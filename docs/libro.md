@@ -5,10 +5,7 @@ nav_order: 9
 
 # Libro.fm import
 
-Open **Get books** on the shelf, then choose **Libro.fm** from the purchase-source dropdown. Connect your
-Libro.fm account with your email and password, then browse your purchases and
-choose **Import** on a book. Administrators can also use **Administration →
-Imports**. No additional downloader application is required.
+Open **Get books** on the shelf, then choose **Libro.fm** from the purchase-source dropdown. In the browser, connect your account there with your email and password. In the native apps, connect under **Settings → Book stores → Libro.fm** and choose **OperaLibre server** as the destination. Return to Get books to browse purchases and choose **Import** on a book. Administrators can also use **Administration → Imports**. No additional downloader application is required.
 
 OperaLibre loads all library pages, offers search and sorting, and queues selected
 books as background jobs. It downloads an M4B when available; otherwise it
@@ -39,7 +36,7 @@ to verify compatibility with Libro.fm's current authentication and delivery serv
 
 ## Native device downloads without a server
 
-On iPhone or Android, open **Get books → Libro.fm** and select **This device**.
+On iPhone, iPad, or Android, open **Settings → Book stores → Libro.fm** and choose **This device** under **Download purchases to**. Connect the device account there, then open **Get books → Libro.fm** to browse purchases.
 In local-library mode this is the only destination. Internet is needed to sign
 in, refresh purchases, and download, but no OperaLibre server is used. Completed
 local books play offline. Plain-browser downloads are not supported.
@@ -143,13 +140,13 @@ personal home directories may be inaccessible. See
 
 ### Browse stores and connect more accounts
 
-In **Get books**, choose the **All accounts** tab to browse Audible and Libro.fm purchases
+In **Get books**, choose **All accounts** from the purchase-source dropdown to browse Audible and Libro.fm purchases
 on the same screen. Search applies to both store sections. You can still select
 an individual store and filter purchases by account.
 
-Expand **Libro.fm accounts**, then choose **Add Libro.fm account** to connect another account. Existing connections
+In a browser, expand **Libro.fm accounts** in Get books. In the native apps, open **Settings → Book stores → Libro.fm → Manage connected accounts**. Choose **Add Libro.fm account** to connect another account. Existing connections
 and cached purchases are preserved, including connections saved by older versions.
-Expand **Libro.fm accounts** to reconnect or disconnect a specific account;
+Use the same account controls to reconnect or disconnect a specific account;
 **Refresh all accounts** updates every connected library. Purchases show their
 account email, and imports use that account's connection. Disconnecting an account
 keeps already imported books.
@@ -158,12 +155,12 @@ Server connections remain private to your OperaLibre user. Device connections us
 iOS Keychain or Android encrypted storage and are shared by users of that app on
 that device. Server and device connections are separate.
 
-On the **All accounts** tab, the purchase account filter includes both Audible and
+With **All accounts** selected, the purchase account filter includes both Audible and
 Libro.fm accounts, grouped and labeled by store. Choosing an account shows only
 that account's purchases; **All accounts** restores both stores. The individual
-store tabs keep their own account filters.
+store views keep their own account filters.
 
-Expand **Libro.fm accounts** to save an optional nickname (up to 80 characters).
+Use the account controls to save an optional nickname (up to 80 characters).
 Nicknames appear in filters and purchase labels; email addresses remain available
 in account settings. Clearing a nickname restores the email label. Server
 nicknames are saved for your OperaLibre user, while device nicknames stay with the

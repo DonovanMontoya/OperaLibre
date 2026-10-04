@@ -12,6 +12,8 @@ This guide helps you choose between installing a ready-made release and building
 - **You have audiobook files on this computer:** download the combined release package below.
 - **Your books are already in Jellyfin:** you do not need to install this server. Open the OperaLibre web, macOS, or iPhone app, choose **Jellyfin**, enter your Jellyfin address, and sign in with your usual Jellyfin account. See [Using OperaLibre](using-operalibre.md#connect-to-jellyfin-instead).
 - **You want to listen from a phone:** finish the local setup first, then see [Use it on a phone or tablet](using-operalibre.md#use-it-on-a-phone-or-tablet).
+- **Your files are already on your phone or tablet:** use **Listen from this device** in the native app; no server is needed. See [Listen from this device](using-operalibre.md#listen-from-this-device).
+- **You want to try it first:** choose **Explore the on-device demo** on the connection screen for bundled audio, an EPUB, and sentence timings that work offline.
 
 ## Install a release (recommended)
 
@@ -39,10 +41,10 @@ Use the following steps if you want to develop OperaLibre or build it yourself i
 ```bash
 git clone https://github.com/DonovanMontoya/OperaLibre.git
 cd OperaLibre
-npm install
+npm ci
 ```
 
-`npm install` installs the web workspace under `apps/web`. The Rust server compiles on first run.
+`npm ci` installs the web workspace from the checked-in lockfile. The Rust server compiles on first run. Leave `VITE_API_BASE` unset so development requests use the Vite proxy and native apps can choose their server at runtime.
 
 ### 2. Create your config
 

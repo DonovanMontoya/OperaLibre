@@ -5,7 +5,7 @@ nav_order: 7
 
 # Using OperaLibre
 
-This is the everyday guide for listeners and the person who looks after the library. You need an OperaLibre server or a Jellyfin server that you can reach first; [Getting Started](getting-started.md) explains the OperaLibre setup.
+This is the everyday guide for listeners and the person who looks after the library. Connect to an OperaLibre or Jellyfin server, use the native app's on-device library, or try the bundled demo. [Getting Started](getting-started.md) explains the OperaLibre server setup.
 
 ## Try the demo
 
@@ -42,7 +42,9 @@ You can add books in either of these ways:
 
 Uploads accept the audio types listed in [Library Layout](library-layout.md#supported-audio-formats). Cover art initially comes from the artwork embedded in the audio files' tags. An administrator can open **Edit Info**, choose a JPEG, PNG, or WebP cover, and **Save Info** to replace it for everyone with access to the book. Images must be at most 8 MiB, 16 million pixels, and 8192 pixels per side; OperaLibre saves a resized copy without changing the audio. **Restore original cover** returns to the embedded artwork, or the placeholder if there is none.
 
-Cover changes survive rescans and server restarts. They require a writable book folder; keep its hidden OperaLibre cover files when moving or backing up your library, alongside a server backup containing your metadata edits. Add a readalong file by copying it into the book’s folder afterward, then rescan.
+Cover changes survive rescans and server restarts. They require a writable book folder; keep its hidden OperaLibre cover files when moving or backing up your library, alongside a server backup containing your metadata edits.
+
+For a book without an EPUB, an administrator can choose **Add EPUB** on the details page and select a matching, unencrypted ebook up to 64 MiB (or the configured upload limit, if lower). OperaLibre validates it, saves it beside the audio, and rescans. Existing files are never overwritten, and a book with a sync map cannot be paired with a different reading copy until that map is removed. Other [companion formats](library-layout.md#readalong-companions) can be copied into the book's folder, followed by a rescan.
 
 ### Organize books with custom tags
 
@@ -74,7 +76,7 @@ tag is used.
 
 ## Add people and recover access
 
-An administrator opens the avatar menu and chooses **Manage readers** to add a reader, remove one, or reset a password. Give every household member their own account rather than sharing the administrator password.
+An administrator opens **Administration → Users & access** to add a reader, remove one, reset a password, or limit their shelf to selected books. In the native apps, Administration is inside **Settings**. Give every household member their own account rather than sharing the administrator password. See [Users & Accounts](users.md) for owner and administrator permissions.
 
 If every administrator password is lost, the server owner can recover access by following [Resetting a forgotten admin password](users.md#resetting-a-forgotten-admin-password). Keep a backup of `data_dir`: it contains accounts and listening progress.
 
@@ -89,9 +91,23 @@ Open the OperaLibre address in Safari, Chrome, or another modern mobile browser 
 
 Open it from the new home-screen icon afterward. The web app offers the same library, player, readalong, and progress sync as the browser. Your phone must be able to reach the server; see [Getting Started: Running on the LAN](getting-started.md#running-on-the-lan).
 
-### Native iPhone app
+### Listen from this device
 
-The repository also includes a native iPhone app with background spoken-audio playback. Building it requires a Mac with Xcode and an Apple development team:
+In the native iPhone, iPad, or Android app, choose **Listen from this device** on the connection screen, then use the shelf's **Add audiobook from device** button to select audio files. Files are copied into the app's private storage; no server or account is needed. Select all tracks of a multi-file book together. You can also add device books while connected to a server; they stay on the device and are not uploaded automatically.
+
+Open an imported book's details and choose **Add EPUB** to pair an unencrypted ebook up to 64 MiB for offline reading. This preserves the audio and listening position. Chapter sync is available; generating a sentence map requires an OperaLibre server. Removing a device book deletes its imported audio and EPUB while keeping listening progress; your original files are left in place.
+
+### Download server books for offline use
+
+In the native iPhone, iPad, and Android apps, open a book's details and choose **Download**. The app saves its audio, cover, companions, and available sync map. Wait for the book to show as downloaded before disconnecting. Downloads and cached server shelves belong to the selected server account; imported device books are separate.
+
+After downloading, the book can play and its EPUB can open without reaching the server, including after restarting the app. Progress is kept locally and reconciled when the server becomes reachable again. Tap the downloaded control to remove the device copy; the server's book and your listening progress remain. The browser and home-screen web app do not create this offline library.
+
+<a id="native-iphone-app"></a>
+
+### Native iPhone and iPad app
+
+The repository also includes a native iPhone and iPad app with background spoken-audio playback. Building it requires a Mac with Xcode and an Apple development team:
 
 1. From the repository root, run `npm run ios:open -w @operalibre/web`.
 2. In Xcode, select the **App** target, then select your development team under **Signing & Capabilities**.
@@ -99,6 +115,8 @@ The repository also includes a native iPhone app with background spoken-audio pl
 4. In the app, choose **OperaLibre**, enter the server’s LAN address (for example `http://192.168.1.20:4920`), and sign in.
 
 The app supports HTTP for private home-network and Tailscale-style addresses. Use HTTPS for a public server.
+
+On a wide iPad window, **Shelf** shows the collection across the available width, while **Reading** shows the shelf beside the player or selected book details. Starting playback or opening details brings back Reading. Narrow iPad windows use a single pane, and the ebook opens in its own full-screen reader. The app keeps the active tab in step as you resize or rotate.
 
 To reach the same server from more than one network, save its other addresses under **Settings → Connection → Address aliases**. Each address keeps its own sign-in: the first time you use one, tap **Sign in** beside it and enter your password. After that the app moves between your signed-in addresses by itself whenever one stops answering. Signing out signs you out of all of them.
 
@@ -180,7 +198,7 @@ For a directly installable development build, run `npm run build:android`; the A
 
 ### Use another audiobook app
 
-The server also speaks an Audiobookshelf-compatible API, so audiobook apps with Audiobookshelf support — BookPlayer, for example — can connect directly. In the app, add an Audiobookshelf server, enter the OperaLibre address with `/abs` appended (for example `http://192.168.1.20:4920/abs`), and sign in with a normal OperaLibre account. Browsing, streaming, cover art, search, genre and tag filters, and resume position all sync with the reader's OperaLibre progress.
+The server implements part of the Audiobookshelf API for compatible clients. For BookPlayer, add an Audiobookshelf server, enter the OperaLibre address with `/abs` appended (for example `http://192.168.1.20:4920/abs`), and sign in with a normal OperaLibre account. Its browsing and download HTTP contracts have been checked; full app playback has not been verified. BookPlayer imports downloads locally and does not automatically send listening progress back to OperaLibre. The official Audiobookshelf app needs additional endpoints that OperaLibre does not implement. See [Client compatibility](client-compatibility.md) for coverage.
 
 There is also an [OPDS](https://opds.io/) catalog for generic reading apps; see the [API Reference](api.md#opds) for the feed address.
 
@@ -192,20 +210,19 @@ To read while listening, place an EPUB, PDF, text, or HTML companion beside the 
 
 In a browser the reader fills the window. The book's contents run down the left, with the title above them as the way back to the book; the page sits in the middle; and on a wide window the right-hand column shows whether the page is following the narration, your place, and the sync tools. The player stays docked along the bottom with speed, the sleep timer, and the chapter list. A narrow window reads full screen instead, with the same bars as the phone apps.
 
-EPUBs support chapter sync. For sentence sync, the owner must enable **Follow along** under **Administration → Experimental features**. You can then tap a sentence to play from there. In the ebook, press **Follow** to start following the narration. Following starts off for a new reader and remembers the last choice afterward. With following on:
+EPUBs support chapter sync. For sentence sync, the owner must enable **Follow along** under **Administration → Experiments**, and the book must have an aligned sync map. You can then tap a mapped sentence to play from there. In the ebook, press **Follow** to start following the narration. Following starts off for a new reader and remembers the last choice afterward. With following on:
 
 - The narrated sentence is highlighted and the page turns with the narration.
 - Turning a page by hand pauses following so you can read ahead. To rejoin the audio, turn following back on (the target **Follow** button in the reader), and the marker snaps to the narrated sentence again.
-- With approximate sync, the marker can drift within a long chapter. Choose **Sync here**, then tap the sentence the narrator is reading: the server keeps that anchor with the book and re-times the sentences around it for every listener. One or two taps in a long chapter keep it close. An administrator can clear the adjustments from the reader.
 - Themes and text size are under **Aa** above the page, next to the full-screen focus mode. The arrows under the page, the arrow keys, and swipes turn pages.
 
 If you update the frontend separately, update the server too so ordinary readers can check the experiment setting. Older servers that deny that check offer chapter sync until upgraded; a denied check does not enable sentence following. The app retains a previously confirmed setting for offline reading.
 
-On the phone and tablet apps the ebook opens as a full-screen reader of its own, over whatever you were doing, and closing it puts you back there. It reads like a paper book: tap the left or right edge of the page to turn it, swipe if you prefer, and tap a sentence in the middle to play from there. A tap on an empty part of the page hides the bars for distraction-free reading and brings them back. The title bar holds the follow toggle, the **Contents** sheet (chapters and any other companion files), and the **Appearance** sheet (theme, text size, **Sync here**, **Improve sync**). The theme starts on **auto**, which turns the page dark whenever the app is in its dark look (the system theme, or the appearance chosen in Settings on the phone); pick **paper**, **sepia**, or **night** to fix it. Under the page a strip shows the sync state and the page within the chapter, and holds the full player so you never have to leave the book: play/pause, skip back and forward, and buttons for speed, the sleep timer, and the chapter list that open over the page. When the book isn't the one playing, a **Listen while you read** button starts it instead. Full-screen focus mode on the web uses the same layout.
+On the phone and tablet apps the ebook opens as a full-screen reader of its own, over whatever you were doing, and closing it puts you back there. It reads like a paper book: tap the left or right edge of the page to turn it, swipe if you prefer, and tap a mapped sentence in the middle to play from there. A tap on an empty part of the page hides the bars for distraction-free reading and brings them back. The title bar holds the follow toggle, the **Contents** sheet (chapters and any other companion files), and the **Appearance** sheet (theme, text size, **Improve sync**). The theme starts on **auto**, which turns the page dark whenever the app is in its dark look (the system theme, or the appearance chosen in Settings on the phone); pick **paper**, **sepia**, or **night** to fix it. Under the page a strip shows the sync state and the page within the chapter, and holds the full player so you never have to leave the book: play/pause, skip back and forward, and buttons for speed, the sleep timer, and the chapter list that open over the page. When the book isn't the one playing, a **Listen while you read** button starts it instead. Full-screen focus mode on the web uses the same layout.
 
-When the experiment is enabled, EPUBs without a precise map use text timings estimated from the audiobook's chapter list, which the reader labels *Approximate sync* — close enough to keep the page and paragraph in step, but the marker can run a few lines ahead or behind. The narrator's pace is learned from the book itself: with enough chapters, how long this narrator spends per character, per sentence, per paragraph, and on dialogue is fitted from the chapters' known lengths. For sentence-exact precision an administrator can either put a matching `.sync.json` file beside the book or set up automatic alignment:
+EPUBs without an aligned map use chapter sync; OperaLibre does not estimate sentence timings. To enable sentence following, an administrator can either put a matching `.sync.json` file beside the book and rescan, or set up automatic alignment:
 
-1. Open **Administration → Experimental features** and install the optional follow-along generator (owner only).
+1. Open **Administration → Experiments** and install the optional follow-along generator (owner only).
 2. Choose **Enable**.
 3. Open the book’s reader and select **Improve sync**.
 
@@ -231,7 +248,7 @@ Audible titles often come with a PDF of maps or illustrations rather than the bo
 
 Install a recent [Libation](https://github.com/rmcrackan/Libation) CLI on the same computer as OperaLibre. Add every Audible account in Libation itself; OperaLibre reads the accounts Libation already knows about rather than signing them in. Give each account a short label such as **Dad** or **UK**; that label appears on its books instead of the Audible email address. The catalog can be filtered or sorted by account.
 
-Add the Libation CLI path and `libation_files_dir` to `server.config`, restart OperaLibre, and use the **Audible** area in the library to review account status, refresh purchases, and choose **Download** for a book. Detailed path examples and troubleshooting are in [Libation / Audible Import](libation.md).
+Add the Libation CLI path and `libation_files_dir` to `server.config`, restart OperaLibre, and choose **Get books → Audible** to browse purchases and download or request a title. In the native apps, account status and refresh controls are under **Settings → Book stores → Audible**. Detailed path examples and troubleshooting are in [Libation / Audible Import](libation.md).
 
 ## Games
 

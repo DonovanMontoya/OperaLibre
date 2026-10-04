@@ -157,7 +157,7 @@ The first page asks for the initial administrator name and password. The adminis
 
 Use a password you can remember. See [Users & Accounts](users.md) for household accounts and password recovery.
 
-The standard install remains the small playback server. If you want OperaLibre to create sentence-level follow-along timing, the owner can later open **Administration → Experimental features** and install the separate readalong sync add-on. Installing it is optional; playback and imported `.sync.json` maps do not need it.
+The standard install remains the small playback server. If you want OperaLibre to create sentence-level follow-along timing, the owner can later open **Administration → Experiments** and install the separate readalong sync add-on. Installing it is optional; playback and chapter sync work without it. Sentence following requires an enabled experiment and an aligned map, including when the map was imported rather than generated on this server.
 
 ## 5. Add audiobooks
 
@@ -210,12 +210,15 @@ Do not expose this plain HTTP address directly to the public internet. Remote ac
 
 ## Back up your library
 
-Back up these folders from the extracted combined package:
+The owner can export accounts, permissions, progress, reading history, and metadata without stopping the server under **Administration → Overview → Server backup**. This portable export does not include the books or all files in the data folder.
+
+For a complete copy, stop OperaLibre and back up these items from the extracted combined package:
 
 - `data` — reader accounts, passwords, progress, and generated sync maps
 - `audiobooks` — books uploaded into the default library
+- `server.config` — your deployment profile and paths
 
-If `library_root` points somewhere else, back up that audiobook folder instead.
+If `library_root` or `data_dir` points somewhere else, back up those folders instead. Include hidden OperaLibre cover files in the library copy. Restart after copying, keep the backup private, and see [Backups](deployment.md#backups) for restore behavior and moving sync maps and schedules.
 
 ## Update to a newer release
 
@@ -241,7 +244,7 @@ Automatic install is available for managed release installations, with or withou
 
 New configuration keys use secure defaults when they are absent, so an existing managed installation does not need a manual config migration after an automatic update. Add the keys from `server.config.example` only when you want to override those defaults.
 
-The browser frontend is tracked separately. When a newer standalone frontend package is available, an owner can choose **Update frontend** to verify and replace only the served web files. The server and playback keep running, the previous frontend is copied to `data/update-backups`, and the Administration page reloads into the new bundle.
+Combined installations update their server and bundled web app together; a frontend-only install is unavailable for those packages. For a standalone frontend served by the server from `web_dist_dir`, an owner can choose **Update frontend** when a newer package is available. The server and playback keep running, the previous frontend is copied to `update-backups` inside `data_dir`, and Administration reloads into the new bundle. Frontends hosted elsewhere must be updated through that host.
 
 Custom source deployments and system services still show the available version and release-notes link, but must be updated manually:
 
