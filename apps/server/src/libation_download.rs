@@ -92,6 +92,9 @@ async fn download_with_budget(
     command
         .args(config.command_args(args))
         .env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "0")
+        // .NET otherwise creates diagnostic sockets and pipes in TMPDIR,
+        // which the staging guard correctly rejects as special files.
+        .env("DOTNET_EnableDiagnostics", "0")
         .env("TMPDIR", &temporary)
         .env("TMP", &temporary)
         .env("TEMP", &temporary)
@@ -382,6 +385,26 @@ assert pathlib.Path(os.environ['TMPDIR']) == temporary
     }
 
     #[tokio::test]
+    async fn imports_without_runtime_diagnostic_special_files() {
+        let (_root, config) = fixture(
+            r#"if os.environ.get('DOTNET_EnableDiagnostics') != '0':
+    import socket
+    diagnostic = socket.socket(socket.AF_UNIX)
+    diagnostic.bind(str(temporary / 'dotnet-diagnostic-socket'))
+    os.mkfifo(temporary / 'clr-debug-pipe-in')
+    os.mkfifo(temporary / 'clr-debug-pipe-out')
+(books / 'book.m4b').write_bytes(b'audio')"#,
+        );
+        assert!(run(&config, budget()).await.unwrap().status.success());
+        assert_eq!(
+            crate::walk_audio_files_checked(&config.library_root)
+                .files
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn rejects_low_space_before_starting_cli() {
         let (_root, config) = fixture("raise Exception('must not run')");
         let mut budget = budget();
@@ -491,6 +514,8 @@ assert pathlib.Path(os.environ['TMPDIR']) == temporary
         for script in [
             "(books / 'large').write_bytes(b'x' * 2048)",
             "(books / 'link').symlink_to('/tmp')",
+            "os.mkfifo(temporary / 'pipe')",
+            "import socket\nsock = socket.socket(socket.AF_UNIX)\nsock.bind(str(temporary / 'socket'))",
         ] {
             let (_root, config) = fixture(script);
             assert!(run(&config, budget()).await.is_err());
