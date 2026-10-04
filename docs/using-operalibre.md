@@ -61,7 +61,8 @@ Use **Sort by** to choose the order and the arrow beside it to reverse that
 order. Your choice is remembered separately for Your Library and Audible.
 The count below the controls shows how many books match.
 
-Open **Filters** to combine reading progress, genres, and tags. Selecting
+Open **Filters** to combine reading progress, genres, and tags, and to show
+only books downloaded on this device or books you can read along with. Selecting
 multiple genres or tags includes any of those choices within that group;
 combining groups narrows the results. Larger genre and tag lists have their
 own search fields. Counts update as you filter, and selected filters remain

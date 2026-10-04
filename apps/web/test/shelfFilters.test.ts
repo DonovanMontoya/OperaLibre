@@ -4,6 +4,7 @@ import {
   bookFacetValues,
   bookMatchesFacet,
   bookMatchesShelfDownload,
+  bookMatchesShelfReadAlong,
   bookMatchesShelfSearch,
   bookMatchesShelfStatus,
   compareShelfAddedAt,
@@ -135,6 +136,15 @@ test("the downloaded filter only narrows the shelf when selected", () => {
   assert.equal(bookMatchesShelfDownload(false, true), false);
 });
 
+test("the read along filter keeps only books that carry their text", () => {
+  const withText = { readingFile: { fileName: "Elantris.epub" } } as Pick<Book, "readingFile">;
+  const audioOnly = { readingFile: null };
+  assert.equal(bookMatchesShelfReadAlong(withText, false), true);
+  assert.equal(bookMatchesShelfReadAlong(audioOnly, false), true);
+  assert.equal(bookMatchesShelfReadAlong(withText, true), true);
+  assert.equal(bookMatchesShelfReadAlong(audioOnly, true), false);
+});
+
 test("removing a merged imported copy invalidates the native download scan", () => {
   const downloaded = book() as Book;
   downloaded.id = "server-book";
@@ -191,6 +201,7 @@ test("toggling leaves the filters it was given untouched", () => {
   const before: ShelfFilters = {
     status: "finished",
     downloadedOnly: true,
+    readAlongOnly: false,
     genres: ["fantasy"],
     tags: []
   };
@@ -204,13 +215,14 @@ test("toggling leaves the filters it was given untouched", () => {
 test("the badge counts every chip that is on, and nothing when none are", () => {
   assert.equal(countActiveShelfFilters(EMPTY_SHELF_FILTERS), 0);
   assert.equal(
-    countActiveShelfFilters({ status: "finished", downloadedOnly: true, genres: [], tags: [] }),
-    2
+    countActiveShelfFilters({ status: "finished", downloadedOnly: true, readAlongOnly: true, genres: [], tags: [] }),
+    3
   );
   assert.equal(
     countActiveShelfFilters({
       status: "inProgress",
       downloadedOnly: false,
+      readAlongOnly: false,
       genres: ["fantasy", "mystery"],
       tags: ["cosmere"]
     }),
