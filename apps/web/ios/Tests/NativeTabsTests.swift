@@ -146,6 +146,18 @@ final class NativeTabsTests: XCTestCase {
         _ = observer
     }
 
+    func testSideColumnOutsideTheWindowSafeAreaIsReservedForThePage() {
+        // Split beside another app: the column holds only the tab bar.
+        let split = UIEdgeInsets(top: 0, left: 0, bottom: 21, right: 0)
+        XCTAssertEqual(NativeTabsController.sideColumnReserve(width: 84, onLeft: true, safeArea: split),
+                       UIEdgeInsets(top: 0, left: 84, bottom: 0, right: 0))
+        XCTAssertEqual(NativeTabsController.sideColumnReserve(width: 84, onLeft: false, safeArea: split),
+                       UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 84))
+        // Cover screen: the clock's column is already outside the safe area.
+        let cover = UIEdgeInsets(top: 0, left: 0, bottom: 21, right: 84)
+        XCTAssertEqual(NativeTabsController.sideColumnReserve(width: 84, onLeft: false, safeArea: cover), .zero)
+    }
+
     #if compiler(>=6.4)
     @available(iOS 27.1, *)
     func testHiddenReaderRailFollowsPhysicalEdgeAndLayoutDirection() {

@@ -502,6 +502,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         // chrome and above the bar's platter of items.
         var rail: CGRect?
         var sideBar = false
+        var columnReserve = UIEdgeInsets.zero
         let hasLeadingRail = frame.minX > view.bounds.minX + 0.5
         let hasTrailingRail = frame.maxX < view.bounds.maxX - 0.5
         if navigationVisible, navigation.parent != nil, !navigation.view.isHidden,
@@ -524,6 +525,8 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                                   width: column.width, height: items.minY - top)
                     frame.origin.x = view.bounds.minX
                     frame.size.width = view.bounds.width
+                    columnReserve = Self.sideColumnReserve(width: column.width, onLeft: barOnLeading,
+                                                           safeArea: view.safeAreaInsets)
                 }
             }
         } else if !navigationVisible || navigation.view.isHidden {
@@ -541,6 +544,10 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                 }
             }
             #endif
+        }
+        for (edge, reserve) in [(\UIEdgeInsets.left, columnReserve.left), (\.right, columnReserve.right)]
+        where abs(content.additionalSafeAreaInsets[keyPath: edge] - reserve) > 0.5 {
+            content.additionalSafeAreaInsets[keyPath: edge] = reserve
         }
         if rail != sentRail, let webView = content.webView {
             sentRail = .some(rail)
@@ -573,6 +580,20 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         for (constraint, inset) in zip(contentConstraints, insets) where constraint.constant != inset {
             constraint.constant = inset
         }
+    }
+
+    /// What the page's safe area still lacks of a side column it runs under.
+    /// The cover screen's column also carries the clock, so the window's safe
+    /// area already excludes it. Beside another app the column holds only the
+    /// bar, and nothing else keeps the page's content out from under it.
+    static func sideColumnReserve(width: CGFloat, onLeft: Bool, safeArea: UIEdgeInsets) -> UIEdgeInsets {
+        var reserve = UIEdgeInsets.zero
+        if onLeft {
+            reserve.left = max(0, width - safeArea.left)
+        } else {
+            reserve.right = max(0, width - safeArea.right)
+        }
+        return reserve
     }
 
     #if compiler(>=6.4)
