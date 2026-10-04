@@ -43,14 +43,16 @@ Administrators can:
 - Reset a reader's password
 - Choose whether a reader can download Libation titles directly or must request approval for each title
 
+Under **Users & access**, administrators can also give a reader the full library or a shelf limited to selected books. These restrictions apply to browsing, streaming, companions, downloads, and third-party API access. Approved Audible downloads and imports from a reader's own Libro.fm account grant that reader access to the resulting book.
+
 Each reader has independent progress, so a household can share one server without stepping on each other's bookmarks.
 
 ## How authentication is wired
 
-The web app exchanges a username + password for a session token. The token is sent:
+The web app exchanges a username + password for a session token and a separate, read-only media token:
 
-- As a cookie/`Authorization` header for normal API calls
-- As a `?token=` query parameter on `<audio>` and `<img>` URLs, so plain HTML elements stay authenticated when streaming audio, fetching cover art, or downloading a zip of a book
+- The session authenticates normal API calls through a cookie or an `Authorization: Bearer ...` header.
+- The scoped media token is sent as `?token=` on audio, cover, companion, download, and OPDS URLs so media elements can load files. It cannot authorize account changes or progress writes. Keep the full session token out of URLs.
 
 Tokens are random opaque strings. Sessions end on logout, account deletion, or 30 days after sign-in.
 
