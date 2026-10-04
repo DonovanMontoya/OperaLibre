@@ -53,7 +53,7 @@ export function releasePlan(options, api, paginate) {
     throw new Error("The nightly tag points at a different commit.");
   }
   let publish = true;
-  if (channel === "nightly" && event === "schedule") {
+  if (channel === "nightly" && event === "repository_dispatch") {
     const previous = releases
       .filter((release) => !release.draft && release.prerelease && NIGHTLY.test(release.tag_name))
       .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at))[0];
@@ -83,7 +83,7 @@ function main() {
   const event = process.env.GITHUB_EVENT_NAME;
   const plan = releasePlan({
     event,
-    channel: event === "schedule" ? "nightly" : process.env.RELEASE_CHANNEL || "stable",
+    channel: event === "repository_dispatch" ? "nightly" : process.env.RELEASE_CHANNEL || "stable",
     branch: process.env.GITHUB_REF,
     sha: process.env.GITHUB_SHA,
     tag: event === "push" ? process.env.GITHUB_REF_NAME : process.env.REQUESTED_TAG,
