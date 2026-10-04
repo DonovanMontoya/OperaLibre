@@ -338,17 +338,23 @@ The checked-in Capacitor iOS project packages the web app as a native iPhone app
 npm run ios:open -w @operalibre/web
 ```
 
-In Xcode, select your development team and an attached iPhone, then press Run. For a server outside the app bundle, enter the reachable server URL on the app’s first screen. Users may enter `My-Mac.local:4920`, a private IP, or a Tailscale address without a scheme; the app keeps those connections on HTTP. A public name automatically uses HTTPS, and explicit public HTTP is rejected before credentials are sent. See [Using OperaLibre](using-operalibre.md#native-iphone-app) for the listener-oriented steps.
+In Xcode, select your development team and an attached iPhone or iPad, then press Run. Leave `VITE_API_BASE` unset and enter the reachable server URL on the app's first screen. Users may enter `My-Mac.local:4920`, a private IP, or a Tailscale address without a scheme; the app keeps those connections on HTTP. A public name automatically uses HTTPS, and explicit public HTTP is rejected before credentials are sent. See [Using OperaLibre](using-operalibre.md#native-iphone-and-ipad-app) for the listener-oriented steps.
 
 ## Backups
 
-Back up `data_dir` (default `./data/`). Its SQLite database (`operalibre.db`) holds user accounts, per-reader progress, the reading log, and the durable identity map that keeps books connected to their history when library folders are moved or renamed. Back up `library_root` with your usual file backups as well; administrators can add new library folders through the web uploader.
+The owner can choose **Administration → Overview → Server backup → Export backup** while the server is running. This downloads a portable JSON snapshot of accounts, permissions, listening progress, per-book settings, reading history, metadata, work links, Libation records, and stable library IDs. Keep it private: it contains sensitive account data.
+
+The portable export does not include audiobook or companion files, uploaded covers, generated sync maps, sync queue/schedule files, import-account credentials, or `server.config`. Back up `library_root` separately, including its hidden OperaLibre files, and preserve the configuration. Keep `data_dir/sync/`, `sync-jobs.json`, `sync-schedules.json`, and `sync-sweep.json` when moving an installation that uses follow-along generation. Optional import accounts may need to be reconnected after a move.
+
+For a complete filesystem backup, stop OperaLibre before copying `data_dir` (default `./data/`), the library, and `server.config`, then restart it. Do not copy a running SQLite database with a normal file-copy command: recent writes may still be in its journal. Use the app's export for a portable backup while listening continues.
+
+**Restore backup** on the same card replaces server-owned data with the selected JSON snapshot; it does not change library files or configuration. OperaLibre saves the current state under `data_dir/restore-backups/` first. Other readers must sign in again afterward, and the restoring owner may also need to sign in if the restored account differs. After restoring or moving a server, check accounts, book access, listening positions, and library matching before discarding the old installation.
 
 ## Updating
 
 ```bash
 git pull
-npm install
+npm ci
 npm run build
 # restart the service
 ```

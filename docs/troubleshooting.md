@@ -60,14 +60,20 @@ The combined package runs in the background. Closing the browser does not stop i
 
 ## Cover art doesn't show up
 
-- Verify the audio file actually has embedded art (Mp3Tag or `ffprobe` will tell you). Covers come from the embedded tags only — a loose `cover.jpg` beside the tracks is not read.
-- If the art is missing, embed it with a tag editor and choose **Rescan library**.
+- Verify the audio file has embedded art (a tag editor or `ffprobe` will tell you), or ask an administrator to add a replacement under **Edit Info**. A loose `cover.jpg` beside the tracks is not used as a cover.
+- If you changed embedded art, choose **Rescan library**. An uploaded replacement still takes priority; choose **Restore original cover** to use the embedded art again.
+- If saving a replacement fails, confirm the book folder is writable and the image meets the [cover limits](using-operalibre.md#add-books-to-the-library).
 - Hard-refresh the browser; covers are cached by the browser.
 
 ## Readalong companion isn't matched
 
-- Check the [matching rules](library-layout.md#matching-rules). Folder books prefer a same-name file; single-file books require a same-stem companion in `library_root`.
-- Confirm the extension is one of `.epub`, `.pdf`, `.txt`, `.html`, `.htm` (lowercase).
+- Check [which files belong to a book](library-layout.md#which-files-belong-to-a-book). Folder books include documents directly inside the folder; single-file books need a matching filename stem beside the audio.
+- Confirm the extension is one of `.epub`, `.pdf`, `.txt`, `.html`, `.htm`.
+- For a book without an EPUB, an administrator can choose **Add EPUB** on its details page. Imported on-device books have the same control in the native apps.
+
+## The ebook does not follow sentences
+
+Chapter sync works without a sentence map. For sentence highlighting and seeking, the server's **Follow along** experiment must be enabled and the book must have an aligned `.sync.json` map. An administrator can generate one with **Improve sync**. Then press **Follow** in the reader; turning pages yourself pauses following until you turn it on again. See [Read along with the ebook](using-operalibre.md#read-along-with-the-ebook).
 
 ## Seeking is broken or the audio rebuffers constantly
 

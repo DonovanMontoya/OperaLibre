@@ -13,7 +13,7 @@ This integration is entirely optional. If you don't configure it, the relevant U
 
 - Libation must be **installed** on the same machine as the server (or somewhere the server process can execute).
 - On Linux, the system ICU runtime is required (a versioned `libicu` package on Ubuntu/Debian, `libicu` on Fedora/RHEL, or `icu-libs` on Alpine). If it is missing, the one-line installer offers to install the correct package with administrator access and verifies it before completing Libation setup.
-- A recent Libation CLI with `login-external` and `list-accounts` support is required for adding accounts through OperaLibre. Existing authenticated Libation profiles remain supported.
+- A recent Libation CLI with `login-external` and `list-accounts` support is required for the installer's guided sign-in and account discovery. Existing authenticated Libation profiles remain supported.
 - OperaLibre stages server-requested downloads inside `library_root`; the server needs write access there.
 
 ## Set it up
@@ -39,9 +39,9 @@ libation_files_dir = /path/to/LibationFiles
 ```
 
 - `libation_cli_path` — absolute path to the Libation CLI executable. If left blank, the server searches `PATH` for `libationcli`, `LibationCli`, or `libationcli.exe`.
-- `libation_files_dir` — the Libation files directory containing `AccountsSettings.json` and `Settings.json`, where the accounts you add in Libation live. Accounts created by older OperaLibre builds keep using their isolated directories under `data_dir/libation-accounts`.
+- `libation_files_dir` — the Libation files directory containing `AccountsSettings.json` and `Settings.json`, where the accounts you add in Libation live. Existing managed accounts keep using their isolated directories under `data_dir/libation-accounts`.
 
-If both are blank, the integration stays disabled.
+The integration is available when the server finds the CLI at the configured path or on `PATH`. Leaving both values blank does not disable a CLI found on `PATH`.
 
 Server-requested downloads use `max_upload_gib` as a per-title ceiling, including temporary download and decryption files. `min_download_free_gib` protects the library volume; OperaLibre checks before each title, while it runs, and before publishing the finished files. These limits apply to direct readers, approved requests, and administrators, including **Download all purchases**. A title already present is reused rather than downloaded again.
 
@@ -52,7 +52,7 @@ Downloads are staged out of view of library scans, then published together when 
 When configured, an admin sees Libation-aware controls:
 
 - **Status** — which accounts Libation has, and whether they look authenticated.
-- **Accounts** — administrators can add or reconnect server-wide Audible accounts; owners can remove managed accounts.
+- **Accounts** — view the accounts already connected in Libation. Add or reconnect them in Libation on the server computer; the app does not offer account sign-in controls.
 - **Account browsing** — filter or sort by account label. **All accounts** keeps duplicate titles visible as separate entries carrying their friendly account label.
 - **Library** — the Audible library Libation knows about; it loads automatically when the Audible tab opens.
 - **Refresh Audible** — ask Libation to check Audible for new purchases. The server also refreshes every 24 hours by default. Administrators can refresh at any time; reader accounts get three refreshes per rolling hour by default.
@@ -66,8 +66,6 @@ Under the hood these map to API endpoints:
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/libation/status` | Account/auth state |
-| `POST /api/libation/accounts/login/start` | Start an administrator-managed Audible browser login |
-| `POST /api/libation/accounts/login/{session_id}/complete` | Finish login with the final Amazon/Audible URL |
 | `GET /api/libation/books` | Account-aware Libation catalog; duplicate ownership stays visible |
 | `POST /api/libation/sync` | Tell Libation to refresh its library; available to authenticated readers, with the configured hourly limit applied to non-administrators |
 | `POST /api/libation/accounts/{profile_id}/books/{asin}/liberate` | Download a title from the selected Audible account when the reader has direct permission |
@@ -79,10 +77,12 @@ Under the hood these map to API endpoints:
 | `GET /api/jobs/{job_id}` | Poll a background liberation job |
 | `POST /api/library/rescan` | Re-scan `library_root` |
 
+The server also retains managed-account sign-in, rename, and removal endpoints for API clients; see [API Reference](api.md#libation-optional). Those endpoints are separate from the current app's account controls.
+
 ## Troubleshooting
 
 - **"Libation not configured"** — `libation_cli_path` is blank and no Libation CLI is on `PATH`. Set the path explicitly.
-- **Account shows as not authenticated** — sign the account in again in Libation. OperaLibre reports the status but no longer signs accounts in itself. A warning badge appears on Audible and, in installed apps, on the Shelf tab.
+- **Account shows as not authenticated** — sign the account in again in Libation on the server computer. The app reports the status but has no account sign-in control. A warning badge appears on Audible and, in installed apps, on the Shelf tab.
 - **An account created by an older OperaLibre build reports missing Libation settings** — restart the updated OperaLibre server once. The server repairs the managed account profile before starting Libation.
 - **Downloads made outside OperaLibre do not appear** — move those files into `library_root` and rescan. Server-requested downloads are staged and published there automatically.
 - **Libation reports that no region is associated with the Invariant Culture** — install the ICU runtime listed under Prerequisites, restart OperaLibre, and retry the download. Do not set `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`; Libation needs full culture and region data when preparing a download.
@@ -101,4 +101,4 @@ library sort orders.
 
 ## Security note
 
-The integration runs a local executable. Administrators can add accounts and trigger acquisition, so grant that role only to trusted people. Audible passwords are never sent to OperaLibre, but the final authentication response URL passes through the server once and Libation stores long-lived identity tokens inside the account's private profile directory. Use HTTPS outside a trusted LAN/VPN, never log request bodies, and protect the server's `data_dir` as credential-bearing storage.
+The integration runs a local executable. Administrators can trigger acquisition and API clients can manage Audible sign-ins, so grant that role only to trusted people. Audible passwords are entered on Amazon's website. The installer's sign-in passes the final response URL directly to Libation; managed-account API sign-in passes it through OperaLibre once. Libation stores long-lived identity tokens in its private profile directory. Use HTTPS outside a trusted LAN/VPN, never log request bodies, and protect the Libation settings folder and server's `data_dir` as credential-bearing storage.

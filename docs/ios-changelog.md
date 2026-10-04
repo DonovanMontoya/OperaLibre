@@ -16,7 +16,7 @@ independently of the server releases.
 
 Prepared from the changes on main since the recorded 1.2.6 (2) app baseline,
 [`db31b5fb`](https://github.com/DonovanMontoya/OperaLibre/commit/db31b5fb2528f2a0530bbe2d7447b59c596dd358),
-through [`bf177955`](https://github.com/DonovanMontoya/OperaLibre/commit/bf17795555e7a90240c5a1b6f1d4a67769d0e2ba).
+through [`2ae15a00`](https://github.com/DonovanMontoya/OperaLibre/commit/2ae15a0008a0652308ca3876bea7e423a74a9bbf).
 This entry replaces the planned 1.2.7 notes. The distributed build number,
 channel, date, and archived source commit are pending confirmation.
 
@@ -62,6 +62,14 @@ channel, date, and archived source commit are pending confirmation.
   [#240](https://github.com/DonovanMontoya/OperaLibre/pull/240),
   [#241](https://github.com/DonovanMontoya/OperaLibre/pull/241),
   [#242](https://github.com/DonovanMontoya/OperaLibre/pull/242))
+- iPad has separate Shelf and Reading tabs. In a wide window, Shelf shows
+  the collection at full width and Reading brings the player or book details
+  beside it. Tab selection follows playback and layout changes.
+  ([#262](https://github.com/DonovanMontoya/OperaLibre/pull/262))
+- The bundled offline demo pairs a short Alice's Adventures in Wonderland
+  recording with the full EPUB and sentence timings. Sources, credits, and
+  license information are available offline from the book and Settings.
+  ([#264](https://github.com/DonovanMontoya/OperaLibre/pull/264))
 - Improved native audio activation, artwork loading, CarPlay updates, and
   download retries when a book's files change.
   ([1f71225](https://github.com/DonovanMontoya/OperaLibre/commit/1f71225),
