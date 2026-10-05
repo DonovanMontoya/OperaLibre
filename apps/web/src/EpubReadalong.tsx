@@ -3,7 +3,7 @@ import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { restrictEpubContent } from "./readerContentPolicy";
 import { Capacitor } from "@capacitor/core";
 import { classifyPageGesture, narrationTextOffset, pageTurnAtEdge } from "./readerPagination";
-import { beginPageTurnDrag, runPageTurn, type PageTurnDirection, type PageTurnDrag } from "./readerPageTurn";
+import { beginPageTurnDrag, pageTurnAnimates, runPageTurn, type PageTurnDirection, type PageTurnDrag } from "./readerPageTurn";
 import { type AnnotationStore, type MarkedView, pruneUntrackedHighlights, removeHighlight } from "./readerAnnotations";
 import {
   ALargeSmall,
@@ -662,6 +662,9 @@ export function EpubReadalong({
     const rendition = renditionRef.current;
     const stage = viewerRef.current;
     if (!rendition || !stage || !pageTurnAnimationRef.current || !pageTurns(direction)) return null;
+    // Checked before the reader is told a hand is turning the page: a drag
+    // that cannot start must leave following as it was.
+    if (!pageTurnAnimates(stage)) return null;
     const wasFollowing = followRef.current;
     let drag: PageTurnDrag | null = null;
     navigateByHand(() => {

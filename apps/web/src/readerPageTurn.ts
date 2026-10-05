@@ -145,6 +145,11 @@ export function runPageTurn(
   startPageTurn(document, stage, direction, false, turn);
 }
 
+/** Whether a turn here plays with motion; without it there is nothing to drag. */
+export function pageTurnAnimates(stage: HTMLElement): boolean {
+  return pageTurnDocument(stage) !== null;
+}
+
 export type PageTurnDrag = {
   /** The finger's travel in the turn's direction, as a share of the page width. */
   move(share: number): void;
