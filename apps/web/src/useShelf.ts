@@ -109,8 +109,11 @@ export function useShelf({
     writeStoredValue(PURCHASE_VIEW_MODE_STORAGE_KEY, mode);
   }
 
-  function changeShelfLayout(next: ShelfLayout, animate = true) {
-    if (next === shelfLayout) return;
+  function changeShelfLayout(next: ShelfLayout, animate = true, update?: () => void) {
+    if (next === shelfLayout) {
+      update?.();
+      return;
+    }
     const apply = () => {
       if (next === "library") {
         viewBeforeWideShelfRef.current = viewMode;
@@ -120,6 +123,7 @@ export function useShelf({
         viewBeforeWideShelfRef.current = null;
       }
       setShelfLayout(next);
+      update?.();
     };
     if (animate) runShelfLayoutTransition(document.documentElement, shelfLayout, next, apply);
     else apply();
