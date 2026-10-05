@@ -37,7 +37,7 @@ export function usePlayerNavigation({
 }: {
   bookDetailsSwipeStartRef: RefObject<{ clientX: number; clientY: number; } | null>;
   books: Book[];
-  changeShelfLayout: (next: ShelfLayout, animate?: boolean) => void;
+  changeShelfLayout: (next: ShelfLayout, animate?: boolean, update?: () => void) => void;
   chaptersOpen: boolean;
   gamesEnabled: boolean;
   isViewingPlayingBook: boolean;
@@ -97,7 +97,17 @@ export function usePlayerNavigation({
   }
 
   function selectBook(book: Book) {
-    if (shelfLayout === "library") changeShelfLayout("split");
+    showPlayer(() => selectBookOnPage(book));
+  }
+
+  // Keep the route and selection on the old page until its snapshot is taken.
+  // Otherwise the destination player can paint before its slide begins.
+  function showPlayer(update: () => void) {
+    if (shelfLayout === "library") changeShelfLayout("split", true, update);
+    else update();
+  }
+
+  function selectBookOnPage(book: Book) {
     setSelectedBookId(book.id);
     setNativePlayerView(book.id === playbackBook?.id ? "now" : "details");
     if (native) {
@@ -110,7 +120,10 @@ export function usePlayerNavigation({
   }
 
   function openBookDetails(bookId: string) {
-    if (shelfLayout === "library") changeShelfLayout("split");
+    showPlayer(() => openBookDetailsOnPage(bookId));
+  }
+
+  function openBookDetailsOnPage(bookId: string) {
     setSelectedBookId(bookId);
     setNativePlayerView("details");
     if (native) {
@@ -166,7 +179,10 @@ export function usePlayerNavigation({
   }
 
   function openPlaybackView(view: "now" | "details" | "chapters") {
-    if (shelfLayout === "library") changeShelfLayout("split");
+    showPlayer(() => openPlaybackViewOnPage(view));
+  }
+
+  function openPlaybackViewOnPage(view: "now" | "details" | "chapters") {
     if (playbackBook) {
       setSelectedBookId(playbackBook.id);
     }
@@ -221,15 +237,16 @@ export function usePlayerNavigation({
     if (tab === "shelf" && spreadTab(nativeTab, shelfSpread, shelfLayout) === "shelf" && librarySource !== "local") {
       showYourLibrary();
     }
-    if (tab === "shelf" && shelfSpread) changeShelfLayout("library");
     // Reading belongs to the playing book. A book browsed from the shelf stays
     // selected after its details page closes and must not follow into the tab.
-    if (tab === "reading") {
-      if (shelfLayout === "library") changeShelfLayout("split");
-      if (playbackBook) setSelectedBookId(playbackBook.id);
-    }
-    setNativeTab(tab);
-    if (tab === "reading" || tab === "shelf") setNativePlayerView("now");
+    const update = () => {
+      if (tab === "reading" && playbackBook) setSelectedBookId(playbackBook.id);
+      setNativeTab(tab);
+      if (tab === "reading" || tab === "shelf") setNativePlayerView("now");
+    };
+    if (tab === "shelf" && shelfSpread) changeShelfLayout("library", true, update);
+    else if (tab === "reading") showPlayer(update);
+    else update();
   }
 
   function toggleGamesEnabled() {
