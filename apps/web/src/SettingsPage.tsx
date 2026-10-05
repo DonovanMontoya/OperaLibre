@@ -144,6 +144,8 @@ export function SettingsPage({
   } = offlineDownloads;
   const {
     followAggressiveness,
+    pageTurnAnimationEnabled,
+    togglePageTurnAnimation,
     updateFollowAggressiveness
   } = readerPreferences;
   const {
@@ -207,8 +209,10 @@ export function SettingsPage({
           toggleContinueReadingAutoplay={toggleContinueReadingAutoplay}
           followAggressiveness={followAggressiveness}
           gamesEnabled={gamesEnabled}
+          pageTurnAnimation={pageTurnAnimationEnabled}
           sentenceFollowAvailable={sentenceFollowAvailable}
           toggleGamesEnabled={toggleGamesEnabled}
+          togglePageTurnAnimation={togglePageTurnAnimation}
           updateFollowAggressiveness={updateFollowAggressiveness}
         />
 

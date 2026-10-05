@@ -21,6 +21,7 @@ import {
 import { supportsLibroDevice } from "./libroDevice";
 import { LibroCatalog } from "./LibroCatalog";
 import { getDeviceBooks, mergeDeviceAndServerBooks } from "./localLibrary";
+import { PageTurnSetting } from "./PageTurnSetting";
 import { FOLLOW_AGGRESSIVENESS_LABELS, type FollowAggressiveness } from "./readalongPreferences";
 import { Fragment } from "react";
 import type { CSSProperties, Dispatch, FormEvent, ReactNode, RefObject, SetStateAction } from "react";
@@ -193,16 +194,20 @@ export function BehaviorSettings({
   toggleContinueReadingAutoplay,
   followAggressiveness,
   gamesEnabled,
+  pageTurnAnimation,
   sentenceFollowAvailable,
   toggleGamesEnabled,
+  togglePageTurnAnimation,
   updateFollowAggressiveness
 }: {
   continueReadingAutoplay: boolean;
   toggleContinueReadingAutoplay: () => void;
   followAggressiveness: FollowAggressiveness;
   gamesEnabled: boolean;
+  pageTurnAnimation: boolean;
   sentenceFollowAvailable: boolean;
   toggleGamesEnabled: () => void;
+  togglePageTurnAnimation: () => void;
   updateFollowAggressiveness: (value: FollowAggressiveness) => void;
 }) {
   return (
@@ -225,6 +230,7 @@ export function BehaviorSettings({
             <span aria-hidden="true" />
           </button>
         </div>
+        <PageTurnSetting enabled={pageTurnAnimation} onToggle={togglePageTurnAnimation} />
         {sentenceFollowAvailable ? (
           <div className="settings-follow-group">
             <div className="settings-toggle-row">

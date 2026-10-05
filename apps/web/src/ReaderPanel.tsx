@@ -251,6 +251,7 @@ export function renderEpubReader({
   } = readalong;
   const {
     followAggressiveness,
+    pageTurnAnimation,
     readalongEnabled
   } = readerPreferences;
   const {
@@ -285,6 +286,7 @@ export function renderEpubReader({
         audioChapters={selectedBook.chapters}
         positionSeconds={narrationFollowActive && isViewingPlayingBook ? bookPosition : 0}
         followLeadSeconds={FOLLOW_AGGRESSIVENESS_LEAD_SECONDS[followAggressiveness]}
+        pageTurnAnimation={pageTurnAnimation}
         onSeekTo={
           narrationFollowActive
             ? (seconds) => seekBookPositionInBook(selectedBook, seconds, true)
