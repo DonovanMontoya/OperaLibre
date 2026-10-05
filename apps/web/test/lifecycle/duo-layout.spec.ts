@@ -13,6 +13,123 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await server?.close(); });
 
+for (const width of [768, 1194]) {
+  test(`iPad Shelf closes between the arriving index and reading page at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 834 });
+    const stylesheet = readFileSync(new URL('../../src/styles.css', import.meta.url), 'utf8');
+    await page.route('http://localhost/shelf-transition-fixture', route => route.fulfill({ contentType: 'text/html', body: `<html class="native-app platform-ios"><head><style>${stylesheet}</style></head><body>
+      <style>
+        .wall, .index, .page { position: absolute; height: 834px; animation-duration: 440ms;
+          animation-timing-function: cubic-bezier(.32, .72, 0, 1); animation-fill-mode: both; }
+        .wall { width: 100vw; animation-name: shelf-wall-close; }
+        .index { width: var(--verso-w); animation-name: shelf-slide-back; }
+        .page { left: var(--verso-w); width: calc(100vw - var(--verso-w)); animation-name: shelf-page-on; }
+      </style>
+      <div class="wall">Outgoing collection controls</div>
+      <div class="index">Arriving index controls</div>
+      <div class="page">Reading controls</div>
+    </body></html>` }));
+    await page.goto('http://localhost/shelf-transition-fixture');
+
+    const samples = await page.evaluate(async () => {
+      // Exercise the production keyframes on visible surfaces so the test
+      // can sample every frame without depending on snapshot capture support.
+      const animations = document.getAnimations();
+      animations.forEach(animation => animation.pause());
+      const style = (selector: string) => getComputedStyle(document.querySelector(selector)!);
+      const result = [];
+      for (const time of [0, 110, 220, 330, 440]) {
+        animations.forEach(animation => { animation.currentTime = time; });
+        const index = style('.index');
+        const wall = style('.wall');
+        const player = style('.page');
+        // Insets bound the old grid's visible pixels. They must meet the
+        // arriving snapshots, including when the old grid disappears.
+        const insets = wall.clipPath.match(/[\d.]+/g)!.map(Number);
+        const right = insets[1] ?? insets[0];
+        const left = insets[3] ?? right;
+        result.push({
+          wallLeft: left,
+          wallRight: innerWidth - right,
+          indexRight: parseFloat(index.width) + new DOMMatrix(index.transform).m41,
+          playerLeft: parseFloat(player.left) + new DOMMatrix(player.transform).m41
+        });
+      }
+      return result;
+    });
+
+    for (const sample of samples) {
+      expect(sample.wallLeft).toBeCloseTo(sample.indexRight, 1);
+      expect(sample.wallRight).toBeCloseTo(sample.playerLeft, 1);
+    }
+    const end = samples[samples.length - 1];
+    expect(end.wallLeft).toBeCloseTo(end.wallRight, 1);
+  });
+}
+
+for (const entry of ['Reading', 'book details'] as const) {
+  test(`iPad ${entry} keeps the full Shelf until its transition captures it`, async ({ page }) => {
+    await page.setViewportSize({ width: 1194, height: 834 });
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'userAgent', { value: 'iPad' });
+    });
+    const books = library(3);
+    const user = { id: 'shelf-owner', username: 'Shelf owner', isAdmin: true, isOwner: true,
+      allowedBookIds: null, libationAccess: 'none', createdAt: '1700000000' };
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname;
+      let body: unknown = [];
+      if (path === '/api/auth/status') body = { setupRequired: false, user, mediaToken: 'fixture' };
+      else if (path === '/api/auth/me') body = user;
+      else if (path === '/api/books') body = books;
+      else if (path === '/api/libation/status') body = { accounts: [], configured: false, available: false };
+      else if (path === '/api/me/libro') body = { connected: false, accounts: [], books: [], jobs: [] };
+      await route.fulfill({ json: body });
+    });
+    await page.goto(`${url}test/duo-shell.html`);
+    await expect(page.locator('.book-row')).toHaveCount(3);
+    const shell = page.locator('main.native-shell');
+    await expect(shell).toHaveClass(/shelf-library/);
+    await page.waitForFunction(() => !document.querySelector('.native-launch-cover'));
+
+    // WebKit takes the old snapshot asynchronously. Hold that boundary so a
+    // route or selection that paints ahead of the snapshot is observable.
+    await page.evaluate(() => {
+      const state = window as typeof window & { captureShelf?: () => Promise<void>; captures?: number };
+      state.captures = 0;
+      document.startViewTransition = (update) => {
+        state.captures!++;
+        let finish!: () => void;
+        const finished = new Promise<void>(resolve => { finish = resolve; });
+        state.captureShelf = async () => {
+          await (update as () => void | Promise<void>)();
+          finish();
+        };
+        return { finished, ready: Promise.resolve(), updateCallbackDone: Promise.resolve(), skipTransition() {} } as ViewTransition;
+      };
+    });
+    if (entry === 'Reading') {
+      await page.getByRole('button', { name: 'Reading', exact: true }).click();
+    } else {
+      await page.locator('.book-row').first().click();
+    }
+    await expect(shell).toHaveClass(/tab-shelf/);
+    await expect(shell).toHaveClass(/shelf-library/);
+    await expect(shell).not.toHaveClass(/library-book-open/);
+    await expect(page.locator('.player-pane')).toBeHidden();
+    expect((await page.locator('.library-pane').boundingBox())!.width).toBeGreaterThan(1100);
+    expect(await page.evaluate(() => (window as typeof window & { captures: number }).captures)).toBe(1);
+
+    await page.evaluate(async () => {
+      await (window as typeof window & { captureShelf: () => Promise<void> }).captureShelf();
+    });
+    await expect(shell).toHaveClass(/shelf-split/);
+    await expect(page.locator('.player-pane')).toBeVisible();
+    await expect(shell).toHaveClass(entry === 'Reading' ? /tab-reading/ : /library-book-open/);
+    if (entry === 'book details') await expect(page.locator('.book-heading')).toContainText(books[0].title);
+  });
+}
+
 test('regular portrait iPhone gives the player transport stronger emphasis', async ({ page }) => {
   await page.setViewportSize({ width: 430, height: 932 });
   const stylesheet = readFileSync(new URL('../../src/styles.css', import.meta.url), 'utf8');
