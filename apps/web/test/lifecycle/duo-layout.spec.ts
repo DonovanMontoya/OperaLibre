@@ -67,6 +67,69 @@ for (const width of [768, 1194]) {
   });
 }
 
+for (const entry of ['Reading', 'book details'] as const) {
+  test(`iPad ${entry} keeps the full Shelf until its transition captures it`, async ({ page }) => {
+    await page.setViewportSize({ width: 1194, height: 834 });
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'userAgent', { value: 'iPad' });
+    });
+    const books = library(3);
+    const user = { id: 'shelf-owner', username: 'Shelf owner', isAdmin: true, isOwner: true,
+      allowedBookIds: null, libationAccess: 'none', createdAt: '1700000000' };
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname;
+      let body: unknown = [];
+      if (path === '/api/auth/status') body = { setupRequired: false, user, mediaToken: 'fixture' };
+      else if (path === '/api/auth/me') body = user;
+      else if (path === '/api/books') body = books;
+      else if (path === '/api/libation/status') body = { accounts: [], configured: false, available: false };
+      else if (path === '/api/me/libro') body = { connected: false, accounts: [], books: [], jobs: [] };
+      await route.fulfill({ json: body });
+    });
+    await page.goto(`${url}test/duo-shell.html`);
+    await expect(page.locator('.book-row')).toHaveCount(3);
+    const shell = page.locator('main.native-shell');
+    await expect(shell).toHaveClass(/shelf-library/);
+    await page.waitForFunction(() => !document.querySelector('.native-launch-cover'));
+
+    // WebKit takes the old snapshot asynchronously. Hold that boundary so a
+    // route or selection that paints ahead of the snapshot is observable.
+    await page.evaluate(() => {
+      const state = window as typeof window & { captureShelf?: () => Promise<void>; captures?: number };
+      state.captures = 0;
+      document.startViewTransition = (update) => {
+        state.captures!++;
+        let finish!: () => void;
+        const finished = new Promise<void>(resolve => { finish = resolve; });
+        state.captureShelf = async () => {
+          await (update as () => void | Promise<void>)();
+          finish();
+        };
+        return { finished, ready: Promise.resolve(), updateCallbackDone: Promise.resolve(), skipTransition() {} } as ViewTransition;
+      };
+    });
+    if (entry === 'Reading') {
+      await page.getByRole('button', { name: 'Reading', exact: true }).click();
+    } else {
+      await page.locator('.book-row').first().click();
+    }
+    await expect(shell).toHaveClass(/tab-shelf/);
+    await expect(shell).toHaveClass(/shelf-library/);
+    await expect(shell).not.toHaveClass(/library-book-open/);
+    await expect(page.locator('.player-pane')).toBeHidden();
+    expect((await page.locator('.library-pane').boundingBox())!.width).toBeGreaterThan(1100);
+    expect(await page.evaluate(() => (window as typeof window & { captures: number }).captures)).toBe(1);
+
+    await page.evaluate(async () => {
+      await (window as typeof window & { captureShelf: () => Promise<void> }).captureShelf();
+    });
+    await expect(shell).toHaveClass(/shelf-split/);
+    await expect(page.locator('.player-pane')).toBeVisible();
+    await expect(shell).toHaveClass(entry === 'Reading' ? /tab-reading/ : /library-book-open/);
+    if (entry === 'book details') await expect(page.locator('.book-heading')).toContainText(books[0].title);
+  });
+}
+
 test('regular portrait iPhone gives the player transport stronger emphasis', async ({ page }) => {
   await page.setViewportSize({ width: 430, height: 932 });
   const stylesheet = readFileSync(new URL('../../src/styles.css', import.meta.url), 'utf8');
