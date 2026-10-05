@@ -13,6 +13,60 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await server?.close(); });
 
+for (const width of [768, 1194]) {
+  test(`iPad Shelf closes between the arriving index and reading page at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 834 });
+    const stylesheet = readFileSync(new URL('../../src/styles.css', import.meta.url), 'utf8');
+    await page.route('http://localhost/shelf-transition-fixture', route => route.fulfill({ contentType: 'text/html', body: `<html class="native-app platform-ios"><head><style>${stylesheet}</style></head><body>
+      <style>
+        .wall, .index, .page { position: absolute; height: 834px; animation-duration: 440ms;
+          animation-timing-function: cubic-bezier(.32, .72, 0, 1); animation-fill-mode: both; }
+        .wall { width: 100vw; animation-name: shelf-wall-close; }
+        .index { width: var(--verso-w); animation-name: shelf-slide-back; }
+        .page { left: var(--verso-w); width: calc(100vw - var(--verso-w)); animation-name: shelf-page-on; }
+      </style>
+      <div class="wall">Outgoing collection controls</div>
+      <div class="index">Arriving index controls</div>
+      <div class="page">Reading controls</div>
+    </body></html>` }));
+    await page.goto('http://localhost/shelf-transition-fixture');
+
+    const samples = await page.evaluate(async () => {
+      // Exercise the production keyframes on visible surfaces so the test
+      // can sample every frame without depending on snapshot capture support.
+      const animations = document.getAnimations();
+      animations.forEach(animation => animation.pause());
+      const style = (selector: string) => getComputedStyle(document.querySelector(selector)!);
+      const result = [];
+      for (const time of [0, 110, 220, 330, 440]) {
+        animations.forEach(animation => { animation.currentTime = time; });
+        const index = style('.index');
+        const wall = style('.wall');
+        const player = style('.page');
+        // Insets bound the old grid's visible pixels. They must meet the
+        // arriving snapshots, including when the old grid disappears.
+        const insets = wall.clipPath.match(/[\d.]+/g)!.map(Number);
+        const right = insets[1] ?? insets[0];
+        const left = insets[3] ?? right;
+        result.push({
+          wallLeft: left,
+          wallRight: innerWidth - right,
+          indexRight: parseFloat(index.width) + new DOMMatrix(index.transform).m41,
+          playerLeft: parseFloat(player.left) + new DOMMatrix(player.transform).m41
+        });
+      }
+      return result;
+    });
+
+    for (const sample of samples) {
+      expect(sample.wallLeft).toBeCloseTo(sample.indexRight, 1);
+      expect(sample.wallRight).toBeCloseTo(sample.playerLeft, 1);
+    }
+    const end = samples[samples.length - 1];
+    expect(end.wallLeft).toBeCloseTo(end.wallRight, 1);
+  });
+}
+
 test('regular portrait iPhone gives the player transport stronger emphasis', async ({ page }) => {
   await page.setViewportSize({ width: 430, height: 932 });
   const stylesheet = readFileSync(new URL('../../src/styles.css', import.meta.url), 'utf8');

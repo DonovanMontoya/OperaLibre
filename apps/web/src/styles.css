@@ -14701,7 +14701,9 @@ html.native-app[data-shelf-transition="player-split"]::view-transition-new(shelf
 
 @keyframes shelf-wall-close {
   from { clip-path: inset(0); }
-  to { clip-path: inset(0 calc(100vw - var(--verso-w)) 0 0); }
+  /* The arriving index covers the left edge while the player uncovers the
+     right. Leave no strip of the old grid behind either page. */
+  to { clip-path: inset(0 calc(100vw - var(--verso-w)) 0 var(--verso-w)); }
 }
 
 @keyframes shelf-recede {
