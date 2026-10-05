@@ -2964,6 +2964,134 @@ img.large-cover {
   min-height: 0;
 }
 
+/* A page turned by hand (readerPageTurn.ts). The page is paper: it peels
+   back from its free edge along a leaning fold, its pale underside folded
+   over the part still lying flat, and uncovers the next page behind it;
+   turning back, it unfolds onto the page again. The page being turned is cut
+   along the fold, and the underside is the curl layer, mirrored in that same
+   line. Only the transition's snapshots move. */
+.epub-page-curl {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+html[data-page-turn] .epub-stage {
+  view-transition-name: reader-page;
+}
+
+html[data-page-turn] .epub-page-curl {
+  view-transition-name: reader-page-curl;
+}
+
+/* The panes behind the reader keep names for their own transitions. Left
+   named, they would be drawn over the reader's bars for the length of a turn. */
+html[data-page-turn] :not(.epub-stage, .epub-page-curl) {
+  view-transition-name: none !important;
+}
+
+html[data-page-turn]::view-transition-old(root) { display: none; }
+html[data-page-turn]::view-transition-new(root) { animation: none; }
+
+html[data-page-turn]::view-transition-group(reader-page),
+html[data-page-turn]::view-transition-group(reader-page-curl) {
+  animation: none;
+  overflow: clip;
+}
+
+html[data-page-turn]::view-transition-image-pair(reader-page) {
+  isolation: auto;
+}
+
+html[data-page-turn]::view-transition-old(reader-page),
+html[data-page-turn]::view-transition-new(reader-page) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* The page being turned: the one leaving when turning forward, the one
+   arriving when turning back. */
+html[data-page-turn="next"]::view-transition-old(reader-page),
+html[data-page-turn="prev"]::view-transition-new(reader-page) {
+  z-index: 1;
+}
+
+html[data-page-turn]::view-transition-old(reader-page-curl) {
+  display: none;
+}
+
+/* The shadow the lifted paper throws, on the flat part of its own page and
+   on the page it has uncovered. */
+html[data-page-turn]::view-transition-image-pair(reader-page-curl) {
+  isolation: auto;
+  filter: drop-shadow(0 0 16px rgba(0, 0, 0, 0.34));
+}
+
+/* The underside: a page-sized sheet showing only what lies past the fold,
+   mirrored in the fold line and drawn a little narrower as it bends over.
+   Paler than the page, darker toward the fold. */
+html[data-page-turn]::view-transition-new(reader-page-curl) {
+  width: 100%;
+  height: 100%;
+  mix-blend-mode: normal;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--page-turn-paper, #fffdf7) 72%, #777) 0%,
+    color-mix(in srgb, var(--page-turn-paper, #fffdf7) 86%, #888) 55%,
+    color-mix(in srgb, var(--page-turn-paper, #fffdf7) 90%, #bbb) 100%
+  );
+  transform-origin: 100% 50%;
+  animation: reader-page-curl 0.55s cubic-bezier(0.45, 0.05, 0.3, 1) both;
+}
+
+html[data-page-turn="next"]::view-transition-old(reader-page),
+html[data-page-turn="prev"]::view-transition-new(reader-page) {
+  animation: reader-page-cut 0.55s cubic-bezier(0.45, 0.05, 0.3, 1) both;
+}
+
+html[data-page-turn="prev"]::view-transition-new(reader-page),
+html[data-page-turn="prev"]::view-transition-new(reader-page-curl) {
+  animation-direction: reverse;
+  animation-timing-function: cubic-bezier(0.7, 0, 0.55, 0.95);
+}
+
+/* A page lifted by a dragging finger is held where the finger has it;
+   readerPageTurn.ts moves it along the same keyframes. */
+html[data-page-turn-drag] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+html[data-page-turn-drag]::view-transition-old(reader-page),
+html[data-page-turn-drag]::view-transition-new(reader-page),
+html[data-page-turn-drag]::view-transition-new(reader-page-curl) {
+  animation-play-state: paused !important;
+  animation-timing-function: linear !important;
+}
+
+/* Both follow the fold from just outside the free edge to just past the
+   spine, in step. The fold crosses the page's middle height at 107% then -9%
+   of its width, leaning 7% either way. */
+@keyframes reader-page-cut {
+  from { clip-path: polygon(0 0, 114.6% 0, 100.6% 100%, 0 100%); }
+  to { clip-path: polygon(0 0, -1.4% 0, -15.4% 100%, 0 100%); }
+}
+
+@keyframes reader-page-curl {
+  from {
+    clip-path: polygon(114% 0, 114% 0, 100% 100%, 100% 100%);
+    transform:
+      translate(calc(var(--page-turn-across, 1.8) * 7%), calc(var(--page-turn-down, 0px) * 7))
+      rotate(var(--page-turn-lean, 0deg)) scaleX(-0.8) rotate(calc(var(--page-turn-lean, 0deg) * -1));
+  }
+  to {
+    clip-path: polygon(-2% 0, 114% 0, 100% 100%, -16% 100%);
+    transform:
+      translate(calc(var(--page-turn-across, 1.8) * -109%), calc(var(--page-turn-down, 0px) * -109))
+      rotate(var(--page-turn-lean, 0deg)) scaleX(-0.8) rotate(calc(var(--page-turn-lean, 0deg) * -1));
+  }
+}
+
 /* App-layer tap catcher over the page (full screen only): WKWebView will not
    deliver taps to the epub iframe's own listeners, so paging and sentence
    seeks are handled here, in the layer that does receive taps. The stage-wrap

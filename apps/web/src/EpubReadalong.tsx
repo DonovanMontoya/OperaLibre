@@ -3,6 +3,7 @@ import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { restrictEpubContent } from "./readerContentPolicy";
 import { Capacitor } from "@capacitor/core";
 import { classifyPageGesture, narrationTextOffset, pageTurnAtEdge } from "./readerPagination";
+import { beginPageTurnDrag, runPageTurn, type PageTurnDirection, type PageTurnDrag } from "./readerPageTurn";
 import { type AnnotationStore, type MarkedView, pruneUntrackedHighlights, removeHighlight } from "./readerAnnotations";
 import {
   ALargeSmall,
@@ -270,6 +271,7 @@ export function EpubReadalong({
   audioChapters,
   positionSeconds,
   followLeadSeconds = 0,
+  pageTurnAnimation = false,
   onSeekTo,
   immersive = false,
   onClose,
@@ -297,6 +299,8 @@ export function EpubReadalong({
   positionSeconds: number;
   /** A small optional lead for switching to the next narrated sentence. */
   followLeadSeconds?: number;
+  /** Animate a page turned by hand. */
+  pageTurnAnimation?: boolean;
   onSeekTo?: (seconds: number) => void;
   /** A full-screen reading surface with its own bars and sheets (the native app). */
   immersive?: boolean;
@@ -323,6 +327,8 @@ export function EpubReadalong({
   fileUrl?: string;
 }) {
   const viewerRef = useRef<HTMLDivElement | null>(null);
+  const pageTurnAnimationRef = useRef(pageTurnAnimation);
+  pageTurnAnimationRef.current = pageTurnAnimation;
   const bookRef = useRef<EpubBook | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
   const syncedTargetRef = useRef<string | null>(null);
@@ -617,6 +623,62 @@ export function EpubReadalong({
     void action();
   },[setFollow]);
 
+  // epub.js runs its turns from animation frames, which the web view
+  // withholds until a page-turn transition has been given its new page. An
+  // idle queue's turn is run at once instead; a busy one keeps its order and
+  // the page simply turns without the motion.
+  const turnWithinTransition = useCallback((rendition: Rendition, direction: PageTurnDirection) => {
+    const queue = rendition.q as unknown as {
+      running?: unknown;
+      length(): number;
+      dequeue(): Promise<unknown>;
+    };
+    const idle = queue.length() === 0 && !queue.running;
+    void (direction === "next" ? rendition.next() : rendition.prev());
+    return idle ? queue.dequeue() : null;
+  }, []);
+  // Nothing lies past either end of the book, so nothing turns there.
+  const pageTurns = useCallback((direction: PageTurnDirection) => {
+    const page = locationRef.current;
+    return direction === "next" ? !page?.atEnd : !page?.atStart;
+  }, []);
+
+  const turnPage = useCallback((direction: PageTurnDirection) => {
+    navigateByHand(() => {
+      const rendition = renditionRef.current;
+      if (!rendition) return;
+      if (pageTurns(direction) && pageTurnAnimationRef.current && viewerRef.current) {
+        runPageTurn(viewerRef.current, direction, () => turnWithinTransition(rendition, direction));
+      } else {
+        void (direction === "next" ? rendition.next() : rendition.prev());
+      }
+    });
+  }, [navigateByHand, pageTurns, turnWithinTransition]);
+
+  // A page lifted by a dragging finger. The reader turns as the drag begins;
+  // putting the page down turns it back and resumes following, as if it had
+  // not been touched.
+  const beginPageDrag = useCallback((direction: PageTurnDirection): PageTurnDrag | null => {
+    const rendition = renditionRef.current;
+    const stage = viewerRef.current;
+    if (!rendition || !stage || !pageTurnAnimationRef.current || !pageTurns(direction)) return null;
+    const wasFollowing = followRef.current;
+    let drag: PageTurnDrag | null = null;
+    navigateByHand(() => {
+      drag = beginPageTurnDrag(
+        stage,
+        direction,
+        () => turnWithinTransition(rendition, direction),
+        async () => {
+          if (renditionRef.current !== rendition) return;
+          await (direction === "next" ? rendition.prev() : rendition.next());
+          if (wasFollowing) setFollow(true);
+        }
+      );
+    });
+    return drag;
+  }, [navigateByHand, pageTurns, setFollow, turnWithinTransition]);
+
   const ensureSearchIndex = useCallback((doc: Document) => {
     if (!searchIndexRef.current || searchIndexRef.current.doc !== doc) {
       searchIndexRef.current = buildDocumentSearchIndex(doc);
@@ -643,11 +705,11 @@ export function EpubReadalong({
       const stageX = Math.max(0, Math.min(stageWidth, x));
       const edge = pageTurnAtEdge(stageX, stageWidth);
       if (edge === "prev") {
-        navigateByHand(() => rendition?.prev());
+        turnPage("prev");
         return;
       }
       if (edge === "next") {
-        navigateByHand(() => rendition?.next());
+        turnPage("next");
         return;
       }
       // Middle: seek to the tapped sentence, if the tap landed on one.
@@ -685,51 +747,129 @@ export function EpubReadalong({
       }
       setChromeHidden((hidden) => !hidden);
     },
-    [ensureSearchIndex, navigateByHand, tapFragment]
+    [ensureSearchIndex, tapFragment, turnPage]
   );
 
   // A horizontal swipe on the overlay turns the page as well.
   const overlaySwipeRef = useRef<{ x: number; y: number; at: number } | null>(null);
+  const overlayDragRef = useRef<{ direction: PageTurnDirection; drag: PageTurnDrag } | null>(null);
+  const beginOverlayGesture = useCallback((clientX: number, clientY: number) => {
+    overlaySwipeRef.current = { x: clientX, y: clientY, at: performance.now() };
+  }, []);
+  // Once the finger is plainly travelling sideways the page lifts and follows
+  // it, rather than waiting for the finger to leave before it moves.
+  const moveOverlayGesture = useCallback((clientX: number, clientY: number) => {
+    const start = overlaySwipeRef.current;
+    const width = viewerRef.current?.getBoundingClientRect().width ?? 0;
+    if (!start || width <= 0) return;
+    const deltaX = clientX - start.x;
+    let dragging = overlayDragRef.current;
+    if (!dragging) {
+      if (Math.abs(deltaX) <= 12 || Math.abs(deltaX) < Math.abs(clientY - start.y) * 1.15) return;
+      const direction = deltaX < 0 ? "next" : "prev";
+      const drag = beginPageDrag(direction);
+      if (!drag) return;
+      dragging = overlayDragRef.current = { direction, drag };
+    }
+    dragging.drag.move((dragging.direction === "next" ? -deltaX : deltaX) / width);
+  }, [beginPageDrag]);
+  const endOverlayGesture = useCallback(
+    (clientX: number, clientY: number) => {
+      const start = overlaySwipeRef.current;
+      overlaySwipeRef.current = null;
+      const dragging = overlayDragRef.current;
+      overlayDragRef.current = null;
+      const stage = viewerRef.current?.getBoundingClientRect();
+      if (dragging) {
+        // Far enough, or flicked: the page goes over. Otherwise it is put down.
+        const travelled = start ? (dragging.direction === "next" ? start.x - clientX : clientX - start.x) : 0;
+        const duration = start ? performance.now() - start.at : 0;
+        const flicked = travelled >= 18 && travelled / Math.max(duration, 1) >= 0.35;
+        dragging.drag.release(!!stage && stage.width > 0 && (flicked || travelled / stage.width >= 0.3));
+        return;
+      }
+      if (!start || !stage || stage.width === 0) {
+        return;
+      }
+      const deltaX = clientX - start.x;
+      const deltaY = clientY - start.y;
+      const duration = performance.now() - start.at;
+      const gesture = classifyPageGesture(deltaX, deltaY, duration);
+      if (gesture === "next" || gesture === "prev") {
+        turnPage(gesture);
+        return;
+      }
+      if (gesture === "tap") {
+        handleOverlayTap(clientX - stage.left, clientX, clientY);
+        return;
+      }
+      readerDebugLog(`gesture ignored dx=${Math.round(deltaX)} dy=${Math.round(deltaY)} ${Math.round(duration)}ms`);
+    },
+    [handleOverlayTap, turnPage]
+  );
   const handleOverlayPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    overlaySwipeRef.current = { x: event.clientX, y: event.clientY, at: performance.now() };
+    beginOverlayGesture(event.clientX, event.clientY);
     // Keep the lift on this layer even if the finger ends over the bars.
     try {
       event.currentTarget.setPointerCapture(event.pointerId);
     } catch {
       // Capture is a nicety; the gesture still resolves where it lifts.
     }
-  }, []);
+  }, [beginOverlayGesture]);
+  const handleOverlayPointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => moveOverlayGesture(event.clientX, event.clientY),
+    [moveOverlayGesture]
+  );
   const handleOverlayPointerCancel = useCallback(() => {
     if (overlaySwipeRef.current) {
       readerDebugLog("gesture cancelled");
     }
     overlaySwipeRef.current = null;
+    overlayDragRef.current?.drag.release(false);
+    overlayDragRef.current = null;
   }, []);
   const handleOverlayPointerUp = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      const start = overlaySwipeRef.current;
-      overlaySwipeRef.current = null;
-      const rendition = renditionRef.current;
-      const stage = viewerRef.current?.getBoundingClientRect();
-      if (!start || !stage || stage.width === 0) {
-        return;
-      }
-      const deltaX = event.clientX - start.x;
-      const deltaY = event.clientY - start.y;
-      const duration = performance.now() - start.at;
-      const gesture = classifyPageGesture(deltaX, deltaY, duration);
-      if (gesture === "next" || gesture === "prev") {
-        navigateByHand(() => (gesture === "next" ? rendition?.next() : rendition?.prev()));
-        return;
-      }
-      if (gesture === "tap") {
-        handleOverlayTap(event.clientX - stage.left, event.clientX, event.clientY);
-        return;
-      }
-      readerDebugLog(`gesture ignored dx=${Math.round(deltaX)} dy=${Math.round(deltaY)} ${Math.round(duration)}ms`);
-    },
-    [handleOverlayTap, navigateByHand]
+    (event: React.PointerEvent<HTMLDivElement>) => endOverlayGesture(event.clientX, event.clientY),
+    [endOverlayGesture]
   );
+
+  // While a turn is animating, the web view hands the finger to the
+  // transition's snapshots, addressed to the root element, instead of to the
+  // overlay beneath them. Paging quickly must not lose those touches, so a
+  // gesture that starts over the overlay then is resolved as one made on it.
+  const tapzonesRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const root = document.documentElement;
+    let tracking = false;
+    const handlePointerDown = (event: PointerEvent) => {
+      const zone = tapzonesRef.current?.getBoundingClientRect();
+      if (event.target !== root || !root.dataset.pageTurn || !zone
+        || event.clientX < zone.left || event.clientX > zone.right
+        || event.clientY < zone.top || event.clientY > zone.bottom) {
+        return;
+      }
+      tracking = true;
+      beginOverlayGesture(event.clientX, event.clientY);
+    };
+    const handlePointerUp = (event: PointerEvent) => {
+      if (!tracking) return;
+      tracking = false;
+      endOverlayGesture(event.clientX, event.clientY);
+    };
+    const handlePointerCancel = () => {
+      if (!tracking) return;
+      tracking = false;
+      handleOverlayPointerCancel();
+    };
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("pointerup", handlePointerUp, true);
+    document.addEventListener("pointercancel", handlePointerCancel, true);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("pointerup", handlePointerUp, true);
+      document.removeEventListener("pointercancel", handlePointerCancel, true);
+    };
+  }, [beginOverlayGesture, endOverlayGesture, handleOverlayPointerCancel]);
 
   useEffect(() => {
     if (!viewerRef.current) {
@@ -896,11 +1036,11 @@ export function EpubReadalong({
           const x = Math.max(0, Math.min(stage.width, rawX));
           const edge = pageTurnAtEdge(x, stage.width);
           if (edge === "prev") {
-            navigateByHand(() => rendition?.prev());
+            turnPage("prev");
             return;
           }
           if (edge === "next") {
-            navigateByHand(() => rendition?.next());
+            turnPage("next");
             return;
           }
         }
@@ -959,15 +1099,15 @@ export function EpubReadalong({
         readerDebugLog(`gesture ignored dx=${Math.round(deltaX)} dy=${Math.round(deltaY)} ${Math.round(duration)}ms`);
         return;
       }
-      navigateByHand(() => (gesture === "next" ? rendition?.next() : rendition?.prev()));
+      turnPage(gesture);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "ArrowRight" || event.key === "PageDown") {
         event.preventDefault();
-        navigateByHand(() => rendition?.next());
+        turnPage("next");
       } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
         event.preventDefault();
-        navigateByHand(() => rendition?.prev());
+        turnPage("prev");
       }
     };
     const attachToDocument = (doc: Document) => {
@@ -1340,7 +1480,7 @@ export function EpubReadalong({
       renditionRef.current = null;
       bookRef.current = null;
     };
-  }, [beginRestore, ensureSearchIndex, locationStorageKey, navigateByHand, returnLocationKey, tapFragment, url]);
+  }, [beginRestore, ensureSearchIndex, locationStorageKey, returnLocationKey, tapFragment, turnPage, url]);
 
   useEffect(() => {
     const book = bookRef.current;
@@ -1739,10 +1879,10 @@ export function EpubReadalong({
     }
     if (event.key === "ArrowRight" || event.key === "PageDown") {
       event.preventDefault();
-      navigateByHand(() => renditionRef.current?.next());
+      turnPage("next");
     } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
       event.preventDefault();
-      navigateByHand(() => renditionRef.current?.prev());
+      turnPage("prev");
     }
   };
 
@@ -1803,6 +1943,7 @@ export function EpubReadalong({
   // and full-screen layouts: epub.js is attached to this very element.
   const stage = (
     <div className="epub-stage" ref={viewerRef}>
+      <span className="epub-page-curl" aria-hidden="true" />
       {fullscreen ? null : (
         <span className="epub-progress" style={{ width: `${Math.max(0, Math.min(100, (percent ?? 0) * 100))}%` }} />
       )}
@@ -1987,7 +2128,9 @@ export function EpubReadalong({
         {fullscreen ? (
           <div
             className="epub-tapzones"
+            ref={tapzonesRef}
             onPointerDown={handleOverlayPointerDown}
+            onPointerMove={handleOverlayPointerMove}
             onPointerUp={handleOverlayPointerUp}
             onPointerCancel={handleOverlayPointerCancel}
             aria-hidden="true"
@@ -2077,7 +2220,7 @@ export function EpubReadalong({
         <footer className="epub-pagefoot">
           <button
             type="button"
-            onClick={() => navigateByHand(() => renditionRef.current?.prev())}
+            onClick={() => turnPage("prev")}
             aria-label="Previous page"
           >
             <ChevronLeft size={17} />
@@ -2089,7 +2232,7 @@ export function EpubReadalong({
           </p>
           <button
             type="button"
-            onClick={() => navigateByHand(() => renditionRef.current?.next())}
+            onClick={() => turnPage("next")}
             aria-label="Next page"
           >
             <ChevronRight size={17} />
