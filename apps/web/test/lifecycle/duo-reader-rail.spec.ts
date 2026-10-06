@@ -111,6 +111,7 @@ test('a short Duo reader keeps all listening controls reachable when the native 
 test('the reader resizes its page when epub.js measures the new stage before the observer', async ({ page }) => {
   await page.setViewportSize({ width: 951, height: 669 });
   await page.goto(`${url}test/reader-catch-up.html?immersive&narration&listening=1`);
+  await expect(page.frameLocator('.epub-stage iframe').locator('p').first()).toBeVisible();
   const layout = () => page.evaluate(() => {
     const stage = document.querySelector<HTMLElement>('.epub-stage')!;
     const iframe = stage.querySelector('iframe');
