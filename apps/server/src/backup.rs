@@ -358,17 +358,7 @@ fn read_database(path: &FsPath) -> anyhow::Result<BackupData> {
             Ok(BackupProgress {
                 user_id,
                 book_id: book_id.clone(),
-                progress: Progress {
-                    book_id,
-                    track_id: row.get("track_id")?,
-                    position_seconds: row.get("position_seconds")?,
-                    book_position_seconds: row.get("book_position_seconds")?,
-                    duration_seconds: row.get("duration_seconds")?,
-                    updated_at: row.get("updated_at")?,
-                    finished_override: row
-                        .get::<_, Option<i64>>("finished_override")?
-                        .map(|value| value != 0),
-                },
+                progress: progress_from_row(row, book_id)?,
             })
         })?;
         progress.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
@@ -458,6 +448,8 @@ fn restore_database(
         if row.progress.book_id != row.book_id {
             anyhow::bail!("a progress record has mismatched book IDs");
         }
+        // A deliberate restore ends the live recording lineage. Its archived
+        // receipt must not authorize an old client's continuation afterward.
         transaction.execute(
             "INSERT INTO progress (
                 user_id, book_id, track_id, position_seconds,

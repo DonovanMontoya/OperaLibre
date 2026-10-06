@@ -3316,6 +3316,46 @@ async fn only_an_owner_can_export_server_backups() {
 }
 
 #[tokio::test]
+async fn a_backup_archives_recording_receipts_but_restoration_ends_the_live_lineage() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&owner).await;
+    let recording = serde_json::json!({"id": "11111111111111111111111111111111", "sequence": 1});
+    let saved = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/progress"),
+            &owner,
+            serde_json::json!({"trackId": track, "positionSeconds": 14.0, "recording": recording}),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK);
+    let exported = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(
+        exported.json()["data"]["progress"][0]["progress"]["recording"],
+        recording
+    );
+    let restored = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/backup")
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(exported.body))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.text());
+    let current = server
+        .get(&format!("/api/books/{book}/progress"), &owner)
+        .await
+        .json();
+    assert_eq!(current["positionSeconds"], saved.json()["positionSeconds"]);
+    assert!(current["recording"].is_null());
+}
+
+#[tokio::test]
 async fn restoring_a_backup_replaces_progress_accounts_and_reading_history() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;

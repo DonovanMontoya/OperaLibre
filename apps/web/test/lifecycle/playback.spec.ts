@@ -65,6 +65,40 @@ async function expectResume(page: Page, saved: number) {
   await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
 }
 
+test('listening after a server save with a lost response keeps its newer position', async ({ page, server }) => {
+  const book = await setup(page, server);
+  const settled = trackProgressWrites(page);
+  await play(page);
+  const paused = await seekAndPause(page);
+  await settled();
+  await expect.poll(async () => (await server.progress(book.id))?.recording?.id).toMatch(/^[a-f0-9]{32}$/);
+  let loseNext = true;
+  let committed!: () => void;
+  const lostSave = new Promise<void>(resolve => { committed = resolve; });
+  await page.route('**/api/books/*/progress', async route => {
+    if (route.request().method() !== 'PUT' || !loseNext) return route.continue();
+    loseNext = false;
+    const response = await route.fetch();
+    expect((await response.json()).accepted).toBe(true);
+    await route.abort('failed');
+    committed();
+  });
+  const checkpoint = (seconds: number) => page.evaluate(seconds => {
+    document.querySelector('audio')!.currentTime = seconds;
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, seconds);
+  await checkpoint(paused + 15);
+  await lostSave;
+  const first = (await server.progress(book.id))!;
+  expect(first.bookPositionSeconds).toBeCloseTo(paused + 15, 0);
+  await checkpoint(paused + 30);
+  await expect.poll(async () => (await server.progress(book.id))?.bookPositionSeconds).toBeCloseTo(paused + 30, 0);
+  const recovered = (await server.progress(book.id))!;
+  expect(recovered.recording!.id).toBe(first.recording!.id);
+  expect(recovered.recording!.sequence).toBeGreaterThan(first.recording!.sequence);
+});
+
 async function expectBufferedSeek(page: Page, target: number) {
   await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement, target) => {
     for (let index = 0; index < audio.buffered.length; index++) {

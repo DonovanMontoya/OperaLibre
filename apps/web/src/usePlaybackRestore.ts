@@ -2,6 +2,8 @@ import { type Dispatch, type RefObject, type SetStateAction, useEffect } from "r
 import type { AuthUser, Book, Progress } from "./types";
 import {
   freshestProgress,
+  identifyProgressRecording,
+  journalProgressAttempt,
   isSuspectProgressReset,
   progressAfterSave,
   pendingProgress,
@@ -315,6 +317,10 @@ export function usePlaybackRestore({
       if (localIsNewer && freshestLocal) {
         updateBookProgress(playbackBook.id, freshestLocal);
         if (serverReachable) {
+          freshestLocal = identifyProgressRecording(freshestLocal);
+          if (journalProgressAttempt(window.localStorage, getServerStorageKey(), currentUser.id, freshestLocal, checkpoint)) {
+            checkpoint = freshestLocal;
+          }
           const saved = await saveProgress(
             playbackBook.id,
             freshestLocal,

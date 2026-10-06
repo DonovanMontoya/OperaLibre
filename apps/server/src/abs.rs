@@ -1093,6 +1093,7 @@ pub(crate) fn decide_abs_progress_write(
         // Clients use lastUpdate to choose the newest copy.
         saved.updated_at = next_progress_timestamp(previous, now_millis);
     }
+    saved.recording = None;
     ProgressDecision::Store {
         saved,
         backup_previous,
