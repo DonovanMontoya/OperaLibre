@@ -16,7 +16,7 @@ independently of the server releases.
 
 Prepared from the changes on main since the recorded 1.2.6 (2) app baseline,
 [`db31b5fb`](https://github.com/DonovanMontoya/OperaLibre/commit/db31b5fb2528f2a0530bbe2d7447b59c596dd358),
-through [`2ae15a00`](https://github.com/DonovanMontoya/OperaLibre/commit/2ae15a0008a0652308ca3876bea7e423a74a9bbf).
+through [`ca1f7a52`](https://github.com/DonovanMontoya/OperaLibre/commit/ca1f7a524a003ff27186f7dc7d0fbf9b1aefe464).
 This entry replaces the planned 1.2.7 notes. The distributed build number,
 channel, date, and archived source commit are pending confirmation.
 
@@ -48,6 +48,12 @@ channel, date, and archived source commit are pending confirmation.
   [#228](https://github.com/DonovanMontoya/OperaLibre/pull/228),
   [#230](https://github.com/DonovanMontoya/OperaLibre/pull/230),
   [#234](https://github.com/DonovanMontoya/OperaLibre/pull/234))
+- Listening done in the background is no longer lost when you reopen the app.
+  Newer progress from the same iPhone is kept instead of being replaced by an
+  older save, including when the server saved a position but its confirmation
+  never arrived. A deliberate rewind from another device still wins.
+  ([#277](https://github.com/DonovanMontoya/OperaLibre/pull/277),
+  [#279](https://github.com/DonovanMontoya/OperaLibre/pull/279))
 - Downloaded books remain on the shelf when uploaded titles are refreshed.
   EPUBs can be paired with imported audiobooks for offline reading, and older
   downloads are retained if their migration cannot finish.
@@ -66,6 +72,29 @@ channel, date, and archived source commit are pending confirmation.
   the collection at full width and Reading brings the player or book details
   beside it. Tab selection follows playback and layout changes.
   ([#262](https://github.com/DonovanMontoya/OperaLibre/pull/262))
+- Opening Reading from the full iPad Shelf no longer flashes a duplicate
+  player over the outgoing shelf. This also applies to the mini player, book
+  details, and returning to Shelf.
+  ([#275](https://github.com/DonovanMontoya/OperaLibre/pull/275))
+- On iPhone Duo, the page stays clear of the side tab bar when OperaLibre
+  shares the screen with another app, and the account sheet and shared-reading
+  panel stay inside the safe area.
+  ([#274](https://github.com/DonovanMontoya/OperaLibre/pull/274))
+- The ebook reader has an optional paper-like page turn for taps, swipes,
+  drags, and the page buttons. It can be turned off and respects reduced
+  motion.
+  ([#276](https://github.com/DonovanMontoya/OperaLibre/pull/276))
+- Added a **Read along** filter to the shelf's Filters panel that keeps books
+  with their text beside the audio. It is hidden when read-along is turned off.
+  ([#273](https://github.com/DonovanMontoya/OperaLibre/pull/273))
+- Tapping the playback timeline now seeks to the tapped spot instead of
+  freezing the scrubber and time labels.
+  ([#280](https://github.com/DonovanMontoya/OperaLibre/pull/280))
+- Owners and administrators can reorder, pause, resume, and remove queued
+  read-along sync jobs. Interrupted jobs resume from their last saved chapter,
+  and jobs paused by hand stay paused across server updates. This requires a
+  server with queue controls.
+  ([#282](https://github.com/DonovanMontoya/OperaLibre/pull/282))
 - The bundled offline demo pairs a short Alice's Adventures in Wonderland
   recording with the full EPUB and sentence timings. Sources, credits, and
   license information are available offline from the book and Settings.
@@ -100,7 +129,9 @@ channel, date, and archived source commit are pending confirmation.
 
 The iOS layout, navigation, offline-library, and per-address sign-in changes
 do not require a server update. Current server support is needed for the
-latest progress reconciliation and Follow Along generation; use the server
+latest progress reconciliation (an older server keeps rejecting recovered
+listening that is more than a few minutes old), Follow Along generation, and
+sync queue controls; use the server
 release notes for server-only security, library scanning, download limits,
 and sync-queue changes.
 
