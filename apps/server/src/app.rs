@@ -266,6 +266,10 @@ pub(crate) fn build_router(
         )
         .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/{job_id}", get(get_job))
+        .route(
+            "/api/sync-jobs/{job_id}",
+            delete(remove_sync_job).patch(control_sync_job),
+        )
         .route("/api/books/{book_id}", get(get_book))
         .route("/api/books/{book_id}/metadata", put(update_book_metadata))
         .route(
@@ -600,7 +604,10 @@ pub(crate) async fn install_update(
     let started = prepare_update_handoff(&state.backup_lock, async {
         state
             .update_manager
-            .install(request.map(|Json(request)| request).unwrap_or_default())
+            .install(
+                request.map(|Json(request)| request).unwrap_or_default(),
+                &state,
+            )
             .await
             .map_err(|error| {
                 ApiError::bad_request(format!("Could not install the update: {error}"))

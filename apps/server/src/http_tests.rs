@@ -6019,6 +6019,55 @@ async fn full_sync_accepts_a_durable_batch_or_none_when_storage_fails() {
 }
 
 #[tokio::test]
+async fn update_before_batch_dispatch_preserves_every_accepted_job() {
+    let mut server = TestServer::start(3).await;
+    let cli = server._root.path().join("sync-cli");
+    fs::write(&cli, "fixture").await.unwrap();
+    server.state.alignment_config.cli_path = Some(cli);
+    let book_ids = server
+        .state
+        .library
+        .read()
+        .await
+        .books
+        .iter()
+        .map(|book| book.id.clone())
+        .collect();
+    assert_eq!(
+        crate::sync::enqueue_sync_batch(server.state.clone(), book_ids)
+            .await
+            .unwrap(),
+        (3, 0)
+    );
+    // This current-thread test signals the pause before the detached dispatcher
+    // gets a turn. The pause must wait for that dispatcher to release its guard.
+    let pause = tokio::time::timeout(
+        Duration::from_secs(5),
+        crate::sync::pause_for_update(&server.state),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let accepted = server.state.jobs.read().await.clone();
+    assert_eq!(accepted.len(), 3);
+    for job in accepted.values() {
+        assert_eq!(job.status, "queued");
+        assert!(job.resume_pending);
+        assert!(job.error.is_none());
+    }
+    pause.keep();
+    server.state.jobs.write().await.clear();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    let recovered = server.state.jobs.read().await;
+    assert_eq!(recovered.len(), accepted.len());
+    for (id, original) in accepted {
+        assert_eq!(recovered[&id].target_id, original.target_id);
+        assert_eq!(recovered[&id].status, "queued");
+        assert!(recovered[&id].resume_pending);
+    }
+}
+
+#[tokio::test]
 async fn recovered_sync_starts_work_once_under_its_original_id() {
     let mut server = TestServer::start(1).await;
     let owner = server.setup_owner().await;
@@ -6441,4 +6490,410 @@ async fn uploaded_cover_restores_real_embedded_art_and_leaves_audio_intact() {
         embedded
     );
     assert_eq!(std::fs::read(audio).unwrap(), bytes);
+}
+
+#[tokio::test]
+async fn sync_queue_controls_are_durable_and_reject_running_jobs() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let (first, _) = create_queued_job(&server.state, "sync-generate", Some("first".into())).await;
+    let (second, _) =
+        create_queued_job(&server.state, "sync-generate", Some("second".into())).await;
+    let (third, _) = create_queued_job(&server.state, "sync-generate", Some("third".into())).await;
+    let response = server
+        .send_json(
+            "PATCH",
+            &format!("/api/sync-jobs/{third}"),
+            &owner,
+            serde_json::json!({"action":"up"}),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    assert_eq!(response.json()["queuePosition"], 1);
+    let response = server
+        .send_json(
+            "PATCH",
+            &format!("/api/sync-jobs/{first}"),
+            &owner,
+            serde_json::json!({"action":"down"}),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()["queuePosition"], 1);
+    let response = server
+        .send_json(
+            "PATCH",
+            &format!("/api/sync-jobs/{second}"),
+            &owner,
+            serde_json::json!({"action":"pause"}),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()["status"], "paused");
+    let (_, created) =
+        create_queued_job(&server.state, "sync-generate", Some("second".into())).await;
+    assert!(!created, "paused books must not be duplicated");
+    server.state.jobs.write().await.clear();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    assert_eq!(server.state.jobs.read().await[&second].status, "paused");
+    assert!(!server.state.jobs.read().await[&second].resume_pending);
+    // Claiming a slot uses the saved order, not spawn order or creation time.
+    let slot = crate::sync::claim_sync_slot(&server.state, &third)
+        .await
+        .unwrap();
+    assert_eq!(server.state.jobs.read().await[&third].status, "running");
+    let response = server
+        .send_json(
+            "DELETE",
+            &format!("/api/sync-jobs/{third}"),
+            &owner,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::CONFLICT);
+    let response = server
+        .send_json(
+            "PATCH",
+            &format!("/api/sync-jobs/{third}"),
+            &owner,
+            serde_json::json!({"action":"up"}),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::CONFLICT);
+    let response = server
+        .send_json(
+            "PATCH",
+            &format!("/api/sync-jobs/{third}"),
+            &owner,
+            serde_json::json!({"action":"pause"}),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()["status"], "running");
+    assert_eq!(response.json()["pauseRequested"], true);
+    let response = server
+        .send_json(
+            "PATCH",
+            &format!("/api/sync-jobs/{second}"),
+            &owner,
+            serde_json::json!({"action":"resume"}),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()["status"], "queued");
+    assert!(!response.json()["pauseRequested"].as_bool().unwrap());
+    // Simulate a restart while the running book is waiting to pause.
+    drop(slot);
+    server.state.jobs.write().await.clear();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    assert_eq!(server.state.jobs.read().await[&third].status, "paused");
+    let response = server
+        .send_json(
+            "DELETE",
+            &format!("/api/sync-jobs/{first}"),
+            &owner,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::NO_CONTENT);
+    server.state.jobs.write().await.clear();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    assert!(!server.state.jobs.read().await.contains_key(&first));
+}
+
+#[tokio::test]
+async fn sync_queue_controls_require_admin_and_roll_back_failed_saves() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "reader").await;
+    let (id, _) = create_queued_job(&server.state, "sync-generate", Some("book".into())).await;
+    for method in ["PATCH", "DELETE"] {
+        let response = server
+            .send_json(
+                method,
+                &format!("/api/sync-jobs/{id}"),
+                &reader,
+                serde_json::json!({"action":"pause"}),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::FORBIDDEN);
+    }
+    let path = server.state.database_path.with_file_name("sync-jobs.json");
+    fs::create_dir(&path).await.unwrap();
+    for (method, action) in [("PATCH", "pause"), ("DELETE", "")] {
+        let response = server
+            .send_json(
+                method,
+                &format!("/api/sync-jobs/{id}"),
+                &owner,
+                serde_json::json!({"action":action}),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(server.state.jobs.read().await[&id].status, "queued");
+        assert!(!server.state.jobs.read().await[&id].pause_requested);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn server_update_interrupts_sync_and_recovers_checkpoint_without_unpausing_manual_jobs() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    server
+        .add_companions_to_first_book(&owner, &[("Book 00.epub", alignment::build_test_epub())])
+        .await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    {
+        let mut library = server.state.library.write().await;
+        let book = &mut library.books[0];
+        for (index, track) in book.tracks.iter_mut().enumerate() {
+            track.duration_seconds = Some(3600.0);
+            track.title = if index == 0 {
+                "Chapter 1: The Meadow"
+            } else {
+                "Chapter 2: The River"
+            }
+            .into();
+        }
+    }
+    let cli = server._root.path().join("sync-cli");
+    fs::write(
+        &cli,
+        r#"#!/bin/sh
+[ "$1" = "align" ] || exit 2
+case "${2##*/}" in
+  02*)
+    if [ ! -f "$0.interrupted" ]; then
+      : > "$0.interrupted"
+      exec sleep 60
+    fi
+    text='The river ran fast & cold.';;
+  *) text='The meadow was quiet.';;
+esac
+printf '%s\n' "$2" >> "$0.calls"
+printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "$4"
+"#,
+    )
+    .await
+    .unwrap();
+    fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
+        .await
+        .unwrap();
+    server.state.alignment_config.cli_path = Some(cli.clone());
+    let Json(created) = crate::sync::enqueue_sync_map(server.state.clone(), book_id.clone())
+        .await
+        .unwrap();
+    let (manual, _) = create_queued_job(
+        &server.state,
+        "sync-generate",
+        Some("manually-paused".into()),
+    )
+    .await;
+    {
+        let mut jobs = server.state.jobs.write().await;
+        let job = jobs.get_mut(&manual).unwrap();
+        job.status = "paused".into();
+        job.pause_requested = true;
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !fs::try_exists(cli.with_extension("interrupted"))
+            .await
+            .unwrap()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let pause = tokio::time::timeout(
+        Duration::from_secs(5),
+        crate::sync::pause_for_update(&server.state),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        server.state.jobs.read().await[&created.job_id].status,
+        "queued"
+    );
+    assert_eq!(server.state.jobs.read().await[&manual].status, "paused");
+    assert!(
+        crate::sync::enqueue_sync_map(server.state.clone(), book_id.clone())
+            .await
+            .is_err()
+    );
+    crate::sync::resume_queue(&server.state).await;
+    assert_eq!(
+        fs::read_to_string(cli.with_extension("calls"))
+            .await
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    pause.keep();
+    // A fresh update manager models the new process: no pause signal survives,
+    // but the saved queue and checkpoints do, with the same job IDs.
+    server.state.update_manager = updates::UpdateManager::new(
+        server.state.database_path.parent().unwrap().to_path_buf(),
+        None,
+        4000,
+    )
+    .unwrap();
+    server.state.jobs.write().await.clear();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    assert_eq!(server.state.jobs.read().await[&manual].status, "paused");
+    crate::sync::resume_queue(&server.state).await;
+    assert!(await_job_outcome_within(&server.state, &created.job_id, Duration::from_secs(5)).await);
+    assert_eq!(
+        fs::read_to_string(cli.with_extension("calls"))
+            .await
+            .unwrap()
+            .lines()
+            .count(),
+        2,
+        "the first track must stay saved through the update"
+    );
+    let map: alignment::SyncMap = serde_json::from_slice(
+        &fs::read(
+            server
+                .state
+                .sync_dir
+                .join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}")),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(map.fragments.len(), 2);
+    assert_eq!(map.fragments[1].start_seconds, 3601.0);
+}
+
+#[tokio::test]
+async fn cancelled_update_preparation_releases_syncs_after_workers_stop() {
+    let server = TestServer::start(0).await;
+    let (id, _) = create_queued_job(&server.state, "sync-generate", Some("book".into())).await;
+    update_job_running(&server.state, &id).await;
+    let worker = server
+        .state
+        .update_manager
+        .sync_lifecycle
+        .clone()
+        .read_owned()
+        .await;
+    let mut signal = server.state.update_manager.sync_update_pause.subscribe();
+    let state = server.state.clone();
+    let task = tokio::spawn(async move { crate::sync::pause_for_update(&state).await });
+    signal.wait_for(|token| *token != 0).await.unwrap();
+    task.abort();
+    assert!(task.await.is_err_and(|error| error.is_cancelled()));
+    assert_ne!(
+        *signal.borrow(),
+        0,
+        "rollback must wait for the interrupted worker"
+    );
+    drop(worker);
+    tokio::time::timeout(Duration::from_secs(5), signal.wait_for(|token| *token == 0))
+        .await
+        .unwrap()
+        .unwrap();
+    let job = server.state.jobs.read().await[&id].clone();
+    assert_eq!(job.status, "queued");
+    assert!(job.resume_pending);
+    let persisted: Vec<JobStatus> = serde_json::from_slice(
+        &fs::read(server.state.database_path.with_file_name("sync-jobs.json"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(persisted[0].status, "queued");
+    assert!(
+        server
+            .state
+            .update_manager
+            .sync_lifecycle
+            .try_write()
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn unsuccessful_update_handoff_restores_the_queue_and_manual_pauses() {
+    let server = TestServer::start(0).await;
+    let (id, _) = create_queued_job(&server.state, "sync-generate", Some("book".into())).await;
+    let (manual, _) =
+        create_queued_job(&server.state, "sync-generate", Some("manual".into())).await;
+    {
+        let mut jobs = server.state.jobs.write().await;
+        jobs.get_mut(&manual).unwrap().status = "paused".into();
+        jobs.get_mut(&manual).unwrap().pause_requested = true;
+    }
+    let mut signal = server.state.update_manager.sync_update_pause.subscribe();
+    let pause = crate::sync::pause_for_update(&server.state).await.unwrap();
+    drop(pause); // The updater could not launch.
+    tokio::time::timeout(Duration::from_secs(5), signal.wait_for(|token| *token == 0))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(server.state.jobs.read().await[&id].resume_pending);
+    assert_eq!(server.state.jobs.read().await[&manual].status, "paused");
+    let queue_path = server.state.database_path.with_file_name("sync-jobs.json");
+    fs::remove_file(&queue_path).await.unwrap();
+    fs::create_dir(&queue_path).await.unwrap();
+    assert!(crate::sync::pause_for_update(&server.state).await.is_err());
+    tokio::time::timeout(Duration::from_secs(5), signal.wait_for(|token| *token == 0))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(server.state.jobs.read().await[&id].resume_pending);
+    assert!(
+        server
+            .state
+            .update_manager
+            .sync_lifecycle
+            .try_write()
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn a_cancelled_handoff_cannot_release_a_newer_update_pause() {
+    let server = TestServer::start(0).await;
+    let worker = server
+        .state
+        .update_manager
+        .sync_lifecycle
+        .clone()
+        .read_owned()
+        .await;
+    let mut signal = server.state.update_manager.sync_update_pause.subscribe();
+    let state = server.state.clone();
+    let first = tokio::spawn(async move { crate::sync::pause_for_update(&state).await });
+    let first_token = *signal.wait_for(|token| *token != 0).await.unwrap();
+    first.abort();
+    assert!(first.await.is_err_and(|error| error.is_cancelled()));
+    let state = server.state.clone();
+    let second = tokio::spawn(async move { crate::sync::pause_for_update(&state).await });
+    let second_token = *signal
+        .wait_for(|token| *token != 0 && *token != first_token)
+        .await
+        .unwrap();
+    drop(worker);
+    let pause = tokio::time::timeout(Duration::from_secs(5), second)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    pause.keep();
+    assert_eq!(*signal.borrow(), second_token);
+    assert!(
+        server
+            .state
+            .update_manager
+            .sync_lifecycle
+            .try_write()
+            .is_ok()
+    );
 }

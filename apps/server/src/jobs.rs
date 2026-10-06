@@ -9,6 +9,10 @@ use crate::*;
 pub(crate) struct JobStatus {
     #[serde(skip)]
     pub(crate) resume_pending: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) queue_position: Option<u64>,
+    #[serde(default)]
+    pub(crate) pause_requested: bool,
     pub(crate) id: String,
     pub(crate) kind: String,
     pub(crate) target_id: Option<String>,
@@ -154,7 +158,11 @@ pub(crate) async fn create_job_with_state(
     if deduplicate_pending
         && let Some(existing) = jobs
             .values()
-            .filter(|job| job.kind == kind && job.target_id == target_id && is_active_job(job))
+            .filter(|job| {
+                job.kind == kind
+                    && job.target_id == target_id
+                    && (is_active_job(job) || job.status == "paused")
+            })
             .max_by_key(|job| job_started_timestamp(job))
     {
         return (existing.id.clone(), false);
@@ -164,6 +172,8 @@ pub(crate) async fn create_job_with_state(
     let running_at = (status == "running").then(|| started_at.clone());
     let job = JobStatus {
         resume_pending: false,
+        queue_position: None,
+        pause_requested: false,
         id: id.clone(),
         kind: kind.to_string(),
         target_id,
@@ -262,6 +272,12 @@ impl JobGuard {
             job_id: job_id.to_string(),
             armed: true,
         }
+    }
+
+    /// A queued task was removed, or deliberately stopped at a saved checkpoint.
+    /// Its successor may already be running, so do not inspect its status again.
+    pub(crate) fn disarm(mut self) {
+        self.armed = false;
     }
 
     /// The task ran to its end. A job it left active is still marked failed:

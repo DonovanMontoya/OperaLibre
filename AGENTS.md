@@ -203,8 +203,13 @@ explicit; a release or dependency version bump alone is not a reason to remap.
   improvement can warrant remapping without changing the add-on package.
 - Preserve the durable `sync-jobs.json`, `sync-schedules.json`, and
   `sync-sweep.json` stores across upgrades. Queue recovery retains job IDs and
-  restarts interrupted books from the beginning after the library and runtime
-  are ready; it does not resume at a saved chapter or recognition window.
+  resumes interrupted books from the last completed chapter or track after the
+  library and runtime are ready. An unfinished section repeats; paused jobs
+  stay paused. Preserve `sync-checkpoints/` alongside the queue. Changed inputs
+  or alignment settings invalidate checkpoints; recognition windows are not saved.
+  Server updates stop workers before launching the updater, save the queue for
+  automatic recovery, and preserve manual pauses. Failed/cancelled preparations
+  release update exclusion and resume interrupted work on the current server.
 - For a revision change, verify that older generated maps become outdated,
   current maps stay current, remapping clears the badge, and nightly batches
   include outdated maps while respecting the saved limit. Keep

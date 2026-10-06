@@ -1,20 +1,21 @@
 import { jobElapsedMinutes } from "./jobTiming.ts";
 import type { JobStatus } from "./types";
 
-/** Running first, then queued, then whatever has already finished. */
+/** Running first, then queued, paused, and finished jobs. */
 function jobOrder(job: Pick<JobStatus, "status">) {
-  return job.status === "running" ? 0 : job.status === "queued" ? 1 : 2;
+  return job.status === "running" ? 0 : job.status === "queued" ? 1 : job.status === "paused" ? 2 : 3;
 }
 
 /**
- * Active jobs read oldest first, so the queue reads in the order it will run.
+ * Queued jobs follow the saved server order, falling back to creation time
+ * for older servers.
  * Finished ones read newest first, because the last result is the interesting
  * one.
  */
-export function sortSyncJobs<T extends Pick<JobStatus, "status" | "startedAt">>(jobs: T[]): T[] {
+export function sortSyncJobs<T extends Pick<JobStatus, "status" | "startedAt"> & { queuePosition?: number | null }>(jobs: T[]): T[] {
   return [...jobs].sort((a, b) =>
     jobOrder(a) - jobOrder(b)
-    || (jobOrder(a) === 2 ? Number(b.startedAt) - Number(a.startedAt) : Number(a.startedAt) - Number(b.startedAt))
+    || (jobOrder(a) === 3 ? Number(b.startedAt) - Number(a.startedAt) : (a.queuePosition ?? Number(a.startedAt)) - (b.queuePosition ?? Number(b.startedAt)))
   );
 }
 
@@ -41,11 +42,13 @@ export function syncJobPercent(job: Pick<JobStatus, "progress">): number | null 
 type SyncJobView = Pick<
   JobStatus,
   "id" | "status" | "targetId" | "startedAt" | "finishedAt" | "error" | "progress"
-> & Partial<Pick<JobStatus, "runningAt">>;
+> & Partial<Pick<JobStatus, "runningAt" | "queuePosition" | "pauseRequested">>;
 
 function sameJob(a: SyncJobView, b: SyncJobView): boolean {
   return a.id === b.id
     && a.status === b.status
+    && a.queuePosition === b.queuePosition
+    && a.pauseRequested === b.pauseRequested
     && a.targetId === b.targetId
     && a.startedAt === b.startedAt
     && (a.runningAt ?? null) === (b.runningAt ?? null)
