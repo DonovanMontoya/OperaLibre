@@ -83,7 +83,7 @@ export function usePlaybackRestore({
   setRestoredPlaybackBookId: Dispatch<SetStateAction<string | null>>;
   startupProgressAppliedRef: RefObject<boolean>;
   startupViewReadyRef: RefObject<boolean>;
-  storeCanonicalServerProgress: (book: Book, saved: Progress, attempted?: Progress | null) => void;
+  storeCanonicalServerProgress: (book: Book, saved: Progress, attempted?: Progress | null, journal?: Progress | null) => void;
   updateBookProgress: (bookId: string, saved: Progress) => void;
 }) {
   useEffect(() => {
@@ -203,7 +203,11 @@ export function usePlaybackRestore({
           ?? (previousLocal?.syncStatus !== "synced" ? previousLocal?.updatedAt : undefined);
         nativeProgress = recordedAt && progressTimestamp(nativeProgress.updatedAt) <= progressTimestamp(recordedAt)
           ? null
-          : pendingProgress(nativeProgress, previousLocal, serverRevisionFromSummary(playbackBook.progress));
+          : pendingProgress(nativeProgress, previousLocal,
+              previousLocal?.syncStatus ? serverRevisionFromSummary(playbackBook.progress) : undefined);
+        // Recovery without an observed revision keeps legacy timestamp checks;
+        // the current shelf revision was fetched after this listening happened.
+        if (nativeProgress && !previousLocal?.syncStatus) nativeProgress.baseUpdatedAt = undefined;
       }
       if (playbackBook.source === "device") {
         const local = freshestProgress(...localCopies, nativeProgress);
@@ -338,7 +342,7 @@ export function usePlaybackRestore({
             if (originalJournalUnchanged || progressAfterSave(currentCheckpoint, freshestLocal, saved) === saved) {
               serverCorrectedLocal = saved.accepted === false || saved.trackId !== freshestLocal.trackId
                 || Math.abs(saved.bookPositionSeconds - freshestLocal.bookPositionSeconds) > 0.01;
-              storeCanonicalServerProgress(playbackBook, saved, originalJournalUnchanged ? checkpoint : freshestLocal);
+              storeCanonicalServerProgress(playbackBook, saved, freshestLocal, originalJournalUnchanged ? checkpoint : freshestLocal);
               target = saved;
               targetIsCanonical = true;
             } else if (journalHealed) {

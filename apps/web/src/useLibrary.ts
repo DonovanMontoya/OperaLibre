@@ -14,7 +14,7 @@ import {
   resolveActivePlaybackBookId,
   resolveBookId,
   resolveProgressLocation,
-  serverRevisionFromSummary
+  rebasePendingProgress
 } from "./reliability";
 import { readStoredBookId, withoutCachedBookGains } from "./appStorage";
 import { startupDestinationAfterLoad } from "./startup";
@@ -85,7 +85,7 @@ export function useLibrary({
   startupNavigationResolved: RefObject<boolean>;
   startupNavigationOverridden: RefObject<boolean>;
   startupViewReadyRef: RefObject<boolean>;
-  storeCanonicalServerProgress: (book: Book, saved: Progress, attempted?: Progress | null) => void;
+  storeCanonicalServerProgress: (book: Book, saved: Progress, attempted?: Progress | null, journal?: Progress | null) => void;
 }) {
   const loadBooks = useCallback(async () => {
     const requestGeneration = ++libraryRequestGenerationRef.current;
@@ -221,7 +221,10 @@ export function useLibrary({
           );
           const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
           if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
-          const local = freshestProgress(mappedDevice, checkpoint, cached);
+          let local = freshestProgress(mappedDevice, checkpoint, cached);
+          if (local && previousResult) {
+            local = rebasePendingProgress(local, previousResult.attempted, previousResult.saved);
+          }
           const serverBook = serverBooks.find((candidate) => candidate.id === book.id);
           const seekIntent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id);
           if (
@@ -251,13 +254,11 @@ export function useLibrary({
             if (seekOptions.intentionalSeek) {
               acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
             }
-            storeCanonicalServerProgress(book, saved, attempted);
+            storeCanonicalServerProgress(book, saved, attempted, checkpoint);
           }
           // Keep the outcome even when a superseding load or a different
           // journal copy prevents its acknowledgement from being persisted.
-          return { attempted: attempted.syncStatus ? attempted : {
-            ...attempted, baseUpdatedAt: serverRevisionFromSummary(serverBook?.progress)
-          }, saved };
+          return { attempted, saved };
         })();
         libraryProgressReplaysRef.current.set(book.id, replay);
         return replay.finally(() => {
