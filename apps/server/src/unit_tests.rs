@@ -6680,6 +6680,139 @@ fn a_same_revision_checkpoint_accepts_clock_skew_and_offline_progress() {
 }
 
 #[test]
+fn native_recovery_after_an_old_replay_uses_its_revision_not_its_age() {
+    let book = decision_book();
+    let now = 1_750_000_000_000;
+    let mut previous = stored_at(100.0, 0);
+    previous.updated_at = (now - 7_200_000).to_string();
+    let replay = checkpoint_at(160.0, now - 5_400_000, now, Some(&previous.updated_at));
+    let replayed = match super::decide_progress_checkpoint(
+        &book,
+        &book.tracks[0],
+        Some(&previous),
+        &replay,
+        now,
+    ) {
+        super::ProgressDecision::Store { saved, .. } => saved,
+        super::ProgressDecision::Keep => panic!("the older local replay should be accepted"),
+    };
+    for recorded_age in [200_000, 400_000, 3_600_000] {
+        for cross_track in [false, true] {
+            let mut native =
+                checkpoint_at(240.0, now - recorded_age, now, Some(&replayed.updated_at));
+            let track = &book.tracks[usize::from(cross_track)];
+            native.update.track_id = track.id.clone();
+            native.update.book_position_seconds = Some(if cross_track { 840.0 } else { 240.0 });
+            match super::decide_progress_checkpoint(&book, track, Some(&replayed), &native, now + 1)
+            {
+                super::ProgressDecision::Store { saved, .. } => {
+                    assert_eq!(saved.track_id, track.id);
+                    assert_eq!(saved.position_seconds, 240.0);
+                    assert_eq!(saved.updated_at, (now + 1).to_string());
+                }
+                super::ProgressDecision::Keep => {
+                    panic!("a current revision must recover older native listening")
+                }
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_progress_route_recovers_old_native_listening_after_a_library_replay() {
+    use tower::ServiceExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let book = decision_book();
+    state.library.write().await.books.push(book.clone());
+    let auth = admin_user();
+    let app = super::Router::new()
+        .route(
+            "/books/{book_id}/progress",
+            super::put(super::update_progress),
+        )
+        .layer(super::Extension(auth.clone()))
+        .with_state(state.clone());
+    let now = super::unix_now_millis();
+    let mut previous = stored_at(100.0, 0);
+    previous.updated_at = (now - 7_200_000).to_string();
+    state
+        .progress
+        .set(&auth.id, &book.id, previous.clone())
+        .await
+        .unwrap();
+    let mut base = previous.updated_at;
+    for (track_index, position, book_position, recorded_age) in [
+        (0, 160.0, 160.0, 5_400_000),
+        (0, 240.0, 240.0, 3_600_000),
+        (1, 240.0, 840.0, 3_000_000),
+    ] {
+        let payload = serde_json::json!({
+            "trackId": book.tracks[track_index].id,
+            "positionSeconds": position,
+            "bookPositionSeconds": book_position,
+            "updatedAtMs": now - recorded_age,
+            "sentAtMs": now,
+            "baseUpdatedAt": base
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                super::Request::builder()
+                    .method(super::Method::PUT)
+                    .uri(format!("/books/{}/progress", book.id))
+                    .header(super::CONTENT_TYPE, "application/json")
+                    .body(super::Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), super::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["accepted"], true);
+        assert_eq!(value["bookPositionSeconds"], book_position);
+        base = value["updatedAt"].as_str().unwrap().to_string();
+    }
+    let persisted = state
+        .progress
+        .get(&auth.id, &book.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.track_id, book.tracks[1].id);
+    assert_eq!(persisted.book_position_seconds, 840.0);
+    assert_eq!(persisted.updated_at, base);
+}
+
+#[test]
+fn a_current_revision_keeps_automatic_regression_and_reset_guards() {
+    let book = decision_book();
+    let now = 1_750_000_000_000;
+    let mut previous = stored_at(500.0, 0);
+    previous.updated_at = now.to_string();
+    for (position, intentional_seek) in [(400.0, false), (0.0, false), (0.0, true)] {
+        let mut checkpoint =
+            checkpoint_at(position, now - 3_600_000, now, Some(&previous.updated_at));
+        checkpoint.update.intentional_seek = intentional_seek;
+        assert!(matches!(
+            super::decide_progress_checkpoint(
+                &book,
+                &book.tracks[0],
+                Some(&previous),
+                &checkpoint,
+                now
+            ),
+            super::ProgressDecision::Keep
+        ));
+    }
+}
+
+#[test]
 fn a_checkpoint_based_on_an_older_revision_cannot_replace_remote_progress() {
     let book = decision_book();
     let now = 1_750_000_000_000;
