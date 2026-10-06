@@ -272,7 +272,10 @@ use rusqlite::{OptionalExtension, params};
 
 /// Rebuild a `Progress` from its row. The book id comes from the key column,
 /// not a stored copy, so the two can never disagree.
-fn progress_from_row(row: &rusqlite::Row<'_>, book_id: String) -> rusqlite::Result<Progress> {
+pub(crate) fn progress_from_row(
+    row: &rusqlite::Row<'_>,
+    book_id: String,
+) -> rusqlite::Result<Progress> {
     Ok(Progress {
         book_id,
         track_id: row.get("track_id")?,
@@ -283,6 +286,18 @@ fn progress_from_row(row: &rusqlite::Row<'_>, book_id: String) -> rusqlite::Resu
         finished_override: row
             .get::<_, Option<i64>>("finished_override")?
             .map(|value| value != 0),
+        recording: row
+            .get::<_, Option<String>>("recording")?
+            .map(|value| {
+                serde_json::from_str(&value).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+            })
+            .transpose()?,
     })
 }
 
@@ -295,15 +310,16 @@ fn upsert_progress(
     connection.execute(
         "INSERT INTO progress (
              user_id, book_id, track_id, position_seconds,
-             book_position_seconds, duration_seconds, updated_at, finished_override
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             book_position_seconds, duration_seconds, updated_at, finished_override, recording
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT (user_id, book_id) DO UPDATE SET
              track_id              = excluded.track_id,
              position_seconds      = excluded.position_seconds,
              book_position_seconds = excluded.book_position_seconds,
              duration_seconds      = excluded.duration_seconds,
              updated_at            = excluded.updated_at,
-             finished_override     = excluded.finished_override",
+             finished_override     = excluded.finished_override,
+             recording             = excluded.recording",
         params![
             user_id,
             book_id,
@@ -313,6 +329,12 @@ fn upsert_progress(
             progress.duration_seconds,
             progress.updated_at,
             progress.finished_override.map(i64::from),
+            progress
+                .recording
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
         ],
     )?;
     Ok(())

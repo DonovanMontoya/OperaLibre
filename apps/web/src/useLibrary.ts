@@ -9,6 +9,8 @@ import {
 import type { AuthUser, Book, LibationBook, Progress } from "./types";
 import {
   freshestProgress,
+  identifyProgressRecording,
+  journalProgressAttempt,
   progressNeedsSync,
   progressAfterSave,
   progressTimestamp,
@@ -216,7 +218,7 @@ export function useLibrary({
                 trackId: book.tracks[deviceTrackIndex].id
               }
             : null;
-          const checkpoint = readProgressCheckpoint(
+          let checkpoint = readProgressCheckpoint(
             window.localStorage,
             getServerStorageKey(),
             currentUser.id,
@@ -255,12 +257,15 @@ export function useLibrary({
           const location = resolveProgressLocation(book.tracks, local);
           if (!location) return previousResult;
           if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
-          const attempted: Progress = {
+          const attempted: Progress = identifyProgressRecording({
             ...local,
             trackId: location.trackId,
             positionSeconds: location.positionSeconds
-          };
+          });
           const seekOptions = progressSeekOptions(seekIntent, attempted, serverBook?.progress?.bookPositionSeconds);
+          if (journalProgressAttempt(window.localStorage, getServerStorageKey(), currentUser.id, attempted, checkpoint)) {
+            checkpoint = attempted;
+          }
           const saved = await saveProgress(
             book.id,
             attempted,

@@ -150,8 +150,8 @@ fn import(connection: &mut rusqlite::Connection, layout: &JsonLayout) -> anyhow:
         transaction.execute(
             "INSERT OR REPLACE INTO progress (
                  user_id, book_id, track_id, position_seconds,
-                 book_position_seconds, duration_seconds, updated_at, finished_override
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 book_position_seconds, duration_seconds, updated_at, finished_override, recording
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 user_id,
                 book_id,
@@ -161,6 +161,11 @@ fn import(connection: &mut rusqlite::Connection, layout: &JsonLayout) -> anyhow:
                 entry.duration_seconds,
                 entry.updated_at,
                 entry.finished_override.map(i64::from),
+                entry
+                    .recording
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
             ],
         )?;
         rows += 1;
@@ -370,17 +375,7 @@ pub(crate) fn export_json(
             let book_id: String = row.get("book_id")?;
             Ok((
                 progress_key(&user_id, &book_id),
-                Progress {
-                    book_id,
-                    track_id: row.get("track_id")?,
-                    position_seconds: row.get("position_seconds")?,
-                    book_position_seconds: row.get("book_position_seconds")?,
-                    duration_seconds: row.get("duration_seconds")?,
-                    updated_at: row.get("updated_at")?,
-                    finished_override: row
-                        .get::<_, Option<i64>>("finished_override")?
-                        .map(|value| value != 0),
-                },
+                progress_from_row(row, book_id)?,
             ))
         })?;
         for row in rows {

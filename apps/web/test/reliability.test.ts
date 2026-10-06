@@ -708,6 +708,24 @@ test("acknowledging an in-flight save only rebases newer pending edits", () => {
   assert.equal(rebasePendingProgress(newer, attempted, { ...saved, accepted: undefined }), newer);
 });
 
+test("recording provenance survives own acknowledgments but never follows another client's position", () => {
+  const initial = pendingProgress(progress(), syncedProgress(progress()));
+  const offline = pendingProgress(progress({ bookPositionSeconds: 100 }), initial);
+  assert.equal(offline.recording!.id, initial.recording!.id);
+  assert.equal(offline.recording!.sequence, initial.recording!.sequence + 1);
+  const saved = { ...initial, updatedAt: "1790769600001", accepted: true };
+  const own = syncedProgress(saved, initial.localUpdatedAt, initial);
+  const next = pendingProgress(progress({ bookPositionSeconds: 120 }), own);
+  assert.equal(next.recording!.id, initial.recording!.id);
+  assert.equal(next.recording!.sequence, initial.recording!.sequence + 1);
+  const fetched = syncedProgress(saved);
+  const otherClient = pendingProgress(progress({ bookPositionSeconds: 120 }), fetched);
+  assert.notEqual(otherClient.recording!.id, initial.recording!.id);
+  const seek = pendingProgress(progress({ bookPositionSeconds: 10 }), next, saved.updatedAt, true);
+  assert.equal(seek.recording!.id, next.recording!.id);
+  assert.equal(seek.recording!.sequence, next.recording!.sequence + 1);
+});
+
 test("local mutations in the same millisecond stay distinct from their acknowledgement", () => {
   const recordedAt = "2026-09-30T12:00:00.000Z";
   const acknowledged = syncedProgress(progress({ updatedAt: "1790769600000" }), recordedAt);

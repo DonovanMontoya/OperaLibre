@@ -1115,13 +1115,14 @@ async function saveOperaLibreProgress(bookId: string, progress: ProgressWrite, o
   // legacy writes without a revision retain timestamp ordering.
   // intentionalRegression marks a deliberate restart or rewind, allowing
   // near-zero writes that would otherwise erase substantial progress.
-  const { updatedAt, trackId, positionSeconds, bookPositionSeconds, durationSeconds, baseUpdatedAt } = progress;
+  const { updatedAt, trackId, positionSeconds, bookPositionSeconds, durationSeconds, baseUpdatedAt, recording } = progress;
   return request<Progress>(`/api/books/${encodeURIComponent(bookId)}/progress`, {
     method: "PUT",
     signal: options?.signal,
     body: JSON.stringify({
       trackId, positionSeconds, bookPositionSeconds, durationSeconds,
       ...(baseUpdatedAt !== undefined ? { baseUpdatedAt } : {}),
+      ...(recording ? { recording } : {}),
       ...(updatedAt ? { updatedAtMs: progressTimestamp(updatedAt) } : {}),
       // When this device's clock is off, updatedAtMs is off by the same
       // amount; the server compares sentAtMs with its own arrival time to

@@ -49,6 +49,24 @@ pub(crate) struct Progress {
     pub(crate) updated_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) finished_override: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recording: Option<ProgressRecording>,
+}
+
+/// An opaque local recording lineage and its monotonically increasing edit.
+/// Stored with the position so a lost response does not erase its provenance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ProgressRecording {
+    pub(crate) id: String,
+    pub(crate) sequence: u64,
+}
+
+impl ProgressRecording {
+    fn is_valid(&self) -> bool {
+        self.id.len() == 32
+            && self.id.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && (1..=9_007_199_254_740_991).contains(&self.sequence)
+    }
 }
 
 /// A book's playback gain as a linear multiplier. The floor tames a book
@@ -140,11 +158,13 @@ pub(crate) struct ProgressCheckpoint {
     /// An empty string means no server checkpoint was observed. Absent keeps
     /// legacy clients on the timestamp and position guards alone.
     pub(crate) base_updated_at: Option<String>,
+    #[serde(default)]
+    pub(crate) recording: Option<ProgressRecording>,
 }
 
-/// PUT returns the resulting position plus whether this checkpoint advanced
-/// its revision. Matching positions alone cannot distinguish an accepted save
-/// from a stale write rejected against an identical position on another device.
+/// PUT returns the resulting position plus whether this checkpoint was saved
+/// or recognized as an exact retry. Matching positions alone cannot distinguish
+/// an accepted save from a stale write against another device's identical position.
 #[derive(Debug, Serialize)]
 pub(crate) struct ProgressCheckpointResponse {
     #[serde(flatten)]
@@ -243,8 +263,20 @@ pub(crate) fn decide_progress_checkpoint(
     checkpoint: &ProgressCheckpoint,
     now_millis: u64,
 ) -> ProgressDecision {
+    let recording_order = previous
+        .and_then(|value| value.recording.as_ref())
+        .zip(checkpoint.recording.as_ref())
+        .filter(|(stored, incoming)| stored.id == incoming.id)
+        .map(|(stored, incoming)| incoming.sequence.cmp(&stored.sequence));
+    // The device can miss a reply without losing its own ordering. A different
+    // recording still requires the current revision; older edits never win.
+    let continues_recording = recording_order == Some(std::cmp::Ordering::Greater);
+    if recording_order.is_some() && !continues_recording {
+        return ProgressDecision::Keep;
+    }
     if let (Some(previous), Some(base)) = (previous, &checkpoint.base_updated_at)
         && base != &previous.updated_at
+        && !continues_recording
     {
         return ProgressDecision::Keep;
     }
@@ -252,12 +284,24 @@ pub(crate) fn decide_progress_checkpoint(
     // A matching server revision establishes ordering even when native
     // listening was recorded long before an older local replay was uploaded.
     // Legacy writes still need timestamp ordering; position guards apply to both.
-    update.updated_at_ms = if checkpoint.base_updated_at.is_some() {
+    update.updated_at_ms = if checkpoint.base_updated_at.is_some() || continues_recording {
         None
     } else {
         server_domain_timestamp_ms(update.updated_at_ms, checkpoint.sent_at_ms, now_millis)
     };
-    decide_progress_write(book, track, previous, &update, now_millis)
+    match decide_progress_write(book, track, previous, &update, now_millis) {
+        ProgressDecision::Store {
+            mut saved,
+            backup_previous,
+        } => {
+            saved.recording = checkpoint.recording.clone();
+            ProgressDecision::Store {
+                saved,
+                backup_previous,
+            }
+        }
+        ProgressDecision::Keep => ProgressDecision::Keep,
+    }
 }
 
 /// Decide what to do with one incoming progress write.
@@ -292,6 +336,7 @@ pub(crate) fn decide_progress_write(
         update.book_position_seconds,
     );
     let saved = Progress {
+        recording: None,
         book_id: book.id.clone(),
         track_id: track.id.clone(),
         position_seconds: incoming_track_position,
@@ -361,6 +406,15 @@ pub(crate) async fn update_progress(
 ) -> Result<Json<ProgressCheckpointResponse>, ApiError> {
     require_book_access(&auth, &book_id)?;
     let now_millis = unix_now_millis();
+    if checkpoint
+        .recording
+        .as_ref()
+        .is_some_and(|value| !value.is_valid())
+    {
+        return Err(ApiError::bad_request(
+            "Invalid progress recording identifier or sequence.",
+        ));
+    }
     let update = &checkpoint.update;
     // Copied out of the library once, so the library lock is not held across
     // the write; the decision on the database's blocking task shares it.
@@ -377,6 +431,7 @@ pub(crate) async fn update_progress(
     };
 
     let decision_checkpoint = checkpoint.clone();
+    let decision_track = track.clone();
     let decided_book_id = book.id.clone();
     let decision_book = Arc::clone(&book);
     let (saved, previous) = state
@@ -384,7 +439,7 @@ pub(crate) async fn update_progress(
         .update_book(&auth.id, &decided_book_id, move |previous| {
             decide_progress_checkpoint(
                 &decision_book,
-                &track,
+                &decision_track,
                 previous,
                 &decision_checkpoint,
                 now_millis,
@@ -410,7 +465,19 @@ pub(crate) async fn update_progress(
 
     let accepted = previous
         .as_ref()
-        .is_none_or(|previous| previous.updated_at != saved.updated_at);
+        .is_none_or(|previous| previous.updated_at != saved.updated_at)
+        || (checkpoint.recording.is_some()
+            && checkpoint.recording == saved.recording
+            && saved.track_id == track.id
+            && saved.position_seconds
+                == clamped_track_position(update.position_seconds, track.duration_seconds)
+            && saved.book_position_seconds
+                == validated_book_position_seconds(
+                    &book,
+                    &track,
+                    saved.position_seconds,
+                    update.book_position_seconds,
+                ));
     Ok(Json(ProgressCheckpointResponse {
         progress: saved,
         accepted,
@@ -574,6 +641,7 @@ pub(crate) fn decide_completion_write(
         saved.updated_at = next_progress_timestamp(previous, now_millis);
     }
     saved.finished_override = Some(update.finished);
+    saved.recording = None;
     let backup_previous = previous.is_some_and(|previous| {
         previous.book_position_seconds - saved.book_position_seconds
             > PROGRESS_BACKUP_REGRESSION_SECONDS
@@ -1107,6 +1175,7 @@ pub(crate) fn fresh_progress(
     now_millis: u64,
 ) -> Progress {
     Progress {
+        recording: None,
         book_id: book.id.clone(),
         track_id: first_track.id.clone(),
         position_seconds: 0.0,
