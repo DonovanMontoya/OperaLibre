@@ -197,8 +197,8 @@ export function useLibrary({
         if (book.source !== "server" || resumeReconciliationBookIdRef.current === book.id) return;
         const previousReplay = libraryProgressReplaysRef.current.get(book.id);
         const replay = (async (): Promise<LibraryProgressReplay> => {
-          await previousReplay?.catch(() => null);
-          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return null;
+          const previousResult = await previousReplay?.catch(() => null) ?? null;
+          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
           const deviceProgress = book.deviceBookId ? getDeviceProgress(book.deviceBookId) : null;
           const deviceBook = book.deviceBookId
             ? deviceBooks.find((candidate) => candidate.id === book.deviceBookId)
@@ -220,7 +220,7 @@ export function useLibrary({
             book.id
           );
           const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
-          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return null;
+          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
           const local = freshestProgress(mappedDevice, checkpoint, cached);
           const serverBook = serverBooks.find((candidate) => candidate.id === book.id);
           const seekIntent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id);
@@ -230,11 +230,11 @@ export function useLibrary({
             if (local && serverBook?.progress && progressSeekOptions(seekIntent, local, serverBook.progress.bookPositionSeconds).intentionalSeek) {
               acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
             }
-            return null;
+            return previousResult;
           }
           const location = resolveProgressLocation(book.tracks, local);
-          if (!location) return null;
-          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return null;
+          if (!location) return previousResult;
+          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
           const attempted: Progress = {
             ...local,
             trackId: location.trackId,
@@ -246,13 +246,15 @@ export function useLibrary({
             attempted,
             { isPaused: true, ...seekOptions }
           ).catch(() => null);
-          if (!saved || !isCurrentRequest()) return null;
-          if (seekOptions.intentionalSeek) {
-            acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
+          if (!saved) return previousResult;
+          if (isCurrentRequest()) {
+            if (seekOptions.intentionalSeek) {
+              acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
+            }
+            storeCanonicalServerProgress(book, saved, attempted);
           }
-          storeCanonicalServerProgress(book, saved, attempted);
-          // Carry this request's outcome even when a different journal copy
-          // prevents its acknowledgement from being persisted.
+          // Keep the outcome even when a superseding load or a different
+          // journal copy prevents its acknowledgement from being persisted.
           return { attempted: attempted.syncStatus ? attempted : {
             ...attempted, baseUpdatedAt: serverRevisionFromSummary(serverBook?.progress)
           }, saved };
