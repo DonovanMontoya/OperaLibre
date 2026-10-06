@@ -53,6 +53,11 @@ const jobs: JobStatus[] = [
     error: "Recognition model download failed: connection reset by peer" },
 ];
 
+jobs.push(
+  { id: "j5", kind: "sync-generate", targetId: "book-5", status: "queued", startedAt: String(now - 4 * 60_000), finishedAt: null, exitCode: null, output: "", error: null },
+  { id: "j6", kind: "sync-generate", targetId: "book-6", status: "paused", startedAt: String(now - 3 * 60_000), finishedAt: null, exitCode: null, output: "", error: null, pauseRequested: true, progress: { fraction: 0.3, step: "Paused" } as JobStatus["progress"] },
+);
+
 const schedules = [
   { bookId: "book-5", runAt: now + 7 * 3_600_000, status: "scheduled", jobId: null, error: null },
   { bookId: "book-7", runAt: now + 30 * 3_600_000, status: "scheduled", jobId: null, error: null },
@@ -81,6 +86,23 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url.includes("/api/sync-sweep")) {
     if (init?.method === "PUT") Object.assign(sweep, JSON.parse(String(init.body)));
     return json(sweep);
+  }
+  if (url.includes("/api/sync-jobs/")) {
+    const id = url.split("/").pop();
+    const index = jobs.findIndex((job) => job.id === id);
+    if (index < 0) return new Response("Not found", { status: 404 });
+    if (init?.method === "DELETE") { jobs.splice(index, 1); return new Response(null, { status: 204 }); }
+    const job = jobs[index];
+    const { action } = JSON.parse(String(init?.body));
+    if (action === "up" || action === "down") {
+      const queue = jobs.filter((job) => job.status === "queued").sort((a, b) => (a.queuePosition ?? Number(a.startedAt)) - (b.queuePosition ?? Number(b.startedAt)));
+      const current = queue.indexOf(job);
+      const other = current + (action === "up" ? -1 : 1);
+      if (other >= 0 && other < queue.length) [queue[current], queue[other]] = [queue[other], queue[current]];
+      queue.forEach((entry, rank) => { entry.queuePosition = rank; });
+    } else if (action === "pause") { job.pauseRequested = true; if (job.status === "queued") job.status = "paused"; }
+    else if (action === "resume") { job.status = "queued"; job.pauseRequested = false; job.queuePosition = Math.max(...jobs.map((entry) => entry.queuePosition ?? Number(entry.startedAt))) + 1; }
+    return json(job);
   }
   if (url.includes("/api/jobs")) return json(jobsEnabled ? jobs : []);
   if (url.includes("/api/sync-schedules")) return json(init?.method === "DELETE" ? [] : schedules);

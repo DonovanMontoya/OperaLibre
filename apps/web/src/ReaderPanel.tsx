@@ -2,7 +2,7 @@ import type { useNativeChrome } from "./useNativeChrome";
 import type { useReadalong } from "./useReadalong";
 import type { useReaderPreferences } from "./useReaderPreferences";
 import type { useSleepTimer } from "./useSleepTimer";
-import { ArrowLeft, BookOpen, ExternalLink, FileText, Images, LoaderCircle, ScrollText, Sparkles, X } from "lucide-react";
+import { ArrowLeft, BookOpen, ExternalLink, FileText, Images, LoaderCircle, Pause, ScrollText, Sparkles, X } from "lucide-react";
 import { companionKindLabel, describeCompanion, READ_ALONG_MODE_LABELS } from "./readalong";
 import { GALLERY_COMPANION_ID } from "./useReadalong";
 import { EpubReadalong } from "./EpubReadalong";
@@ -52,12 +52,12 @@ export function renderReaderSyncActions({
                 : "Align the narration to the text for sentence-exact highlighting"
             }
           >
-            {syncJobRunning ? (
+            {syncJobRunning && readalong.syncJob?.status === "paused" ? <Pause size={13} /> : syncJobRunning ? (
               <LoaderCircle size={13} className="spin-icon" />
             ) : (
               <Sparkles size={13} />
             )}
-            <span>{selectedSyncPrecise ? "Re-sync" : "Improve sync"}</span>
+            <span>{syncJobRunning && readalong.syncJob?.status === "paused" ? "Sync paused" : selectedSyncPrecise ? "Re-sync" : "Improve sync"}</span>
           </button>
         ) : null}
       </>
@@ -95,12 +95,15 @@ export function renderReaderSyncMessages({
             : "This book has no alignment yet, so the reader only opens to the chapter being played. Improve sync listens to the narration on the server and matches it to the text sentence by sentence, so the highlight lands on the sentence being read. It runs in the background for everyone on this server and can take a long while on a full-length book."}
         </p>
       ) : null}
-      {syncJobForBook && syncJobRunning ? (
+      {syncJobForBook?.status === "paused" ? (
+        <div className="readalong-genstatus" role="status">Sync paused; completed sections are saved. Resume it in Administration → Experiments.</div>
+      ) : syncJobForBook && syncJobRunning ? (
         <div className="sync-progress" role="status" aria-live="polite">
           <div className="sync-progress-head">
             <span className="sync-progress-step">
               {syncJobForBook.status === "queued"
                 ? "Waiting for another sync to finish"
+                : syncJobForBook.pauseRequested ? "Finishing the current chapter or track before pausing"
                 : syncJobForBook.progress?.step ?? "Aligning the narration to the text"}
             </span>
             {syncProgressPercent !== null ? (

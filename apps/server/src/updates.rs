@@ -49,6 +49,8 @@ pub struct UpdateManager {
     installing: Arc<AtomicBool>,
     pub(crate) sync_lifecycle: Arc<tokio::sync::RwLock<()>>,
     pub(crate) sync_slots: Arc<tokio::sync::Semaphore>,
+    pub(crate) sync_queue_changed: Arc<tokio::sync::Notify>,
+    pub(crate) sync_update_pause: tokio::sync::watch::Sender<u64>,
 }
 
 /// Holds the `installing` flag for the length of one install and releases it
@@ -259,6 +261,8 @@ impl UpdateManager {
             installing: Arc::new(AtomicBool::new(false)),
             sync_lifecycle: Arc::new(tokio::sync::RwLock::new(())),
             sync_slots: Arc::new(tokio::sync::Semaphore::new(1)),
+            sync_queue_changed: Arc::new(tokio::sync::Notify::new()),
+            sync_update_pause: tokio::sync::watch::channel(0).0,
         })
     }
 
@@ -328,11 +332,21 @@ impl UpdateManager {
     pub async fn install(
         &self,
         request: UpdateInstallRequest,
+        state: &crate::AppState,
+    ) -> anyhow::Result<UpdateInstallStarted> {
+        self.install_prepared(request, crate::sync::pause_for_update(state))
+            .await
+    }
+
+    async fn install_prepared(
+        &self,
+        request: UpdateInstallRequest,
+        before_restart: impl std::future::Future<Output = anyhow::Result<crate::sync::SyncUpdatePause>>,
     ) -> anyhow::Result<UpdateInstallStarted> {
         let Some(guard) = InstallGuard::acquire(&self.installing) else {
             bail!("An OperaLibre update is already being installed.");
         };
-        let result = self.install_inner(request).await;
+        let result = self.install_inner(request, before_restart).await;
         if result.is_ok() {
             // A staged backend update restarts the process; hold the flag so
             // nothing installs over it in the meantime.
@@ -624,6 +638,7 @@ impl UpdateManager {
     async fn install_inner(
         &self,
         request: UpdateInstallRequest,
+        before_restart: impl std::future::Future<Output = anyhow::Result<crate::sync::SyncUpdatePause>>,
     ) -> anyhow::Result<UpdateInstallStarted> {
         let channel = self.channel().await?;
         if request.channel.is_some_and(|expected| expected != channel) {
@@ -708,9 +723,13 @@ impl UpdateManager {
             .stderr(Stdio::from(stderr));
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+        // Pause only after the package is verified, and before an updater
+        // starts its 45-second exit deadline. Failed launches resume the queue.
+        let sync_pause = before_restart.await?;
         command
             .spawn()
             .with_context(|| format!("Could not start {}", updater_path.display()))?;
+        sync_pause.keep();
 
         Ok(UpdateInstallStarted {
             version: package.version.clone(),
@@ -1951,10 +1970,13 @@ mod tests {
             .await
             .unwrap();
         let error = manager
-            .install(super::UpdateInstallRequest {
-                channel: Some(super::UpdateChannel::Stable),
-                version: Some("1.0.0".into()),
-            })
+            .install_prepared(
+                super::UpdateInstallRequest {
+                    channel: Some(super::UpdateChannel::Stable),
+                    version: Some("1.0.0".into()),
+                },
+                std::future::pending(),
+            )
             .await
             .unwrap_err();
         assert!(error.to_string().contains("selected channel changed"));

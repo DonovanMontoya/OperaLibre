@@ -2683,6 +2683,8 @@ fn prune_finished_jobs_keeps_active_and_newest() {
             id.clone(),
             super::JobStatus {
                 resume_pending: false,
+                queue_position: None,
+                pause_requested: false,
                 id,
                 kind: "test".to_string(),
                 target_id: None,
@@ -2717,6 +2719,8 @@ fn job_list_summaries_bound_output_without_breaking_unicode() {
     let output = "résumé ".repeat(2_000);
     let job = super::JobStatus {
         resume_pending: false,
+        queue_position: None,
+        pause_requested: false,
         id: "job-output".to_string(),
         kind: "test".to_string(),
         target_id: None,
@@ -2744,6 +2748,8 @@ fn job_timestamps_advance_when_the_clock_value_is_already_used() {
         "latest".to_string(),
         super::JobStatus {
             resume_pending: false,
+            queue_position: None,
+            pause_requested: false,
             id: "latest".to_string(),
             kind: "test".to_string(),
             target_id: None,

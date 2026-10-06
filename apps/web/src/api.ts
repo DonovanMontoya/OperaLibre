@@ -1259,6 +1259,16 @@ export async function startFaststartConversion(options?: {
   });
 }
 
+export async function removeSyncJob(jobId: string) {
+  return request<void>(`/api/sync-jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+}
+
+export async function controlSyncJob(jobId: string, action: "up" | "down" | "pause" | "resume") {
+  return request<JobStatus>(`/api/sync-jobs/${encodeURIComponent(jobId)}`, {
+    method: "PATCH", body: JSON.stringify({ action }),
+  });
+}
+
 export async function getJob(jobId: string) {
   return request<JobStatus>(`/api/jobs/${encodeURIComponent(jobId)}`);
 }

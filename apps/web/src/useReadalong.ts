@@ -1,5 +1,6 @@
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
+  ApiError,
   generateSyncMap,
   getAlignmentStatus,
   getJob,
@@ -320,7 +321,8 @@ export function useReadalong({
   // every poll replaces the object, which would otherwise rebuild the timer
   // on each tick.
   const syncJobId = syncJob?.id ?? null;
-  const syncJobPending = !!syncJob && ["queued", "running"].includes(syncJob.status);
+  const syncJobPaused = syncJob?.status === "paused";
+  const syncJobPending = !!syncJob && ["queued", "running", "paused"].includes(syncJob.status);
   useEffect(() => {
     if (!syncJobId || !syncJobPending) {
       return;
@@ -342,16 +344,21 @@ export function useReadalong({
             void loadBooks();
           }
         })
-        .catch(() => undefined)
+        .catch((error) => {
+          if (!cancelled && error instanceof ApiError && error.status === 404) {
+            setSyncJob(null);
+            setSyncNotice("This sync was removed from the queue.");
+          }
+        })
         .finally(() => {
           requestInFlight = false;
         });
-    }, 2000);
+    }, syncJobPaused ? 15000 : 2000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [loadBooks, syncJobId, syncJobPending]);
+  }, [loadBooks, syncJobId, syncJobPending, syncJobPaused]);
 
   // A sync run outlives the page that started it: it is a server job, and a
   // long book takes far longer than a reload or a walk to another book. Adopt
@@ -375,7 +382,7 @@ export function useReadalong({
           (job) =>
             job.kind === "sync-generate"
             && job.targetId === selectedBookId
-            && ["queued", "running"].includes(job.status)
+            && ["queued", "running", "paused"].includes(job.status)
         );
         if (running && !cancelled) {
           setSyncJob(running);
