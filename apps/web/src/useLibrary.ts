@@ -10,15 +10,20 @@ import type { AuthUser, Book, LibationBook, Progress } from "./types";
 import {
   freshestProgress,
   progressNeedsSync,
+  progressAfterSave,
+  progressTimestamp,
+  pendingProgress,
   readProgressCheckpoint,
   resolveActivePlaybackBookId,
   resolveBookId,
-  resolveProgressLocation
+  resolveProgressLocation,
+  rebasePendingProgress
 } from "./reliability";
 import { readStoredBookId, withoutCachedBookGains } from "./appStorage";
 import { startupDestinationAfterLoad } from "./startup";
 import { getBooks, getLibationBooks, getServerStorageKey, isServerNotReadyError, saveProgress } from "./api";
 import { cacheLibrary, getCachedLibrary, getCachedProgress } from "./offline";
+import type { LibraryProgressReplay } from "./playbackTypes";
 import type { NativeTab } from "./nativeTabs";
 import { acknowledgeProgressSeekIntent, progressSeekStorage, progressSeekOptions, readProgressSeekIntent } from "./progressSeekIntent";
 
@@ -31,6 +36,7 @@ export function useLibrary({
   currentUser,
   initialLibraryHydrated,
   isOperaLibre,
+  libraryProgressReplaysRef,
   libraryRequestGenerationRef,
   libraryRetryTimerRef,
   loadBooksRef,
@@ -39,6 +45,7 @@ export function useLibrary({
   nativeAudioRef,
   nativePlaybackPlayingRef,
   reconcileServerBookGains,
+  resumeReconciliationBookIdRef,
   setBooks,
   setError,
   setIsLoading,
@@ -58,6 +65,7 @@ export function useLibrary({
   currentUser: AuthUser;
   initialLibraryHydrated: RefObject<boolean>;
   isOperaLibre: boolean;
+  libraryProgressReplaysRef: RefObject<Map<string, Promise<LibraryProgressReplay>>>;
   libraryRequestGenerationRef: RefObject<number>;
   libraryRetryTimerRef: RefObject<number | null>;
   loadBooksRef: RefObject<() => Promise<void>>;
@@ -66,6 +74,7 @@ export function useLibrary({
   nativeAudioRef: RefObject<boolean>;
   nativePlaybackPlayingRef: RefObject<boolean>;
   reconcileServerBookGains: (payload: readonly Book[]) => void;
+  resumeReconciliationBookIdRef: RefObject<string | null>;
   setBooks: Dispatch<SetStateAction<Book[]>>;
   setError: Dispatch<SetStateAction<string | null>>;
   setIsLoading: Dispatch<SetStateAction<boolean>>;
@@ -79,7 +88,7 @@ export function useLibrary({
   startupNavigationResolved: RefObject<boolean>;
   startupNavigationOverridden: RefObject<boolean>;
   startupViewReadyRef: RefObject<boolean>;
-  storeCanonicalServerProgress: (book: Book, saved: Progress, attempted?: Progress | null) => void;
+  storeCanonicalServerProgress: (book: Book, saved: Progress, attempted?: Progress | null, journal?: Progress | null) => void;
 }) {
   const loadBooks = useCallback(async () => {
     const requestGeneration = ++libraryRequestGenerationRef.current;
@@ -185,60 +194,98 @@ export function useLibrary({
       // Reconcile every durable local copy, not only imported device media.
       // This brings progress recorded while offline back to the server even if
       // the user opens a different book after reconnecting.
-      void Promise.all(nextBooks.map(async (book) => {
-        if (book.source !== "server") return;
-        const deviceProgress = book.deviceBookId ? getDeviceProgress(book.deviceBookId) : null;
-        const deviceBook = book.deviceBookId
-          ? deviceBooks.find((candidate) => candidate.id === book.deviceBookId)
-          : null;
-        const deviceTrackIndex = deviceBook?.tracks.findIndex(
-          (track) => track.id === deviceProgress?.trackId
-        ) ?? -1;
-        const mappedDevice = deviceProgress && deviceTrackIndex >= 0 && book.tracks[deviceTrackIndex]
-          ? {
-              ...deviceProgress,
-              bookId: book.id,
-              trackId: book.tracks[deviceTrackIndex].id
+      // Restore owns its book's newer native/cache checkpoint. An earlier
+      // replay is tracked so restore can use its acknowledged revision.
+      void Promise.all(nextBooks.map((book) => {
+        if (book.source !== "server" || resumeReconciliationBookIdRef.current === book.id) return;
+        const previousReplay = libraryProgressReplaysRef.current.get(book.id);
+        const replay = (previousReplay ?? Promise.resolve(null)).catch(() => null)
+          .then(async (previousResult): Promise<LibraryProgressReplay> => {
+          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
+          const deviceProgress = book.deviceBookId ? getDeviceProgress(book.deviceBookId) : null;
+          const deviceBook = book.deviceBookId
+            ? deviceBooks.find((candidate) => candidate.id === book.deviceBookId)
+            : null;
+          const deviceTrackIndex = deviceBook?.tracks.findIndex(
+            (track) => track.id === deviceProgress?.trackId
+          ) ?? -1;
+          const mappedDevice = deviceProgress && deviceTrackIndex >= 0 && book.tracks[deviceTrackIndex]
+            ? {
+                ...deviceProgress,
+                bookId: book.id,
+                trackId: book.tracks[deviceTrackIndex].id
+              }
+            : null;
+          const checkpoint = readProgressCheckpoint(
+            window.localStorage,
+            getServerStorageKey(),
+            currentUser.id,
+            book.id
+          );
+          const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
+          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
+          let local = freshestProgress(mappedDevice, checkpoint, cached);
+          if (local && previousResult) {
+            if (previousResult.saved.accepted === true
+              && progressAfterSave(local, previousResult.attempted, previousResult.saved) === previousResult.saved) {
+              storeCanonicalServerProgress(book, previousResult.saved, previousResult.attempted, checkpoint);
+              return previousResult;
             }
-          : null;
-        const checkpoint = readProgressCheckpoint(
-          window.localStorage,
-          getServerStorageKey(),
-          currentUser.id,
-          book.id
-        );
-        const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
-        if (!isCurrentRequest()) return;
-        const local = freshestProgress(mappedDevice, checkpoint, cached);
-        const serverBook = serverBooks.find((candidate) => candidate.id === book.id);
-        const seekIntent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id);
-        if (
-          !local || !progressNeedsSync(local, serverBook?.progress)
-        ) {
-          if (local && serverBook?.progress && progressSeekOptions(seekIntent, local, serverBook.progress.bookPositionSeconds).intentionalSeek) {
-            acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
+            if (!local.syncStatus && previousResult.saved.accepted === true
+              && progressTimestamp(local.updatedAt) >= progressTimestamp(
+                previousResult.attempted.localUpdatedAt ?? previousResult.attempted.updatedAt)) {
+              // A later legacy mutation can follow this device's explicit
+              // acknowledgement, without inventing a base from the shelf.
+              local = pendingProgress(local, local);
+            }
+            for (const { attempted, saved } of previousResult.acknowledgements) {
+              local = rebasePendingProgress(local, attempted, saved);
+            }
           }
-          return;
-        }
-        const location = resolveProgressLocation(book.tracks, local);
-        if (!location) return;
-        if (!isCurrentRequest()) return;
-        const attempted: Progress = {
-          ...local,
-          trackId: location.trackId,
-          positionSeconds: location.positionSeconds
-        };
-        const seekOptions = progressSeekOptions(seekIntent, attempted, serverBook?.progress?.bookPositionSeconds);
-        const saved = await saveProgress(
-          book.id,
-          attempted,
-          { isPaused: true, ...seekOptions }
-        ).catch(() => null);
-        if (!saved || !isCurrentRequest()) return;
-        if (seekOptions.intentionalSeek) {
-          acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
-        }
-        storeCanonicalServerProgress(book, saved, attempted);
+          const serverBook = serverBooks.find((candidate) => candidate.id === book.id);
+          const seekIntent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id);
+          if (
+            !local || !progressNeedsSync(local, serverBook?.progress)
+          ) {
+            if (local && serverBook?.progress && progressSeekOptions(seekIntent, local, serverBook.progress.bookPositionSeconds).intentionalSeek) {
+              acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
+            }
+            return previousResult;
+          }
+          const location = resolveProgressLocation(book.tracks, local);
+          if (!location) return previousResult;
+          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
+          const attempted: Progress = {
+            ...local,
+            trackId: location.trackId,
+            positionSeconds: location.positionSeconds
+          };
+          const seekOptions = progressSeekOptions(seekIntent, attempted, serverBook?.progress?.bookPositionSeconds);
+          const saved = await saveProgress(
+            book.id,
+            attempted,
+            { isPaused: true, ...seekOptions }
+          ).catch(() => null);
+          if (!saved) return previousResult;
+          // A superseding shelf fetch may not have registered a successor yet.
+          // Persist the receipt while this replay still owns the book's slot.
+          if (isCurrentRequest() || libraryProgressReplaysRef.current.get(book.id) === replay) {
+            if (seekOptions.intentionalSeek) {
+              acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
+            }
+            storeCanonicalServerProgress(book, saved, attempted, checkpoint);
+          }
+          // Keep the outcome even when a superseding load or a different
+          // journal copy prevents its acknowledgement from being persisted.
+          return { attempted, saved,
+            acknowledgements: [...previousResult?.acknowledgements ?? [], { attempted, saved }] };
+        });
+        libraryProgressReplaysRef.current.set(book.id, replay);
+        return replay.finally(() => {
+          if (libraryProgressReplaysRef.current.get(book.id) === replay) {
+            libraryProgressReplaysRef.current.delete(book.id);
+          }
+        });
       })).catch(() => undefined);
       if (!isCurrentRequest()) return;
       applyLoadedBooks(nextBooks, true);

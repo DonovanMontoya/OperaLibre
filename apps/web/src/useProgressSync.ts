@@ -340,10 +340,13 @@ export function useProgressSync({
     );
   }
 
-  function storeCanonicalServerProgress(book: Book, saved: Progress, attempted?: Progress | null) {
+  function storeCanonicalServerProgress(book: Book, saved: Progress, attempted?: Progress | null, journal?: Progress | null) {
     const local = readProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, book.id);
     if (attempted !== undefined) {
-      const current = progressAfterSave(local, attempted, saved);
+      // A library replay may come from cache rather than the journal. Guard
+      // against changes to the journal it observed, while rebasing from the
+      // checkpoint actually sent.
+      const current = progressAfterSave(local, journal === undefined ? attempted : journal, saved);
       if (current !== saved) {
         const rebased = attempted ? rebasePendingProgress(current, attempted, saved) : current;
         if (rebased !== current) {
@@ -355,7 +358,12 @@ export function useProgressSync({
       }
     }
     acknowledgedServerPositionRef.current.set(book.id, saved.bookPositionSeconds);
-    const canonical = syncedProgress(saved, local?.localUpdatedAt);
+    // Acknowledging an older cache/legacy replay now must not hide listening
+    // recorded natively after that checkpoint's actual mutation time.
+    const acknowledgedCheckpoint = saved.accepted === true ? attempted ?? local : null;
+    const recordedAt = acknowledgedCheckpoint?.localUpdatedAt
+      ?? acknowledgedCheckpoint?.updatedAt ?? local?.localUpdatedAt;
+    const canonical = syncedProgress(saved, recordedAt);
     if (saved.accepted === false && local) {
       // Healing the durable position does not move an active/native engine.
       // Keep its rejected base across autosaves, background recovery and

@@ -1,5 +1,8 @@
 import type { Progress } from "./types";
 
+export type ProgressSaveResult = { attempted: Progress; saved: Progress };
+export type LibraryProgressReplay = (ProgressSaveResult & { acknowledgements: ProgressSaveResult[] }) | null;
+
 export type PendingSeek = { trackId: string; positionSeconds: number };
 export type QueuedProgressSave = {
   bookId: string;

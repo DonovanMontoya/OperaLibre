@@ -249,8 +249,14 @@ pub(crate) fn decide_progress_checkpoint(
         return ProgressDecision::Keep;
     }
     let mut update = checkpoint.update.clone();
-    update.updated_at_ms =
-        server_domain_timestamp_ms(update.updated_at_ms, checkpoint.sent_at_ms, now_millis);
+    // A matching server revision establishes ordering even when native
+    // listening was recorded long before an older local replay was uploaded.
+    // Legacy writes still need timestamp ordering; position guards apply to both.
+    update.updated_at_ms = if checkpoint.base_updated_at.is_some() {
+        None
+    } else {
+        server_domain_timestamp_ms(update.updated_at_ms, checkpoint.sent_at_ms, now_millis)
+    };
     decide_progress_write(book, track, previous, &update, now_millis)
 }
 

@@ -55,7 +55,8 @@ function fixture(saved: string | null = "playing", selected = "browsed") {
     setPlaybackBookId: (update: any) => { playback = update(playback); },
     setSelectedBookId: (update: any) => { selection = typeof update === "function" ? update(selection) : update; },
     setStartupViewReady: (value: boolean) => { ready = value; },
-    startupNavigationResolved: ref(false), startupViewReadyRef: ref(false), storeCanonicalServerProgress: noop
+    startupNavigationResolved: ref(false), startupViewReadyRef: ref(false), storeCanonicalServerProgress: noop,
+    libraryProgressReplaysRef: ref(new Map()), resumeReconciliationBookIdRef: ref(null)
   };
   const load = loadHook("useLibrary", {
     react, "./startup": startup, "./reliability": reliability, "./progressSeekIntent": {},
