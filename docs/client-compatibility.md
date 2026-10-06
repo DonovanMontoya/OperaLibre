@@ -7,7 +7,7 @@ title: Client compatibility
 
 OperaLibre provides an Audiobookshelf API subset at `/abs` and an OPDS 1.2 catalog at `/api/opds`. They are separate protocols. Compatibility with BookPlayer does not establish compatibility with every Audiobookshelf client.
 
-Clients using the [native progress API](api.md#playback-progress) should retain the server revision with offline checkpoints. A matching revision permits older recorded listening to sync; obsolete revisions are rejected. Clients that omit the revision continue to use timestamp ordering.
+Clients using the [native progress API](api.md#playback-progress) should retain the server revision with offline checkpoints. A matching revision permits older recorded listening to sync. Optional recording identifiers and sequence numbers let an updated app recover its own saves after a lost confirmation; another client's write still invalidates that recording. Clients that omit this metadata keep revision and timestamp ordering. This recovery requires both the updated app and server.
 
 ## BookPlayer
 

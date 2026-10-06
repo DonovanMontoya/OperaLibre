@@ -250,6 +250,7 @@ fn an_unmeasurable_book_does_not_report_its_position_as_zero() {
         ],
     );
     let stored = super::Progress {
+        recording: None,
         book_id: String::new(),
         track_id: "t2".to_string(),
         position_seconds: 1_800.0,
@@ -278,6 +279,7 @@ fn a_partial_duration_cannot_falsely_finish_a_book() {
         ],
     );
     let stored = super::Progress {
+        recording: None,
         book_id: String::new(),
         track_id: "t2".to_string(),
         position_seconds: 600.0,
@@ -324,6 +326,7 @@ fn unknown_durations_keep_each_track_at_a_distinct_whole_book_offset() {
 fn fuzz_accepted_progress_revisions_are_strictly_monotonic() {
     let mut state = 0x2545_f491_4f6c_dd1d_u64;
     let mut previous = super::Progress {
+        recording: None,
         book_id: String::new(),
         track_id: String::new(),
         position_seconds: 0.0,
@@ -468,6 +471,7 @@ fn shared_progress_skips_untouched_books_and_leads_with_finishers() {
     );
 
     let stored = |position: f64| super::Progress {
+        recording: None,
         book_id: "book".to_string(),
         track_id: "track".to_string(),
         position_seconds: position,
@@ -515,6 +519,7 @@ fn a_new_edition_inherits_the_finished_label_without_inheriting_a_position() {
     }))
     .unwrap();
     let old_progress = super::Progress {
+        recording: None,
         book_id: "old-edition".to_string(),
         track_id: "old-track".to_string(),
         position_seconds: 1000.0,
@@ -563,6 +568,7 @@ fn a_new_edition_inherits_the_finished_label_without_inheriting_a_position() {
     saved.insert(
         super::progress_key("reader", "book"),
         super::Progress {
+            recording: None,
             book_id: "book".to_string(),
             track_id: "new-track".to_string(),
             position_seconds: 0.0,
@@ -1118,6 +1124,7 @@ fn contained_file_open_rejects_post_scan_symlink_substitution() {
 #[test]
 fn activity_delta_ignores_seeks_and_caps_impossible_movement() {
     let previous = super::Progress {
+        recording: None,
         book_id: "book".to_string(),
         track_id: "track".to_string(),
         position_seconds: 100.0,
@@ -1147,6 +1154,7 @@ fn activity_delta_ignores_seeks_and_caps_impossible_movement() {
 #[test]
 fn restarting_a_finished_book_clears_the_completion_override() {
     let finished = super::Progress {
+        recording: None,
         book_id: "book".to_string(),
         track_id: "track".to_string(),
         position_seconds: 3_600.0,
@@ -1238,6 +1246,7 @@ fn reached_position_never_exceeds_the_books_real_length() {
         vec![track_with_duration("track", 0, Some(3_600.0))],
     );
     let progress = super::Progress {
+        recording: None,
         book_id: book.id.clone(),
         track_id: "track".to_string(),
         position_seconds: 3_600.0,
@@ -3791,6 +3800,7 @@ async fn faststart_library(
 #[cfg(unix)]
 fn saved_position(book_id: &str, track_id: &str, age_ms: u64) -> super::Progress {
     super::Progress {
+        recording: None,
         book_id: book_id.to_string(),
         track_id: track_id.to_string(),
         position_seconds: 1.5,
@@ -3960,6 +3970,7 @@ fn playback_completion_timezone_is_parsed() {
 
 fn stored_at(book_position_seconds: f64, age_ms: u64) -> super::Progress {
     super::Progress {
+        recording: None,
         book_id: "book".to_string(),
         track_id: "t1".to_string(),
         position_seconds: book_position_seconds,
@@ -4455,6 +4466,7 @@ async fn a_second_start_does_not_import_again() {
             "alice",
             "one",
             super::Progress {
+                recording: None,
                 book_id: "one".to_string(),
                 track_id: "t1".to_string(),
                 position_seconds: 400.0,
@@ -6500,6 +6512,7 @@ fn checkpoint_at(
     let mut update = decision_update(position);
     update.updated_at_ms = Some(recorded_at);
     super::ProgressCheckpoint {
+        recording: None,
         update,
         sent_at_ms: Some(sent_at),
         base_updated_at: base_updated_at.map(str::to_string),
@@ -6810,6 +6823,192 @@ fn a_current_revision_keeps_automatic_regression_and_reset_guards() {
             super::ProgressDecision::Keep
         ));
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn lost_confirmation_recovery_is_durable_and_cannot_cross_a_foreign_write() {
+    use tower::ServiceExt;
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let book = decision_book();
+    state.library.write().await.books.push(book.clone());
+    let auth = admin_user();
+    let app = super::Router::new()
+        .route(
+            "/books/{book_id}/progress",
+            super::put(super::update_progress),
+        )
+        .layer(super::Extension(auth.clone()))
+        .with_state(state.clone());
+    let now = super::unix_now_millis();
+    let mut initial = stored_at(100.0, 0);
+    initial.updated_at = (now - 7_200_000).to_string();
+    state
+        .progress
+        .set(&auth.id, &book.id, initial.clone())
+        .await
+        .unwrap();
+    let base = initial.updated_at;
+    let mut revision = base.clone();
+    let own_id = "11111111111111111111111111111111";
+    let foreign_id = "22222222222222222222222222222222";
+    for (index, (track, position, sequence, id, seek, accepted)) in [
+        (0, 160.0, 1, Some(own_id), false, true),
+        (0, 160.0, 1, Some(own_id), false, true),
+        (1, 240.0, 2, Some(own_id), false, true),
+        (1, 300.0, 1, Some(own_id), false, false),
+        (0, 160.0, 1, Some(foreign_id), true, true),
+        (1, 300.0, 3, Some(own_id), false, false),
+        (0, 240.0, 0, None, false, true),
+        (1, 300.0, 4, Some(own_id), false, false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let payload = serde_json::json!({
+            "trackId": book.tracks[track].id,
+            "positionSeconds": position,
+            "updatedAtMs": now - 3_600_000,
+            "sentAtMs": now,
+            "baseUpdatedAt": if seek || id.is_none() { &revision } else { &base },
+            "intentionalSeek": seek,
+            "intentionalRegression": seek,
+            "recording": id.map(|id| serde_json::json!({"id": id, "sequence": sequence}))
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                super::Request::builder()
+                    .method(super::Method::PUT)
+                    .uri(format!("/books/{}/progress", book.id))
+                    .header(super::CONTENT_TYPE, "application/json")
+                    .body(super::Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), super::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["accepted"], accepted, "step {index}: {value}");
+        if index == 1 || !accepted {
+            assert_eq!(
+                value["updatedAt"], revision,
+                "retry or rejection must not advance the revision"
+            );
+        }
+        revision = value["updatedAt"].as_str().unwrap().to_string();
+        if index == 0 {
+            // Reopen the database after discarding the first confirmation.
+            let reopened = super::ProgressStore::new(
+                super::Database::open(&root.path().join("data/operalibre.db")).unwrap(),
+            );
+            let stored = reopened.get(&auth.id, &book.id).await.unwrap().unwrap();
+            assert_eq!(stored.recording.unwrap().id, own_id);
+        }
+        if index == 2 {
+            assert_eq!(value["bookPositionSeconds"], 840.0);
+        }
+        if index == 5 {
+            assert_eq!(value["bookPositionSeconds"], 160.0);
+        }
+        if index == 7 {
+            assert_eq!(value["bookPositionSeconds"], 240.0);
+        }
+    }
+}
+
+#[test]
+fn progress_recording_schema_upgrade_preserves_existing_positions() {
+    for half_applied in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("operalibre.db");
+        {
+            let connection = super::db::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "INSERT INTO progress
+                (user_id, book_id, track_id, position_seconds, book_position_seconds, updated_at)
+                VALUES ('reader', 'book', 'track', 1800, 1800, '1790769600000');
+                UPDATE schema_version SET version = 3;",
+                )
+                .unwrap();
+            if !half_applied {
+                connection
+                    .execute_batch("ALTER TABLE progress DROP COLUMN recording;")
+                    .unwrap();
+            }
+        }
+        for _ in 0..2 {
+            let connection = super::db::open(&path).unwrap();
+            let progress = connection
+                .query_row("SELECT * FROM progress", [], |row| {
+                    super::progress_from_row(row, "book".to_string())
+                })
+                .unwrap();
+            assert_eq!(progress.book_position_seconds, 1800.0);
+            assert_eq!(progress.updated_at, "1790769600000");
+            assert_eq!(progress.recording, None);
+        }
+    }
+}
+
+#[test]
+fn recording_continuations_keep_position_guards_and_order_intentional_seeks() {
+    let book = decision_book();
+    let now = 1_750_000_000_000;
+    let mut previous = stored_at(500.0, 0);
+    previous.updated_at = now.to_string();
+    let recording = super::ProgressRecording {
+        id: "11111111111111111111111111111111".to_string(),
+        sequence: 2,
+    };
+    previous.recording = Some(recording.clone());
+    for position in [0.0, 400.0] {
+        let mut checkpoint = checkpoint_at(position, now - 3_600_000, now, Some("old-base"));
+        checkpoint.recording = Some(super::ProgressRecording {
+            sequence: 3,
+            ..recording.clone()
+        });
+        assert!(matches!(
+            super::decide_progress_checkpoint(
+                &book,
+                &book.tracks[0],
+                Some(&previous),
+                &checkpoint,
+                now
+            ),
+            super::ProgressDecision::Keep
+        ));
+    }
+    let mut seek = checkpoint_at(160.0, now - 3_600_000, now, Some("old-base"));
+    seek.recording = Some(super::ProgressRecording {
+        sequence: 3,
+        ..recording.clone()
+    });
+    seek.update.intentional_seek = true;
+    seek.update.intentional_regression = true;
+    let rewound = match super::decide_progress_checkpoint(
+        &book,
+        &book.tracks[0],
+        Some(&previous),
+        &seek,
+        now,
+    ) {
+        super::ProgressDecision::Store { saved, .. } => saved,
+        super::ProgressDecision::Keep => {
+            panic!("an ordered local seek must survive its earlier lost acknowledgment")
+        }
+    };
+    let mut stale = checkpoint_at(550.0, now, now, Some(&rewound.updated_at));
+    stale.recording = Some(recording);
+    assert!(matches!(
+        super::decide_progress_checkpoint(&book, &book.tracks[0], Some(&rewound), &stale, now),
+        super::ProgressDecision::Keep
+    ));
 }
 
 #[test]

@@ -206,7 +206,12 @@ async fn restore_server_backup(
     let database_path = state.database_path.clone();
     let restored_data = backup.data.clone();
     let snapshot = tokio::task::spawn_blocking(move || {
-        restore_database(&database_path, &restored_data, &retained_sessions)
+        restore_database(
+            &database_path,
+            &restored_data,
+            &retained_sessions,
+            RestoreMode::DeliberateRestore,
+        )
     })
     .await
     .map_err(|error| ApiError::internal(format!("Backup restore task failed: {error}")))?
@@ -220,7 +225,12 @@ async fn restore_server_backup(
         // Rolling back puts the sessions that were live a moment ago back.
         let rollback = tokio::task::spawn_blocking(move || {
             let sessions = rollback_data.sessions.clone();
-            restore_database(&database_path, &rollback_data, &sessions)
+            restore_database(
+                &database_path,
+                &rollback_data,
+                &sessions,
+                RestoreMode::AutomaticRollback,
+            )
         })
         .await;
         return match rollback {
@@ -358,17 +368,7 @@ fn read_database(path: &FsPath) -> anyhow::Result<BackupData> {
             Ok(BackupProgress {
                 user_id,
                 book_id: book_id.clone(),
-                progress: Progress {
-                    book_id,
-                    track_id: row.get("track_id")?,
-                    position_seconds: row.get("position_seconds")?,
-                    book_position_seconds: row.get("book_position_seconds")?,
-                    duration_seconds: row.get("duration_seconds")?,
-                    updated_at: row.get("updated_at")?,
-                    finished_override: row
-                        .get::<_, Option<i64>>("finished_override")?
-                        .map(|value| value != 0),
-                },
+                progress: progress_from_row(row, book_id)?,
             })
         })?;
         progress.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
@@ -432,12 +432,18 @@ fn read_database(path: &FsPath) -> anyhow::Result<BackupData> {
     })
 }
 
+enum RestoreMode {
+    DeliberateRestore,
+    AutomaticRollback,
+}
+
 /// Replace the database's contents with `data`, keeping only `sessions` —
 /// which the caller chooses, so the ones in a backup file stay in the file.
 fn restore_database(
     path: &FsPath,
     data: &BackupData,
     sessions: &HashMap<String, Session>,
+    mode: RestoreMode,
 ) -> anyhow::Result<CachedSnapshot> {
     let mut connection = db::open_existing(path)?;
     let transaction = connection.transaction()?;
@@ -458,11 +464,23 @@ fn restore_database(
         if row.progress.book_id != row.book_id {
             anyhow::bail!("a progress record has mismatched book IDs");
         }
+        // A deliberate restore ends the live recording lineage. Its archived
+        // receipt must not authorize an old client's continuation afterward.
+        // Automatic rollback must put the original receipt back unchanged.
+        let recording = match mode {
+            RestoreMode::DeliberateRestore => None,
+            RestoreMode::AutomaticRollback => row
+                .progress
+                .recording
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
+        };
         transaction.execute(
             "INSERT INTO progress (
                 user_id, book_id, track_id, position_seconds,
-                book_position_seconds, duration_seconds, updated_at, finished_override
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                book_position_seconds, duration_seconds, updated_at, finished_override, recording
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 row.user_id,
                 row.book_id,
@@ -472,6 +490,7 @@ fn restore_database(
                 row.progress.duration_seconds,
                 row.progress.updated_at,
                 row.progress.finished_override.map(i64::from),
+                recording,
             ],
         )?;
     }
