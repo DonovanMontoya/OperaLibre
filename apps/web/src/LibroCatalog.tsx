@@ -205,7 +205,7 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
     {account?.connected ? <>
       {filterEmail === undefined && accounts.length > 1 ? <label className="libro-account-filter">Account<select aria-label="Libro.fm account" value={accountFilter} onChange={event => setAccountFilter(event.target.value)}><option value="all">All Libro.fm accounts</option>{accounts.map(item => <option key={item.email} value={item.email}>{item.nickname || item.email}</option>)}</select></label> : null}
       {searchQuery === undefined ? <label className="libro-catalog-search"><Search size={15} /><input type="search" aria-label="Search Libro.fm purchases" placeholder="Search your purchases…" value={query} onChange={event => setQuery(event.target.value)} /></label> : null}
-      {viewMode === undefined || loadingLibrary ? <div className="libro-view-toolbar">
+      {mode !== "catalog" || loadingLibrary ? <div className="libro-view-toolbar">
         <p className="libro-catalog-summary" role="status">{loadingLibrary ? "Loading your Libro.fm library…" : `${books.length} of ${account.books.length} purchases`}</p>
         {viewMode === undefined ? <div className="libro-view-toggle" role="group" aria-label="Purchase layout">
           <button type="button" aria-label="Cover grid" aria-pressed={view === "grid"} onClick={() => setView("grid")}><LayoutGrid size={18} /></button>

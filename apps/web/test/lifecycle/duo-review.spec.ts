@@ -409,6 +409,7 @@ test('web readers can connect Libro.fm without native Settings', async ({ page }
   await page.getByRole('button', { name: 'Connect Libro.fm', exact: true }).press('Enter');
   await page.getByRole('button', { name: 'Close Libro.fm management' }).press('Enter');
   await expect(page.getByRole('button', { name: 'Manage Libro.fm', exact: true })).toBeVisible();
+  await expect(page.getByText('0 of 0 purchases', { exact: true })).toBeVisible();
   expect(writes).toContain('/api/me/libro');
 });
 
@@ -531,6 +532,7 @@ test('native Get books keeps a way to each connected store\'s Settings', async (
   const audible = page.getByRole('button', { name: 'Audible accounts & settings', exact: true });
   await expect(libro).toBeVisible();
   await expect(audible).toBeVisible();
+  await expect(page.getByText('0 of 0 purchases', { exact: true })).toHaveCount(0);
   const [libroBox, audibleBox] = [(await libro.boundingBox())!, (await audible.boundingBox())!];
   expect(Math.abs(libroBox.x + libroBox.width - audibleBox.x - audibleBox.width)).toBeLessThan(1);
   const heading = (await page.getByRole('heading', { name: 'Libro.fm', exact: true }).boundingBox())!;
