@@ -188,6 +188,10 @@ async fn checkpoint_fingerprint(
     runtime: &SyncAddonRuntime,
 ) -> anyhow::Result<String> {
     let mut hash = Sha256::new();
+    // Server alignment code and its settings can change without recommending
+    // regeneration of finished maps. Be conservative when mixing saved sections.
+    hash.update(include_str!("sync.rs"));
+    hash.update(include_str!("alignment.rs"));
     hash.update(format!(
         "{}:{:?}:{:?}:{:?}",
         alignment::MAPPING_REVISION,
@@ -199,6 +203,14 @@ async fn checkpoint_fingerprint(
     for path in std::iter::once(epub)
         .chain(tracks.iter().map(|track| track.path.as_path()))
         .chain(std::iter::once(runtime.cli_path.as_path()))
+        .chain(
+            runtime
+                .cli_args
+                .iter()
+                .map(FsPath::new)
+                .filter(|path| path.is_file()),
+        )
+        .chain(runtime.ffmpeg_path.as_deref())
     {
         let metadata = fs::metadata(path).await?;
         hash.update(format!(
@@ -619,6 +631,14 @@ pub(crate) async fn enqueue_sync_batch(
             if let Err(error) =
                 enqueue_sync_map_inner(state.clone(), book_id, Some(job_id.clone()), true).await
             {
+                if error.status == StatusCode::CONFLICT {
+                    // An update can pause dispatch after the batch was accepted.
+                    // Keep these jobs recoverable until the handoff saves the queue.
+                    if let Some(job) = state.jobs.write().await.get_mut(&job_id) {
+                        job.resume_pending = job.status == "queued";
+                    }
+                    continue;
+                }
                 update_job_finished(&state, &job_id, "failed", None, Some(error.message)).await;
             }
         }
@@ -2428,6 +2448,48 @@ pub(crate) fn find_alignment_cli_on_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn checkpoint_rejects_changed_runtime_components_at_the_same_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let epub = root.path().join("book.epub");
+        let cli = root.path().join("python");
+        let script = root.path().join("align.py");
+        let ffmpeg = root.path().join("ffmpeg");
+        for path in [&epub, &cli, &script, &ffmpeg] {
+            fs::write(path, b"original").await.unwrap();
+        }
+        let runtime = SyncAddonRuntime {
+            cli_path: cli,
+            cli_args: vec![script.to_string_lossy().into_owned(), "--fixture".into()],
+            ffmpeg_path: Some(ffmpeg.clone()),
+        };
+        let original = checkpoint_fingerprint(&epub, &[], &[], &runtime)
+            .await
+            .unwrap();
+        assert_eq!(
+            checkpoint_fingerprint(&epub, &[], &[], &runtime)
+                .await
+                .unwrap(),
+            original
+        );
+        fs::write(&script, b"updated alignment script")
+            .await
+            .unwrap();
+        let changed_script = checkpoint_fingerprint(&epub, &[], &[], &runtime)
+            .await
+            .unwrap();
+        assert_ne!(changed_script, original);
+        fs::write(&ffmpeg, b"updated audio slicing binary")
+            .await
+            .unwrap();
+        assert_ne!(
+            checkpoint_fingerprint(&epub, &[], &[], &runtime)
+                .await
+                .unwrap(),
+            changed_script
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn paused_generation_restores_completed_tracks_after_restart() {
