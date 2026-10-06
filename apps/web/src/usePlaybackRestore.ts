@@ -18,7 +18,7 @@ import { nativeAudioRecoveryScope } from "./appStorage";
 import { getCachedProgress } from "./offline";
 import { getDeviceBooks, getDeviceProgress } from "./localLibrary";
 import { getProgress, getServerStorageKey, saveProgress } from "./api";
-import type { PendingSeek } from "./playbackTypes";
+import type { LibraryProgressReplay, PendingSeek } from "./playbackTypes";
 import { acknowledgeProgressSeekIntent, progressSeekStorage, progressSeekOptions, readProgressSeekIntent } from "./progressSeekIntent";
 
 // The restore effect's own /progress reads; local copies cover the wait.
@@ -60,7 +60,7 @@ export function usePlaybackRestore({
 }: {
   acknowledgedServerPositionRef: RefObject<Map<string, number>>;
   currentUser: AuthUser;
-  libraryProgressReplaysRef: RefObject<Map<string, Promise<void>>>;
+  libraryProgressReplaysRef: RefObject<Map<string, Promise<LibraryProgressReplay>>>;
   explicitSessionStartBookIdRef: RefObject<string | null>;
   nativeAudio: boolean;
   overruledSaveRef: RefObject<Map<string, Progress>>;
@@ -235,21 +235,21 @@ export function usePlaybackRestore({
       // flight finish before uploading it. Only an accepted save from this
       // local baseline can advance the recovery checkpoint's revision.
       if (libraryReplay) {
-        await libraryReplay.catch(() => undefined);
+        const replayed = await libraryReplay.catch(() => null);
         if (cancelled || playbackActionVersionRef.current !== restoreActionVersion) return;
-        const acknowledgedReplay = readProgressCheckpoint(
-          window.localStorage, getServerStorageKey(), currentUser.id, playbackBook.id
-        );
-        if (freshestLocal && previousLocal && acknowledgedReplay) {
-          // Unmarked journals did not carry a base; native recovery used the
-          // listed server revision instead, never the journal's device time.
-          const replayBaseline = previousLocal.syncStatus ? previousLocal : {
-            ...previousLocal, baseUpdatedAt: serverRevisionFromSummary(playbackBook.progress)
-          };
-          const rebased = rebasePendingProgress(freshestLocal, replayBaseline, acknowledgedReplay);
+        if (freshestLocal && replayed) {
+          const rebased = rebasePendingProgress(freshestLocal, replayed.attempted, replayed.saved);
           if (rebased !== freshestLocal) {
             freshestLocal = rebased;
-            checkpoint = acknowledgedReplay;
+            const acknowledgedReplay = readProgressCheckpoint(
+              window.localStorage, getServerStorageKey(), currentUser.id, playbackBook.id
+            );
+            // Advance the captured journal only when it holds this response;
+            // a concurrent local edit must still win the later save.
+            if (acknowledgedReplay?.syncStatus === "synced"
+              && acknowledgedReplay.updatedAt === replayed.saved.updatedAt) {
+              checkpoint = acknowledgedReplay;
+            }
           }
         }
       }
