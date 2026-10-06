@@ -199,8 +199,8 @@ export function useLibrary({
       void Promise.all(nextBooks.map((book) => {
         if (book.source !== "server" || resumeReconciliationBookIdRef.current === book.id) return;
         const previousReplay = libraryProgressReplaysRef.current.get(book.id);
-        const replay = (async (): Promise<LibraryProgressReplay> => {
-          const previousResult = await previousReplay?.catch(() => null) ?? null;
+        const replay = (previousReplay ?? Promise.resolve(null)).catch(() => null)
+          .then(async (previousResult): Promise<LibraryProgressReplay> => {
           if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
           const deviceProgress = book.deviceBookId ? getDeviceProgress(book.deviceBookId) : null;
           const deviceBook = book.deviceBookId
@@ -267,7 +267,9 @@ export function useLibrary({
             { isPaused: true, ...seekOptions }
           ).catch(() => null);
           if (!saved) return previousResult;
-          if (isCurrentRequest()) {
+          // A superseding shelf fetch may not have registered a successor yet.
+          // Persist the receipt while this replay still owns the book's slot.
+          if (isCurrentRequest() || libraryProgressReplaysRef.current.get(book.id) === replay) {
             if (seekOptions.intentionalSeek) {
               acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
             }
@@ -277,7 +279,7 @@ export function useLibrary({
           // journal copy prevents its acknowledgement from being persisted.
           return { attempted, saved,
             acknowledgements: [...previousResult?.acknowledgements ?? [], { attempted, saved }] };
-        })();
+        });
         libraryProgressReplaysRef.current.set(book.id, replay);
         return replay.finally(() => {
           if (libraryProgressReplaysRef.current.get(book.id) === replay) {

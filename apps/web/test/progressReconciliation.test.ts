@@ -977,6 +977,75 @@ for (const restoreFirst of [false, true]) {
   });
 }
 
+for (const refresh of ["slow", "failed", "cancelled restore"] as const) {
+  test(`an accepted replay keeps its revision through a ${refresh} refresh without a successor replay`, async () => {
+    const f = fixture();
+    f.write(f.local);
+    f.options.nativeAudio = refresh !== "cancelled restore";
+    f.dependencies["./nativeAudio"].getNativeAudioRecovery = async () => ({
+      trackId: "track", positionSeconds: 1800, bookPositionSeconds: 1800, durationSeconds: 7200,
+      updatedAt: Date.parse("2026-09-30T12:05:00Z")
+    });
+    const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+    f.options.storeCanonicalServerProgress = sync.storeCanonicalServerProgress;
+    let server = f.server;
+    let releaseReplay!: () => void;
+    const pending = new Promise<void>(resolve => { releaseReplay = resolve; });
+    let replayStarted!: () => void;
+    const started = new Promise<void>(resolve => { replayStarted = resolve; });
+    let releaseShelf!: () => void;
+    const pendingShelf = new Promise<void>(resolve => { releaseShelf = resolve; });
+    let shelfStarted!: () => void;
+    const fetchingShelf = new Promise<void>(resolve => { shelfStarted = resolve; });
+    let loads = 0;
+    f.dependencies["./api"].getBooks = async () => {
+      if (++loads === 2) {
+        shelfStarted();
+        if (refresh === "failed") throw new Error("offline");
+        if (refresh === "slow") await pendingShelf;
+      }
+      return [{ ...f.book, progress: { ...server, status: "inProgress" } }];
+    };
+    f.dependencies["./api"].getProgress = async () => server;
+    f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+      f.writes.push({ progress, options });
+      if (f.writes.length === 1) { replayStarted(); await pending; }
+      if (progress.baseUpdatedAt !== server.updatedAt) return { ...server, accepted: false };
+      server = { ...server, ...progress, updatedAt: String(Number(server.updatedAt) + 1), accepted: true };
+      return server;
+    };
+    const library = loadHook("useLibrary", f.dependencies)(f.options);
+    await library.loadBooks();
+    await started;
+    const replay = f.options.libraryProgressReplaysRef.current.get("book");
+    const restoring = refresh === "cancelled restore" ? f.restore() : null;
+    const refreshed = library.loadBooks();
+    await fetchingShelf;
+    if (refresh !== "slow") await refreshed;
+    if (restoring) f.options.playbackActionVersionRef.current += 1;
+    releaseReplay();
+    await replay;
+    await restoring;
+    assert.equal(f.checkpoint().baseUpdatedAt, server.updatedAt);
+    assert.equal(f.checkpoint().syncStatus, "synced");
+    assert.equal(f.options.libraryProgressReplaysRef.current.size, 0);
+    releaseShelf();
+    await refreshed;
+    if (restoring) {
+      f.write(reliability.pendingProgress({ ...f.local, positionSeconds: 1500,
+        bookPositionSeconds: 1500, updatedAt: "2026-09-30T12:10:00Z" }, f.checkpoint()));
+      await library.loadBooks();
+      await new Promise(resolve => setImmediate(resolve));
+      await f.options.libraryProgressReplaysRef.current.get("book");
+    } else {
+      await f.restore();
+      assert.equal(f.seeks.at(-1)!.positionSeconds, 1800);
+    }
+    assert.equal(server.bookPositionSeconds, restoring ? 1500 : 1800);
+    assert.equal(f.writes.length, 2, "the accepted older checkpoint must not be replayed again");
+  });
+}
+
 for (const cacheReplay of [false, true]) {
   for (const editDuringReplay of [false, true]) {
     test(`settled library replays retain their accepted baseline from ${cacheReplay ? "cache" : "journal"} ${editDuringReplay ? "with a later local edit" : "before opening the book"}`, async () => {
