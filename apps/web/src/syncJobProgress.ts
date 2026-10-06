@@ -15,7 +15,7 @@ export function describeSyncJob({
   // the poll above keeps following it either way.
   const syncJobForBook =
     syncJob && selectedBook && syncJob.targetId === selectedBook.id ? syncJob : null;
-  const syncJobRunning = !!syncJobForBook && ["queued", "running"].includes(syncJobForBook.status);
+  const syncJobRunning = !!syncJobForBook && ["queued", "running", "paused"].includes(syncJobForBook.status);
   const syncProgressPercent = (() => {
     const fraction = syncJobForBook?.progress?.fraction;
     return typeof fraction === "number" && Number.isFinite(fraction)
@@ -50,7 +50,9 @@ export function describeSyncJob({
       ? `${formatDurationLabel(syncElapsedSeconds)} so far`
       : null,
     syncRemainingLabel ? `about ${syncRemainingLabel} left` : null,
-    "keeps running if you close the reader"
+    syncJobForBook?.status === "paused" ? "paused; resume in Administration → Experiments"
+      : syncJobForBook?.pauseRequested ? "pauses after the current chapter or track"
+      : "keeps running if you close the reader"
   ]
     .filter(Boolean)
     .join(" · ");

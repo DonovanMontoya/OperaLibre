@@ -98,3 +98,21 @@ test("a settled job stops counting, so time alone never forces a redraw", () => 
   const done = job({ status: "completed", finishedAt: "5000" });
   assert.equal(syncFeedChanged({ jobs: [done], now: 100_000 }, [done], 9_000_000), false);
 });
+
+
+test("saved queue order overrides creation time and paused books follow the queue", () => {
+  const jobs = sortSyncJobs([
+    { id: "first", status: "queued", startedAt: "100", queuePosition: 2 },
+    { id: "second", status: "queued", startedAt: "200", queuePosition: 1 },
+    { id: "paused", status: "paused", startedAt: "50" },
+    { id: "done", status: "completed", startedAt: "400" },
+  ]);
+  assert.deepEqual(jobs.map((job) => job.id), ["second", "first", "paused", "done"]);
+});
+
+test("the feed notices pause intent and queue order changes", () => {
+  const previous = { jobs: [job()], now: 1000 };
+  assert.equal(syncFeedChanged(previous, [job({ pauseRequested: true })], 1000), true);
+  assert.equal(syncFeedChanged(previous, [job({ queuePosition: 2 })], 1000), true);
+  assert.equal(syncJobPollDelay([{ status: "paused" }]), IDLE_SYNC_POLL_MS);
+});

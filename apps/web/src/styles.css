@@ -18926,3 +18926,11 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf.library-book-open .book-heading .heading-actions > :last-child:nth-child(odd),
   html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf.library-book-open .book-heading .heading-actions .download-status { grid-column: 1 / -1; }
+
+.admin-sync-job-controls { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.admin-sync-monitor .admin-sync-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 30px; min-height: 30px; height: 30px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--ink-faded); cursor: pointer; }
+.admin-sync-monitor .admin-sync-icon-button:hover:not(:disabled) { background: var(--sync-live-bg); color: var(--sync-live); }
+.admin-sync-monitor .admin-sync-icon-button:disabled { opacity: 0.35; cursor: default; }
+.admin-sync-monitor .admin-sync-icon-button:focus-visible { outline: 2px solid var(--sync-live); outline-offset: 2px; }
+
+.admin-sync-monitor .admin-sync-icon-button svg { flex-shrink: 0; }

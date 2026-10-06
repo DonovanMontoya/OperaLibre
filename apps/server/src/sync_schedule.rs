@@ -256,10 +256,10 @@ pub(crate) async fn schedule(
     if state.jobs.read().await.values().any(|job| {
         job.kind == "sync-generate"
             && job.target_id.as_ref() == Some(&book_id)
-            && matches!(job.status.as_str(), "queued" | "running")
+            && matches!(job.status.as_str(), "queued" | "running" | "paused")
     }) {
         return Err(ApiError::conflict(
-            "This book is already queued or syncing.",
+            "This book is already queued, syncing, or paused.",
         ));
     }
     let mut entries = load(&state).await?;
@@ -287,7 +287,7 @@ pub(crate) async fn cancel(
     let active = state.jobs.read().await.values().any(|job| {
         job.kind == "sync-generate"
             && job.target_id.as_ref() == Some(&book_id)
-            && is_active_job(job)
+            && (is_active_job(job) || job.status == "paused")
     });
     if entries.iter().any(|entry| {
         entry.book_id == book_id
@@ -387,7 +387,7 @@ async fn run_sweep(state: &AppState, limit: usize) -> SweepRun {
         let busy = state.jobs.read().await.values().any(|job| {
             job.kind == "sync-generate"
                 && job.target_id.as_ref() == Some(&book_id)
-                && matches!(job.status.as_str(), "queued" | "running")
+                && matches!(job.status.as_str(), "queued" | "running" | "paused")
         });
         if busy {
             skipped += 1;
