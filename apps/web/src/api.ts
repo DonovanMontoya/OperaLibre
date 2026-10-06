@@ -1111,11 +1111,10 @@ export async function saveProgress(bookId: string, progress: ProgressWrite, opti
 }
 
 async function saveOperaLibreProgress(bookId: string, progress: ProgressWrite, options?: ProgressWriteOptions) {
-  // The server keeps the copy with the newest client timestamp; sending it
-  // lets a replayed offline checkpoint be rejected instead of rolling back
-  // progress another device saved more recently. intentionalRegression marks
-  // a deliberate backwards jump (restart, rewind) — without it the server
-  // refuses near-zero writes that would erase substantial progress.
+  // The server uses the observed revision to reject obsolete checkpoints;
+  // legacy writes without a revision retain timestamp ordering.
+  // intentionalRegression marks a deliberate restart or rewind, allowing
+  // near-zero writes that would otherwise erase substantial progress.
   const { updatedAt, trackId, positionSeconds, bookPositionSeconds, durationSeconds, baseUpdatedAt } = progress;
   return request<Progress>(`/api/books/${encodeURIComponent(bookId)}/progress`, {
     method: "PUT",

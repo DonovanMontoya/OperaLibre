@@ -7,6 +7,8 @@ title: Client compatibility
 
 OperaLibre provides an Audiobookshelf API subset at `/abs` and an OPDS 1.2 catalog at `/api/opds`. They are separate protocols. Compatibility with BookPlayer does not establish compatibility with every Audiobookshelf client.
 
+Clients using the [native progress API](api.md#playback-progress) should retain the server revision with offline checkpoints. A matching revision permits older recorded listening to sync; obsolete revisions are rejected. Clients that omit the revision continue to use timestamp ordering.
+
 ## BookPlayer
 
 Choose **Audiobookshelf** in BookPlayer, use `https://your-server/abs`, and sign in with your OperaLibre username and password. A reverse proxy must forward `/abs/` to the server. BookPlayer's inspected source has Audiobookshelf and Jellyfin integrations but no OPDS implementation.
