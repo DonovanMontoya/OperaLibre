@@ -355,7 +355,12 @@ export function useProgressSync({
       }
     }
     acknowledgedServerPositionRef.current.set(book.id, saved.bookPositionSeconds);
-    const canonical = syncedProgress(saved, local?.localUpdatedAt);
+    // Acknowledging an older cache/legacy replay now must not hide listening
+    // recorded natively after that checkpoint's actual mutation time.
+    const acknowledgedCheckpoint = saved.accepted === true ? attempted ?? local : null;
+    const recordedAt = local?.localUpdatedAt
+      ?? acknowledgedCheckpoint?.localUpdatedAt ?? acknowledgedCheckpoint?.updatedAt;
+    const canonical = syncedProgress(saved, recordedAt);
     if (saved.accepted === false && local) {
       // Healing the durable position does not move an active/native engine.
       // Keep its rejected base across autosaves, background recovery and

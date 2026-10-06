@@ -31,6 +31,7 @@ export function useLibrary({
   currentUser,
   initialLibraryHydrated,
   isOperaLibre,
+  libraryProgressReplaysRef,
   libraryRequestGenerationRef,
   libraryRetryTimerRef,
   loadBooksRef,
@@ -39,6 +40,7 @@ export function useLibrary({
   nativeAudioRef,
   nativePlaybackPlayingRef,
   reconcileServerBookGains,
+  resumeReconciliationBookIdRef,
   setBooks,
   setError,
   setIsLoading,
@@ -58,6 +60,7 @@ export function useLibrary({
   currentUser: AuthUser;
   initialLibraryHydrated: RefObject<boolean>;
   isOperaLibre: boolean;
+  libraryProgressReplaysRef: RefObject<Map<string, Promise<void>>>;
   libraryRequestGenerationRef: RefObject<number>;
   libraryRetryTimerRef: RefObject<number | null>;
   loadBooksRef: RefObject<() => Promise<void>>;
@@ -66,6 +69,7 @@ export function useLibrary({
   nativeAudioRef: RefObject<boolean>;
   nativePlaybackPlayingRef: RefObject<boolean>;
   reconcileServerBookGains: (payload: readonly Book[]) => void;
+  resumeReconciliationBookIdRef: RefObject<string | null>;
   setBooks: Dispatch<SetStateAction<Book[]>>;
   setError: Dispatch<SetStateAction<string | null>>;
   setIsLoading: Dispatch<SetStateAction<boolean>>;
@@ -185,60 +189,73 @@ export function useLibrary({
       // Reconcile every durable local copy, not only imported device media.
       // This brings progress recorded while offline back to the server even if
       // the user opens a different book after reconnecting.
-      void Promise.all(nextBooks.map(async (book) => {
-        if (book.source !== "server") return;
-        const deviceProgress = book.deviceBookId ? getDeviceProgress(book.deviceBookId) : null;
-        const deviceBook = book.deviceBookId
-          ? deviceBooks.find((candidate) => candidate.id === book.deviceBookId)
-          : null;
-        const deviceTrackIndex = deviceBook?.tracks.findIndex(
-          (track) => track.id === deviceProgress?.trackId
-        ) ?? -1;
-        const mappedDevice = deviceProgress && deviceTrackIndex >= 0 && book.tracks[deviceTrackIndex]
-          ? {
-              ...deviceProgress,
-              bookId: book.id,
-              trackId: book.tracks[deviceTrackIndex].id
+      // Restore owns its book's newer native/cache checkpoint. An earlier
+      // replay is tracked so restore can use its acknowledged revision.
+      void Promise.all(nextBooks.map((book) => {
+        if (book.source !== "server" || resumeReconciliationBookIdRef.current === book.id) return;
+        const previousReplay = libraryProgressReplaysRef.current.get(book.id);
+        const replay = (async () => {
+          await previousReplay;
+          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return;
+          const deviceProgress = book.deviceBookId ? getDeviceProgress(book.deviceBookId) : null;
+          const deviceBook = book.deviceBookId
+            ? deviceBooks.find((candidate) => candidate.id === book.deviceBookId)
+            : null;
+          const deviceTrackIndex = deviceBook?.tracks.findIndex(
+            (track) => track.id === deviceProgress?.trackId
+          ) ?? -1;
+          const mappedDevice = deviceProgress && deviceTrackIndex >= 0 && book.tracks[deviceTrackIndex]
+            ? {
+                ...deviceProgress,
+                bookId: book.id,
+                trackId: book.tracks[deviceTrackIndex].id
+              }
+            : null;
+          const checkpoint = readProgressCheckpoint(
+            window.localStorage,
+            getServerStorageKey(),
+            currentUser.id,
+            book.id
+          );
+          const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
+          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return;
+          const local = freshestProgress(mappedDevice, checkpoint, cached);
+          const serverBook = serverBooks.find((candidate) => candidate.id === book.id);
+          const seekIntent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id);
+          if (
+            !local || !progressNeedsSync(local, serverBook?.progress)
+          ) {
+            if (local && serverBook?.progress && progressSeekOptions(seekIntent, local, serverBook.progress.bookPositionSeconds).intentionalSeek) {
+              acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
             }
-          : null;
-        const checkpoint = readProgressCheckpoint(
-          window.localStorage,
-          getServerStorageKey(),
-          currentUser.id,
-          book.id
-        );
-        const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
-        if (!isCurrentRequest()) return;
-        const local = freshestProgress(mappedDevice, checkpoint, cached);
-        const serverBook = serverBooks.find((candidate) => candidate.id === book.id);
-        const seekIntent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id);
-        if (
-          !local || !progressNeedsSync(local, serverBook?.progress)
-        ) {
-          if (local && serverBook?.progress && progressSeekOptions(seekIntent, local, serverBook.progress.bookPositionSeconds).intentionalSeek) {
+            return;
+          }
+          const location = resolveProgressLocation(book.tracks, local);
+          if (!location) return;
+          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return;
+          const attempted: Progress = {
+            ...local,
+            trackId: location.trackId,
+            positionSeconds: location.positionSeconds
+          };
+          const seekOptions = progressSeekOptions(seekIntent, attempted, serverBook?.progress?.bookPositionSeconds);
+          const saved = await saveProgress(
+            book.id,
+            attempted,
+            { isPaused: true, ...seekOptions }
+          ).catch(() => null);
+          if (!saved || !isCurrentRequest()) return;
+          if (seekOptions.intentionalSeek) {
             acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
           }
-          return;
-        }
-        const location = resolveProgressLocation(book.tracks, local);
-        if (!location) return;
-        if (!isCurrentRequest()) return;
-        const attempted: Progress = {
-          ...local,
-          trackId: location.trackId,
-          positionSeconds: location.positionSeconds
-        };
-        const seekOptions = progressSeekOptions(seekIntent, attempted, serverBook?.progress?.bookPositionSeconds);
-        const saved = await saveProgress(
-          book.id,
-          attempted,
-          { isPaused: true, ...seekOptions }
-        ).catch(() => null);
-        if (!saved || !isCurrentRequest()) return;
-        if (seekOptions.intentionalSeek) {
-          acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
-        }
-        storeCanonicalServerProgress(book, saved, attempted);
+          storeCanonicalServerProgress(book, saved, attempted);
+        })();
+        libraryProgressReplaysRef.current.set(book.id, replay);
+        return replay.finally(() => {
+          if (libraryProgressReplaysRef.current.get(book.id) === replay) {
+            libraryProgressReplaysRef.current.delete(book.id);
+          }
+        });
       })).catch(() => undefined);
       if (!isCurrentRequest()) return;
       applyLoadedBooks(nextBooks, true);

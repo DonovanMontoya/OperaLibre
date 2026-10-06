@@ -532,6 +532,7 @@ function MainApp({
   const saveStartedAt = useRef(0);
   const playWhenTrackLoads = useRef(false);
   const progressSaveDrainPromiseRef = useRef<Promise<void> | null>(null);
+  const libraryProgressReplaysRef = useRef(new Map<string, Promise<void>>());
   const progressSaveAbortController = useRef<AbortController | null>(null);
   const queuedProgressSaves = useRef<Map<string, QueuedProgressSave>>(new Map());
   const progressMutationVersion = useRef(0);
@@ -1371,6 +1372,7 @@ function MainApp({
     initialLibraryHydrated,
     isOperaLibre,
     libraryRequestGenerationRef,
+    libraryProgressReplaysRef,
     libraryRetryTimerRef,
     loadBooksRef,
     localMode,
@@ -1378,6 +1380,7 @@ function MainApp({
     nativeAudioRef,
     nativePlaybackPlayingRef,
     reconcileServerBookGains,
+    resumeReconciliationBookIdRef,
     setBooks,
     setError,
     setIsLoading,
@@ -1588,6 +1591,7 @@ function MainApp({
   } = usePlaybackRestore({
     acknowledgedServerPositionRef,
     currentUser,
+    libraryProgressReplaysRef,
     explicitSessionStartBookIdRef,
     nativeAudio,
     overruledSaveRef,

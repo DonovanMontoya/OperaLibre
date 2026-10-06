@@ -9,6 +9,7 @@ import {
   progressFromBookSummary,
   progressTimestamp,
   readProgressCheckpoint,
+  rebasePendingProgress,
   resolveProgressLocation,
   serverRevisionFromSummary
 } from "./reliability";
@@ -31,6 +32,7 @@ const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
 export function usePlaybackRestore({
   acknowledgedServerPositionRef,
   currentUser,
+  libraryProgressReplaysRef,
   explicitSessionStartBookIdRef,
   nativeAudio,
   overruledSaveRef,
@@ -58,6 +60,7 @@ export function usePlaybackRestore({
 }: {
   acknowledgedServerPositionRef: RefObject<Map<string, number>>;
   currentUser: AuthUser;
+  libraryProgressReplaysRef: RefObject<Map<string, Promise<void>>>;
   explicitSessionStartBookIdRef: RefObject<string | null>;
   nativeAudio: boolean;
   overruledSaveRef: RefObject<Map<string, Progress>>;
@@ -154,6 +157,7 @@ export function usePlaybackRestore({
     };
 
     void (async () => {
+      const libraryReplay = libraryProgressReplaysRef.current.get(playbackBook.id);
       // Independent local stores can answer concurrently; preserve the same
       // freshest-copy reconciliation after both have completed.
       const [recoveredNative, cached] = await Promise.all([
@@ -177,7 +181,7 @@ export function usePlaybackRestore({
         : null;
       const deviceBookId = playbackBook.deviceBookId;
       const device = deviceBookId ? getDeviceProgress(deviceBookId) : null;
-      const checkpoint = readProgressCheckpoint(
+      let checkpoint = readProgressCheckpoint(
         window.localStorage,
         getServerStorageKey(),
         currentUser.id,
@@ -209,7 +213,7 @@ export function usePlaybackRestore({
       }
       // Progress saved on the device or while disconnected can be newer than
       // the server. Resume from the freshest copy and converge the server.
-      const freshestLocal = freshestProgress(...localCopies, nativeProgress);
+      let freshestLocal = freshestProgress(...localCopies, nativeProgress);
       // The summary embedded in the library listing is also the server's
       // copy. It backstops a failed or empty progress fetch — without it, a
       // fresh install that hits one failed request opens the book at zero and
@@ -227,6 +231,28 @@ export function usePlaybackRestore({
         ? listed
         : freshestProgress(freshestLocal, listed);
       applyProgress(optimistic, optimistic === listed || optimistic?.syncStatus === "synced");
+      // Show native recovery immediately, but let a library save already in
+      // flight finish before uploading it. Only an accepted save from this
+      // local baseline can advance the recovery checkpoint's revision.
+      if (libraryReplay) {
+        await libraryReplay.catch(() => undefined);
+        if (cancelled || playbackActionVersionRef.current !== restoreActionVersion) return;
+        const acknowledgedReplay = readProgressCheckpoint(
+          window.localStorage, getServerStorageKey(), currentUser.id, playbackBook.id
+        );
+        if (freshestLocal && previousLocal && acknowledgedReplay) {
+          // Unmarked journals did not carry a base; native recovery used the
+          // listed server revision instead, never the journal's device time.
+          const replayBaseline = previousLocal.syncStatus ? previousLocal : {
+            ...previousLocal, baseUpdatedAt: serverRevisionFromSummary(playbackBook.progress)
+          };
+          const rebased = rebasePendingProgress(freshestLocal, replayBaseline, acknowledgedReplay);
+          if (rebased !== freshestLocal) {
+            freshestLocal = rebased;
+            checkpoint = acknowledgedReplay;
+          }
+        }
+      }
       let server: Progress | null = null;
       let serverReachable = true;
       // One failed fetch must not strand this device on a stale or empty
@@ -277,7 +303,7 @@ export function usePlaybackRestore({
         storeCanonicalServerProgress(playbackBook, lastKnownServer, freshestLocal);
         acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, playbackBook.id, seekIntent?.id);
       }
-      if (localIsNewer) {
+      if (localIsNewer && freshestLocal) {
         updateBookProgress(playbackBook.id, freshestLocal);
         if (serverReachable) {
           const saved = await saveProgress(
