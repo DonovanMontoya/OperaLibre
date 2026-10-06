@@ -1,6 +1,6 @@
 {
   "name": "@operalibre/readalong-sync-runtime",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "Dependencies packaged for OperaLibre's optional readalong sync add-on.",
   "license": "UNLICENSED",
@@ -16,5 +16,8 @@
   "scripts": {
     "postinstall": "node patch-runtime.mjs",
     "test": "node --test runtime.test.mjs"
+  },
+  "overrides": {
+    "global-agent": "4.1.3"
   }
 }
