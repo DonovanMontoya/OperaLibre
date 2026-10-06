@@ -1,6 +1,6 @@
-import { AlertTriangle, ArrowUpRight, BookOpen, Check, ChevronDown, Clock, LoaderCircle, Moon, PlayCircle, RefreshCw, Search } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Pause, Play, X, ArrowUpRight, BookOpen, Check, ChevronDown, Clock, LoaderCircle, Moon, PlayCircle, RefreshCw, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { cancelBookSyncSchedule, generateSyncMap, getBooks, getSyncSweep, listJobs, listSyncSchedules, runSyncSweep, scheduleBookSync, setSyncSweep, type SyncSchedule, type SyncSweep } from "./api";
+import { cancelBookSyncSchedule, controlSyncJob, removeSyncJob, generateSyncMap, getBooks, getSyncSweep, listJobs, listSyncSchedules, runSyncSweep, scheduleBookSync, setSyncSweep, type SyncSchedule, type SyncSweep } from "./api";
 import { jobElapsedMinutes } from "./jobTiming";
 import {
   syncFeedChanged,
@@ -16,6 +16,7 @@ type Feed = { jobs: JobStatus[]; now: number };
 function jobState(status: string) {
   if (status === "running") return { label: "Running", tone: "running" };
   if (status === "queued") return { label: "Queued", tone: "queued" };
+  if (status === "paused") return { label: "Paused", tone: "queued" };
   if (status === "completed") return { label: "Completed", tone: "done" };
   if (status === "failed") return { label: "Failed", tone: "failed" };
   return { label: status, tone: "queued" };
@@ -183,6 +184,8 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
   const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<{ bookId: string; message: string } | null>(null);
   const [busyBook, setBusyBook] = useState<string | null>(null);
+  const [busyJob, setBusyJob] = useState<string | null>(null);
+  const [queueError, setQueueError] = useState<string | null>(null);
   const [schedulingBook, setSchedulingBook] = useState<string | null>(null);
   const [scheduledTime, setScheduledTime] = useState("");
   const [query, setQuery] = useState("");
@@ -224,6 +227,20 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
     } finally {
       setBusyBook(null);
     }
+  }
+
+  async function changeJob(jobId: string, action: "remove" | "up" | "down" | "pause" | "resume") {
+    setBusyJob(jobId);
+    setQueueError(null);
+    try {
+      if (action === "remove") await removeSyncJob(jobId);
+      else await controlSyncJob(jobId, action);
+      const received = await listJobs("sync-generate");
+      setFeed({ jobs: sortSyncJobs(received), now: Date.now() });
+      setRevision((value) => value + 1);
+    } catch (err) {
+      setQueueError(err instanceof Error ? err.message : "Could not update the sync queue.");
+    } finally { setBusyJob(null); }
   }
 
   useEffect(() => {
@@ -309,6 +326,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
 
   const jobs = feed?.jobs ?? null;
   const running = jobs?.filter((job) => job.status === "running").length ?? 0;
+  const queuedJobs = jobs?.filter((job) => job.status === "queued") ?? [];
   const queued = jobs?.filter((job) => job.status === "queued").length ?? 0;
   const booksById = useMemo(() => new Map(libraryBooks.map((book) => [book.id, book])), [libraryBooks]);
 
@@ -316,7 +334,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
   const eligibleBooks = useMemo(() => libraryBooks.filter((book) => book.source !== "device"
     && book.readingFile?.extension === "epub" && book.tracks.length > 0)
     .sort((a, b) => a.title.localeCompare(b.title)), [libraryBooks]);
-  const activeJobs = new Map(jobs?.filter((job) => job.status === "running" || job.status === "queued")
+  const activeJobs = new Map(jobs?.filter((job) => job.status === "running" || job.status === "queued" || job.status === "paused")
     .map((job) => [job.targetId, job]));
 
   const needle = query.trim().toLowerCase();
@@ -353,6 +371,8 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
       {libraryError ? <p className="admin-sync-notice admin-sync-notice-warn" role="alert"><AlertTriangle size={14} aria-hidden="true" />{libraryError}</p> : null}
       {error ? <p className="admin-sync-notice admin-sync-notice-warn" role="alert"><AlertTriangle size={14} aria-hidden="true" />{error} {jobs ? "Showing the last received status. " : ""}Retrying automatically…</p> : null}
 
+      {queueError ? <p className="admin-sync-notice admin-sync-notice-warn" role="alert">{queueError}</p> : null}
+
       <SyncSweepPanel syncEnabled={syncEnabled} revision={revision} onQueued={() => setRevision((value) => value + 1)} />
 
       <section className="admin-sync-panel">
@@ -376,10 +396,19 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
               <article className={`admin-sync-job admin-sync-job-${state.tone}`} key={job.id}>
                 <div className="admin-sync-job-heading">
                   {book && onOpenBook ? <button className="admin-sync-book-link" type="button" onClick={() => onOpenBook(book.id)}>{title}<ArrowUpRight size={13} aria-hidden="true" /></button> : <strong>{title}</strong>}
-                  <span className={`admin-sync-job-state admin-sync-job-state-${state.tone}`}>
+                  <div className="admin-sync-job-controls">
+                    {job.status === "queued" ? <>
+                      <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null || queuedJobs[0]?.id === job.id} aria-label={`Move ${title} up in queue`} title="Move up" onClick={() => void changeJob(job.id, "up")}><ArrowUp size={14} /></button>
+                      <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null || queuedJobs[queuedJobs.length - 1]?.id === job.id} aria-label={`Move ${title} down in queue`} title="Move down" onClick={() => void changeJob(job.id, "down")}><ArrowDown size={14} /></button>
+                    </> : null}
+                    {job.status === "running" || job.status === "queued" ? <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null || job.pauseRequested} aria-label={`Pause sync for ${title}`} title="Pause after the current chapter or track" onClick={() => void changeJob(job.id, "pause")}><Pause size={14} /></button> : null}
+                    {job.status === "paused" ? <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null || !syncEnabled} aria-label={`Resume sync for ${title}`} title="Resume sync" onClick={() => void changeJob(job.id, "resume")}><Play size={14} /></button> : null}
+                    <span className={`admin-sync-job-state admin-sync-job-state-${state.tone}`}>
                     {job.status === "running" ? <LoaderCircle size={11} className="spin-icon" aria-hidden="true" /> : null}
-                    {state.label}
-                  </span>
+                    {job.pauseRequested && job.status === "running" ? "Pausing…" : state.label}
+                    </span>
+                    {job.status === "queued" || job.status === "paused" ? <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null} aria-label={`Remove ${title} from sync queue`} title="Remove from queue" onClick={() => void changeJob(job.id, "remove")}><X size={14} /></button> : null}
+                  </div>
                 </div>
                 {job.status === "running" ? (
                   <div className="sync-progress">
@@ -406,6 +435,8 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                     ) : null}
                   </div>
                 ) : job.status === "queued" ? <p className="admin-sync-job-step">{job.progress?.step ?? "Waiting for another sync to finish."}</p> : null}
+                {job.status === "running" && job.pauseRequested ? <p className="admin-sync-job-step">Finishing the current chapter or track before saving and pausing.</p> : null}
+                {job.status === "paused" ? <p className="admin-sync-job-step">{percent !== null ? `${percent}% saved. ` : "Completed sections are saved. "}Resume when ready; this sync stays paused across server restarts.</p> : null}
                 {job.status === "failed" ? (
                   <div className="admin-sync-job-failure">
                     <p className="admin-sync-job-error">{job.error ?? "Sync generation failed."}</p>
@@ -458,7 +489,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                     {job ? <span className={`admin-sync-state-active admin-sync-job-state-${job.status === "running" ? "running" : "queued"}`}>
                       {job.status === "running"
                         ? <><LoaderCircle size={11} className="spin-icon" aria-hidden="true" />{percent !== null ? `Syncing ${percent}%` : "Syncing"}</>
-                        : "Queued"}
+                        : job.status === "paused" ? "Paused" : "Queued"}
                     </span> : <>
                       <button type="button" className="quiet-button" disabled={!syncEnabled || busyBook !== null || pending} onClick={() => void act(book.id, "sync")} aria-label={`Sync ${book.title} now`}>{busyBook === book.id ? <LoaderCircle size={12} className="spin-icon" /> : <RefreshCw size={12} />}{book.syncFile ? "Re-sync" : "Sync"}</button>
                       {!pending ? <button type="button" className="quiet-button admin-sync-schedule-button" disabled={!syncEnabled || busyBook !== null || schedules === null || !!scheduleError} onClick={() => openSchedule(book.id)} aria-label={`Schedule sync for ${book.title}`} title="Schedule sync"><Clock size={14} /></button> : null}
@@ -491,7 +522,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
         </div>
       </section>
 
-      <p className="admin-experiment-detail">Jobs run one at a time and continue when you close this view. The queue and recent results survive server restarts. Interrupted books restart automatically when Follow along is enabled; existing maps remain available.</p>
+      <p className="admin-experiment-detail">Jobs run one at a time and continue when you close this view. The queue and recent results survive server restarts. Interrupted books resume from the last completed chapter or track when Follow along is enabled. Pause finishes the current section before saving; books without matched chapters may need to finish the whole track. Paused jobs stay paused across restarts. Existing maps remain available.</p>
     </div>
   );
 }

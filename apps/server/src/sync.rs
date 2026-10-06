@@ -4,6 +4,374 @@
 use crate::updates::SyncAddonRuntime;
 use crate::*;
 
+/// Queue rank is separate from creation time so moving a book never changes
+/// its elapsed time or history. Old snapshots fall back to creation order.
+fn sync_queue_order(job: &JobStatus) -> u64 {
+    job.queue_position
+        .unwrap_or_else(|| job_started_timestamp(job))
+}
+
+struct SyncQueueWake(Arc<tokio::sync::Notify>);
+impl Drop for SyncQueueWake {
+    fn drop(&mut self) {
+        self.0.notify_waiters();
+    }
+}
+
+pub(crate) async fn claim_sync_slot<'a>(
+    state: &'a AppState,
+    id: &str,
+) -> Option<tokio::sync::SemaphorePermit<'a>> {
+    loop {
+        let changed = state.update_manager.sync_queue_changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        {
+            let jobs = state.jobs.read().await;
+            if jobs.get(id).is_none_or(|job| job.status != "queued") {
+                return None;
+            }
+            let first = jobs
+                .values()
+                .filter(|job| job.kind == SYNC_GENERATE_JOB_KIND && job.status == "queued")
+                .min_by_key(|job| (sync_queue_order(job), &job.id));
+            if first.is_none_or(|job| job.id != id) {
+                drop(jobs);
+                changed.await;
+                continue;
+            }
+        }
+        let slot = state.update_manager.sync_slots.acquire().await.ok()?;
+        let mut jobs = state.jobs.write().await;
+        let first = jobs
+            .values()
+            .filter(|job| job.kind == SYNC_GENERATE_JOB_KIND && job.status == "queued")
+            .min_by_key(|job| (sync_queue_order(job), &job.id));
+        if first.is_some_and(|job| job.id == id) {
+            let job = jobs.get_mut(id)?;
+            job.status = "running".into();
+            job.running_at = Some(unix_now_millis().to_string());
+            return Some(slot);
+        }
+        drop(jobs);
+        drop(slot);
+    }
+}
+
+pub(crate) async fn remove_sync_job(
+    State(state): State<AppState>,
+    _: AdminUser,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let mut jobs = state.jobs.write().await;
+    let job = jobs
+        .get(&id)
+        .filter(|job| job.kind == SYNC_GENERATE_JOB_KIND)
+        .ok_or_else(|| ApiError::not_found("Sync job not found"))?;
+    if !matches!(job.status.as_str(), "queued" | "paused") {
+        return Err(ApiError::conflict(
+            "Only queued or paused syncs can be removed.",
+        ));
+    }
+    let previous = jobs.remove(&id).unwrap();
+    if let Err(error) = save_queue(&state, &jobs).await {
+        jobs.insert(id, previous);
+        return Err(error);
+    }
+    state.update_manager.sync_queue_changed.notify_waiters();
+    // The worker cannot be using this checkpoint while queued or paused.
+    let _ = fs::remove_file(sync_checkpoint_path(&state, &previous.id)).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SyncJobControl {
+    action: String,
+}
+
+pub(crate) async fn control_sync_job(
+    State(state): State<AppState>,
+    _: AdminUser,
+    Path(id): Path<String>,
+    Json(control): Json<SyncJobControl>,
+) -> Result<Json<JobStatus>, ApiError> {
+    let mut jobs = state.jobs.write().await;
+    let previous = jobs.clone();
+    let job = jobs
+        .get(&id)
+        .filter(|job| job.kind == SYNC_GENERATE_JOB_KIND)
+        .ok_or_else(|| ApiError::not_found("Sync job not found"))?;
+    match control.action.as_str() {
+        "up" | "down" if job.status == "queued" => {
+            let mut ordered: Vec<_> = jobs
+                .values()
+                .filter(|job| job.kind == SYNC_GENERATE_JOB_KIND && job.status == "queued")
+                .map(|job| (sync_queue_order(job), job.id.clone()))
+                .collect();
+            ordered.sort();
+            let index = ordered.iter().position(|(_, key)| key == &id).unwrap();
+            let other = if control.action == "up" {
+                index.checked_sub(1)
+            } else {
+                (index + 1 < ordered.len()).then_some(index + 1)
+            };
+            if let Some(other) = other {
+                ordered.swap(index, other);
+            }
+            for (rank, (_, key)) in ordered.iter().enumerate() {
+                jobs.get_mut(key).unwrap().queue_position = Some(rank as u64);
+            }
+        }
+        "pause" if matches!(job.status.as_str(), "queued" | "running") => {
+            let job = jobs.get_mut(&id).unwrap();
+            job.pause_requested = true;
+            if job.status == "queued" {
+                job.status = "paused".into();
+                job.resume_pending = false;
+            }
+        }
+        "resume" if job.status == "paused" => {
+            let rank = jobs
+                .values()
+                .map(sync_queue_order)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            let job = jobs.get_mut(&id).unwrap();
+            job.pause_requested = false;
+            job.status = "queued".into();
+            job.queue_position = Some(rank);
+            job.resume_pending = true;
+            job.progress = Some(JobProgress::new("Waiting to resume from saved progress"));
+        }
+        "up" | "down" | "pause" | "resume" => {
+            return Err(ApiError::conflict(
+                "The sync has changed state. Refresh and try again.",
+            ));
+        }
+        _ => return Err(ApiError::bad_request("Unknown sync queue action.")),
+    }
+    if let Err(error) = save_queue(&state, &jobs).await {
+        *jobs = previous;
+        return Err(error);
+    }
+    let updated = jobs[&id].clone();
+    drop(jobs);
+    state.update_manager.sync_queue_changed.notify_waiters();
+    if control.action == "resume" {
+        resume_queue(&state).await;
+    }
+    Ok(Json(updated))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SyncCheckpoint {
+    fingerprint: String,
+    completed_scopes: usize,
+    fragments: Vec<alignment::SyncFragment>,
+    recovery_gaps: Vec<alignment::RecoveryGap>,
+}
+
+fn sync_checkpoint_path(state: &AppState, id: &str) -> PathBuf {
+    state
+        .database_path
+        .with_file_name("sync-checkpoints")
+        .join(format!("{id}.json"))
+}
+
+/// Reject cached timing when the input files, alignment settings or chapter
+/// scopes change. File metadata avoids rereading gigabytes of audio on a NAS.
+async fn checkpoint_fingerprint(
+    epub: &FsPath,
+    tracks: &[SyncTrackInput],
+    scopes: &[SyncAlignmentScope],
+    runtime: &SyncAddonRuntime,
+) -> anyhow::Result<String> {
+    let mut hash = Sha256::new();
+    // Server alignment code and its settings can change without recommending
+    // regeneration of finished maps. Be conservative when mixing saved sections.
+    hash.update(include_str!("sync.rs"));
+    hash.update(include_str!("alignment.rs"));
+    hash.update(format!(
+        "{}:{:?}:{:?}:{:?}",
+        alignment::MAPPING_REVISION,
+        runtime.cli_path,
+        runtime.cli_args,
+        scopes
+    ));
+    hash.update(format!("{:?}", runtime.ffmpeg_path));
+    for path in std::iter::once(epub)
+        .chain(tracks.iter().map(|track| track.path.as_path()))
+        .chain(std::iter::once(runtime.cli_path.as_path()))
+        .chain(
+            runtime
+                .cli_args
+                .iter()
+                .map(FsPath::new)
+                .filter(|path| path.is_file()),
+        )
+        .chain(runtime.ffmpeg_path.as_deref())
+    {
+        let metadata = fs::metadata(path).await?;
+        hash.update(format!(
+            "{path:?}:{}:{:?}",
+            metadata.len(),
+            metadata.modified()?
+        ));
+    }
+    Ok(hex_digest(hash.finalize()))
+}
+
+#[derive(Debug)]
+struct SyncPaused;
+impl std::fmt::Display for SyncPaused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Sync paused")
+    }
+}
+impl std::error::Error for SyncPaused {}
+
+async fn pause_at_checkpoint(state: &AppState, id: &str) -> anyhow::Result<()> {
+    let mut jobs = state.jobs.write().await;
+    if jobs.get(id).is_some_and(|job| job.pause_requested) {
+        let previous = jobs[id].clone();
+        let job = jobs.get_mut(id).unwrap();
+        job.status = "paused".into();
+        job.resume_pending = false;
+        if let Some(progress) = &mut job.progress {
+            progress.step = "Paused; completed sections saved".into();
+        }
+        if let Err(error) = save_queue(state, &jobs).await {
+            jobs.insert(id.to_string(), previous);
+            return Err(anyhow::anyhow!(error.message));
+        }
+        return Err(SyncPaused.into());
+    }
+    Ok(())
+}
+
+/// Owns update exclusion while workers stop and their queue is saved. A failed
+/// or cancelled update releases the stop signal so recovery can restart work.
+pub(crate) struct SyncUpdatePause {
+    signal: tokio::sync::watch::Sender<u64>,
+    state: AppState,
+    // A late rollback must not release a newer update’s stop signal.
+    token: u64,
+    _lifecycle: Option<tokio::sync::OwnedRwLockWriteGuard<()>>,
+    keep: bool,
+}
+
+impl SyncUpdatePause {
+    pub(crate) fn keep(mut self) {
+        self.keep = true;
+    }
+}
+
+impl Drop for SyncUpdatePause {
+    fn drop(&mut self) {
+        if self.keep {
+            return;
+        }
+        let state = self.state.clone();
+        let signal = self.signal.clone();
+        let held = self._lifecycle.take();
+        let token = self.token;
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            signal.send_if_modified(|current| {
+                if *current != token {
+                    return false;
+                }
+                *current = 0;
+                true
+            });
+            return;
+        };
+        handle.spawn(async move {
+            // Cancellation can happen while waiting for workers to stop. Keep
+            // the signal set until they have all released update exclusion.
+            let lifecycle = match held {
+                Some(guard) => guard,
+                None => {
+                    state
+                        .update_manager
+                        .sync_lifecycle
+                        .clone()
+                        .write_owned()
+                        .await
+                }
+            };
+            if let Err(error) = save_update_queue(&state).await {
+                tracing::error!(?error, "could not save sync queue after failed update");
+            }
+            drop(lifecycle);
+            signal.send_if_modified(|current| {
+                if *current != token {
+                    return false;
+                }
+                *current = 0;
+                true
+            });
+            resume_queue(&state).await;
+        });
+    }
+}
+
+async fn wait_for_update(signal: &mut tokio::sync::watch::Receiver<u64>) {
+    let _ = signal.wait_for(|token| *token != 0).await;
+}
+
+pub(crate) async fn pause_for_update(state: &AppState) -> anyhow::Result<SyncUpdatePause> {
+    let mut pause = SyncUpdatePause {
+        signal: state.update_manager.sync_update_pause.clone(),
+        state: state.clone(),
+        token: rand::random::<u64>().max(1),
+        _lifecycle: None,
+        keep: false,
+    };
+    pause.signal.send_replace(pause.token);
+    // Both running and queued workers listen to the signal and release their
+    // lifecycle guards. Holding the write guard prevents new workers racing in.
+    pause._lifecycle = Some(
+        state
+            .update_manager
+            .sync_lifecycle
+            .clone()
+            .write_owned()
+            .await,
+    );
+    save_update_queue(state).await?;
+    Ok(pause)
+}
+
+async fn save_update_queue(state: &AppState) -> anyhow::Result<()> {
+    let mut jobs = state.jobs.write().await;
+    for job in jobs
+        .values_mut()
+        .filter(|job| job.kind == SYNC_GENERATE_JOB_KIND && is_active_job(job))
+    {
+        if job.pause_requested {
+            job.status = "paused".into();
+            job.resume_pending = false;
+        } else {
+            job.status = "queued".into();
+            job.resume_pending = true;
+        }
+        job.running_at = None;
+        if let Some(progress) = &mut job.progress {
+            progress.step = if job.status == "paused" {
+                "Paused; saved sections available"
+            } else {
+                "Saved for server update; resumes after restart"
+            }
+            .into();
+        }
+    }
+    save_queue(state, &jobs)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    Ok(())
+}
+
 pub(crate) const SYNC_GENERATE_JOB_KIND: &str = "sync-generate";
 
 /// Queue snapshots are serialized while holding the job table's write lock,
@@ -36,12 +404,19 @@ pub(crate) async fn restore_queue(state: &AppState) -> Result<(), ApiError> {
             continue;
         }
         if is_active_job(&job) {
-            job.status = "queued".into();
+            job.status = if job.pause_requested {
+                "paused"
+            } else {
+                "queued"
+            }
+            .into();
             job.running_at = None;
-            job.resume_pending = true;
-            job.progress = Some(JobProgress::new(
-                "Recovered after restart; waiting to resume",
-            ));
+            job.resume_pending = job.status == "queued";
+            job.progress = Some(JobProgress::new(if job.status == "paused" {
+                "Paused; saved sections available after restart"
+            } else {
+                "Recovered after restart; waiting to resume"
+            }));
         }
         jobs.insert(job.id.clone(), job);
     }
@@ -49,7 +424,8 @@ pub(crate) async fn restore_queue(state: &AppState) -> Result<(), ApiError> {
 }
 
 pub(crate) async fn resume_queue(state: &AppState) {
-    if !state.library.read().await.catalogue_ready
+    if *state.update_manager.sync_update_pause.borrow() != 0
+        || !state.library.read().await.catalogue_ready
         || state
             .update_manager
             .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
@@ -66,7 +442,7 @@ pub(crate) async fn resume_queue(state: &AppState) {
         .filter(|job| job.resume_pending)
         .cloned()
         .collect();
-    pending.sort_by_key(job_started_timestamp);
+    pending.sort_by_key(sync_queue_order);
     for job in pending {
         let Some(book_id) = job.target_id else {
             continue;
@@ -166,6 +542,11 @@ pub(crate) async fn enqueue_sync_batch(
     if book_ids.is_empty() {
         return Ok((0, 0));
     }
+    if *state.update_manager.sync_update_pause.borrow() != 0 {
+        return Err(ApiError::conflict(
+            "Sync generation is paused for a server update.",
+        ));
+    }
     let lifecycle = state
         .update_manager
         .sync_lifecycle
@@ -189,7 +570,9 @@ pub(crate) async fn enqueue_sync_batch(
     let mut created = Vec::with_capacity(book_ids.len());
     let mut active_books: HashSet<String> = jobs
         .values()
-        .filter(|job| job.kind == SYNC_GENERATE_JOB_KIND && is_active_job(job))
+        .filter(|job| {
+            job.kind == SYNC_GENERATE_JOB_KIND && (is_active_job(job) || job.status == "paused")
+        })
         .filter_map(|job| job.target_id.clone())
         .collect();
     let mut timestamp = next_job_timestamp(&jobs);
@@ -209,6 +592,8 @@ pub(crate) async fn enqueue_sync_batch(
             job_id.clone(),
             JobStatus {
                 resume_pending: true,
+                queue_position: None,
+                pause_requested: false,
                 id: job_id.clone(),
                 kind: SYNC_GENERATE_JOB_KIND.into(),
                 target_id: Some(book_id.clone()),
@@ -246,6 +631,14 @@ pub(crate) async fn enqueue_sync_batch(
             if let Err(error) =
                 enqueue_sync_map_inner(state.clone(), book_id, Some(job_id.clone()), true).await
             {
+                if error.status == StatusCode::CONFLICT {
+                    // An update can pause dispatch after the batch was accepted.
+                    // Keep these jobs recoverable until the handoff saves the queue.
+                    if let Some(job) = state.jobs.write().await.get_mut(&job_id) {
+                        job.resume_pending = job.status == "queued";
+                    }
+                    continue;
+                }
                 update_job_finished(&state, &job_id, "failed", None, Some(error.message)).await;
             }
         }
@@ -259,6 +652,11 @@ async fn enqueue_sync_map_inner(
     resume_id: Option<String>,
     already_persisted: bool,
 ) -> Result<Json<JobCreated>, ApiError> {
+    if *state.update_manager.sync_update_pause.borrow() != 0 {
+        return Err(ApiError::conflict(
+            "Sync generation is paused for a server update.",
+        ));
+    }
     let lifecycle = state
         .update_manager
         .sync_lifecycle
@@ -337,8 +735,17 @@ async fn enqueue_sync_map_inner(
     };
     {
         let mut jobs = state.jobs.write().await;
+        let position = jobs
+            .values()
+            .map(sync_queue_order)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
         if created && let Some(job) = jobs.get_mut(&job_id) {
-            job.resume_pending = true;
+            if !resuming {
+                job.queue_position = Some(position);
+            }
+            job.resume_pending = job.status == "queued";
             job.progress = Some(JobProgress::new("Waiting for the sync queue"));
         }
         if !already_persisted && let Err(error) = save_queue(&state, &jobs).await {
@@ -354,17 +761,23 @@ async fn enqueue_sync_map_inner(
             job.resume_pending = false;
         }
     }
+    let mut update_pause = state.update_manager.sync_update_pause.subscribe();
     let state_for_job = state.clone();
     let job_id_for_task = job_id.clone();
-    tokio::spawn(run_job(state.clone(), job_id.clone(), async move {
+    tokio::spawn(async move {
+        let guard = JobGuard::new(&state_for_job, &job_id_for_task);
         let _lifecycle = lifecycle;
-        let _slot = state_for_job
-            .update_manager
-            .sync_slots
-            .acquire()
-            .await
-            .expect("sync queue stays open for the lifetime of the server");
-        update_job_running(&state_for_job, &job_id_for_task).await;
+        let slot = tokio::select! {
+            biased;
+            _ = wait_for_update(&mut update_pause) => { guard.disarm(); return; }
+            slot = claim_sync_slot(&state_for_job, &job_id_for_task) => slot,
+        };
+        let Some(slot) = slot else {
+            guard.disarm();
+            return;
+        };
+        let _wake = SyncQueueWake(state_for_job.update_manager.sync_queue_changed.clone());
+        let _slot = slot;
         update_job_progress(
             &state_for_job,
             &job_id_for_task,
@@ -378,15 +791,13 @@ async fn enqueue_sync_map_inner(
         )
         .await;
 
-        let result = run_sync_generation(
-            &state_for_job,
-            &job_id_for_task,
-            &book_id,
-            &runtime,
-            &epub_path,
-            &tracks,
-        )
-        .await;
+        let result = tokio::select! {
+            biased;
+            _ = wait_for_update(&mut update_pause) => { guard.disarm(); return; }
+            result = run_sync_generation(
+                &state_for_job, &job_id_for_task, &book_id, &runtime, &epub_path, &tracks,
+            ) => result,
+        };
 
         match result {
             Ok(fragment_count) => {
@@ -402,7 +813,18 @@ async fn enqueue_sync_map_inner(
                     JobProgress::new("Refreshing the library").fraction(0.98),
                 )
                 .await;
-                if let Err(error) = rescan_library(&state_for_job).await {
+                let rescanned = tokio::select! {
+                    biased;
+                    _ = wait_for_update(&mut update_pause) => {
+                        // The complete map is already published; startup's scan
+                        // will discover it without repeating alignment.
+                        update_job_finished(&state_for_job, &job_id_for_task, "completed", Some(0), None).await;
+                        guard.disarm();
+                        return;
+                    }
+                    result = rescan_library(&state_for_job) => result,
+                };
+                if let Err(error) = rescanned {
                     update_job_finished(
                         &state_for_job,
                         &job_id_for_task,
@@ -418,7 +840,13 @@ async fn enqueue_sync_map_inner(
                 update_job_finished(&state_for_job, &job_id_for_task, "completed", Some(0), None)
                     .await;
             }
+            Err(error) if error.downcast_ref::<SyncPaused>().is_some() => {
+                guard.disarm();
+                return;
+            }
             Err(error) => {
+                let _ =
+                    fs::remove_file(sync_checkpoint_path(&state_for_job, &job_id_for_task)).await;
                 update_job_finished(
                     &state_for_job,
                     &job_id_for_task,
@@ -429,8 +857,10 @@ async fn enqueue_sync_map_inner(
                 .await;
             }
         }
-    }));
+        guard.finish().await;
+    });
 
+    state.update_manager.sync_queue_changed.notify_waiters();
     Ok(Json(JobCreated { job_id }))
 }
 
@@ -447,7 +877,7 @@ pub(crate) struct SyncChapterInput {
     pub(crate) end_seconds: Option<f64>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct SyncAlignmentScope {
     track_index: usize,
     section_range: std::ops::Range<usize>,
@@ -651,7 +1081,25 @@ pub(crate) async fn run_sync_generation(
     } else {
         Vec::new()
     };
-    for (scope_number, scope) in scopes.iter().enumerate() {
+    let checkpoint_path = sync_checkpoint_path(state, job_id);
+    let fingerprint = checkpoint_fingerprint(epub_path, tracks, &scopes, runtime).await?;
+    let mut completed_scopes = 0;
+    match fs::read(&checkpoint_path).await {
+        Ok(bytes) => {
+            let checkpoint: SyncCheckpoint = serde_json::from_slice(&bytes)?;
+            if checkpoint.fingerprint == fingerprint && checkpoint.completed_scopes <= scopes.len()
+            {
+                completed_scopes = checkpoint.completed_scopes;
+                fragments = checkpoint.fragments;
+                recovery_gaps = checkpoint.recovery_gaps;
+                done_weight = scope_weights.iter().take(completed_scopes).sum();
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    pause_at_checkpoint(state, job_id).await?;
+    for (scope_number, scope) in scopes.iter().enumerate().skip(completed_scopes) {
         let track = &tracks[scope.track_index];
         let progress = ScopeProgress {
             base: ALIGN_PROGRESS_START
@@ -700,6 +1148,19 @@ pub(crate) async fn run_sync_generation(
         .await;
         fragments.extend(scope_fragments.fragments);
         recovery_gaps.extend(scope_fragments.recovery_gaps);
+        fs::create_dir_all(checkpoint_path.parent().unwrap()).await?;
+        let checkpoint = SyncCheckpoint {
+            fingerprint: fingerprint.clone(),
+            completed_scopes: scope_number + 1,
+            fragments: std::mem::take(&mut fragments),
+            recovery_gaps: std::mem::take(&mut recovery_gaps),
+        };
+        let saved = write_bytes_atomic(&checkpoint_path, &serde_json::to_vec(&checkpoint)?).await;
+        fragments = checkpoint.fragments;
+        recovery_gaps = checkpoint.recovery_gaps;
+        saved.map_err(|error| anyhow::anyhow!(error.message))?;
+        update_job_progress(state, job_id, progress.at(1.0)).await;
+        pause_at_checkpoint(state, job_id).await?;
     }
 
     anyhow::ensure!(
@@ -732,6 +1193,7 @@ pub(crate) async fn run_sync_generation(
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
 
+    let _ = fs::remove_file(checkpoint_path).await;
     Ok(fragment_count)
 }
 
@@ -1986,6 +2448,205 @@ pub(crate) fn find_alignment_cli_on_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn checkpoint_rejects_changed_runtime_components_at_the_same_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let epub = root.path().join("book.epub");
+        let cli = root.path().join("python");
+        let script = root.path().join("align.py");
+        let ffmpeg = root.path().join("ffmpeg");
+        for path in [&epub, &cli, &script, &ffmpeg] {
+            fs::write(path, b"original").await.unwrap();
+        }
+        let runtime = SyncAddonRuntime {
+            cli_path: cli,
+            cli_args: vec![script.to_string_lossy().into_owned(), "--fixture".into()],
+            ffmpeg_path: Some(ffmpeg.clone()),
+        };
+        let original = checkpoint_fingerprint(&epub, &[], &[], &runtime)
+            .await
+            .unwrap();
+        assert_eq!(
+            checkpoint_fingerprint(&epub, &[], &[], &runtime)
+                .await
+                .unwrap(),
+            original
+        );
+        fs::write(&script, b"updated alignment script")
+            .await
+            .unwrap();
+        let changed_script = checkpoint_fingerprint(&epub, &[], &[], &runtime)
+            .await
+            .unwrap();
+        assert_ne!(changed_script, original);
+        fs::write(&ffmpeg, b"updated audio slicing binary")
+            .await
+            .unwrap();
+        assert_ne!(
+            checkpoint_fingerprint(&epub, &[], &[], &runtime)
+                .await
+                .unwrap(),
+            changed_script
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn paused_generation_restores_completed_tracks_after_restart() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let (mut state, _) = crate::unit_tests::fake_libation_state(root.path());
+        let epub = root.path().join("book.epub");
+        fs::write(&epub, alignment::build_test_epub())
+            .await
+            .unwrap();
+        let cli = root.path().join("aligner");
+        // Gate the first track on an observable file so the test requests a
+        // pause during alignment, rather than guessing how long it takes.
+        fs::write(
+            &cli,
+            r#"#!/bin/sh
+[ "$1" = "align" ] || exit 2
+if [ ! -f "$0.calls" ]; then
+  : > "$0.started"
+  while [ ! -f "$0.release" ]; do sleep 0.01; done
+fi
+printf '%s\n' "$2" >> "$0.calls"
+case "$2" in
+  *second.wav) text='The river ran fast & cold.';;
+  *) text='The meadow was quiet.';;
+esac
+printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "$4"
+"#,
+        )
+        .await
+        .unwrap();
+        fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
+            .await
+            .unwrap();
+        let runtime = SyncAddonRuntime {
+            cli_path: cli.clone(),
+            cli_args: Vec::new(),
+            ffmpeg_path: None,
+        };
+        let tracks = vec![
+            SyncTrackInput {
+                path: root.path().join("first.wav"),
+                title: "Chapter 1: The Meadow".into(),
+                duration_seconds: Some(3600.0),
+                chapters: Vec::new(),
+            },
+            SyncTrackInput {
+                path: root.path().join("second.wav"),
+                title: "Chapter 2: The River".into(),
+                duration_seconds: Some(3600.0),
+                chapters: Vec::new(),
+            },
+        ];
+        for track in &tracks {
+            fs::write(&track.path, b"fixture").await.unwrap();
+        }
+        let (id, _) =
+            create_queued_job(&state, SYNC_GENERATE_JOB_KIND, Some("fixture".into())).await;
+        update_job_running(&state, &id).await;
+        let generation = run_sync_generation(&state, &id, "fixture", &runtime, &epub, &tracks);
+        let request_pause = async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !fs::try_exists(cli.with_extension("started")).await.unwrap() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            state
+                .jobs
+                .write()
+                .await
+                .get_mut(&id)
+                .unwrap()
+                .pause_requested = true;
+            fs::write(cli.with_extension("release"), b"ready")
+                .await
+                .unwrap();
+        };
+        let (result, _) = tokio::join!(generation, request_pause);
+        let error = result.unwrap_err();
+        assert!(error.downcast_ref::<SyncPaused>().is_some(), "{error:#}");
+        assert_eq!(state.jobs.read().await[&id].status, "paused");
+        let checkpoint: SyncCheckpoint =
+            serde_json::from_slice(&fs::read(sync_checkpoint_path(&state, &id)).await.unwrap())
+                .unwrap();
+        assert_eq!(checkpoint.completed_scopes, 1);
+        assert_eq!(checkpoint.fragments.len(), 1);
+        assert!(
+            !state
+                .sync_dir
+                .join(format!("fixture{SYNC_SIDECAR_SUFFIX}"))
+                .exists()
+        );
+        state.jobs = Arc::new(RwLock::new(HashMap::new()));
+        restore_queue(&state).await.unwrap();
+        assert_eq!(state.jobs.read().await[&id].status, "paused");
+        state
+            .jobs
+            .write()
+            .await
+            .get_mut(&id)
+            .unwrap()
+            .pause_requested = false;
+        update_job_running(&state, &id).await;
+        assert_eq!(
+            run_sync_generation(&state, &id, "fixture", &runtime, &epub, &tracks)
+                .await
+                .unwrap(),
+            2
+        );
+        let calls = fs::read_to_string(cli.with_extension("calls"))
+            .await
+            .unwrap();
+        assert_eq!(
+            calls.lines().count(),
+            2,
+            "the completed first track must not run twice"
+        );
+        let map: alignment::SyncMap = serde_json::from_slice(
+            &fs::read(state.sync_dir.join(format!("fixture{SYNC_SIDECAR_SUFFIX}")))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(map.fragments[0].start_seconds, 1.0);
+        assert_eq!(map.fragments[1].start_seconds, 3601.0);
+        assert!(!sync_checkpoint_path(&state, &id).exists());
+        // Reusing a checkpoint after an EPUB change must start over, even
+        // with the same job ID and unchanged audio.
+        fs::write(
+            sync_checkpoint_path(&state, &id),
+            serde_json::to_vec(&checkpoint).unwrap(),
+        )
+        .await
+        .unwrap();
+        fs::write(
+            &epub,
+            alignment::build_test_epub_with_text(
+                "<p>The meadow was quiet. Changed text and timing.</p>",
+                "<p>The river ran fast &amp; cold.</p>",
+            ),
+        )
+        .await
+        .unwrap();
+        run_sync_generation(&state, &id, "fixture", &runtime, &epub, &tracks)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(cli.with_extension("calls"))
+                .await
+                .unwrap()
+                .lines()
+                .count(),
+            4
+        );
+    }
 
     #[cfg(unix)]
     #[tokio::test]
@@ -2007,6 +2668,7 @@ mod tests {
             duration_seconds: None,
             chapters: Vec::new(),
         }];
+        fs::write(&tracks[0].path, b"fixture audio").await.unwrap();
         fs::create_dir_all(&state.sync_dir).await.unwrap();
         let destination = state.sync_dir.join(format!("fixture{SYNC_SIDECAR_SUFFIX}"));
         let original = br#"{"version":2,"fragments":[{"startSeconds":20,"endSeconds":25,"href":"text/ch1.xhtml","text":"Previous usable timing."}]}"#;

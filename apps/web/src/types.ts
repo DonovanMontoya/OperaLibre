@@ -370,6 +370,8 @@ export type JobStatus = {
   startedAt: string;
   /** When a queued job began doing work. Older servers may omit it. */
   runningAt?: string | null;
+  queuePosition?: number | null;
+  pauseRequested?: boolean;
   finishedAt: string | null;
   exitCode: number | null;
   output: string;
