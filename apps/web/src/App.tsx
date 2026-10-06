@@ -153,7 +153,7 @@ import { useSleepTimer } from "./useSleepTimer";
 import { useShelf } from "./useShelf";
 import { usePurchases } from "./usePurchases";
 import { useCarPlay } from "./useCarPlay";
-import type { PendingSeek, QueuedProgressSave } from "./playbackTypes";
+import type { LibraryProgressReplay, PendingSeek, QueuedProgressSave } from "./playbackTypes";
 import { useReadalong } from "./useReadalong";
 import { useOfflineDownloads } from "./useOfflineDownloads";
 import { useBookCompletion } from "./useBookCompletion";
@@ -532,7 +532,7 @@ function MainApp({
   const saveStartedAt = useRef(0);
   const playWhenTrackLoads = useRef(false);
   const progressSaveDrainPromiseRef = useRef<Promise<void> | null>(null);
-  const libraryProgressReplaysRef = useRef(new Map<string, Promise<void>>());
+  const libraryProgressReplaysRef = useRef(new Map<string, Promise<LibraryProgressReplay>>());
   const progressSaveAbortController = useRef<AbortController | null>(null);
   const queuedProgressSaves = useRef<Map<string, QueuedProgressSave>>(new Map());
   const progressMutationVersion = useRef(0);
