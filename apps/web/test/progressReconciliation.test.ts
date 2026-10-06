@@ -732,10 +732,12 @@ for (const laterTrack of [false, true]) {
             // Let the library store its acknowledgement before recovery answers.
             await new Promise(resolve => setImmediate(resolve));
           }
-          if (progress.baseUpdatedAt !== undefined && progress.baseUpdatedAt !== server.updatedAt) {
+          if ((progress.baseUpdatedAt !== undefined && progress.baseUpdatedAt !== server.updatedAt)
+            || (progress.baseUpdatedAt === undefined
+              && reliability.progressTimestamp(progress.updatedAt) + 300_000 < reliability.progressTimestamp(server.updatedAt))) {
             return { ...server, accepted: false };
           }
-          server = { ...server, ...progress, updatedAt: String(Number(server.updatedAt) + 1), accepted: true };
+          server = { ...server, ...progress, updatedAt: String(Math.max(Date.parse("2026-09-30T13:00:00Z"), Number(server.updatedAt) + 1)), accepted: true };
           return server;
         };
         await loadHook("useLibrary", f.dependencies)(f.options).loadBooks();
@@ -928,3 +930,49 @@ test("a failed earlier replay does not prevent the next library replay", async (
   assert.equal(f.writes[0].progress.positionSeconds, 1060);
   assert.equal(f.options.libraryProgressReplaysRef.current.size, 0);
 });
+
+for (const restoreFirst of [false, true]) {
+  test(`a superseding library load preserves the earlier save acknowledgement with restore ${restoreFirst ? "before" : "after"} refresh`, async () => {
+    const f = fixture();
+    f.write(f.local);
+    f.options.nativeAudio = true;
+    f.dependencies["./nativeAudio"].getNativeAudioRecovery = async () => ({
+      trackId: "track", positionSeconds: 1800, bookPositionSeconds: 1800, durationSeconds: 7200,
+      updatedAt: Date.parse("2026-09-30T12:05:00Z")
+    });
+    const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+    f.options.storeCanonicalServerProgress = sync.storeCanonicalServerProgress;
+    let server = f.server;
+    let releaseReplay!: () => void;
+    const pending = new Promise<void>(resolve => { releaseReplay = resolve; });
+    let replayStarted!: () => void;
+    const started = new Promise<void>(resolve => { replayStarted = resolve; });
+    f.dependencies["./api"].getProgress = async () => server;
+    f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+      f.writes.push({ progress, options });
+      if (f.writes.length === 1) { replayStarted(); await pending; }
+      if (progress.baseUpdatedAt !== server.updatedAt) return { ...server, accepted: false };
+      server = { ...server, ...progress, updatedAt: String(Number(server.updatedAt) + 1), accepted: true };
+      return server;
+    };
+    const library = loadHook("useLibrary", f.dependencies)(f.options);
+    await library.loadBooks();
+    await started;
+    let restoring: Promise<void>;
+    if (restoreFirst) {
+      restoring = f.restore();
+      await new Promise(resolve => setImmediate(resolve));
+      await library.loadBooks();
+    } else {
+      await library.loadBooks();
+      restoring = f.restore();
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.equal(f.seeks[0].positionSeconds, 1800);
+    releaseReplay();
+    await restoring;
+    assert.equal(f.seeks.at(-1)!.positionSeconds, 1800);
+    assert.equal(server.bookPositionSeconds, 1800);
+    assert.equal(f.writes.length, 2);
+  });
+}
