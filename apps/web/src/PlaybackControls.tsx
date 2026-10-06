@@ -357,11 +357,16 @@ export function ScrubSlider({
 }) {
   const [dragValue, setDragValue] = useState<number | null>(null);
   const pendingRef = useRef<number | null>(null);
+  const holdingRef = useRef(false);
   const displayedValue = dragValue ?? value;
   const progressPercent = max > 0
     ? Math.min(100, Math.max(0, (displayedValue / max) * 100))
     : 0;
+  const hold = () => {
+    holdingRef.current = true;
+  };
   const commit = () => {
+    holdingRef.current = false;
     if (pendingRef.current !== null) {
       onCommit(pendingRef.current);
       pendingRef.current = null;
@@ -370,6 +375,7 @@ export function ScrubSlider({
     onPreview?.(null);
   };
   const cancel = () => {
+    holdingRef.current = false;
     pendingRef.current = null;
     setDragValue(null);
     onPreview?.(null);
@@ -386,9 +392,20 @@ export function ScrubSlider({
       onChange={(event) => {
         const next = Number(event.currentTarget.value);
         pendingRef.current = next;
+        // iOS WebKit reports a tap on the track only after the touch has
+        // ended. With nothing held there is no ending event left to wait
+        // for: keeping the value would pin the thumb and clock while playback
+        // carries on, and the next touch would seek to this one's position.
+        if (!holdingRef.current) {
+          commit();
+          return;
+        }
         setDragValue(next);
         onPreview?.(next);
       }}
+      onPointerDown={hold}
+      onTouchStart={hold}
+      onKeyDown={hold}
       onPointerUp={commit}
       onPointerCancel={cancel}
       onTouchEnd={commit}
