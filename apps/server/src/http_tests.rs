@@ -6019,6 +6019,55 @@ async fn full_sync_accepts_a_durable_batch_or_none_when_storage_fails() {
 }
 
 #[tokio::test]
+async fn update_before_batch_dispatch_preserves_every_accepted_job() {
+    let mut server = TestServer::start(3).await;
+    let cli = server._root.path().join("sync-cli");
+    fs::write(&cli, "fixture").await.unwrap();
+    server.state.alignment_config.cli_path = Some(cli);
+    let book_ids = server
+        .state
+        .library
+        .read()
+        .await
+        .books
+        .iter()
+        .map(|book| book.id.clone())
+        .collect();
+    assert_eq!(
+        crate::sync::enqueue_sync_batch(server.state.clone(), book_ids)
+            .await
+            .unwrap(),
+        (3, 0)
+    );
+    // This current-thread test signals the pause before the detached dispatcher
+    // gets a turn. The pause must wait for that dispatcher to release its guard.
+    let pause = tokio::time::timeout(
+        Duration::from_secs(5),
+        crate::sync::pause_for_update(&server.state),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let accepted = server.state.jobs.read().await.clone();
+    assert_eq!(accepted.len(), 3);
+    for job in accepted.values() {
+        assert_eq!(job.status, "queued");
+        assert!(job.resume_pending);
+        assert!(job.error.is_none());
+    }
+    pause.keep();
+    server.state.jobs.write().await.clear();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    let recovered = server.state.jobs.read().await;
+    assert_eq!(recovered.len(), accepted.len());
+    for (id, original) in accepted {
+        assert_eq!(recovered[&id].target_id, original.target_id);
+        assert_eq!(recovered[&id].status, "queued");
+        assert!(recovered[&id].resume_pending);
+    }
+}
+
+#[tokio::test]
 async fn recovered_sync_starts_work_once_under_its_original_id() {
     let mut server = TestServer::start(1).await;
     let owner = server.setup_owner().await;
