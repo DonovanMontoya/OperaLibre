@@ -11,6 +11,8 @@ import {
   freshestProgress,
   progressNeedsSync,
   progressAfterSave,
+  progressTimestamp,
+  pendingProgress,
   readProgressCheckpoint,
   resolveActivePlaybackBookId,
   resolveBookId,
@@ -228,6 +230,13 @@ export function useLibrary({
               && progressAfterSave(local, previousResult.attempted, previousResult.saved) === previousResult.saved) {
               storeCanonicalServerProgress(book, previousResult.saved, previousResult.attempted, checkpoint);
               return previousResult;
+            }
+            if (!local.syncStatus && previousResult.saved.accepted === true
+              && progressTimestamp(local.updatedAt) >= progressTimestamp(
+                previousResult.attempted.localUpdatedAt ?? previousResult.attempted.updatedAt)) {
+              // A later legacy mutation can follow this device's explicit
+              // acknowledgement, without inventing a base from the shelf.
+              local = pendingProgress(local, local);
             }
             for (const { attempted, saved } of previousResult.acknowledgements) {
               local = rebasePendingProgress(local, attempted, saved);
