@@ -1189,3 +1189,59 @@ for (const cacheReplay of [false, true]) {
     assert.equal(server.bookPositionSeconds, 1800);
   });
 }
+
+for (const settled of [false, true]) {
+  test(`a later unmarked checkpoint follows its own accepted replay with restore ${settled ? "after" : "during"} the later save`, async () => {
+    const f = fixture();
+    const legacy = { ...f.server, positionSeconds: 1060, bookPositionSeconds: 1060,
+      updatedAt: "2026-09-30T12:01:00Z" };
+    f.write(legacy);
+    f.options.nativeAudio = true;
+    f.dependencies["./nativeAudio"].getNativeAudioRecovery = async () => ({
+      trackId: "track", positionSeconds: 1800, bookPositionSeconds: 1800, durationSeconds: 7200,
+      updatedAt: Date.parse("2026-09-30T12:05:00Z")
+    });
+    const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+    f.options.storeCanonicalServerProgress = sync.storeCanonicalServerProgress;
+    let server = f.server;
+    const releases: Array<() => void> = [];
+    const starts: Array<() => void> = [];
+    const started = [0, 1].map(i => new Promise<void>(resolve => { starts[i] = resolve; }));
+    const pending = [0, 1].map(i => new Promise<void>(resolve => { releases[i] = resolve; }));
+    f.dependencies["./api"].getProgress = async () => server;
+    f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+      const i = f.writes.length;
+      f.writes.push({ progress, options });
+      if (i < 2) { starts[i](); await pending[i]; }
+      const rejected = progress.baseUpdatedAt !== undefined
+        ? progress.baseUpdatedAt !== server.updatedAt
+        : reliability.progressTimestamp(progress.updatedAt) + 300_000 < reliability.progressTimestamp(server.updatedAt);
+      if (rejected) return { ...server, accepted: false };
+      server = { ...server, ...progress, updatedAt: String(Math.max(Date.parse("2026-09-30T13:00:00Z"),
+        Number(server.updatedAt) + 1)), accepted: true };
+      return server;
+    };
+    const library = loadHook("useLibrary", f.dependencies)(f.options);
+    await library.loadBooks();
+    await started[0];
+    f.write({ ...legacy, positionSeconds: 1200, bookPositionSeconds: 1200, updatedAt: "2026-09-30T12:02:00Z" });
+    await library.loadBooks();
+    releases[0]();
+    await started[1];
+    const replay = f.options.libraryProgressReplaysRef.current.get("book");
+    let restoring: Promise<void>;
+    if (settled) {
+      releases[1]();
+      await replay;
+      restoring = f.restore();
+    } else {
+      restoring = f.restore();
+      await new Promise(resolve => setImmediate(resolve));
+      releases[1]();
+    }
+    await restoring;
+    assert.equal(f.seeks.at(-1)!.positionSeconds, 1800);
+    assert.equal(f.checkpoint().positionSeconds, 1800);
+    assert.equal(server.bookPositionSeconds, 1800);
+  });
+}
