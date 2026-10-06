@@ -242,7 +242,12 @@ export function usePlaybackRestore({
         const replayed = await libraryReplay.catch(() => null);
         if (cancelled || playbackActionVersionRef.current !== restoreActionVersion) return;
         if (freshestLocal && replayed) {
-          const rebased = rebasePendingProgress(freshestLocal, replayed.attempted, replayed.saved);
+          let rebased = freshestLocal;
+          // Recovery may join after several saves advanced the revision while
+          // its on-disk copy still carries an earlier base in that same chain.
+          for (const { attempted, saved } of replayed.acknowledgements) {
+            rebased = rebasePendingProgress(rebased, attempted, saved);
+          }
           if (rebased !== freshestLocal) {
             freshestLocal = rebased;
             const acknowledgedReplay = readProgressCheckpoint(

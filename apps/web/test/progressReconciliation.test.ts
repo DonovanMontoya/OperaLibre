@@ -1014,7 +1014,11 @@ for (const cacheReplay of [false, true]) {
       const replay = f.options.libraryProgressReplaysRef.current.get("book");
       releaseReplay();
       await replay;
-      assert.equal(f.writes[1].progress.baseUpdatedAt, String(Number(f.server.updatedAt) + 1));
+      if (editDuringReplay) {
+        assert.equal(f.writes[1].progress.baseUpdatedAt, String(Number(f.server.updatedAt) + 1));
+      } else {
+        assert.equal(f.writes.length, 1, "an acknowledged checkpoint must not be sent twice");
+      }
       assert.equal(f.checkpoint().syncStatus, "synced");
       assert.equal(f.checkpoint().positionSeconds, editDuringReplay ? 1200 : 1060);
       await f.restore();
@@ -1073,3 +1077,115 @@ test("acknowledged native recovery is not uploaded again on the next cold start"
   assert.equal(next.seeks[0].positionSeconds, 1800);
   assert.deepEqual(next.writes, []);
 });
+
+for (const cacheReplay of [false, true]) {
+  for (const crossTrack of [false, true]) {
+    for (const rejected of [false, true]) {
+      test(`restore joins ${rejected ? "a rejected" : "an accepted"} rebased later edit from ${cacheReplay ? "cache" : "journal"} ${crossTrack ? "across tracks" : "within a track"}`, async () => {
+        const f = fixture();
+        let cached = f.local;
+        if (cacheReplay) {
+          f.write(reliability.syncedProgress(f.server, "2026-09-30T11:55:00Z"));
+          f.dependencies["./offline"].getCachedProgress = async () => cached;
+        } else f.write(f.local);
+        if (crossTrack) f.book.tracks.push({ id: "next-track", durationSeconds: 7200 });
+        const trackId = crossTrack ? "next-track" : "track";
+        const bookPositionSeconds = crossTrack ? 9000 : 1800;
+        f.options.nativeAudio = true;
+        f.dependencies["./nativeAudio"].getNativeAudioRecovery = async () => ({
+          trackId, positionSeconds: 1800, bookPositionSeconds, durationSeconds: 7200,
+          updatedAt: Date.parse("2026-09-30T12:05:00Z")
+        });
+        const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+        f.options.storeCanonicalServerProgress = sync.storeCanonicalServerProgress;
+        let server = f.server;
+        const releases: Array<() => void> = [];
+        const starts: Array<() => void> = [];
+        const started = [0, 1].map(i => new Promise<void>(resolve => { starts[i] = resolve; }));
+        const pending = [0, 1].map(i => new Promise<void>(resolve => { releases[i] = resolve; }));
+        f.dependencies["./api"].getProgress = async () => server;
+        f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+          const i = f.writes.length;
+          f.writes.push({ progress, options });
+          if (i < 2) { starts[i](); await pending[i]; }
+          if (i === 1 && rejected) {
+            server = { ...server, positionSeconds: 1400, bookPositionSeconds: 1400,
+              updatedAt: String(Number(server.updatedAt) + 1) };
+            return { ...server, accepted: false };
+          }
+          if (progress.baseUpdatedAt !== server.updatedAt) return { ...server, accepted: false };
+          server = { ...server, ...progress, updatedAt: String(Number(server.updatedAt) + 1), accepted: true };
+          return server;
+        };
+        const library = loadHook("useLibrary", f.dependencies)(f.options);
+        await library.loadBooks();
+        await started[0];
+        const edited = reliability.pendingProgress({ ...f.local, positionSeconds: 1200,
+          bookPositionSeconds: 1200, updatedAt: "2026-09-30T12:00:00Z" }, f.local);
+        if (cacheReplay) cached = edited;
+        else f.write(edited);
+        await library.loadBooks();
+        releases[0]();
+        await started[1];
+        assert.equal(f.writes[1].progress.baseUpdatedAt, server.updatedAt);
+        const restoring = f.restore();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(f.seeks[0], { trackId, positionSeconds: 1800 });
+        releases[1]();
+        await restoring;
+        assert.deepEqual(f.seeks.at(-1), rejected
+          ? { trackId: "track", positionSeconds: 1400 } : { trackId, positionSeconds: 1800 });
+        assert.equal(server.bookPositionSeconds, rejected ? 1400 : bookPositionSeconds);
+        if (rejected) assert.equal(f.writes[2].progress.baseUpdatedAt, String(Number(f.server.updatedAt) + 1));
+      });
+    }
+  }
+}
+
+for (const cacheReplay of [false, true]) {
+  test(`a superseding load acknowledges an unchanged legacy ${cacheReplay ? "cache" : "journal"} before checking the newer shelf`, async () => {
+    const f = fixture();
+    const legacy = { ...f.server, positionSeconds: 1060, bookPositionSeconds: 1060,
+      updatedAt: "2026-09-30T12:01:00Z" };
+    if (cacheReplay) {
+      f.dependencies["./offline"].getCachedProgress = async () => legacy;
+    } else f.write(legacy);
+    f.options.nativeAudio = true;
+    f.dependencies["./nativeAudio"].getNativeAudioRecovery = async () => ({
+      trackId: "track", positionSeconds: 1800, bookPositionSeconds: 1800, durationSeconds: 7200,
+      updatedAt: Date.parse("2026-09-30T12:05:00Z")
+    });
+    const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+    f.options.storeCanonicalServerProgress = sync.storeCanonicalServerProgress;
+    let server = f.server;
+    let releaseReplay!: () => void;
+    const pending = new Promise<void>(resolve => { releaseReplay = resolve; });
+    let replayStarted!: () => void;
+    const started = new Promise<void>(resolve => { replayStarted = resolve; });
+    f.dependencies["./api"].getBooks = async () => [{ ...f.book, progress: { ...server, status: "inProgress" } }];
+    f.dependencies["./api"].getProgress = async () => server;
+    f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+      f.writes.push({ progress, options });
+      if (progress.baseUpdatedAt !== undefined && progress.baseUpdatedAt !== server.updatedAt) {
+        return { ...server, accepted: false };
+      }
+      server = { ...server, ...progress, updatedAt: String(Math.max(
+        Date.parse("2026-09-30T13:00:00Z"), Number(server.updatedAt) + 1)), accepted: true };
+      if (f.writes.length === 1) { replayStarted(); await pending; }
+      return server;
+    };
+    const library = loadHook("useLibrary", f.dependencies)(f.options);
+    await library.loadBooks();
+    await started;
+    await library.loadBooks();
+    const replay = f.options.libraryProgressReplaysRef.current.get("book");
+    releaseReplay();
+    await replay;
+    assert.equal(f.writes.length, 1);
+    assert.equal(f.checkpoint().syncStatus, "synced");
+    assert.equal(f.checkpoint().localUpdatedAt, legacy.updatedAt);
+    await f.restore();
+    assert.equal(f.seeks.at(-1)!.positionSeconds, 1800);
+    assert.equal(server.bookPositionSeconds, 1800);
+  });
+}

@@ -10,6 +10,7 @@ import type { AuthUser, Book, LibationBook, Progress } from "./types";
 import {
   freshestProgress,
   progressNeedsSync,
+  progressAfterSave,
   readProgressCheckpoint,
   resolveActivePlaybackBookId,
   resolveBookId,
@@ -223,7 +224,14 @@ export function useLibrary({
           if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
           let local = freshestProgress(mappedDevice, checkpoint, cached);
           if (local && previousResult) {
-            local = rebasePendingProgress(local, previousResult.attempted, previousResult.saved);
+            if (previousResult.saved.accepted === true
+              && progressAfterSave(local, previousResult.attempted, previousResult.saved) === previousResult.saved) {
+              storeCanonicalServerProgress(book, previousResult.saved, previousResult.attempted, checkpoint);
+              return previousResult;
+            }
+            for (const { attempted, saved } of previousResult.acknowledgements) {
+              local = rebasePendingProgress(local, attempted, saved);
+            }
           }
           const serverBook = serverBooks.find((candidate) => candidate.id === book.id);
           const seekIntent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id);
@@ -258,7 +266,8 @@ export function useLibrary({
           }
           // Keep the outcome even when a superseding load or a different
           // journal copy prevents its acknowledgement from being persisted.
-          return { attempted, saved };
+          return { attempted, saved,
+            acknowledgements: [...previousResult?.acknowledgements ?? [], { attempted, saved }] };
         })();
         libraryProgressReplaysRef.current.set(book.id, replay);
         return replay.finally(() => {
