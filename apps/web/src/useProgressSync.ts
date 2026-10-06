@@ -251,7 +251,8 @@ export function useProgressSync({
               bookPositionSeconds: entry.progress.bookPositionSeconds,
               durationSeconds: entry.progress.durationSeconds,
               updatedAt: entry.progress.updatedAt,
-              baseUpdatedAt: entry.progress.baseUpdatedAt
+              baseUpdatedAt: entry.progress.baseUpdatedAt,
+              recording: entry.progress.recording
             },
             {
               isPaused: entry.isPaused,
@@ -297,7 +298,7 @@ export function useProgressSync({
             // server's canonical response. Without this, the same stale copy
             // wins every restart and is retried indefinitely.
             const book = books.find((candidate) => candidate.id === entry.bookId);
-            if (book) storeCanonicalServerProgress(book, saved);
+            if (book) storeCanonicalServerProgress(book, saved, entry.progress);
             if (saveWasOverruled(entry.progress, saved)) {
               overruledSaveRef.current.set(entry.bookId, entry.progress);
               // Move an idle player off the refused position now, not at the
@@ -363,7 +364,7 @@ export function useProgressSync({
     const acknowledgedCheckpoint = saved.accepted === true ? attempted ?? local : null;
     const recordedAt = acknowledgedCheckpoint?.localUpdatedAt
       ?? acknowledgedCheckpoint?.updatedAt ?? local?.localUpdatedAt;
-    const canonical = syncedProgress(saved, recordedAt);
+    const canonical = syncedProgress(saved, recordedAt, acknowledgedCheckpoint);
     if (saved.accepted === false && local) {
       // Healing the durable position does not move an active/native engine.
       // Keep its rejected base across autosaves, background recovery and

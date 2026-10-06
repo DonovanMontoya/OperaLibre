@@ -6,6 +6,56 @@ import * as carLibrary from "../src/carLibrary.ts";
 import * as seekIntent from "../src/progressSeekIntent.ts";
 import type { Progress } from "../src/types.ts";
 
+for (const laterTrack of [false, true]) {
+  for (const foreignWrite of [false, true]) {
+    test(`lost save confirmation preserves native recovery ${laterTrack ? "across tracks" : "within a track"} ${foreignWrite ? "unless another client writes the same position" : "after an offline retry"}`, async () => {
+      const f = fixture();
+      f.write(f.local);
+      if (laterTrack) f.book.tracks.push({ id: "next-track", durationSeconds: 7200 });
+      const trackId = laterTrack ? "next-track" : "track";
+      const bookPositionSeconds = laterTrack ? 9000 : 1800;
+      f.options.nativeAudio = true;
+      f.dependencies["./nativeAudio"].getNativeAudioRecovery = async () => ({
+        trackId, positionSeconds: 1800, bookPositionSeconds, durationSeconds: 7200,
+        updatedAt: Date.parse("2026-09-30T12:05:00Z")
+      });
+      const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+      f.options.storeCanonicalServerProgress = sync.storeCanonicalServerProgress;
+      let server = f.server;
+      f.dependencies["./api"].getProgress = async () => server;
+      f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+        f.writes.push({ progress, options });
+        const ownRecording = progress.recording && server.recording
+          && progress.recording.id === server.recording.id;
+        const duplicate = ownRecording && progress.recording!.sequence === server.recording!.sequence
+          && progress.trackId === server.trackId && progress.bookPositionSeconds === server.bookPositionSeconds;
+        if (duplicate) return { ...server, accepted: true };
+        if (progress.baseUpdatedAt !== server.updatedAt
+          && !(ownRecording && progress.recording!.sequence > server.recording!.sequence)) {
+          return { ...server, accepted: false };
+        }
+        server = { ...server, ...progress, updatedAt: String(Number(server.updatedAt) + 1), accepted: true };
+        if (f.writes.length === 1) throw new Error("response lost after server commit");
+        return server;
+      };
+      const library = loadHook("useLibrary", f.dependencies)(f.options);
+      await library.loadBooks();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(server.bookPositionSeconds, 1060);
+      assert.equal(f.checkpoint().syncStatus, "pending");
+      if (foreignWrite) server = { ...server, updatedAt: String(Number(server.updatedAt) + 1),
+        recording: { id: "ffffffffffffffffffffffffffffffff", sequence: 1 } };
+      // A retry may finish before the native restore starts on a cold launch.
+      await library.loadBooks();
+      await new Promise(resolve => setImmediate(resolve));
+      await f.restore();
+      assert.equal(server.bookPositionSeconds, foreignWrite ? 1060 : bookPositionSeconds);
+      assert.equal(f.seeks.at(-1)!.positionSeconds, foreignWrite ? 1060 : 1800);
+      assert.equal(f.seeks.at(-1)!.trackId, foreignWrite ? "track" : trackId);
+    });
+  }
+}
+
 
 function fixture() {
   const values = new Map<string, string>();
@@ -103,6 +153,84 @@ function controlsFor(f: ReturnType<typeof fixture>) {
     "./playbackGain": {}, "./bookVolume": {}, "./carPlay": {}, "./playbackPending": {},
     "./native": {}, "./nativeAudioStartup": {}, "./playbackSpeed": {}
   })({ ...f.options, playbackBook: null, persistProgress: () => {} });
+}
+
+test("a first native recovery journals its identity before a lost reply and survives another cold start", async () => {
+  const f = fixture();
+  f.write(reliability.syncedProgress(f.server, "2026-09-30T11:55:00Z"));
+  f.options.nativeAudio = true;
+  f.dependencies["./nativeAudio"].getNativeAudioRecovery = async () => ({
+    trackId: "track", positionSeconds: 1800, bookPositionSeconds: 1800, durationSeconds: 7200,
+    updatedAt: Date.parse("2026-09-30T12:05:00Z")
+  });
+  let server = f.server;
+  f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress) => {
+    assert.deepEqual(f.checkpoint().recording, progress.recording);
+    server = { ...server, ...progress, updatedAt: "1790769600001", accepted: true };
+    throw new Error("response lost");
+  };
+  await f.restore();
+  const reopened = fixture();
+  reopened.write(f.checkpoint());
+  reopened.options.nativeAudio = true;
+  reopened.dependencies["./nativeAudio"].getNativeAudioRecovery = async () => ({
+    trackId: "track", positionSeconds: 2000, bookPositionSeconds: 2000, durationSeconds: 7200,
+    updatedAt: Date.parse("2026-09-30T12:10:00Z")
+  });
+  reopened.dependencies["./api"].getProgress = async () => server;
+  reopened.dependencies["./api"].saveProgress = async (_book: string, progress: Progress) => {
+    const own = progress.recording?.id === server.recording?.id
+      && progress.recording!.sequence > server.recording!.sequence;
+    if (progress.baseUpdatedAt !== server.updatedAt && !own) return { ...server, accepted: false };
+    server = { ...server, ...progress, updatedAt: "1790769600002", accepted: true };
+    return server;
+  };
+  await reopened.restore();
+  assert.equal(server.bookPositionSeconds, 2000);
+  assert.equal(reopened.seeks.at(-1)!.positionSeconds, 2000);
+});
+
+for (const nativeAudio of [false, true]) {
+  test(`a lost ${nativeAudio ? "native" : "web"} pause confirmation survives offline ticks and foreground retry`, async () => {
+    const f = fixture();
+    f.write(reliability.syncedProgress(f.server));
+    f.options.nativeAudio = nativeAudio;
+    f.options.nativeForegroundSyncGateRef.current.shouldDeferServerAdoption = () => false;
+    f.options.restoredProgressBookId.current = "book";
+    f.options.playbackTouchedRef.current = true;
+    f.options.audioRef.current.currentTime = 1060;
+    let server = f.server;
+    let offline = false;
+    let loseReply = true;
+    Object.assign(f.dependencies["./api"], { getFreshProgress: async () => server });
+    f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+      f.writes.push({ progress, options });
+      if (offline) throw new Error("offline");
+      const own = progress.recording && server.recording
+        && progress.recording.id === server.recording.id && progress.recording.sequence > server.recording.sequence;
+      if (progress.baseUpdatedAt !== server.updatedAt && !own) return { ...server, accepted: false };
+      server = { ...server, ...progress, updatedAt: String(Number(server.updatedAt) + 1), accepted: true };
+      if (loseReply) { loseReply = false; throw new Error("reply lost after save"); }
+      return server;
+    };
+    const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+    await sync.persistProgress();
+    assert.equal(server.bookPositionSeconds, 1060);
+    offline = true;
+    for (const position of [1200, 1500, 1800]) {
+      f.options.audioRef.current.currentTime = position;
+      await sync.persistProgress();
+    }
+    Object.assign(globalThis, { document: { visibilityState: "visible" } });
+    await sync.foregroundProgressActionsRef.current.adoptNewerServerProgress();
+    assert.equal(f.checkpoint().bookPositionSeconds, 1800);
+    assert.equal(f.seeks.length, 0);
+    offline = false;
+    await sync.persistProgress();
+    assert.equal(server.bookPositionSeconds, 1800);
+    assert.equal(f.checkpoint().syncStatus, "synced");
+    assert.equal(f.options.overruledSaveRef.current.size, 0);
+  });
 }
 
 for (const store of ["journal", "cache", "device"] as const) {
@@ -1149,8 +1277,9 @@ test("acknowledged native recovery is not uploaded again on the next cold start"
 
 for (const cacheReplay of [false, true]) {
   for (const crossTrack of [false, true]) {
-    for (const rejected of [false, true]) {
-      test(`restore joins ${rejected ? "a rejected" : "an accepted"} rebased later edit from ${cacheReplay ? "cache" : "journal"} ${crossTrack ? "across tracks" : "within a track"}`, async () => {
+    for (const { rejected, unavailable } of [false, true].flatMap(rejected =>
+      (cacheReplay ? [false, true] : [false]).map(unavailable => ({ rejected, unavailable })))) {
+      test(`restore joins ${rejected ? "a rejected" : "an accepted"} rebased later edit from ${cacheReplay ? "cache" : "journal"} ${crossTrack ? "across tracks" : "within a track"}${unavailable ? " with unavailable recovery stores" : ""}`, async () => {
         const f = fixture();
         let cached = f.local;
         if (cacheReplay) {
@@ -1179,9 +1308,12 @@ for (const cacheReplay of [false, true]) {
           if (i < 2) { starts[i](); await pending[i]; }
           if (i === 1 && rejected) {
             server = { ...server, positionSeconds: 1400, bookPositionSeconds: 1400,
-              updatedAt: String(Number(server.updatedAt) + 1) };
+              updatedAt: String(Number(server.updatedAt) + 1),
+              recording: { id: "ffffffffffffffffffffffffffffffff", sequence: 1 } };
             return { ...server, accepted: false };
           }
+          if (progress.recording && server.recording && progress.recording.id === server.recording.id
+            && progress.recording.sequence <= server.recording.sequence) return { ...server, accepted: false };
           if (progress.baseUpdatedAt !== server.updatedAt) return { ...server, accepted: false };
           server = { ...server, ...progress, updatedAt: String(Number(server.updatedAt) + 1), accepted: true };
           return server;
@@ -1193,10 +1325,12 @@ for (const cacheReplay of [false, true]) {
           bookPositionSeconds: 1200, updatedAt: "2026-09-30T12:00:00Z" }, f.local);
         if (cacheReplay) cached = edited;
         else f.write(edited);
+        if (unavailable) f.storage.setItem = () => { throw new Error("journal quota exceeded"); };
         await library.loadBooks();
         releases[0]();
         await started[1];
         assert.equal(f.writes[1].progress.baseUpdatedAt, server.updatedAt);
+        if (unavailable) f.dependencies["./offline"].getCachedProgress = async () => { throw new Error("cache unavailable"); };
         const restoring = f.restore();
         await new Promise(resolve => setImmediate(resolve));
         assert.deepEqual(f.seeks[0], { trackId, positionSeconds: 1800 });

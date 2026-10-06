@@ -3316,6 +3316,128 @@ async fn only_an_owner_can_export_server_backups() {
 }
 
 #[tokio::test]
+async fn a_backup_archives_recording_receipts_but_restoration_ends_the_live_lineage() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&owner).await;
+    let recording = serde_json::json!({"id": "11111111111111111111111111111111", "sequence": 1});
+    let saved = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/progress"),
+            &owner,
+            serde_json::json!({"trackId": track, "positionSeconds": 14.0, "recording": recording}),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK);
+    let exported = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(
+        exported.json()["data"]["progress"][0]["progress"]["recording"],
+        recording
+    );
+    let restored = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/backup")
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(exported.body))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.text());
+    let current = server
+        .get(&format!("/api/books/{book}/progress"), &owner)
+        .await
+        .json();
+    assert_eq!(current["positionSeconds"], saved.json()["positionSeconds"]);
+    assert!(current["recording"].is_null());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_backup_restore_preserves_recording_receipts_for_lost_confirmation_recovery() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut server = TestServer::start(1).await;
+    let identity_dir = server._root.path().join("identities");
+    std::fs::create_dir_all(&identity_dir).unwrap();
+    let identities = load_library_identities(&server.state.library_identities_file)
+        .await
+        .unwrap();
+    server.state.library_identities_file = identity_dir.join("library-identities.json");
+    write_json_atomic(&server.state.library_identities_file, &identities)
+        .await
+        .unwrap();
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    let owner = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&owner).await;
+    let path = format!("/api/books/{book}/progress");
+    let initial = server
+        .send_json(
+            "PUT",
+            &path,
+            &owner,
+            serde_json::json!({"trackId": track, "positionSeconds": 2.0}),
+        )
+        .await
+        .json();
+    let recording = serde_json::json!({"id": "11111111111111111111111111111111", "sequence": 1});
+    let committed = server
+        .send_json(
+            "PUT",
+            &path,
+            &owner,
+            serde_json::json!({
+                "trackId": track, "positionSeconds": 4.0,
+                "baseUpdatedAt": initial["updatedAt"], "recording": recording
+            }),
+        )
+        .await
+        .json();
+    assert_eq!(committed["accepted"], true);
+    let mut backup = server.get("/api/admin/backup", &owner).await.json();
+    backup["data"]["progress"][0]["progress"]["positionSeconds"] = serde_json::json!(1.0);
+    backup["data"]["progress"][0]["progress"]["bookPositionSeconds"] = serde_json::json!(1.0);
+
+    // Only the identity write fails; the database replacement and rollback
+    // can still commit in the fixture's separate writable data directory.
+    std::fs::set_permissions(&identity_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let restored = server
+        .send_json("POST", "/api/admin/backup", &owner, backup)
+        .await;
+    std::fs::set_permissions(&identity_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        restored.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        restored.text()
+    );
+    let current = server.get(&path, &owner).await.json();
+    assert_eq!(current["positionSeconds"], committed["positionSeconds"]);
+    assert_eq!(current["updatedAt"], committed["updatedAt"]);
+    assert_eq!(current["recording"], recording);
+
+    // The phone missed the committed reply and still has the original base.
+    let recovered = server
+        .send_json(
+            "PUT",
+            &path,
+            &owner,
+            serde_json::json!({
+                "trackId": track, "positionSeconds": 6.0,
+                "baseUpdatedAt": initial["updatedAt"],
+                "recording": {"id": recording["id"], "sequence": 2}
+            }),
+        )
+        .await
+        .json();
+    assert_eq!(recovered["accepted"], true);
+    assert_eq!(recovered["positionSeconds"], 6.0);
+}
+
+#[tokio::test]
 async fn restoring_a_backup_replaces_progress_accounts_and_reading_history() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;

@@ -229,11 +229,15 @@ export type Progress = {
   updatedAt: string;
   /** Present only on a checkpoint PUT response; false means the server retained its copy. */
   accepted?: boolean;
+  /** Identifies ordered checkpoints created by this local journal. */
+  recording?: { id: string; sequence: number };
   /** Device-only journal metadata; never compare a pending device clock to a server revision. */
   syncStatus?: "pending" | "synced";
   baseUpdatedAt?: string;
   acknowledgedUpdatedAt?: string;
   localUpdatedAt?: string;
+  /** Local ownership; a fetched recording identifier must never be inherited. */
+  localRecordingId?: string;
   /** Explicit reader choice; null/undefined means infer completion from position. */
   finishedOverride?: boolean | null;
 };

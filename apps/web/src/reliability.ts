@@ -65,15 +65,44 @@ export function writeProgressCheckpoint(
   serverKey: string,
   userId: string,
   progress: Progress
-): void {
+): boolean {
   try {
     storage.setItem(
       progressCheckpointKey(serverKey, userId, progress.bookId),
       JSON.stringify(progress)
     );
+    return true;
   } catch {
     // Storage can be unavailable in private browsing or under quota pressure.
+    return false;
   }
+}
+
+function newProgressRecording(): NonNullable<Progress["recording"]> {
+  return { id: Array.from(crypto.getRandomValues(new Uint8Array(16)),
+    value => value.toString(16).padStart(2, "0")).join(""), sequence: 1 };
+}
+
+function ownedProgressRecording(progress: Progress | null): Progress["recording"] {
+  const recording = progress?.recording;
+  return recording && recording.id === progress.localRecordingId
+    && /^[a-f0-9]{32}$/i.test(recording.id)
+    && Number.isSafeInteger(recording.sequence) && recording.sequence > 0
+    ? recording : undefined;
+}
+
+export function identifyProgressRecording(progress: Progress): Progress {
+  if (ownedProgressRecording(progress)) return progress;
+  const recording = newProgressRecording();
+  return { ...progress, recording, localRecordingId: recording.id };
+}
+
+/** Journal the wire identity before sending, without replacing an intervening edit. */
+export function journalProgressAttempt(storage: ProgressStorage, serverKey: string, userId: string,
+  attempted: Progress, observed: Progress | null): boolean {
+  const current = readProgressCheckpoint(storage, serverKey, userId, attempted.bookId);
+  return progressAfterSave(current, observed, attempted) === attempted
+    && writeProgressCheckpoint(storage, serverKey, userId, attempted);
 }
 
 export function readProgressCheckpoint(
@@ -216,6 +245,12 @@ export function pendingProgress(
   const inheritedBase = previous?.syncStatus
     ? previous.baseUpdatedAt ?? (previous.syncStatus === "synced" ? previous.updatedAt : undefined)
     : serverUpdatedAt ?? (previous ? undefined : "");
+  const previousRecording = ownedProgressRecording(previous);
+  const inheritedRecording = previousRecording
+    && previousRecording.sequence < Number.MAX_SAFE_INTEGER ? previousRecording : null;
+  const recording = inheritedRecording
+    ? { ...inheritedRecording, sequence: inheritedRecording.sequence + 1 }
+    : newProgressRecording();
   return {
     ...progress,
     syncStatus: "pending",
@@ -224,6 +259,8 @@ export function pendingProgress(
     // base; only a new listener seek may deliberately build on the reply.
     baseUpdatedAt: intentionalSeek ? acknowledgedUpdatedAt ?? inheritedBase : inheritedBase,
     acknowledgedUpdatedAt,
+    recording,
+    localRecordingId: recording.id,
     localUpdatedAt: new Date(Math.max(progressTimestamp(progress.updatedAt),
       progressTimestamp(previous?.localUpdatedAt ?? "0") + 1)).toISOString()
   };
@@ -233,8 +270,12 @@ export function serverRevisionFromSummary(summary: Pick<BookProgress, "updatedAt
   return summary?.serverUpdatedAt === undefined ? summary?.updatedAt : summary.serverUpdatedAt ?? undefined;
 }
 
-export function syncedProgress(progress: Progress, localUpdatedAt = new Date().toISOString()): Progress {
-  return { ...progress, syncStatus: "synced", baseUpdatedAt: progress.updatedAt,
+export function syncedProgress(progress: Progress, localUpdatedAt = new Date().toISOString(), attempted?: Progress | null): Progress {
+  const owned = progress.accepted === true && progress.recording
+    && progress.recording.id === attempted?.localRecordingId
+    && progress.recording.sequence === attempted.recording?.sequence;
+  return { ...progress, localRecordingId: owned ? attempted.localRecordingId : undefined,
+    syncStatus: "synced", baseUpdatedAt: progress.updatedAt,
     acknowledgedUpdatedAt: progress.updatedAt, localUpdatedAt };
 }
 
@@ -255,7 +296,16 @@ export function progressNeedsSync(local: Progress | null, server: { updatedAt: s
 export function rebasePendingProgress(local: Progress, attempted: Progress, saved: Progress): Progress {
   if (saved.accepted !== true || local.syncStatus !== "pending" || local.baseUpdatedAt !== attempted.baseUpdatedAt
     || saved.trackId !== attempted.trackId) return local;
-  return { ...local, baseUpdatedAt: saved.updatedAt, acknowledgedUpdatedAt: saved.updatedAt };
+  const previousRecording = ownedProgressRecording(local);
+  // Recovery can read an older journal when cache reads or journal writes
+  // fail. An actual accepted receipt orders its newer edit after that save.
+  const recording = previousRecording && saved.recording?.id === previousRecording.id
+    && previousRecording.sequence <= saved.recording.sequence
+    ? saved.recording.sequence < Number.MAX_SAFE_INTEGER
+      ? { ...previousRecording, sequence: saved.recording.sequence + 1 } : newProgressRecording()
+    : previousRecording;
+  return { ...local, baseUpdatedAt: saved.updatedAt, acknowledgedUpdatedAt: saved.updatedAt,
+    ...(recording ? { recording, localRecordingId: recording.id } : {}) };
 }
 
 /** Mirrors the server's PROGRESS_NEAR_ZERO_SECONDS. */
@@ -266,6 +316,8 @@ export const PROGRESS_RESET_GUARD_SECONDS = 300;
 function isSameProgressRevision(left: Progress, right: Progress): boolean {
   return left.updatedAt === right.updatedAt
     && left.localUpdatedAt === right.localUpdatedAt
+    && left.recording?.id === right.recording?.id
+    && left.recording?.sequence === right.recording?.sequence
     && left.trackId === right.trackId
     && left.positionSeconds === right.positionSeconds
     && left.bookPositionSeconds === right.bookPositionSeconds;

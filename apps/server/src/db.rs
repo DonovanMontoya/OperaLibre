@@ -18,7 +18,7 @@ use crate::*;
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Bumped when the schema changes in a way `migrate` has to react to.
-pub(crate) const SCHEMA_VERSION: i64 = 3;
+pub(crate) const SCHEMA_VERSION: i64 = 4;
 
 /// Marks a database that is the authority over any legacy JSON files beside
 /// it: either it finished importing them, or it never had any to import.
@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS progress (
     duration_seconds      REAL,
     updated_at            TEXT NOT NULL,
     finished_override     INTEGER,
+    recording             TEXT,
     PRIMARY KEY (user_id, book_id)
 );
 CREATE INDEX IF NOT EXISTS progress_book ON progress (book_id);
@@ -147,6 +148,9 @@ pub(crate) fn open(path: &FsPath) -> anyhow::Result<Connection> {
             if version < 3 {
                 upgrade_v2_to_v3(&mut connection)?;
             }
+            if version < 4 {
+                upgrade_v3_to_v4(&mut connection)?;
+            }
         }
     }
     Ok(connection)
@@ -198,6 +202,16 @@ fn upgrade_v2_to_v3(connection: &mut Connection) -> anyhow::Result<()> {
         )?;
     }
     transaction.execute("UPDATE schema_version SET version = 3", [])?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn upgrade_v3_to_v4(connection: &mut Connection) -> anyhow::Result<()> {
+    let transaction = connection.transaction()?;
+    if !table_has_column(&transaction, "progress", "recording")? {
+        transaction.execute_batch("ALTER TABLE progress ADD COLUMN recording TEXT;")?;
+    }
+    transaction.execute("UPDATE schema_version SET version = 4", [])?;
     transaction.commit()?;
     Ok(())
 }
