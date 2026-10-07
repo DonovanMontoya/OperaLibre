@@ -401,7 +401,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                       <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null || queuedJobs[0]?.id === job.id} aria-label={`Move ${title} up in queue`} title="Move up" onClick={() => void changeJob(job.id, "up")}><ArrowUp size={14} /></button>
                       <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null || queuedJobs[queuedJobs.length - 1]?.id === job.id} aria-label={`Move ${title} down in queue`} title="Move down" onClick={() => void changeJob(job.id, "down")}><ArrowDown size={14} /></button>
                     </> : null}
-                    {job.status === "running" || job.status === "queued" ? <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null || job.pauseRequested} aria-label={`Pause sync for ${title}`} title="Pause after the current chapter or track" onClick={() => void changeJob(job.id, "pause")}><Pause size={14} /></button> : null}
+                    {job.status === "running" || job.status === "queued" ? <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null || job.pauseRequested} aria-label={`Pause sync for ${title}`} title="Pause sync and keep completed sections" onClick={() => void changeJob(job.id, "pause")}><Pause size={14} /></button> : null}
                     {job.status === "paused" ? <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null || !syncEnabled} aria-label={`Resume sync for ${title}`} title="Resume sync" onClick={() => void changeJob(job.id, "resume")}><Play size={14} /></button> : null}
                     <span className={`admin-sync-job-state admin-sync-job-state-${state.tone}`}>
                     {job.status === "running" ? <LoaderCircle size={11} className="spin-icon" aria-hidden="true" /> : null}
@@ -435,7 +435,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                     ) : null}
                   </div>
                 ) : job.status === "queued" ? <p className="admin-sync-job-step">{job.progress?.step ?? "Waiting for another sync to finish."}</p> : null}
-                {job.status === "running" && job.pauseRequested ? <p className="admin-sync-job-step">Finishing the current chapter or track before saving and pausing.</p> : null}
+                {job.status === "running" && job.pauseRequested ? <p className="admin-sync-job-step">Stopping the current section; completed chapters or tracks stay saved.</p> : null}
                 {job.status === "paused" ? <p className="admin-sync-job-step">{percent !== null ? `${percent}% saved. ` : "Completed sections are saved. "}Resume when ready; this sync stays paused across server restarts.</p> : null}
                 {job.status === "failed" ? (
                   <div className="admin-sync-job-failure">

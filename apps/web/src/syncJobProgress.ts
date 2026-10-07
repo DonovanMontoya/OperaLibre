@@ -51,7 +51,7 @@ export function describeSyncJob({
       : null,
     syncRemainingLabel ? `about ${syncRemainingLabel} left` : null,
     syncJobForBook?.status === "paused" ? "paused; resume in Administration → Experiments"
-      : syncJobForBook?.pauseRequested ? "pauses after the current chapter or track"
+      : syncJobForBook?.pauseRequested ? "pausing; completed sections stay saved"
       : "keeps running if you close the reader"
   ]
     .filter(Boolean)

@@ -6637,6 +6637,89 @@ async fn sync_queue_controls_require_admin_and_roll_back_failed_saves() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn manual_sync_pause_stops_alignment_and_releases_addon_update_lock() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    server
+        .add_companions_to_first_book(&owner, &[("Book 00.epub", alignment::build_test_epub())])
+        .await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    // A single track with no chapter metadata must still pause promptly.
+    server.state.library.write().await.books[0]
+        .tracks
+        .truncate(1);
+    let cli = server._root.path().join("sync-cli");
+    fs::write(
+        &cli,
+        r#"#!/bin/sh
+: > "$0.started"
+exec sleep 60
+"#,
+    )
+    .await
+    .unwrap();
+    fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
+        .await
+        .unwrap();
+    server.state.alignment_config.cli_path = Some(cli.clone());
+    let Json(created) = crate::sync::enqueue_sync_map(server.state.clone(), book_id)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !fs::try_exists(cli.with_extension("started")).await.unwrap() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        server
+            .state
+            .update_manager
+            .sync_lifecycle
+            .try_write()
+            .is_err()
+    );
+    let response = server
+        .send_json(
+            "PATCH",
+            &format!("/api/sync-jobs/{}", created.job_id),
+            &owner,
+            serde_json::json!({"action": "pause"}),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if server.state.jobs.read().await[&created.job_id].status == "paused"
+                && server
+                    .state
+                    .update_manager
+                    .sync_lifecycle
+                    .try_write()
+                    .is_ok()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("manual pause must release add-on update exclusion");
+    let persisted: Vec<JobStatus> = serde_json::from_slice(
+        &fs::read(server.state.database_path.with_file_name("sync-jobs.json"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(persisted[0].status, "paused");
+    assert!(persisted[0].pause_requested);
+    assert!(persisted[0].error.is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn server_update_interrupts_sync_and_recovers_checkpoint_without_unpausing_manual_jobs() {
     use std::os::unix::fs::PermissionsExt;
     let mut server = TestServer::start(1).await;
