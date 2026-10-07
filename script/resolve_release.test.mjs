@@ -126,3 +126,25 @@ test("a retried post-stable nightly must match the pinned source rather than mai
   assert.throws(() => releasePlan(options,
     (route) => route === "releases/latest" ? stable : { sha: scheduled.sha }, paginate([], tags)), /different commit/);
 });
+
+for (const [tag, expected] of [["0.4.8", false], ["v0.4.9", true], ["0.4.10", true],
+  ["0.3.99", false], ["0.5.0", true], ["1.0.0", true]]) {
+  test(`stable ${tag} ${expected ? "refreshes" : "preserves"} the nightly feed`, () => {
+    const result = releasePlan({ ...scheduled, channel: "stable", tag }, () => stable, paginate());
+    assert.equal(result.nightly_needed, expected);
+  });
+}
+
+test("historical rebuilds do not refresh nightly even if latest points at an older stable", () => {
+  const result = releasePlan({ ...scheduled, channel: "stable", tag: "0.4.9" }, () => stable,
+    paginate([{ ...stable, tag_name: "v0.4.10" }, { ...stable, tag_name: "0.5.0", draft: true }]));
+  assert.equal(result.nightly_needed, false);
+});
+
+test("first stable releases and promotions refresh nightly, while nightly builds do not recurse", () => {
+  assert.equal(releasePlan({ ...scheduled, channel: "stable" }, () => stable, () => []).nightly_needed, true);
+  assert.equal(releasePlan({ ...scheduled, channel: "stable", sourceNightly: publishedNightly.tag_name },
+    (route) => route === "releases/latest" ? stable : route.startsWith("releases/") ? publishedNightly : { sha: stableSource },
+    paginate()).nightly_needed, true);
+  assert.equal(releasePlan(scheduled, () => stable, paginate()).nightly_needed, false);
+});

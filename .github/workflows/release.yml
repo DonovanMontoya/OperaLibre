@@ -58,7 +58,7 @@ jobs:
   nightly:
     name: Nightly from stable source
     needs: release
-    if: github.event_name != 'repository_dispatch' && inputs.channel != 'nightly'
+    if: needs.release.outputs.nightly_needed == 'true'
     uses: ./.github/workflows/build-release.yml
     with:
       channel: nightly
