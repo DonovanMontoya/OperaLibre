@@ -5991,10 +5991,6 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
     justify-content: flex-end;
   }
 
-  .server-type-grid {
-    grid-template-columns: 1fr;
-  }
-
   .auth-card {
     padding: 1.65rem 1.25rem;
   }
@@ -6382,49 +6378,6 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   outline-offset: 1px;
 }
 
-.server-type-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.65rem;
-}
-
-.server-type-grid button {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  min-width: 0;
-  padding: 0.7rem;
-  border: 1px solid rgba(var(--ink-rgb), 0.18);
-  border-radius: 9px;
-  background: rgba(var(--lift-rgb), 0.65);
-  color: var(--ink-soft);
-  text-align: left;
-  cursor: pointer;
-}
-
-.server-type-grid button.selected {
-  border-color: var(--oxblood);
-  background: rgba(139, 46, 31, 0.08);
-  color: var(--oxblood-deep);
-  box-shadow: inset 0 0 0 1px rgba(139, 46, 31, 0.16);
-}
-
-.server-type-grid button span {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.server-type-grid button strong {
-  font-size: 0.86rem;
-}
-
-.server-type-grid button small {
-  margin-top: 0.1rem;
-  color: var(--ink-faded);
-  font-size: 0.68rem;
-}
-
 .auth-submit {
   margin-top: 0.4rem;
   background: var(--oxblood);
@@ -6449,79 +6402,6 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   padding: 0.55rem 0.7rem;
   margin: 0;
   font-size: 0.9rem;
-}
-
-.auth-hint {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: -4px 0 0;
-  font-family: "Fraunces", serif;
-  font-style: italic;
-  font-size: 0.8rem;
-  color: var(--ink-faded);
-}
-
-.auth-hint code {
-  font-family: "JetBrains Mono", monospace;
-  font-style: normal;
-  font-size: 0.72rem;
-  letter-spacing: 0.04em;
-  padding: 2px 6px;
-  background: rgba(var(--ink-rgb), 0.06);
-  border: 1px solid rgba(var(--ink-rgb), 0.12);
-  color: var(--ink-soft);
-}
-
-.auth-secondary {
-  margin-top: 0.4rem;
-  background: transparent;
-  color: var(--ink);
-  border: 1px solid rgba(var(--ink-rgb), 0.2);
-  border-radius: 999px;
-  padding: 0.55rem 1rem;
-  font: inherit;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
-}
-
-.auth-secondary:hover {
-  background: var(--ink);
-  color: var(--on-ink);
-  border-color: var(--ink);
-}
-
-.auth-demo-separator {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  color: var(--ink-faded);
-  font: italic 0.78rem "Fraunces", serif;
-}
-
-.auth-demo-separator::before,
-.auth-demo-separator::after {
-  content: "";
-  height: 1px;
-  flex: 1;
-  background: rgba(var(--ink-rgb), 0.14);
-}
-
-.auth-demo-button {
-  margin-top: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-}
-
-.auth-card .auth-demo-note {
-  margin-top: -0.5rem;
-  text-align: center;
-  font-size: 0.76rem;
-  line-height: 1.45;
 }
 
 .auth-server-meta {
@@ -6561,6 +6441,291 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
 
 .auth-linklike:hover {
   color: var(--oxblood-deep);
+}
+
+/* Server connection. The startup loader's three volumes settle on their shelf
+   once, so this screen reads as the loader coming to rest. Below them are the
+   two ways in: a server, or a library that needs none. */
+.connect-page {
+  width: min(400px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.connect-brand {
+  display: grid;
+  justify-items: center;
+  gap: 0.65rem;
+}
+
+.connect-mark {
+  position: relative;
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  gap: 5px;
+  width: 86px;
+  height: 64px;
+  padding-bottom: 6px;
+}
+
+.connect-mark::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 3px;
+  left: 0;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--oxblood-deep);
+  box-shadow: 0 5px 12px rgba(79, 33, 23, 0.25);
+  animation: connect-shelf 0.6s cubic-bezier(0.22, 0.8, 0.25, 1) both;
+}
+
+.connect-mark i {
+  position: relative;
+  width: 18px;
+  height: 44px;
+  border: 1px solid rgba(255, 245, 218, 0.22);
+  border-radius: 2px 4px 4px 2px;
+  background: linear-gradient(90deg, #541c14, #8b2e1f 22%, #a8412c 78%, #682016);
+  box-shadow: inset 3px 0 rgba(28, 12, 8, 0.22), 0 8px 14px -9px rgba(26, 20, 16, 0.65);
+  transform-origin: 50% 100%;
+  animation: connect-book-settle 0.75s cubic-bezier(0.22, 0.8, 0.25, 1) 0.1s both;
+}
+
+.connect-mark i::before,
+.connect-mark i::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  left: 5px;
+  height: 1px;
+  background: rgba(230, 192, 116, 0.72);
+}
+
+.connect-mark i::before { top: 7px; }
+.connect-mark i::after { bottom: 7px; }
+
+.connect-mark i:nth-child(2) {
+  width: 21px;
+  height: 58px;
+  background: linear-gradient(90deg, #231710, #49301e 24%, #6c4a2b 78%, #2c1b12);
+  animation-delay: 0.18s;
+}
+
+.connect-mark i:nth-child(3) {
+  height: 50px;
+  animation-delay: 0.26s;
+}
+
+@keyframes connect-shelf {
+  from { transform: scaleX(0); }
+}
+
+@keyframes connect-book-settle {
+  from { opacity: 0; transform: translateY(22px) rotate(-5deg); }
+}
+
+.connect-wordmark {
+  font-family: "Fraunces", serif;
+  font-size: 1.35rem;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.connect-page h1 {
+  margin: 0.35rem 0 0.5rem;
+  text-align: center;
+  font-size: 2.3rem;
+  font-weight: 380;
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+.connect-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.4rem 1.35rem 1.35rem;
+  border: 1px solid rgba(var(--ink-rgb), 0.13);
+  border-radius: 18px;
+  background: rgba(var(--sheet-rgb), 0.94);
+  box-shadow: 0 26px 50px -30px rgba(26, 20, 16, 0.4);
+}
+
+.connect-form label {
+  display: grid;
+  gap: 0.5rem;
+  font-size: 0.92rem;
+  font-weight: 560;
+  color: var(--ink-soft);
+}
+
+.connect-form input {
+  min-height: 48px;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid rgba(var(--ink-rgb), 0.22);
+  border-radius: 11px;
+  background: rgba(var(--lift-rgb), 0.9);
+  font: 0.92rem/1.3 "JetBrains Mono", ui-monospace, monospace;
+  letter-spacing: -0.01em;
+}
+
+.connect-form input::placeholder {
+  color: rgba(var(--ink-rgb), 0.38);
+}
+
+.connect-form input:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 1px;
+}
+
+.connect-hint {
+  margin: -0.15rem 0 0;
+  font-size: 0.8rem;
+  font-style: italic;
+  line-height: 1.45;
+  color: var(--ink-faded);
+}
+
+.connect-hint code {
+  font: normal 0.74rem "JetBrains Mono", monospace;
+  color: var(--ink-soft);
+}
+
+.connect-form .auth-error,
+.connect-form .auth-submit {
+  margin: 0;
+}
+
+.connect-form .auth-submit {
+  min-height: 48px;
+}
+
+.connect-or {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  color: var(--ink-faded);
+  font: italic 0.95rem "Instrument Serif", serif;
+}
+
+.connect-or::before,
+.connect-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: rgba(var(--ink-rgb), 0.15);
+}
+
+.connect-offline {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.9rem;
+  width: 100%;
+  padding: 1rem 1rem 1rem 1.05rem;
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  border-radius: 18px;
+  background: rgba(var(--lift-rgb), 0.4);
+  color: var(--ink);
+  text-align: left;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.connect-offline:hover:not(:disabled) {
+  border-color: rgba(var(--ink-rgb), 0.38);
+  background: rgba(var(--lift-rgb), 0.8);
+}
+
+.connect-offline:focus-visible,
+.connect-more :is(button, a):focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.connect-offline:disabled {
+  opacity: 0.6;
+}
+
+.connect-offline-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: rgba(var(--ink-rgb), 0.07);
+  color: var(--oxblood);
+}
+
+.connect-offline strong {
+  display: block;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.connect-offline small {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--ink-faded);
+}
+
+.connect-offline > svg {
+  color: var(--ink-faded);
+}
+
+.connect-more {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0 1.4rem;
+  margin-top: 0.35rem;
+}
+
+.connect-more :is(button, a) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 36px;
+  font-size: 0.88rem;
+  font-style: italic;
+  color: var(--ink-soft);
+  text-decoration: underline;
+  text-decoration-color: rgba(var(--ink-rgb), 0.28);
+  text-underline-offset: 3px;
+}
+
+.connect-more :is(button, a):hover {
+  color: var(--oxblood);
+  text-decoration-color: currentColor;
+}
+
+@media (max-width: 620px) {
+  .connect-page h1 {
+    font-size: 2rem;
+  }
+
+  .connect-form {
+    padding: 1.2rem 1.1rem 1.15rem;
+  }
+
+  .connect-more :is(button, a) {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connect-mark::after,
+  .connect-mark i {
+    animation: none;
+  }
 }
 
 .user-menu-wrap {
@@ -7623,9 +7788,7 @@ button.upload-file-picker {
   }
 
   .auth-card input,
-  .auth-submit,
-  .auth-secondary,
-  .server-type-grid button {
+  .auth-submit {
     min-height: 44px;
   }
 
@@ -7661,14 +7824,6 @@ button.upload-file-picker {
 }
 
 @media (max-width: 420px) {
-  .server-type-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .server-type-grid button {
-    padding: 0.65rem 0.8rem;
-  }
-
   .pane-title {
     gap: 10px;
   }
@@ -11337,16 +11492,10 @@ html.native-app .auth-shell.startup-shell {
   padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
 }
 
-html.native-app .auth-submit,
-html.native-app .auth-secondary {
+html.native-app .auth-submit {
   min-height: 52px;
   border-radius: 16px;
   font-size: 1.05rem;
-}
-
-html.native-app .server-type-grid button {
-  min-height: 56px;
-  border-radius: 14px;
 }
 
 /* --- Ledger is a full-bleed screen, not a modal card --- */
