@@ -23,6 +23,12 @@ export function resolveRelease({ channel, tag = "", stableTag, date, run, source
   return result;
 }
 
+function compareStableTags(left, right) {
+  const a = left.match(STABLE).slice(1).map(Number);
+  const b = right.match(STABLE).slice(1).map(Number);
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+
 export function releasePlan(options, api, paginate) {
   const { event, channel, branch, sha, sourceNightly = "", sourceSha = "" } = options;
   if (sourceSha && (channel !== "nightly" || !/^[a-f0-9]{40}$/.test(sourceSha))) {
@@ -35,11 +41,7 @@ export function releasePlan(options, api, paginate) {
   // an older release. Failed API requests still abort rather than picking 0.1.0.
   const releases = paginate("releases");
   const stableReleases = releases.filter((release) => !release.draft && !release.prerelease && STABLE.test(release.tag_name));
-  const highestStable = stableReleases.sort((a, b) => {
-    const left = a.tag_name.match(STABLE).slice(1).map(Number);
-    const right = b.tag_name.match(STABLE).slice(1).map(Number);
-    return right[0] - left[0] || right[1] - left[1] || right[2] - left[2];
-  })[0];
+  const highestStable = stableReleases.sort((a, b) => compareStableTags(b.tag_name, a.tag_name))[0];
   const stable = highestStable ? api("releases/latest") : undefined;
   if (stable && !STABLE.test(stable.tag_name)) throw new Error("GitHub's latest release must be a stable server release.");
   const tag = resolveRelease({ ...options, stableTag: highestStable?.tag_name });
@@ -64,7 +66,9 @@ export function releasePlan(options, api, paginate) {
       publish = api(`compare/${previous.tag_name}...${ref}`).status !== "identical";
     }
   }
-  return { tag, ref, channel, publish, tag_exists: exists, stable_tag: stable?.tag_name ?? "" };
+  // Historical rebuilds must not move the nightly feed back to older code.
+  const nightlyNeeded = channel === "stable" && (!highestStable || compareStableTags(tag, highestStable.tag_name) >= 0);
+  return { tag, ref, channel, publish, tag_exists: exists, stable_tag: stable?.tag_name ?? "", nightly_needed: nightlyNeeded };
 }
 
 export function nightlyFeedMatches(feed, release) {

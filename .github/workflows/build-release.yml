@@ -25,6 +25,9 @@ on:
       ref:
         description: Resolved release source commit
         value: ${{ jobs.prepare.outputs.ref }}
+      nightly_needed:
+        description: Whether this stable release should refresh nightly
+        value: ${{ jobs.prepare.outputs.nightly_needed }}
 
 permissions:
   contents: read
@@ -35,6 +38,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       channel: ${{ steps.release-ref.outputs.channel }}
+      nightly_needed: ${{ steps.release-ref.outputs.nightly_needed }}
       publish: ${{ steps.release-ref.outputs.publish }}
       stable_tag: ${{ steps.release-ref.outputs.stable_tag }}
       tag: ${{ steps.release-ref.outputs.tag }}
