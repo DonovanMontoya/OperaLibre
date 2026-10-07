@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 const installer = await readFile(new URL("./install.sh", import.meta.url), "utf8");
-const releaseWorkflow = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+const releaseWorkflow = await readFile(new URL("../.github/workflows/build-release.yml", import.meta.url), "utf8");
 
 test("Release archive checks consume long listings and reject invalid packages", async (t) => {
   const fixture = await mkdtemp(path.join(os.tmpdir(), "operalibre-release-guard-"));

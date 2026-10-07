@@ -88,3 +88,41 @@ test("stable promotion builds the published nightly commit even when main moved"
     sourceNightly: publishedNightly.tag_name },
   (route) => route.startsWith("releases/tags/") ? { ...publishedNightly, draft: true } : api(route), paginate()));
 });
+
+const stableSource = "a".repeat(40);
+
+test("a post-stable nightly uses the stable source even when main has moved", () => {
+  const result = releasePlan({ ...scheduled, event: "workflow_dispatch", sourceSha: stableSource },
+    () => stable, paginate([publishedNightly, feed]));
+  assert.equal(result.ref, stableSource);
+  assert.equal(result.publish, true, "stable publication refreshes nightly even for unchanged source");
+  assert.equal(result.stable_tag, stable.tag_name);
+  assert.equal(result.tag, "0.4.10-nightly.20260927.12");
+});
+
+test("tag-triggered stable releases can build a nightly pinned to their source", () => {
+  const result = releasePlan({ ...scheduled, event: "workflow_dispatch", branch: "refs/tags/v0.4.9",
+    sourceSha: stableSource }, () => stable, paginate());
+  assert.equal(result.ref, stableSource);
+  for (const sourceSha of ["main", "refs/tags/v0.4.9", "abc", `${stableSource}\n`]) {
+    assert.throws(() => releasePlan({ ...scheduled, sourceSha }, () => stable, paginate()), /source commit SHA/);
+  }
+  assert.throws(() => releasePlan({ ...scheduled, channel: "stable", sourceSha: stableSource },
+    () => stable, paginate()), /source commit SHA/);
+});
+
+test("stable rebuilds resolve an existing tag to an immutable source commit", () => {
+  const result = releasePlan({ ...scheduled, channel: "stable", tag: "v0.4.9" },
+    (route) => route === "releases/latest" ? stable : { sha: stableSource },
+    paginate([], [{ name: "v0.4.9" }]));
+  assert.equal(result.ref, stableSource);
+});
+
+test("a retried post-stable nightly must match the pinned source rather than main", () => {
+  const options = { ...scheduled, sourceSha: stableSource, event: "workflow_dispatch" };
+  const tags = [{ name: "0.4.10-nightly.20260927.12" }];
+  const api = (route) => route === "releases/latest" ? stable : { sha: stableSource };
+  assert.equal(releasePlan(options, api, paginate([], tags)).tag_exists, true);
+  assert.throws(() => releasePlan(options,
+    (route) => route === "releases/latest" ? stable : { sha: scheduled.sha }, paginate([], tags)), /different commit/);
+});

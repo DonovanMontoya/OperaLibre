@@ -24,8 +24,11 @@ export function resolveRelease({ channel, tag = "", stableTag, date, run, source
 }
 
 export function releasePlan(options, api, paginate) {
-  const { event, channel, branch, sha, sourceNightly = "" } = options;
-  if (channel === "nightly" && branch !== "refs/heads/main") {
+  const { event, channel, branch, sha, sourceNightly = "", sourceSha = "" } = options;
+  if (sourceSha && (channel !== "nightly" || !/^[a-f0-9]{40}$/.test(sourceSha))) {
+    throw new Error("Only a nightly release can use an explicit source commit SHA.");
+  }
+  if (channel === "nightly" && branch !== "refs/heads/main" && !sourceSha) {
     throw new Error("Nightlies must be dispatched from main.");
   }
   // Keep stable's next-patch behavior even if GitHub's latest pointer names
@@ -40,7 +43,7 @@ export function releasePlan(options, api, paginate) {
   const stable = highestStable ? api("releases/latest") : undefined;
   if (stable && !STABLE.test(stable.tag_name)) throw new Error("GitHub's latest release must be a stable server release.");
   const tag = resolveRelease({ ...options, stableTag: highestStable?.tag_name });
-  let ref = sha;
+  let ref = sourceSha || sha;
   const exists = paginate("tags").some((item) => item.name === tag);
   if (channel === "stable") {
     if (sourceNightly) {
@@ -48,8 +51,8 @@ export function releasePlan(options, api, paginate) {
       if (release.draft || !release.prerelease) throw new Error("The source nightly must be published.");
       ref = api(`commits/${sourceNightly}`).sha;
       if (exists && api(`commits/${tag}`).sha !== ref) throw new Error("The stable tag points at a different commit.");
-    } else if (exists) ref = tag;
-  } else if (exists && api(`commits/${tag}`).sha !== sha) {
+    } else if (exists) ref = api(`commits/${tag}`).sha;
+  } else if (exists && api(`commits/${tag}`).sha !== ref) {
     throw new Error("The nightly tag points at a different commit.");
   }
   let publish = true;
@@ -80,7 +83,7 @@ function main() {
     const output = execFileSync("gh", ["api", "--paginate", `repos/${repository}/${route}?per_page=100`, "--jq", fields], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }).trim();
     return output ? output.split("\n").map((line) => JSON.parse(line)) : [];
   };
-  const event = process.env.GITHUB_EVENT_NAME;
+  const event = process.env.RELEASE_EVENT || process.env.GITHUB_EVENT_NAME;
   const plan = releasePlan({
     event,
     channel: event === "repository_dispatch" ? "nightly" : process.env.RELEASE_CHANNEL || "stable",
@@ -89,7 +92,8 @@ function main() {
     tag: event === "push" ? process.env.GITHUB_REF_NAME : process.env.REQUESTED_TAG,
     date: new Date().toISOString().slice(0, 10).replaceAll("-", ""),
     run: process.env.GITHUB_RUN_NUMBER,
-    sourceNightly: process.env.SOURCE_NIGHTLY || ""
+    sourceNightly: process.env.SOURCE_NIGHTLY || "",
+    sourceSha: process.env.SOURCE_SHA || ""
   }, api, paginate);
   for (const [key, value] of Object.entries(plan)) {
     appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
