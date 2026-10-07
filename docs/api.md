@@ -185,7 +185,7 @@ Sync administration endpoints (administrator only):
 | `GET` | `/api/sync-schedules` | List persisted individual schedules and their outcomes. |
 | `PUT` | `/api/sync-schedules/{book_id}` | Schedule with `{ "runAt": <Unix milliseconds> }`. |
 | `DELETE` | `/api/sync-jobs/{job_id}` | Remove a queued or paused sync and its saved sections. Returns 204; running or finished jobs return 409. Admin only. |
-| `PATCH` | `/api/sync-jobs/{job_id}` | Send `{ "action": "up" }`, `down`, `pause`, or `resume`. Up/down moves a queued job one place. Pause waits for the current chapter or track to finish and save; queued jobs pause immediately. Resume appends a paused job to the queue. Returns the job; incompatible states return 409. Admin only. |
+| `PATCH` | `/api/sync-jobs/{job_id}` | Send `{ "action": "up" }`, `down`, `pause`, or `resume`. Up/down moves a queued job one place. Pause interrupts the current section and retains completed chapters or tracks; queued jobs pause immediately. Resume appends a paused job to the queue and repeats the unfinished section. Returns the job; incompatible states return 409. Admin only. |
 | `DELETE` | `/api/sync-schedules/{book_id}` | Cancel a schedule before it joins the queue. |
 | `GET` | `/api/sync-sweep` | Nightly rule, `pendingCount` (missing or outdated maps), and `eligibleCount`. |
 | `PUT` | `/api/sync-sweep` | Save `{ "enabled": true, "localTime": "01:00", "timeZone": "America/New_York", "booksPerNight": 2 }`. Limit: 1–100, default 2 when omitted. |
