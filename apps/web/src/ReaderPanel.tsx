@@ -103,7 +103,7 @@ export function renderReaderSyncMessages({
             <span className="sync-progress-step">
               {syncJobForBook.status === "queued"
                 ? "Waiting for another sync to finish"
-                : syncJobForBook.pauseRequested ? "Finishing the current chapter or track before pausing"
+                : syncJobForBook.pauseRequested ? "Stopping sync; completed sections stay saved"
                 : syncJobForBook.progress?.step ?? "Aligning the narration to the text"}
             </span>
             {syncProgressPercent !== null ? (

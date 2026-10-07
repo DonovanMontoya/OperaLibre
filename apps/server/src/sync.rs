@@ -231,6 +231,24 @@ impl std::fmt::Display for SyncPaused {
 }
 impl std::error::Error for SyncPaused {}
 
+async fn wait_for_manual_pause(state: &AppState, id: &str) {
+    loop {
+        let changed = state.update_manager.sync_queue_changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        if state
+            .jobs
+            .read()
+            .await
+            .get(id)
+            .is_some_and(|job| job.pause_requested)
+        {
+            return;
+        }
+        changed.await;
+    }
+}
+
 async fn pause_at_checkpoint(state: &AppState, id: &str) -> anyhow::Result<()> {
     let mut jobs = state.jobs.write().await;
     if jobs.get(id).is_some_and(|job| job.pause_requested) {
@@ -1137,9 +1155,19 @@ pub(crate) async fn run_sync_generation(
         )
         .await;
 
-        let scope_fragments = aligner
-            .align_scope(scope, track, &transcript, scope_number, &progress)
-            .await?;
+        // Interrupt expensive work, but never a checkpoint write. Completed
+        // sections remain durable; resuming repeats only the unfinished one.
+        // Dropping alignment also stops its kill-on-drop child process.
+        let scope_fragments = tokio::select! {
+            biased;
+            _ = wait_for_manual_pause(state, job_id) => None,
+            result = aligner.align_scope(scope, track, &transcript, scope_number, &progress) => Some(result?),
+        };
+        let Some(scope_fragments) = scope_fragments else {
+            update_job_progress(state, job_id, progress.at(0.0)).await;
+            pause_at_checkpoint(state, job_id).await?;
+            return Err(SyncPaused.into());
+        };
         update_job_output(
             state,
             job_id,
@@ -2501,16 +2529,19 @@ mod tests {
             .await
             .unwrap();
         let cli = root.path().join("aligner");
-        // Gate the first track on an observable file so the test requests a
-        // pause during alignment, rather than guessing how long it takes.
+        // Gate the second track so pausing must interrupt an unfinished section
+        // while preserving the completed first track across a restart.
         fs::write(
             &cli,
             r#"#!/bin/sh
 [ "$1" = "align" ] || exit 2
-if [ ! -f "$0.calls" ]; then
-  : > "$0.started"
-  while [ ! -f "$0.release" ]; do sleep 0.01; done
-fi
+case "$2" in
+  *second.wav)
+    if [ ! -f "$0.release" ]; then
+      printf '%s' "$$" > "$0.started"
+      exec sleep 60
+    fi;;
+esac
 printf '%s\n' "$2" >> "$0.calls"
 case "$2" in
   *second.wav) text='The river ran fast & cold.';;
@@ -2565,11 +2596,13 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
                 .get_mut(&id)
                 .unwrap()
                 .pause_requested = true;
-            fs::write(cli.with_extension("release"), b"ready")
-                .await
-                .unwrap();
+            state.update_manager.sync_queue_changed.notify_waiters();
         };
-        let (result, _) = tokio::join!(generation, request_pause);
+        let (result, _) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(generation, request_pause)
+        })
+        .await
+        .expect("pause must not wait for the blocked aligner to finish");
         let error = result.unwrap_err();
         assert!(error.downcast_ref::<SyncPaused>().is_some(), "{error:#}");
         assert_eq!(state.jobs.read().await[&id].status, "paused");
@@ -2578,12 +2611,39 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
                 .unwrap();
         assert_eq!(checkpoint.completed_scopes, 1);
         assert_eq!(checkpoint.fragments.len(), 1);
+        let paused_progress = state.jobs.read().await[&id].progress.clone().unwrap();
+        assert_eq!(paused_progress.completed, Some(1));
+        assert_eq!(paused_progress.fraction, Some(0.49));
         assert!(
             !state
                 .sync_dir
                 .join(format!("fixture{SYNC_SIDECAR_SUFFIX}"))
                 .exists()
         );
+        assert_eq!(
+            fs::read_to_string(cli.with_extension("calls"))
+                .await
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        let pid: i32 = fs::read_to_string(cli.with_extension("started"))
+            .await
+            .unwrap()
+            .parse()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            // Observe the captured fixture child; never signal unrelated jobs.
+            while unsafe { libc::kill(pid, 0) } == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("pausing must stop the alignment process");
+        fs::write(cli.with_extension("release"), b"ready")
+            .await
+            .unwrap();
         state.jobs = Arc::new(RwLock::new(HashMap::new()));
         restore_queue(&state).await.unwrap();
         assert_eq!(state.jobs.read().await[&id].status, "paused");
