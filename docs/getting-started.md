@@ -10,7 +10,7 @@ This guide helps you choose between installing a ready-made release and building
 ## Choose the right starting point
 
 - **You have audiobook files on this computer:** download the combined release package below.
-- **Your books are already in Jellyfin:** you do not need to install this server. Open the OperaLibre web, macOS, or iPhone app, choose **Jellyfin**, enter your Jellyfin address, and sign in with your usual Jellyfin account. See [Using OperaLibre](using-operalibre.md#connect-to-jellyfin-instead).
+- **Your books are already in Jellyfin:** you do not need to install this server. Open the OperaLibre web, macOS, or iPhone app, choose **Use a Jellyfin server**, enter your Jellyfin address, and sign in with your usual Jellyfin account. See [Using OperaLibre](using-operalibre.md#connect-to-jellyfin-instead).
 - **You want to listen from a phone:** finish the local setup first, then see [Use it on a phone or tablet](using-operalibre.md#use-it-on-a-phone-or-tablet).
 - **Your files are already on your phone or tablet:** use **Listen from this device** in the native app; no server is needed. See [Listen from this device](using-operalibre.md#listen-from-this-device).
 - **You want to try it first:** choose **Explore the on-device demo** on the connection screen for bundled audio, an EPUB, and sentence timings that work offline.
