@@ -3,7 +3,7 @@ import { test, expect, type AppServer } from './server';
 
 async function setup(page: Page, server: AppServer) {
   await page.goto(server.url);
-  await page.getByRole('button', { name: 'Test & connect', exact: true }).click();
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await page.getByLabel('Username', { exact: true }).fill('owner');
   await page.getByLabel('Password', { exact: true }).fill('fixture-password-123');
   await page.getByLabel('Confirm password', { exact: true }).fill('fixture-password-123');
@@ -308,7 +308,7 @@ test('six listeners can play and save independent positions', async ({ page, bro
       contexts.push(context);
       const listener = await context.newPage();
       await listener.goto(server.url);
-      await listener.getByRole('button', { name: 'Test & connect', exact: true }).click();
+      await listener.getByRole('button', { name: 'Connect', exact: true }).click();
       await listener.getByLabel('Username', { exact: true }).fill(username);
       await listener.getByLabel('Password', { exact: true }).fill('fixture-password-456');
       const response = listener.waitForResponse(r => r.url().endsWith('/api/auth/login') && r.request().method() === 'POST');

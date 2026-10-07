@@ -1,6 +1,6 @@
 import { Capacitor } from "@capacitor/core";
-import { BookOpen, ExternalLink, FolderOpen, Globe, LogIn, Network, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { BookOpen, ChevronRight, ExternalLink, LogIn, ShieldCheck, Smartphone } from "lucide-react";
+import { useRef, useState } from "react";
 import {
   defaultServerUrl,
   getServerUrl,
@@ -30,7 +30,43 @@ export function ServerSetup({
   const [url, setUrl] = useState(() => getServerUrl());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const addressInput = useRef<HTMLInputElement>(null);
   const nativeApp = Capacitor.isNativePlatform();
+  const jellyfin = serverType === "jellyfin";
+
+  // The second way in is always one that needs no server: the device library
+  // on native apps (a way back to it when this screen was opened from there),
+  // otherwise the bundled demo, which then leaves the secondary links.
+  const offline = onCancel
+    ? {
+      action: onCancel,
+      icon: <Smartphone size={20} />,
+      title: "Keep listening from this device",
+      note: "Return to the audiobooks already saved on this device."
+    }
+    : onLocal
+      ? {
+        action: onLocal,
+        icon: <Smartphone size={20} />,
+        title: "Listen from this device",
+        note: "Fully offline, from audiobook files on this device. No server or account."
+      }
+      : onDemo
+        ? {
+          action: onDemo,
+          icon: <BookOpen size={20} />,
+          title: "Explore the on-device demo",
+          note: "Alice’s Adventures in Wonderland, with public-domain audio and ebook (USA). No server or sign-in."
+        }
+        : null;
+  const demoLink = offline?.action !== onDemo ? onDemo : undefined;
+
+  function switchServerType(next: ServerType) {
+    setServerType(next);
+    setUrl(defaultServerUrl(next));
+    setError(null);
+    if (!nativeApp) addressInput.current?.focus();
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -50,131 +86,88 @@ export function ServerSetup({
 
   return (
     <main className="auth-shell">
-      <form className="auth-card" onSubmit={submit}>
-        <span className="eyebrow">
-          <Network size={13} /> Connect to a server
-        </span>
-        <h1>Find your library</h1>
-        <p>
-          Choose where your audiobooks live, then enter the server address. We&rsquo;ll verify it
-          can be reached before continuing.
-        </p>
-
-        <div className="server-type-grid" role="radiogroup" aria-label="Server type">
-          <button
-            type="button"
-            role="radio"
-            aria-checked={serverType === "operalibre"}
-            className={serverType === "operalibre" ? "selected" : ""}
-            onClick={() => {
-              setServerType("operalibre");
-              setUrl(defaultServerUrl("operalibre"));
-              setError(null);
-            }}
-          >
-            <Network size={17} />
-            <span><strong>OperaLibre</strong><small>Native server</small></span>
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={serverType === "jellyfin"}
-            className={serverType === "jellyfin" ? "selected" : ""}
-            onClick={() => {
-              setServerType("jellyfin");
-              setUrl(defaultServerUrl("jellyfin"));
-              setError(null);
-            }}
-          >
-            <Globe size={17} />
-            <span><strong>Jellyfin</strong><small>Audiobook library</small></span>
-          </button>
+      <div className="connect-page">
+        <div className="connect-brand">
+          <span className="connect-mark" aria-hidden="true"><i /><i /><i /></span>
+          <span className="connect-wordmark">OperaLibre</span>
         </div>
+        <h1>Connect your library</h1>
 
-        <label>
-          <span>{serverType === "jellyfin" ? "Jellyfin address" : "OperaLibre address"}</span>
-          <input
-            type="text"
-            value={url}
-            placeholder={serverType === "jellyfin"
-              ? nativeApp ? "My-Mac.local:8096 or jellyfin.example.com" : "http://localhost:8096"
-              : nativeApp ? "My-Mac.local:4920 or books.example.com" : "http://localhost:4920"}
-            inputMode="url"
-            autoComplete="off"
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-            onChange={(event) => setUrl(event.currentTarget.value)}
-            required
-            autoFocus={!nativeApp}
-          />
-        </label>
+        <form className="connect-form" onSubmit={submit}>
+          <label>
+            <span>{jellyfin ? "Jellyfin server address" : "OperaLibre server address"}</span>
+            <input
+              ref={addressInput}
+              type="text"
+              value={url}
+              placeholder={jellyfin
+                ? nativeApp ? "My-Mac.local:8096" : "http://localhost:8096"
+                : nativeApp ? "My-Mac.local:4920" : "http://localhost:4920"}
+              inputMode="url"
+              autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              onChange={(event) => setUrl(event.currentTarget.value)}
+              required
+              autoFocus={!nativeApp}
+            />
+          </label>
 
-        <p className="auth-hint">
-          <Globe size={12} />
-          {serverType === "jellyfin" ? (
-            <>
-              {nativeApp ? (
-                <>Private addresses use HTTP automatically; public names use HTTPS.</>
-              ) : (
-                <>Default HTTP: <code>localhost:8096</code> HTTPS when enabled: <code>localhost:8920</code></>
-              )}
-            </>
-          ) : (
-            <>
-              {nativeApp ? (
-                <>Private addresses use HTTP automatically; public names use HTTPS.</>
-              ) : (
-                <>Default: <code>localhost:4920</code> Remote: <code>https://books.example.com</code></>
-              )}
-            </>
-          )}
-        </p>
+          <p className="connect-hint">
+            {nativeApp ? (
+              <>
+                Private addresses use HTTP automatically; public names such
+                as <code>{jellyfin ? "jellyfin.example.com" : "books.example.com"}</code> use HTTPS.
+              </>
+            ) : jellyfin ? (
+              <>Usually <code>localhost:8096</code>, or <code>localhost:8920</code> with HTTPS.</>
+            ) : (
+              <>Usually <code>localhost:4920</code> on the server itself, or its HTTPS name from elsewhere.</>
+            )}
+          </p>
 
-        <p className="auth-server-meta">
-          Don&rsquo;t have a server yet?{" "}
-          <a className="auth-linklike" href={SERVER_SETUP_GUIDE_URL} target="_blank" rel="noreferrer">
-            Read the setup guide <ExternalLink size={11} aria-hidden="true" />
-          </a>
-        </p>
+          {error ? <p className="auth-error" role="alert">{error}</p> : null}
 
-        {error ? <p className="auth-error">{error}</p> : null}
+          <button type="submit" className="auth-submit" disabled={busy}>
+            {busy ? "Connecting…" : "Connect"}
+          </button>
+        </form>
 
-        <button type="submit" className="auth-submit" disabled={busy}>
-          {busy ? "Testing…" : "Test & connect"}
-        </button>
-
-        {onLocal && !onCancel ? (
+        {offline ? (
           <>
-            <div className="auth-demo-separator"><span>or</span></div>
-            <button type="button" className="auth-secondary auth-demo-button" onClick={onLocal} disabled={busy}>
-              <FolderOpen size={16} />
-              Listen from this device
+            <div className="connect-or"><span>or</span></div>
+            <button type="button" className="connect-offline" onClick={offline.action} disabled={busy}>
+              <span className="connect-offline-icon" aria-hidden="true">{offline.icon}</span>
+              <span>
+                <strong>{offline.title}</strong>
+                <small>{offline.note}</small>
+              </span>
+              <ChevronRight size={18} aria-hidden="true" />
             </button>
-            <p className="auth-demo-note">
-              Pick audiobook files from Files on iOS or the Android file picker. No server or account required.
-            </p>
           </>
         ) : null}
 
-        {onDemo ? (
-          <>
-            <button type="button" className="auth-secondary auth-demo-button" onClick={onDemo} disabled={busy}>
-              <BookOpen size={16} />
+        <div className="connect-more">
+          <button
+            type="button"
+            onClick={() => switchServerType(jellyfin ? "operalibre" : "jellyfin")}
+            disabled={busy}
+          >
+            {jellyfin ? "Use an OperaLibre server" : "Use a Jellyfin server"}
+          </button>
+          {demoLink ? (
+            <button type="button" onClick={demoLink} disabled={busy}>
               Explore the on-device demo
             </button>
-            <p className="auth-demo-note">
-              No server or sign-in required. Includes Alice’s Adventures in Wonderland with public-domain audio and ebook (USA).
-            </p>
-          </>
-        ) : null}
-
-        {onCancel ? (
-          <button type="button" className="auth-secondary" onClick={onCancel} disabled={busy}>
-            Not now — keep listening from this device
-          </button>
-        ) : null}
-      </form>
+          ) : null}
+          {jellyfin ? null : (
+            <a href={SERVER_SETUP_GUIDE_URL} target="_blank" rel="noreferrer">
+              Server setup guide <ExternalLink size={11} aria-hidden="true" />
+            </a>
+          )}
+        </div>
+      </div>
     </main>
   );
 }

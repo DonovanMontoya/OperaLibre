@@ -265,7 +265,7 @@ Open **Administration → Overview** and choose **Check for updates** under **So
 
 OperaLibre can be used as a client for an existing Jellyfin audiobook library; no OperaLibre server configuration is needed for this mode.
 
-1. On the connection screen, choose **Jellyfin**.
+1. On the connection screen, choose **Use a Jellyfin server**.
 2. Enter the Jellyfin address. The common local address is `http://localhost:8096`; on a phone, use the server’s LAN address instead.
 3. Sign in with a normal Jellyfin user account.
 
