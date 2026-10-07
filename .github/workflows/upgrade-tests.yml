@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/upgrade-tests.yml'
       - '.github/workflows/release.yml'
+      - '.github/workflows/build-release.yml'
       - 'script/test_release_upgrade.py'
       - 'script/release_signing.mjs'
       - 'release/update-trust.json'
