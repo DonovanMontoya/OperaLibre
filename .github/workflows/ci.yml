@@ -251,6 +251,11 @@ jobs:
           swiftc apps/macos/Sources/OperaLibre/ReleaseSignature.swift apps/macos/Tests/ReleaseSignatureTests.swift -o "$RUNNER_TEMP/release-signature-tests"
           "$RUNNER_TEMP/release-signature-tests"
 
+      - name: Test iOS export compliance declaration
+        run: |
+          python3 script/test_ios_export_compliance.py
+          sh script/check_ios_export_compliance.sh apps/web/ios/App/App/Info.plist
+
       - name: Test iOS background download policy
         run: |
           swiftc apps/web/ios/App/App/BackgroundDownloadPolicy.swift apps/web/ios/Tests/BackgroundDownloadPolicyTests.swift -o "$RUNNER_TEMP/background-policy-tests"
