@@ -46,3 +46,31 @@ test("a real tag or manual description wins over catalog metadata", () => {
 test("track-name comments are not displayed as book descriptions", () => {
   assert.equal(displayBookDescription({ ...book, description: "Opening Credits" }), null);
 });
+
+test("nonbreaking-space placeholders are treated as missing descriptions", () => {
+  for (const description of [
+    "&nbsp;", "&nbsp", " &#160; ", "&#xA0;", "\u00a0",
+    "&amp;nbsp;", "&amp;amp;nbsp;", "&nbsp;&nbsp;\n&#160;"
+  ]) {
+    const placeholder = { ...book, description };
+    assert.equal(displayBookDescription(placeholder), null, description);
+    const [enriched] = enrichBooksFromLibation([placeholder], [catalogBook]);
+    assert.equal(enriched.description, "A portrait of longing & reinvention.", description);
+  }
+});
+
+test("description spaces are decoded without losing text or paragraph breaks", () => {
+  const description = "A&nbsp;portrait&#160;of&#xa0;longing.\n\nLove &amp; reinvention.";
+  assert.equal(
+    displayBookDescription({ ...book, description }),
+    "A portrait of longing.\n\nLove &amp; reinvention."
+  );
+  assert.equal(displayBookDescription({ ...book, description: "Opening&nbsp;Credits" }), null);
+});
+
+test("blank catalog placeholders do not replace missing metadata", () => {
+  for (const description of ["<p>&nbsp;</p>", "&amp;nbsp;", "&#xA0;", "&nbsp"]) {
+    const books = [book];
+    assert.equal(enrichBooksFromLibation(books, [{ ...catalogBook, description }]), books);
+  }
+});
