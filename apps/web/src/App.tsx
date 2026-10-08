@@ -32,9 +32,6 @@ import {
   createBookGainSync,
   mergeServerBookGains
 } from "./bookVolume";
-import {
-  shelfDownloadScanKey
-} from "./shelfFilters";
 import { PlaybackGainChain, streamCanBeBoosted, webAudioBoostSupported } from "./playbackGain";
 import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
 import { buildChapterSegments, chapterAtBookPosition } from "./chapters";
@@ -67,8 +64,7 @@ import {
   cacheOfflineUser,
   forgetOfflineUser,
   getBookBackgroundDownloadStatus,
-  getOfflineUser,
-  isBookDownloaded
+  getOfflineUser
 } from "./offline";
 import { haptic } from "./native";
 import { useStartupNavigation } from "./useStartupNavigation";
@@ -1013,7 +1009,6 @@ function MainApp({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTrackKey, playbackBookKey, currentUser.id, nativeAudio, playbackTransitions]);
   const bookIdsKey = useMemo(() => books.map((book) => book.id).join("|"), [books]);
-  const downloadScanKey = useMemo(() => shelfDownloadScanKey(books), [books]);
   const booksRef = useRef<Book[]>(books);
   const carPlay = useCarPlay({
     acknowledgedSeekGenerationRef,
@@ -1488,26 +1483,6 @@ function MainApp({
     });
   }, [currentUser.id, libationBooks]);
 
-  useEffect(() => {
-    if (!Capacitor.isNativePlatform() || !books.length) return;
-    // A newer scan supersedes this one; a slow stale scan must not land last.
-    let cancelled = false;
-    void Promise.all(books.map(async (book) => [
-      book.id,
-      await isBookDownloaded(book).catch(() => false)
-    ] as const))
-      .then((states) => {
-        if (cancelled) return;
-        setDownloadedBookIds(new Set(states.filter(([, ready]) => ready).map(([id]) => id)));
-      });
-    return () => {
-      cancelled = true;
-    };
-    // Keyed on book ids and local-file identity: progress/metadata updates do
-    // not re-stat every track, but removing a merged imported copy rechecks the
-    // surviving server book even though its id stays the same.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [downloadScanKey]);
   carEventHandlersRef.current = {
     playbackStarted: (bookId: string) => {
       // The driver started a book on the shared player. Claim it before any
@@ -1530,13 +1505,18 @@ function MainApp({
     if (!Capacitor.isNativePlatform() || !books.length) return;
     let cancelled = false;
     void Promise.all(books.map(async (book) => {
-      const status = await getBookBackgroundDownloadStatus(book).catch(() => null);
-      return { book, status };
+      const [status, retryStatus] = await Promise.all([
+        getBookBackgroundDownloadStatus(book).catch(() => null),
+        getBookBackgroundDownloadStatus(book, true).catch(() => null)
+      ]);
+      return { book, status, retryStatus };
     })).then((entries) => {
       if (cancelled) return;
-      for (const { book, status } of entries) {
+      for (const { book, status, retryStatus } of entries) {
         if (status?.state === "queued" || status?.state === "running") {
           void downloadForOffline(book);
+        } else if (retryStatus?.state === "queued" || retryStatus?.state === "running") {
+          void downloadForOffline(book, true);
         }
       }
     });
@@ -1768,6 +1748,7 @@ function MainApp({
   const offlineDownloads = useOfflineDownloads({
     downloadStatus,
     audioRef,
+    books,
     booksRef,
     capabilities,
     clearPlaybackSession,

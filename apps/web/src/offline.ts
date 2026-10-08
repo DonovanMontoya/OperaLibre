@@ -13,6 +13,7 @@ import { fileExtension, storedMediaExtension } from "./mediaFiles";
 import { coverMediaKind, coverRevision } from "./bookCover.ts";
 import { revalidatedCompanion } from "./companionCache";
 import { downloadWebBook } from "./offlineDownload";
+import { inspectOfflineReadiness, offlineCompanions } from "./offlineReadiness.ts";
 import type { AuthUser, Book, CompanionFile, Progress, SyncMap, Track } from "./types";
 
 const DB_NAME = "operalibre-offline";
@@ -172,16 +173,16 @@ function toBase64(data: ArrayBuffer) {
   return btoa(binary);
 }
 
-export const backgroundDownloadJobId = (book: Pick<Book, "id">) =>
-  `${sanitizeSegment(getServerStorageKey())}-${sanitizeSegment(book.id)}`;
+export const backgroundDownloadJobId = (book: Pick<Book, "id">, retryMissing = false) =>
+  `${sanitizeSegment(getServerStorageKey())}-${sanitizeSegment(book.id)}${retryMissing ? "-missing" : ""}`;
 
-export function getBookBackgroundDownloadStatus(book: Pick<Book, "id">) {
-  return getBackgroundBookDownloadStatus(backgroundDownloadJobId(book));
+export function getBookBackgroundDownloadStatus(book: Pick<Book, "id">, retryMissing = false) {
+  return getBackgroundBookDownloadStatus(backgroundDownloadJobId(book, retryMissing));
 }
 
-export async function cancelBookOfflineDownload(book: Pick<Book, "id">) {
+export async function cancelBookOfflineDownload(book: Pick<Book, "id">, retryMissing = false) {
   if (Capacitor.isNativePlatform()) {
-    await cancelBackgroundBookDownload(backgroundDownloadJobId(book));
+    await cancelBackgroundBookDownload(backgroundDownloadJobId(book, retryMissing));
   }
 }
 
@@ -468,6 +469,33 @@ export async function isBookDownloaded(book: Book) {
   return records.every(Boolean);
 }
 
+async function offlineFileExists(book: Book, kind: string) {
+  if (!Capacitor.isNativePlatform()) {
+    return (await readMedia(book.id, kind))?.blob.size ? true : false;
+  }
+  let path: string;
+  if (kind.startsWith("track:")) {
+    const track = book.tracks.find((item) => `track:${item.id}` === kind)!;
+    path = track.localFilePath ?? await resolveTrackFilePath(book, track);
+  } else if (kind.startsWith("companion:")) {
+    const companion = offlineCompanions(book).find((item) => `companion:${item.id}` === kind)!;
+    path = companion.localFilePath ?? companionFilePath(book, companion);
+  } else {
+    path = kind === "sync" ? syncMapFilePath(book) : coverFilePath(book);
+  }
+  try {
+    return (await Filesystem.stat({ path, directory: MEDIA_DIRECTORY })).size > 0;
+  } catch {
+    return false;
+  }
+}
+
+export async function getBookOfflineReadiness(book: Book) {
+  const audio = await isBookDownloaded(book);
+  return inspectOfflineReadiness(book, audio,
+    (kind) => offlineFileExists(book, kind), () => getOfflineSyncMap(book), coverMediaKind(book));
+}
+
 export async function downloadBookForOffline(
   book: Book,
   resolveUrl: (path: string) => string,
@@ -477,19 +505,23 @@ export async function downloadBookForOffline(
     currentTrackPercent?: number,
     state?: BackgroundDownloadStatus["state"]
   ) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  retryMissing = false
 ) {
   const total = book.tracks.length;
+  signal?.throwIfAborted();
+  const readiness = retryMissing ? await getBookOfflineReadiness(book) : null;
+  if (retryMissing && !readiness?.audio) throw new Error("Download the audio before retrying missing files.");
   if (Capacitor.isNativePlatform()) {
     void clearLegacyMediaBlobs();
     await migrateLegacyBookDirectory(book);
-    const files: BackgroundDownloadFile[] = await Promise.all(book.tracks.map(async (track) => ({
+    let files: BackgroundDownloadFile[] = await Promise.all((retryMissing ? [] : book.tracks).map(async (track) => ({
       url: resolveUrl(track.downloadUrl ?? track.streamUrl),
       path: (await Filesystem.getUri({ path: trackFilePath(book, track), directory: MEDIA_DIRECTORY })).uri,
       label: track.title,
       required: true
     })));
-    if (book.coverArtUrl) {
+    if (book.coverArtUrl && (!readiness || readiness.missingFiles.includes(coverMediaKind(book)))) {
       files.push({
         url: resolveUrl(book.coverArtUrl),
         path: (await Filesystem.getUri({ path: coverFilePath(book), directory: MEDIA_DIRECTORY })).uri,
@@ -500,7 +532,8 @@ export async function downloadBookForOffline(
     // The ebook and pictures belong to the book, so they come down with it:
     // a book taken on a flight can be read as well as heard. They are not
     // required, so a missing companion cannot fail the audio download.
-    for (const companion of book.companions ?? []) {
+    for (const companion of offlineCompanions(book)) {
+      if (readiness && !readiness.missingFiles.includes(companionMediaKind(companion))) continue;
       files.push({
         url: resolveUrl(companion.url),
         path: (await Filesystem.getUri({ path: companionFilePath(book, companion), directory: MEDIA_DIRECTORY })).uri,
@@ -508,7 +541,7 @@ export async function downloadBookForOffline(
         required: false
       });
     }
-    if (book.syncFile) {
+    if (book.syncFile && (!readiness || readiness.missingFiles.includes("sync"))) {
       files.push({
         url: resolveUrl(book.syncFile.url),
         path: (await Filesystem.getUri({ path: syncMapFilePath(book), directory: MEDIA_DIRECTORY })).uri,
@@ -518,7 +551,32 @@ export async function downloadBookForOffline(
     }
     // Stable IDs let a relaunched app reattach to work the OS is already
     // running instead of scheduling a duplicate copy of the same book.
-    const jobId = backgroundDownloadJobId(book);
+    const jobId = backgroundDownloadJobId(book, retryMissing);
+    const status = retryMissing ? await getBackgroundBookDownloadStatus(jobId).catch(() => null) : null;
+    const resumeExisting = status?.state === "queued" || status?.state === "running";
+    if (retryMissing) {
+      // Re-enqueue the original list to restart Android's worker and reattach
+      // iOS tasks. Recomputing it after some files finish would replace the
+      // live job's counters and cancellation list.
+      const path = `${bookDirectory(book.id)}/retry-missing.json`;
+      if (resumeExisting) {
+        const result = await Filesystem.readFile({ path, directory: MEDIA_DIRECTORY });
+        if (typeof result.data !== "string") throw new Error("Could not reopen the missing-file retry.");
+        files = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(result.data), (value) => value.charCodeAt(0))));
+      } else if (files.length) {
+        await Filesystem.mkdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY, recursive: true });
+        await Filesystem.writeFile({ path, directory: MEDIA_DIRECTORY,
+          data: toBase64(new TextEncoder().encode(JSON.stringify(files)).buffer as ArrayBuffer) });
+        // iOS counts existing destinations as completed. Empty optional files
+        // and unreadable sync JSON must be replaced rather than precounted.
+        for (const file of files) {
+          signal?.throwIfAborted();
+          await Filesystem.deleteFile({ path: file.path }).catch(() => undefined);
+        }
+      }
+    }
+    if (!files.length && !resumeExisting) return;
+    signal?.throwIfAborted();
     await runBackgroundBookDownload(jobId, book.title, getServerUrl(), files, (fraction, state) => {
       const trackProgress = fraction * total;
       const completed = Math.min(total, Math.floor(trackProgress));
@@ -529,17 +587,23 @@ export async function downloadBookForOffline(
 
   const prefix = mediaKey(book.id, "");
   await downloadWebBook(
-    book,
+    retryMissing ? { ...book, tracks: [] } : book,
     resolveUrl,
     (kind, blob) => write("media", { key: prefix + kind, blob }),
     (kind) => removeRecord("media", prefix + kind),
     onProgress,
-    signal
+    signal,
+    (kind) => readiness ? Promise.resolve(!readiness.missingFiles.includes(kind)) : offlineFileExists(book, kind)
   );
 }
 
 export async function removeBookDownload(book: Book) {
   if (Capacitor.isNativePlatform()) {
+    // A persisted retry may not have reattached to the UI yet. Stop it before
+    // removing the directory so it cannot recreate files after removal.
+    await Promise.all([
+      cancelBookOfflineDownload(book), cancelBookOfflineDownload(book, true)
+    ].map((cancellation) => cancellation.catch(() => undefined)));
     await migrateLegacyBookDirectory(book).catch(() => undefined);
     await Promise.all([
       Filesystem.rmdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY, recursive: true }),

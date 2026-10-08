@@ -1,8 +1,9 @@
 import type { AuthUser, Book, Track } from "./types";
-import { cacheLibrary, cancelBookOfflineDownload, downloadBookForOffline, removeBookDownload } from "./offline";
-import { mediaUrl } from "./api";
+import { cacheLibrary, cancelBookOfflineDownload, downloadBookForOffline, getBookOfflineReadiness, isBookDownloaded, removeBookDownload } from "./offline";
+import { getServerStorageKey, mediaUrl } from "./api";
+import { offlineDownloadMessage, type OfflineReadiness } from "./offlineReadiness";
 import { errorMessage } from "./formatting";
-import { type Dispatch, type RefObject, type SetStateAction, useEffect, useRef } from "react";
+import { type Dispatch, type RefObject, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import { importAudiobookFromDevice, removeDeviceBook } from "./localLibrary";
 import type { ServerCapabilities } from "./serverCapabilities";
 import type { DeviceNotice } from "./ConfirmDialogs";
@@ -13,6 +14,7 @@ import type { PendingSeek } from "./playbackTypes";
 
 export function useOfflineDownloads({
   audioRef,
+  books,
   booksRef,
   capabilities,
   clearPlaybackSession,
@@ -40,6 +42,7 @@ export function useOfflineDownloads({
   setSelectedBookId
 }: {
   audioRef: RefObject<HTMLAudioElement | null>;
+  books: Book[];
   booksRef: RefObject<Book[]>;
   capabilities: ServerCapabilities;
   clearPlaybackSession: () => void;
@@ -68,14 +71,67 @@ export function useOfflineDownloads({
 }) {
   const downloadAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const activeDownloadIdsRef = useRef<Set<string>>(new Set());
+  const retryDownloadIdsRef = useRef<Set<string>>(new Set());
+  const cancellationsRef = useRef<Map<string, Promise<void>>>(new Map());
+  const [readiness, setReadiness] = useState<Record<string, OfflineReadiness>>({});
+  const [online, setOnline] = useState(navigator.onLine !== false);
+  const scope = getServerStorageKey();
+  const scanKey = useMemo(() => JSON.stringify([scope, books.map((book) => [
+    book.id, book.tracks.map((track) => [track.id, track.fileName, track.localFilePath]),
+    book.readingFile, book.companions, book.syncFile, book.coverArtUrl
+  ])]), [books, scope]);
 
-  async function downloadForOffline(book: Book) {
+  useEffect(() => {
+    const update = () => setOnline(navigator.onLine !== false);
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    update();
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const states: Record<string, OfflineReadiness> = {};
+      // Undownloaded books need only an audio check. Scan one book at a time
+      // so a large shelf cannot flood IndexedDB or the native file bridge.
+      for (const book of booksRef.current) {
+        if (cancelled) return;
+        if (!(await isBookDownloaded(book).catch(() => false))) continue;
+        const state = await getBookOfflineReadiness(book).catch(() => null);
+        if (state) states[book.id] = state;
+      }
+      if (cancelled) return;
+      setReadiness(states);
+      setDownloadedBookIds(new Set(Object.entries(states).filter(([, state]) => state.audio).map(([id]) => id)));
+    })();
+    return () => { cancelled = true; };
+  }, [scanKey, booksRef, setDownloadedBookIds]);
+
+  async function refreshReadiness(book: Book) {
+    const state = await getBookOfflineReadiness(book);
+    if (getServerStorageKey() !== scope) return state;
+    setReadiness((existing) => ({ ...existing, [book.id]: state }));
+    setDownloadedBookIds((existing) => {
+      const next = new Set(existing);
+      if (state.audio) next.add(book.id);
+      else next.delete(book.id);
+      return next;
+    });
+    return state;
+  }
+
+  async function downloadForOffline(book: Book, retryMissing = false) {
     if (!capabilities.downloads) return;
     if (activeDownloadIdsRef.current.has(book.id)) return;
     activeDownloadIdsRef.current.add(book.id);
+    if (retryMissing) retryDownloadIdsRef.current.add(book.id);
     const abortController = new AbortController();
     downloadAbortControllersRef.current.set(book.id, abortController);
-    if (playbackBook?.id === book.id) {
+    if (!retryMissing && playbackBook?.id === book.id) {
       persistProgress();
     }
     setDownloadStatus(null);
@@ -83,7 +139,11 @@ export function useOfflineDownloads({
       ...existing,
       [book.id]: { bookId: book.id, title: book.title, fraction: null, state: "queued", queuedAt: Date.now() }
     }));
+    let readinessRefreshed = false;
     try {
+      // Native jobs can finish while the WebView is closed. Save their shelf
+      // before handing the transfer to the OS as well as after completion.
+      await cacheLibrary(currentUser.id, booksRef.current.filter((candidate) => candidate.source !== "device"));
       await downloadBookForOffline(book, mediaUrl, (done, total, percent, state) => {
         const fraction = total > 0 ? Math.min(1, (done + (percent ?? 0) / 100) / total) : null;
         setActiveDownloads((existing) => ({
@@ -96,7 +156,7 @@ export function useOfflineDownloads({
             queuedAt: existing[book.id]?.queuedAt ?? Date.now()
           }
         }));
-      }, abortController.signal);
+      }, abortController.signal, retryMissing);
       // The files and the catalogue are one offline feature. Re-persist the
       // current authorized shelf after the transfer so a quick app kill cannot
       // leave durable audio with no metadata from which to render or play it.
@@ -104,8 +164,11 @@ export function useOfflineDownloads({
         currentUser.id,
         booksRef.current.filter((candidate) => candidate.source !== "device")
       );
-      setDownloadedBookIds((existing) => new Set(existing).add(book.id));
-      setDownloadStatus({ bookId: book.id, message: `${book.title} is available offline` });
+      const state = await refreshReadiness(book);
+      readinessRefreshed = true;
+      if (getServerStorageKey() === scope) {
+        setDownloadStatus({ bookId: book.id, message: offlineDownloadMessage(book.title, state) });
+      }
     } catch (downloadError) {
       if (abortController.signal.aborted) return;
       setDownloadStatus({
@@ -113,10 +176,14 @@ export function useOfflineDownloads({
         message: `${book.title}: ${errorMessage(downloadError, "Download failed.")}`
       });
     } finally {
+      await cancellationsRef.current.get(book.id)?.catch(() => undefined);
+      if (!readinessRefreshed) await refreshReadiness(book).catch(() => undefined);
       if (downloadAbortControllersRef.current.get(book.id) === abortController) {
         downloadAbortControllersRef.current.delete(book.id);
       }
       activeDownloadIdsRef.current.delete(book.id);
+      retryDownloadIdsRef.current.delete(book.id);
+      cancellationsRef.current.delete(book.id);
       setActiveDownloads((existing) => {
         const next = { ...existing };
         delete next[book.id];
@@ -128,10 +195,13 @@ export function useOfflineDownloads({
   async function cancelOfflineDownload(book: Pick<Book, "id" | "title">) {
     const abortController = downloadAbortControllersRef.current.get(book.id);
     if (!abortController) return;
+    const retryMissing = retryDownloadIdsRef.current.has(book.id);
+    const cancellation = cancelBookOfflineDownload(book, retryMissing);
+    cancellationsRef.current.set(book.id, cancellation);
     abortController.abort();
     setDownloadStatus({ bookId: book.id, message: `${book.title} download cancelled` });
     try {
-      await cancelBookOfflineDownload(book);
+      await cancellation;
     } catch (error) {
       setDownloadStatus({
         bookId: book.id,
@@ -204,6 +274,7 @@ export function useOfflineDownloads({
       playWhenTrackLoads.current = resumePlayback;
     }
     await removeBookDownload(book);
+    await refreshReadiness(book).catch(() => undefined);
     setDownloadedBookIds((existing) => {
       const next = new Set(existing);
       next.delete(book.id);
@@ -216,11 +287,14 @@ export function useOfflineDownloads({
   }
 
   return {
+    online,
+    readiness,
     downloadStatus,
     cancelOfflineDownload,
     deleteDeviceBook,
     downloadForOffline,
     importFromDevice,
+    retryMissingFiles: (book: Book) => downloadForOffline(book, true),
     removeOfflineDownload
   };
 }

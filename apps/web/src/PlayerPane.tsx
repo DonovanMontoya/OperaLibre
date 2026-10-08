@@ -53,6 +53,7 @@ import type { DeviceNotice } from "./ConfirmDialogs";
 import type { NativeTab } from "./nativeTabs";
 import type { NativePlayerSheet } from "./PlayerSheets";
 import type { DeviceDownloadActivity } from "./SettingsCards";
+import { OfflineBookReadiness } from "./OfflineBookReadiness";
 import type { Dispatch, ReactNode, RefObject, SetStateAction, TouchEvent, UIEvent } from "react";
 import type { ServerCapabilities } from "./serverCapabilities";
 
@@ -238,6 +239,9 @@ export function PlayerPane({
   const {
     cancelOfflineDownload,
     downloadForOffline,
+    online,
+    readiness,
+    retryMissingFiles,
     removeOfflineDownload
   } = offlineDownloads;
   const {
@@ -701,7 +705,7 @@ export function PlayerPane({
                       <CircleCheck size={13} />
                       <span>On device</span>
                     </span>
-                  ) : Capacitor.isNativePlatform() && (capabilities.downloads || downloadedBookIds.has(selectedBook.id) || selectedDownload) ? (
+                  ) : (Capacitor.isNativePlatform() || downloadedBookIds.has(selectedBook.id) || selectedDownload) && (capabilities.downloads || downloadedBookIds.has(selectedBook.id) || selectedDownload) ? (
                     <button
                       className={`download-btn ${downloadedBookIds.has(selectedBook.id) ? "active" : ""} ${
                         selectedDownload ? "downloading" : ""
@@ -737,7 +741,7 @@ export function PlayerPane({
                         {selectedDownload
                           ? "Cancel"
                           : downloadedBookIds.has(selectedBook.id)
-                            ? "Downloaded"
+                            ? "Audio downloaded"
                             : "Download"}
                       </span>
                     </button>
@@ -765,7 +769,18 @@ export function PlayerPane({
                       </ul>
                     </details>
                   ) : null}
-                  {Capacitor.isNativePlatform() && downloadStatus?.bookId === selectedBook.id ? (
+                  {selectedBook.source !== "device" && !demoMode && downloadedBookIds.has(selectedBook.id) ? (
+                    <span className="offline-readiness-panel">
+                      <OfflineBookReadiness readiness={readiness[selectedBook.id]} />
+                      {capabilities.downloads && !!readiness[selectedBook.id]?.missingFiles.length ? (
+                        <button type="button" className="download-btn" disabled={!!selectedDownload || !online}
+                          onClick={() => void retryMissingFiles(selectedBook)}>
+                          Retry missing files
+                        </button>
+                      ) : null}
+                    </span>
+                  ) : null}
+                  {downloadStatus?.bookId === selectedBook.id ? (
                     <span className="download-status">{downloadStatus.message}</span>
                   ) : null}
                   {playbackError ? <span className="download-status">{playbackError}</span> : null}
