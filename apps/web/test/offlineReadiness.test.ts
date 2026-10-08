@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { downloadWebBook } from "../src/offlineDownload.ts";
-import { inspectOfflineReadiness, offlineDownloadMessage } from "../src/offlineReadiness.ts";
+import { inspectOfflineReadiness, offlineDownloadMessage, offlineMissingFileLabels } from "../src/offlineReadiness.ts";
 import { library } from "./performance/fixtures.ts";
 import type { Book, SyncMap } from "../src/types.ts";
 
@@ -87,4 +87,18 @@ test("missing, unsupported, legacy, and chapter-only companions are distinguishe
   stored.set("sync", new Blob([JSON.stringify(map)]));
   stored.delete("companion:ebook");
   assert.equal((await readiness(book, stored)).sentenceSync, "needs-ebook");
+});
+
+test("books without a usable ebook do not warn about unused sentence-sync files", async () => {
+  for (const readingFile of [null, { ...epub, extension: "pdf" }]) {
+    const withoutEpub = { ...book, readingFile, companions: [] };
+    const state = await readiness(withoutEpub, new Map());
+    assert.equal(state.sentenceSync, "unsupported");
+    assert.ok(!state.missingFiles.includes("sync"));
+  }
+});
+
+test("missing-file labels identify artwork, companions, and follow-along timing", () => {
+  const state = { audio: true, ebook: "missing", sentenceSync: "missing", missingFiles: ["cover:latest", "companion:ebook", "sync"] } as const;
+  assert.deepEqual(offlineMissingFileLabels(book, { ...state, missingFiles: [...state.missingFiles] }), ["cover art", "book.epub", "follow-along timing"]);
 });

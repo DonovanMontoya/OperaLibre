@@ -376,7 +376,7 @@ export function ServerDownloadSettings({
                   <div key={book.id} className="settings-download-row">
                     <div className="settings-download-info">
                       <strong>{book.title}</strong>
-                      <OfflineBookReadiness readiness={readiness[book.id]} />
+                      <OfflineBookReadiness book={book} readiness={readiness[book.id]} />
                       {canDownload && !!readiness[book.id]?.missingFiles.length ? (
                         <button type="button" className="download-btn"
                           disabled={deviceDownloadQueue.some((activity) => activity.bookId === book.id) || !online}

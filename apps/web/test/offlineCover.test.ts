@@ -8,7 +8,7 @@ Reflect.set(globalThis, "__coverTestPaths", paths);
 const mocks: Record<string, string> = {
   "@capacitor/core": "export const Capacitor = { isNativePlatform: () => true, convertFileSrc: (value) => value };",
   "@capacitor/filesystem": `export const Directory = { Data: "DATA" }; export const Filesystem = {
-    stat: async ({path}) => { if (!globalThis.__coverTestPaths.has(path)) throw new Error('missing'); return {}; },
+    stat: async ({path}) => { if (!globalThis.__coverTestPaths.has(path)) throw new Error('missing'); return {type: 'file', size: 1}; },
     getUri: async ({path}) => ({uri: 'file://' + path}),
     readdir: async ({path}) => ({ files: [...globalThis.__coverTestPaths]
       .filter(file => file.startsWith(path + '/'))

@@ -879,7 +879,7 @@ export function PlayerPane({
 
           {selectedBook.source !== "device" && !demoMode && downloadedBookIds.has(selectedBook.id) ? (
             <section className="book-offline-files" aria-label="Offline files">
-              <OfflineBookReadiness readiness={readiness[selectedBook.id]} />
+              <OfflineBookReadiness book={selectedBook} readiness={readiness[selectedBook.id]} />
               {capabilities.downloads && !!readiness[selectedBook.id]?.missingFiles.length ? (
                 <>
                   <button type="button" className="download-btn" disabled={!!selectedDownload || !online}
