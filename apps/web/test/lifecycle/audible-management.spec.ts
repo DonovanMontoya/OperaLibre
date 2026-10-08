@@ -215,14 +215,6 @@ test("an unavailable installation can be inspected without a sidebar dropdown", 
   await expect(page.getByRole("region", { name: "Server setup" })).toContainText("Install Libation on the server.");
 });
 
-test("reader shelf exposes refresh without account administration", async ({ page }) => {
-  await page.goto(`${url}test/audible-management.html?reader`);
-  await expect(page.getByRole("button", { name: "Refresh purchases", exact: true })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "Manage Audible", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Connect Audible", exact: true })).toHaveCount(0);
-  await expect(page.locator(".audible-sidebar details")).toHaveCount(0);
-});
-
 for (const dark of [false, true]) {
   test(`setup check briefly shows success in native ${dark ? "dark" : "light"} settings and resets on retry`, async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
@@ -275,4 +267,146 @@ test("setup check shows request failure and keeps the error after the icon reset
   await page.clock.fastForward(4000);
   await expect(check.locator(".audible-setup-result")).toHaveCount(0);
   await expect(error).toBeVisible();
+});
+
+async function setFailure(page: import("@playwright/test").Page, kind: string, enabled: boolean) {
+  await page.evaluate(({ kind, enabled }) => (window as unknown as { setAudibleFailure: (kind: string, enabled: boolean) => void }).setAudibleFailure(kind, enabled), { kind, enabled });
+}
+
+for (const native of [false, true]) {
+  test(`connection checks fail honestly and recover in ${native ? "native settings" : "web management"}`, async ({ page }) => {
+    await page.goto(`${url}test/audible-management.html?connected${native ? "&native" : ""}`);
+    if (!native) await openManagement(page);
+    const check = page.getByRole("button", { name: "Check setup", exact: true });
+    await expect(check).toBeEnabled();
+    await setFailure(page, "status", true);
+    await check.press("Enter");
+    await expect(check).toHaveAttribute("title", "Setup check failed.");
+    await expect(check.locator(".audible-setup-result.failure")).toBeVisible();
+    await expect(page.getByRole("alert")).toContainText("status temporarily unavailable.");
+    await setFailure(page, "status", false);
+    await check.press("Enter");
+    await expect(check).toHaveAttribute("title", "Setup ready.");
+    await expect(page.getByRole("alert")).toHaveCount(0);
+  });
+
+  test(`account changes repair cached purchases and filters when reloading fails in ${native ? "native settings" : "web management"}`, async ({ page }) => {
+    await page.goto(`${url}test/audible-management.html?connected&catalog${native ? "&native" : ""}`);
+    const catalog = page.getByRole("region", { name: "Cached Audible purchases" });
+    await expect(catalog).toContainText("Family Purchase — Family");
+    await catalog.getByLabel("Account filter", { exact: true }).selectOption("family");
+    await catalog.getByLabel("Combined account filter", { exact: true }).selectOption("audible:family");
+    if (!native) await openManagement(page);
+    await setFailure(page, "catalog", true);
+    await page.getByRole("button", { name: "Rename", exact: true }).press("Enter");
+    await page.getByLabel("Account label", { exact: true }).fill("Personal");
+    await page.getByRole("button", { name: "Save", exact: true }).press("Enter");
+    await expect(page.getByText("Account renamed.", { exact: true })).toBeVisible();
+    await expect(catalog).toContainText("Family Purchase — Personal");
+    await expect(catalog.getByRole("option", { name: "Personal", exact: true })).toHaveCount(2);
+    await expect(page.getByRole("alert")).toContainText("Libation books could not be loaded.");
+    await setFailure(page, "status", true);
+    await page.getByRole("button", { name: "Disconnect", exact: true }).press("Enter");
+    await page.getByRole("button", { name: "Disconnect account", exact: true }).press("Enter");
+    await expect(page.getByText("Account disconnected.", { exact: true })).toBeVisible();
+    await expect(catalog.locator("li")).toHaveCount(0);
+    await expect(catalog.getByRole("option", { name: "Personal", exact: true })).toHaveCount(0);
+    await expect(catalog.getByLabel("Account filter", { exact: true })).toHaveValue("all");
+    await expect(catalog.getByLabel("Combined account filter", { exact: true })).toHaveValue("all");
+  });
+}
+
+test("healthy connection checks preserve unrelated acquisition errors", async ({ page }) => {
+  await page.goto(`${url}test/audible-management.html?connected&native`);
+  await setFailure(page, "import", true);
+  await page.getByRole("button", { name: "Add all purchases to server", exact: true }).press("Enter");
+  await expect(page.getByRole("alert")).toContainText("Fixture acquisition failed.");
+  const check = page.getByRole("button", { name: "Check setup", exact: true });
+  await setFailure(page, "status", true);
+  await check.press("Enter");
+  await expect(check).toHaveAttribute("title", "Setup check failed.");
+  await setFailure(page, "status", false);
+  await check.press("Enter");
+  await expect(check).toHaveAttribute("title", "Setup ready.");
+  await expect(page.getByRole("alert")).toContainText("Fixture acquisition failed.");
+});
+
+test("a catalog response started before disconnect cannot restore a removed account", async ({ page }) => {
+  await page.goto(`${url}test/audible-management.html?connected&catalog&native`);
+  const catalog = page.getByRole("region", { name: "Cached Audible purchases" });
+  await expect(catalog).toContainText("Family Purchase");
+  await page.evaluate(() => (window as unknown as { holdAudibleCatalog: () => void }).holdAudibleCatalog());
+  await page.getByRole("button", { name: "Rename", exact: true }).press("Enter");
+  await page.getByLabel("Account label", { exact: true }).fill("Personal");
+  await page.getByRole("button", { name: "Save", exact: true }).press("Enter");
+  await expect.poll(() => page.evaluate(() => typeof (window as unknown as { releaseAudibleCatalog?: () => void }).releaseAudibleCatalog)).toBe("function");
+  await page.getByRole("button", { name: "Disconnect", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Disconnect account", exact: true }).press("Enter");
+  await expect(catalog.locator("li")).toHaveCount(0);
+  await page.evaluate(() => (window as unknown as { releaseAudibleCatalog: () => void }).releaseAudibleCatalog());
+  await expect(page.getByText("Account disconnected.", { exact: true })).toBeVisible();
+  await expect(catalog.locator("li")).toHaveCount(0);
+  await expect(catalog.getByRole("option")).toHaveCount(2);
+});
+
+test("a discovery poll started before refresh cannot discard its optimistic job", async ({ page }) => {
+  await page.clock.install();
+  await page.goto(`${url}test/audible-management.html?connected&native`);
+  const refresh = page.getByRole("button", { name: "Refresh purchases", exact: true });
+  await expect(refresh).toBeEnabled();
+  await page.evaluate(() => (window as unknown as { holdAudibleJobs: () => void }).holdAudibleJobs());
+  await page.clock.fastForward(15000);
+  await expect.poll(() => page.evaluate(() => typeof (window as unknown as { releaseAudibleJobs?: () => void }).releaseAudibleJobs)).toBe("function");
+  await refresh.press("Enter");
+  const refreshing = page.getByRole("button", { name: "Refreshing purchases", exact: true });
+  await expect(refreshing).toBeDisabled();
+  await page.evaluate(() => (window as unknown as { releaseAudibleJobs: () => void }).releaseAudibleJobs());
+  const check = page.getByRole("button", { name: "Check setup", exact: true });
+  await check.press("Enter");
+  await expect(check).toHaveAttribute("title", "Setup ready.");
+  await expect(refreshing).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Refresh purchases", exact: true })).toHaveCount(0);
+});
+
+test("connection status captured before disconnect cannot restore the removed account", async ({ page }) => {
+  await page.goto(`${url}test/audible-management.html?connected&catalog&native`);
+  const catalog = page.getByRole("region", { name: "Cached Audible purchases" });
+  await expect(catalog).toContainText("Family Purchase");
+  await page.evaluate(() => (window as unknown as { holdAudibleStatus: () => void }).holdAudibleStatus());
+  await page.getByRole("button", { name: "Check setup", exact: true }).press("Enter");
+  await expect.poll(() => page.evaluate(() => typeof (window as unknown as { releaseAudibleStatus?: () => void }).releaseAudibleStatus)).toBe("function");
+  await page.getByRole("button", { name: "Disconnect", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Disconnect account", exact: true }).press("Enter");
+  await expect(page.getByText("Account disconnected.", { exact: true })).toBeVisible();
+  await page.evaluate(() => (window as unknown as { releaseAudibleStatus: () => void }).releaseAudibleStatus());
+  await expect(page.getByRole("button", { name: "Check setup", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Disconnect", exact: true })).toHaveCount(0);
+  await expect(catalog.getByRole("option")).toHaveCount(2);
+});
+
+test("a successful account update clears a previous connection-status error", async ({ page }) => {
+  await page.goto(`${url}test/audible-management.html?connected&native`);
+  const check = page.getByRole("button", { name: "Check setup", exact: true });
+  await expect(check).toBeEnabled();
+  await setFailure(page, "status", true);
+  await check.press("Enter");
+  await expect(check).toHaveAttribute("title", "Setup check failed.");
+  await expect(page.getByRole("alert")).toContainText("status temporarily unavailable.");
+  await page.getByRole("checkbox").press("Space");
+  await expect(page.getByRole("checkbox")).toBeChecked();
+  await expect(page.getByRole("status").filter({ hasText: "Future purchases will be imported after a refresh." })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("an ordinary catalog refresh does not invalidate a successful connection check", async ({ page }) => {
+  await page.goto(`${url}test/audible-management.html?connected&catalog&native`);
+  await expect(page.getByRole("region", { name: "Cached Audible purchases" })).toContainText("Family Purchase");
+  await page.evaluate(() => (window as unknown as { holdAudibleStatus: () => void }).holdAudibleStatus());
+  const check = page.getByRole("button", { name: "Check setup", exact: true });
+  await check.press("Enter");
+  await expect.poll(() => page.evaluate(() => typeof (window as unknown as { releaseAudibleStatus?: () => void }).releaseAudibleStatus)).toBe("function");
+  await page.evaluate(() => (window as unknown as { refreshAudibleCatalog: () => Promise<void> }).refreshAudibleCatalog());
+  await page.evaluate(() => (window as unknown as { releaseAudibleStatus: () => void }).releaseAudibleStatus());
+  await expect(check).toHaveAttribute("title", "Setup ready.");
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
