@@ -769,20 +769,6 @@ export function PlayerPane({
                       </ul>
                     </details>
                   ) : null}
-                  {selectedBook.source !== "device" && !demoMode && downloadedBookIds.has(selectedBook.id) ? (
-                    <span className="offline-readiness-panel">
-                      <OfflineBookReadiness readiness={readiness[selectedBook.id]} />
-                      {capabilities.downloads && !!readiness[selectedBook.id]?.missingFiles.length ? (
-                        <button type="button" className="download-btn" disabled={!!selectedDownload || !online}
-                          onClick={() => void retryMissingFiles(selectedBook)}>
-                          Retry missing files
-                        </button>
-                      ) : null}
-                    </span>
-                  ) : null}
-                  {downloadStatus?.bookId === selectedBook.id ? (
-                    <span className="download-status">{downloadStatus.message}</span>
-                  ) : null}
                   {playbackError ? <span className="download-status">{playbackError}</span> : null}
                   {completionError?.bookId === selectedBook.id ? (
                     <span className="download-status" role="alert">
@@ -890,6 +876,25 @@ export function PlayerPane({
               ) : null}
             </div>
           </div>
+
+          {selectedBook.source !== "device" && !demoMode && downloadedBookIds.has(selectedBook.id) ? (
+            <section className="book-offline-files" aria-label="Offline files">
+              <OfflineBookReadiness readiness={readiness[selectedBook.id]} />
+              {capabilities.downloads && !!readiness[selectedBook.id]?.missingFiles.length ? (
+                <>
+                  <button type="button" className="download-btn" disabled={!!selectedDownload || !online}
+                    aria-label={`Retry missing files for ${selectedBook.title}`}
+                    onClick={() => void retryMissingFiles(selectedBook)}>
+                    Retry missing files
+                  </button>
+                  {!online ? <span className="download-status">Connect to your server to retry missing files.</span> : null}
+                </>
+              ) : null}
+            </section>
+          ) : null}
+          {downloadStatus?.bookId === selectedBook.id ? (
+            <span className="download-status book-download-status" role="status">{downloadStatus.message}</span>
+          ) : null}
 
           {native ? (
             <div className="metadata-strip">
