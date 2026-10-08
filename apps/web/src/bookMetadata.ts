@@ -15,17 +15,23 @@ function descriptionEchoesBook(book: Book, description: string) {
   );
 }
 
-/** Hide track/chapter labels that some audiobook files store as a comment. */
+function cleanDescriptionSpaces(value: string | null) {
+  // Cached metadata can contain escaped entities or omit the trailing semicolon.
+  return value
+    ?.replace(/&(?:amp;)*(?:nbsp|#0*160|#x0*a0)(?:;|(?=\s|$|[<&]))/gi, " ")
+    .trim() || null;
+}
+
+/** Hide blank descriptions and track/chapter labels stored as a comment. */
 export function displayBookDescription(book: Book) {
-  const description = book.description?.trim();
+  const description = cleanDescriptionSpaces(book.description);
   return description && !descriptionEchoesBook(book, description) ? description : null;
 }
 
 function cleanCatalogDescription(value: string | null) {
-  const description = value
+  const description = cleanDescriptionSpaces(value)
     ?.replace(/<br\s*\/?>/gi, " ")
     .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;|&#160;/gi, " ")
     .replace(/&quot;|&#34;/gi, '"')
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&lt;/gi, "<")
