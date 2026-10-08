@@ -97,6 +97,9 @@ async fn download_with_budget(
     args.extend([
         "--override".to_string(),
         format!("InProgress={}", temporary.display()),
+        // These files are served over HTTP; keep the index ahead of the audio.
+        "--override".to_string(),
+        "MoveMoovToBeginning=true".to_string(),
         "--override".to_string(),
         format!("Books={}", books.display()),
     ]);
@@ -399,6 +402,37 @@ assert pathlib.Path(os.environ['TMPDIR']) == temporary
         std::fs::remove_file(config.cli_path.as_ref().unwrap()).unwrap();
         assert!(run(&config, budget()).await.unwrap().status.success());
         assert_eq!(std::fs::read_dir(&config.library_root).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn imports_faststart_without_changing_libation_settings() {
+        let (root, mut config) = fixture(
+            r#"import json, struct
+profile = pathlib.Path(sys.argv[sys.argv.index('--libationFiles') + 1])
+saved = json.loads((profile / 'Settings.json').read_text())
+overrides = dict(sys.argv[i + 1].split('=', 1) for i, arg in enumerate(sys.argv) if arg == '--override')
+faststart = overrides.get('MoveMoovToBeginning', str(saved.get('MoveMoovToBeginning', False))).lower() == 'true'
+box = lambda name: struct.pack('>I4s', 8, name)
+layout = [b'ftyp', b'moov', b'mdat'] if faststart else [b'ftyp', b'mdat', b'moov']
+(books / 'book.m4b').write_bytes(b''.join(box(name) for name in layout))"#,
+        );
+        let profile = root.path().join("profile");
+        std::fs::create_dir(&profile).unwrap();
+        let saved_settings = br#"{"MoveMoovToBeginning":false}"#;
+        std::fs::write(profile.join("Settings.json"), saved_settings).unwrap();
+        config.libation_files_dir = Some(profile.clone());
+
+        assert!(run(&config, budget()).await.unwrap().status.success());
+        let audio = crate::walk_audio_files_checked(&config.library_root);
+        assert_eq!(audio.files.len(), 1);
+        assert_eq!(
+            crate::faststart::inspect(&audio.files[0]).unwrap(),
+            crate::faststart::Layout::Faststart
+        );
+        assert_eq!(
+            std::fs::read(profile.join("Settings.json")).unwrap(),
+            saved_settings
+        );
     }
 
     #[tokio::test]

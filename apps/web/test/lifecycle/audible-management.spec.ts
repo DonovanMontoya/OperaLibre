@@ -222,3 +222,57 @@ test("reader shelf exposes refresh without account administration", async ({ pag
   await expect(page.getByRole("button", { name: "Connect Audible", exact: true })).toHaveCount(0);
   await expect(page.locator(".audible-sidebar details")).toHaveCount(0);
 });
+
+for (const dark of [false, true]) {
+  test(`setup check briefly shows success in native ${dark ? "dark" : "light"} settings and resets on retry`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${url}test/audible-management.html?native${dark ? "&dark" : ""}`);
+    const check = page.getByRole("button", { name: "Check setup", exact: true });
+    await expect(check).toBeEnabled();
+    await page.clock.install();
+    await expect(check.locator(".audible-setup-result")).toHaveCount(0);
+    await check.press("Enter");
+    await expect(check.locator(".audible-setup-result.success")).toBeVisible();
+    await expect(check).toHaveAttribute("title", "Setup ready.");
+    await expect(page.locator(".audible-section-head [role=status]")).toHaveText("Setup ready.");
+    await page.clock.fastForward(2000);
+    await check.press("Enter");
+    await expect(check.locator(".audible-setup-result.success")).toBeVisible();
+    await page.clock.fastForward(2000);
+    await expect(check.locator(".audible-setup-result.success")).toBeVisible();
+    await page.clock.fastForward(2000);
+    await expect(check.locator(".audible-setup-result")).toHaveCount(0);
+    await expect(check.locator(".lucide-refresh-ccw")).toBeVisible();
+    await expect(page.locator(".audible-section-head [role=status]")).toBeEmpty();
+  });
+}
+
+test("setup check shows failure when a completed check needs attention", async ({ page }) => {
+  await page.goto(`${url}test/audible-management.html?missing`);
+  await openManagement(page);
+  const check = page.getByRole("button", { name: "Check setup", exact: true });
+  await expect(check).toBeEnabled();
+  await page.clock.install();
+  await check.press("Enter");
+  await expect(check.locator(".audible-setup-result.failure")).toBeVisible();
+  await expect(check).toHaveAttribute("title", "Setup needs attention. See server setup below.");
+  await expect(page.getByRole("region", { name: "Server setup" })).toContainText("Install Libation on the server.");
+  await page.clock.fastForward(4000);
+  await expect(check.locator(".audible-setup-result")).toHaveCount(0);
+});
+
+test("setup check shows request failure and keeps the error after the icon resets", async ({ page }) => {
+  await page.goto(`${url}test/audible-management.html?native&setup-failure`);
+  const check = page.getByRole("button", { name: "Check setup", exact: true });
+  await expect(check).toBeEnabled();
+  await page.clock.install();
+  await check.press("Enter");
+  await expect(check.locator(".audible-setup-result.failure")).toBeVisible();
+  await expect(check).toBeEnabled();
+  await expect(check).toHaveAttribute("title", "Setup check failed.");
+  const error = page.getByRole("alert").filter({ hasText: "Setup could not be checked." });
+  await expect(error).toBeVisible();
+  await page.clock.fastForward(4000);
+  await expect(check.locator(".audible-setup-result")).toHaveCount(0);
+  await expect(error).toBeVisible();
+});

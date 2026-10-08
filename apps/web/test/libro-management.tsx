@@ -5,6 +5,7 @@ import "../src/styles.css";
 
 const params = new URLSearchParams(location.search);
 const native = params.has("native");
+const admin = params.has("admin");
 if (native) document.documentElement.classList.add("native-app", "platform-ios");
 if (params.has("dark")) document.documentElement.classList.add("dark-mode");
 const emails = ["personal@example.test", "family@example.test"];
@@ -52,6 +53,7 @@ window.fetch = async (input, init) => {
   return new Response(code === 204 ? null : JSON.stringify(result), { status: code, headers: { "Content-Type": "application/json" } });
 };
 
-createRoot(document.getElementById("root")!).render(<main className={native ? "settings-card purchase-provider-settings" : "library-pane open"} style={native ? { maxWidth: 700, margin: "24px auto", padding: 24 } : { width: "min(380px, 100%)", minHeight: "100dvh", padding: 24 }}>
-  <LibroCatalog mode={native ? "management" : "full"} viewMode="list" searchQuery="" onBooksChanged={() => undefined} />
+const catalog = <LibroCatalog mode={native && !admin ? "management" : "full"} viewMode={admin ? undefined : "list"} searchQuery={admin ? undefined : ""} onBooksChanged={() => undefined} />;
+createRoot(document.getElementById("root")!).render(admin ? <main className="admin-shell"><div /><div className="admin-content">{catalog}</div></main> : <main className={native ? "settings-card purchase-provider-settings" : "library-pane open"} style={native ? { maxWidth: 700, margin: "24px auto", padding: 24 } : { width: "min(380px, 100%)", minHeight: "100dvh", padding: 24 }}>
+  {catalog}
 </main>);
