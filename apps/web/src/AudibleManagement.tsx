@@ -64,8 +64,8 @@ export function AudibleManagement({ currentUser, native, purchases }: Management
       const result = await getLibationSetup();
       if (!mounted.current) return;
       setSetup(result);
-      await loadLibationStatus();
-      if (mounted.current && showResult) setSetupResult(result.checks.length > 0 && result.checks.every(check => check.ready) ? "ready" : "attention");
+      const statusLoaded = await loadLibationStatus();
+      if (mounted.current && showResult) setSetupResult(!statusLoaded ? "failed" : result.checks.length > 0 && result.checks.every(check => check.ready) ? "ready" : "attention");
     } catch (cause) {
       if (mounted.current) {
         setError(errorMessage(cause, "Setup could not be checked."));
@@ -74,12 +74,13 @@ export function AudibleManagement({ currentUser, native, purchases }: Management
     } finally { if (mounted.current) setChecking(false); }
   }
 
-  async function changeAccount(id: string, action: () => Promise<LibationStatus | void>, message: string) {
+  async function changeAccount(id: string, action: () => Promise<LibationStatus | void>, message: string, catalogChanged = false) {
     setBusy(id); setError(null); setNotice(null);
     try {
       const result = await action();
-      if (result) setLibationStatus(result);
-      else await loadLibationStatus();
+      if (catalogChanged) purchases.applyLibationAccountChange(id, result);
+      else if (result) setLibationStatus(result);
+      if (!result) await loadLibationStatus();
       setEditing(null); setRemoving(null); setNotice(message);
     } catch (cause) { setError(errorMessage(cause, "The account could not be updated.")); }
     finally { setBusy(null); }
@@ -122,8 +123,8 @@ export function AudibleManagement({ currentUser, native, purchases }: Management
               {account.managed ? <button type="button" disabled={!!busy || !!pending} onClick={() => { setEditing(editing === account.id ? null : account.id); setLabel(account.name ?? ""); }}>Rename</button> : <a href={SETUP_DOCS} target="_blank" rel="noreferrer">Managed in Libation <ExternalLink size={12} /></a>}
               {account.managed && currentUser.isOwner ? <button type="button" disabled={!!busy || !!pending} onClick={() => setRemoving(account.id)} className="danger">Disconnect</button> : null}
             </div>
-            {editing === account.id ? <form className="audible-account-edit" onSubmit={event => { event.preventDefault(); void changeAccount(account.id, () => updateLibationAccount(account.id, label.trim()), "Account renamed."); }}><label>Account label<input value={label} maxLength={80} onChange={event => setLabel(event.currentTarget.value)} required /></label><button type="submit" className="quiet-button" disabled={!!busy || !label.trim()}>Save</button><button type="button" className="quiet-button" onClick={() => setEditing(null)}>Cancel</button></form> : null}
-            {removing === account.id ? <div className="audible-disconnect"><p>Disconnect {account.name}? Downloaded books and listening progress stay in your library.</p><button type="button" className="quiet-button" disabled={!!busy} onClick={() => void changeAccount(account.id, () => removeLibationAccount(account.id), "Account disconnected.")}>Disconnect account</button><button type="button" className="quiet-button" onClick={() => setRemoving(null)}>Keep connected</button></div> : null}
+            {editing === account.id ? <form className="audible-account-edit" onSubmit={event => { event.preventDefault(); void changeAccount(account.id, () => updateLibationAccount(account.id, label.trim()), "Account renamed.", true); }}><label>Account label<input value={label} maxLength={80} onChange={event => setLabel(event.currentTarget.value)} required /></label><button type="submit" className="quiet-button" disabled={!!busy || !label.trim()}>Save</button><button type="button" className="quiet-button" onClick={() => setEditing(null)}>Cancel</button></form> : null}
+            {removing === account.id ? <div className="audible-disconnect"><p>Disconnect {account.name}? Downloaded books and listening progress stay in your library.</p><button type="button" className="quiet-button" disabled={!!busy} onClick={() => void changeAccount(account.id, () => removeLibationAccount(account.id), "Account disconnected.", true)}>Disconnect account</button><button type="button" className="quiet-button" onClick={() => setRemoving(null)}>Keep connected</button></div> : null}
             {currentUser.libationAccess === "direct" && account.id !== "legacy" ? <label className="audible-auto-import"><input type="checkbox" checked={libationStatus.autoImportAccountIds?.includes(account.id) ?? false} disabled={!!busy || !!pending || (!account.authenticated && !libationStatus.autoImportAccountIds?.includes(account.id))} onChange={event => { const value = event.currentTarget.checked; void changeAccount(account.id, () => setLibationAutoImport(account.id, value), value ? "Future purchases will be imported after a refresh." : "Automatic imports turned off."); }} /><span><strong>Automatically add new purchases</strong><small>Future purchases go to the server after a refresh. Existing purchases and Audible Plus titles stay manual. Reader access rules still apply.</small></span></label> : null}
           </> : null}
         </div>

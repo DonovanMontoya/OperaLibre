@@ -12398,7 +12398,6 @@ html.native-app .admin-shell:not(.admin-overlay) {
 .audible-check svg { margin-top: 3px; }
 .audible-check p { color: var(--audible-muted); }
 .audible-setup pre, .audible-error pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .7rem; max-height: 180px; overflow: auto; }
-.audible-setup code { overflow-wrap: anywhere; }
 .audible-accounts article { grid-template-columns: 18px minmax(0, 1fr); align-items: start; }
 .audible-management .audible-accounts article { border-color: var(--audible-border); background: var(--audible-surface); }
 .audible-accounts .account-list-copy { grid-template-columns: minmax(0, 1fr); color: var(--audible-ink); gap: 6px; font: inherit; font-size: .8rem; letter-spacing: normal; }
