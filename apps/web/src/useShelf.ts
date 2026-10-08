@@ -24,6 +24,7 @@ import {
   countActiveShelfFilters,
   countShelfFacet,
   EMPTY_SHELF_FILTERS,
+  shelfSearchWords,
   type ShelfFacetGroupKey,
   type ShelfFilters,
   type ShelfStatusFilter,
@@ -194,7 +195,7 @@ export function useShelf({
   // verdicts apart is what lets the panel count a group over the books the
   // *other* groups allow without walking the library again per chip.
   const shelfMatches = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
+    const query = shelfSearchWords(searchQuery);
     return books.map((book) => ({
       book,
       search: bookMatchesShelfSearch(book, query),
