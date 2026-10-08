@@ -1,9 +1,9 @@
-import { BookOpen, Check, Cloud, Images, Search, Smartphone, Timer, Users } from "lucide-react";
+import { BookHeadphones, BookOpen, Check, Cloud, Images, Search, Smartphone, Timer, Users } from "lucide-react";
 import { hasExtras } from "./readalong";
 import { memo, useState } from "react";
 import { compactProgressLabel } from "./bookProgress";
 import type { ShelfViewMode } from "./shelfView";
-import { SHELF_FACET_PREVIEW_COUNT, type ShelfFacetOption, type ShelfFilters, tagForShelfSort } from "./shelfFilters";
+import { bookReadingAvailability, SHELF_FACET_PREVIEW_COUNT, type ShelfFacetOption, type ShelfFilters, tagForShelfSort } from "./shelfFilters";
 import type { Book } from "./types";
 import { summarizeSharedProgress } from "./sharedProgress";
 import { bookSortGroupCaption, type SortMode } from "./shelfSort";
@@ -167,6 +167,9 @@ export const ShelfBookList = memo(function ShelfBookList({
         // shortening it costs a screen reader nothing.
         const progressLabel = isCompactView ? compactProgressLabel(book) : bookProgressLabel(book);
         const compactProgressTitle = isCompactView ? bookProgressLabel(book) : undefined;
+        const followAlong = bookReadingAvailability(book) === "followAlong";
+        const readingLabel = followAlong ? "Follow along" : "Ebook";
+        const readingTitle = followAlong ? "Synced ebook: text follows the audio" : "Ebook included: read beside the audio";
         const sortTag = tagForShelfSort(book, shelfTags);
         return (
             <button
@@ -217,11 +220,11 @@ export const ShelfBookList = memo(function ShelfBookList({
                 {readalongEnabled && book.readingFile ? (
                   <span
                     className={`book-readalong-tag ${isCompactView ? "is-glyph" : ""}`}
-                    title="Ebook included: read along while you listen"
-                    aria-label={isCompactView ? "Ebook included: read along while you listen" : undefined}
+                    title={readingTitle}
+                    aria-label={isCompactView ? readingTitle : undefined}
                   >
-                    <BookOpen size={11} strokeWidth={1.6} />
-                    {isCompactView ? null : "Read along"}
+                    {followAlong ? <BookHeadphones size={11} strokeWidth={1.6} /> : <BookOpen size={11} strokeWidth={1.6} />}
+                    {isCompactView ? null : readingLabel}
                   </span>
                 ) : readalongEnabled && hasExtras(book) ? (
                   <span

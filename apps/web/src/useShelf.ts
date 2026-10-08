@@ -17,7 +17,9 @@ import { readStoredShelfViewMode, type ShelfViewMode, writeStoredShelfViewMode }
 import {
   bookMatchesFacet,
   bookMatchesShelfDownload,
-  bookMatchesShelfReadAlong,
+  bookMatchesShelfReading,
+  bookReadingAvailability,
+  SHELF_READING_OPTIONS,
   bookMatchesShelfSearch,
   bookMatchesShelfStatus,
   compareShelfAddedAt,
@@ -205,7 +207,7 @@ export function useShelf({
         || book.source === "device"
         || !!book.deviceBookId
         || downloadedBookIds.has(book.id),
-      readAlong: bookMatchesShelfReadAlong(book, shelfFilters.readAlongOnly),
+      readAlong: bookMatchesShelfReading(book, shelfFilters.reading),
       genres: bookMatchesFacet(book, "genres", shelfFilters.genres),
       tags: bookMatchesFacet(book, "tags", shelfFilters.tags)
     })).map((match) => ({
@@ -224,7 +226,7 @@ export function useShelf({
       finished: 0
     };
     let downloadedCount = 0;
-    let readAlongCount = 0;
+    const readingCounts = { ebook: 0, followAlong: 0 };
     for (const match of shelfMatches) {
       if (match.search && match.status && match.tags && match.downloaded && match.readAlong) forGenres.push(match.book);
       if (match.search && match.status && match.genres && match.downloaded && match.readAlong) forTags.push(match.book);
@@ -235,8 +237,9 @@ export function useShelf({
       if (match.search && match.status && match.genres && match.tags && match.readAlong && match.availableOnDevice) {
         downloadedCount += 1;
       }
-      if (match.search && match.status && match.genres && match.tags && match.downloaded && match.book.readingFile) {
-        readAlongCount += 1;
+      if (match.search && match.status && match.genres && match.tags && match.downloaded) {
+        const availability = bookReadingAvailability(match.book);
+        if (availability !== "none") readingCounts[availability] += 1;
       }
     }
     return {
@@ -244,7 +247,7 @@ export function useShelf({
       tags: updateShelfFacetCounts(allShelfFacets.tags, forTags, "tags"),
       statusCounts,
       downloadedCount,
-      readAlongCount
+      readingCounts
     };
   }, [allShelfFacets, shelfMatches]);
 
@@ -277,12 +280,12 @@ export function useShelf({
         clear: () => setShelfFilters((filters) => ({ ...filters, downloadedOnly: false }))
       });
     }
-    if (shelfFilters.readAlongOnly) {
+    if (shelfFilters.reading !== "all") {
       chips.push({
-        id: "availability:readAlong",
+        id: `availability:${shelfFilters.reading}`,
         caption: "Availability",
-        label: "Read along",
-        clear: () => setShelfFilters((filters) => ({ ...filters, readAlongOnly: false }))
+        label: SHELF_READING_OPTIONS.find((option) => option.value === shelfFilters.reading)!.label,
+        clear: () => setShelfFilters((filters) => ({ ...filters, reading: "all" }))
       });
     }
     for (const group of ["genres", "tags"] as ShelfFacetGroupKey[]) {
