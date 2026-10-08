@@ -9,6 +9,8 @@ import { summarizeSharedProgress } from "./sharedProgress";
 import { bookSortGroupCaption, type SortMode } from "./shelfSort";
 import { bookProgressLabel, bookSubtitle, durationFromTracks, formatDurationLabel } from "./formatting";
 import { CoverArt } from "./CoverArt";
+import { OfflineBookReadiness } from "./OfflineBookReadiness";
+import { offlineReadinessSummary, type OfflineReadiness } from "./offlineReadiness";
 
 /**
  * One column of the filter panel: a heading and a cloud of toggleable chips.
@@ -112,6 +114,7 @@ export const ShelfBookList = memo(function ShelfBookList({
   selectedBookId,
   playbackBookId,
   downloadedBookIds,
+  offlineReadiness,
   isOffline,
   demoMode,
   localMode,
@@ -127,6 +130,7 @@ export const ShelfBookList = memo(function ShelfBookList({
   selectedBookId: string | null;
   playbackBookId: string | null;
   downloadedBookIds: Set<string>;
+  offlineReadiness: Record<string, OfflineReadiness>;
   isOffline: boolean;
   demoMode: boolean;
   localMode: boolean;
@@ -157,7 +161,9 @@ export const ShelfBookList = memo(function ShelfBookList({
           || !!book.deviceBookId
           || downloadedBookIds.has(book.id);
         const availableOnServer = !demoMode && !localMode && book.source !== "device";
-        const availabilityLabel = availableOnDevice
+        const availabilityLabel = downloadedBookIds.has(book.id) && book.source !== "device"
+          ? offlineReadinessSummary(offlineReadiness[book.id])
+          : availableOnDevice
           ? availableOnServer
             ? "Available on the server and this device"
             : "Available on this device"
@@ -205,6 +211,9 @@ export const ShelfBookList = memo(function ShelfBookList({
               <span className="book-text">
                 <strong>{book.title}</strong>
                 <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
+                {downloadedBookIds.has(book.id) && book.source !== "device" && !demoMode ? (
+                  <OfflineBookReadiness readiness={offlineReadiness[book.id]} />
+                ) : null}
                 {!isCompactView && sortMode === "series" && book.metadata.seriesPosition ? (
                   <span className="book-sort-context">Book {book.metadata.seriesPosition} in series</span>
                 ) : null}

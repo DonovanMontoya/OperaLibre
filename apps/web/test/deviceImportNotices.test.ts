@@ -7,12 +7,14 @@ for (const message of ["Permission denied reading the audio file", "File picker 
     const notices: unknown[] = [];
     const activity: unknown[] = [];
     const useOfflineDownloads = loadHook("useOfflineDownloads", {
-      react: { useRef: (current: unknown) => ({ current }), useEffect: () => {} },
-      "./offline": {}, "./api": {},
+      react: { useRef: (current: unknown) => ({ current }), useEffect: () => {}, useMemo: (run: () => unknown) => run(), useState: (value: unknown) => [value, () => {}] },
+      "./offline": {}, "./api": { getServerStorageKey: () => "fixture" },
+      "./offlineReadiness": {},
       "./formatting": { errorMessage: (error: Error) => error.message },
       "./localLibrary": { importAudiobookFromDevice: async () => { throw new Error(message); } }
     });
     const hook = useOfflineDownloads({
+      books: [],
       downloadStatus: { message: "Earlier failure", source: "deviceImport" },
       setDownloadStatus: (notice: unknown) => notices.push(notice),
       setDeviceImport: (value: unknown) => activity.push(value)
