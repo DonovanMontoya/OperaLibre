@@ -128,19 +128,27 @@ export function shelfDownloadScanKey(books: Book[]) {
   ]));
 }
 
-/** `query` is already trimmed and lower-cased by the caller; empty matches all. */
-export function bookMatchesShelfSearch(book: Book, query: string) {
-  if (!query) return true;
-  return [
+/** Split once per shelf update rather than once per book in a large library. */
+export function shelfSearchWords(query: string): string[] {
+  const normalized = query.trim().toLowerCase();
+  return normalized ? normalized.split(/\s+/) : [];
+}
+
+/** Every word must appear somewhere on this book; empty matches all. */
+export function bookMatchesShelfSearch(book: Book, query: string | readonly string[]) {
+  const words = typeof query === "string" ? shelfSearchWords(query) : query;
+  if (words.length === 0) return true;
+  const fields = [
     book.title,
     book.author,
     book.narrator,
-    book.metadata.series,
+    book.metadata?.series,
     ...tagsForBook(book).map((tag) => tag.name),
-    ...book.genres
+    ...(book.genres ?? [])
   ]
     .filter(Boolean)
-    .some((field) => field!.toLowerCase().includes(query));
+    .map((field) => field!.toLowerCase());
+  return words.every((word) => fields.some((field) => field.includes(word)));
 }
 
 /**
