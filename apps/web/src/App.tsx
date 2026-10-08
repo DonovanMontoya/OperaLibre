@@ -785,26 +785,6 @@ function MainApp({
   // player closed can tell that from the app's first render.
   const nativeAudioAttachedRef = useRef(false);
   const [downloadedBookIds, setDownloadedBookIds] = useState<Set<string>>(new Set());
-  const shelf = useShelf({
-    books,
-    demoMode,
-    downloadedBookIds,
-    ipad,
-    librarySource,
-    localMode,
-    native,
-    playbackFold
-  });
-  const {
-    changeShelfLayout,
-    searchQuery,
-    shelfFolded,
-    shelfLandscape,
-    shelfLayout,
-    shelfSpread,
-    sortMode,
-    sortReversed,
-  } = shelf;
   const [downloadStatus, setDownloadStatus] = useState<DeviceNotice | null>(null);
   const [completionPendingBookId, setCompletionPendingBookId] = useState<string | null>(null);
   const [completionError, setCompletionError] = useState<DeviceNotice | null>(null);
@@ -1420,6 +1400,28 @@ function MainApp({
     updateAlignmentStatus,
     writeReaderOpenFlag
   } = readalong;
+
+  const shelf = useShelf({
+    books,
+    demoMode,
+    downloadedBookIds,
+    ipad,
+    librarySource,
+    localMode,
+    native,
+    playbackFold,
+    sentenceFollowAvailable: readalong.sentenceFollowAvailable
+  });
+  const {
+    changeShelfLayout,
+    searchQuery,
+    shelfFolded,
+    shelfLandscape,
+    shelfLayout,
+    shelfSpread,
+    sortMode,
+    sortReversed,
+  } = shelf;
 
   const purchases = usePurchases({
     capabilities,
