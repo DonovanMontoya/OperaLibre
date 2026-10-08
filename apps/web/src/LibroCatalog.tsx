@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useModalFocus } from "./useModalFocus";
-import { KeyRound, Plus, X, BookOpen, CloudDownload, LayoutGrid, List, LoaderCircle, RefreshCcw, Search } from "lucide-react";
+import { KeyRound, Plus, X, BookOpen, ChevronRight, CloudDownload, LayoutGrid, List, LoaderCircle, RefreshCcw, Search } from "lucide-react";
 import { connectLibroAccount, disconnectLibroAccount, getBooks, getLibroAccount, importLibroPurchase, refreshLibroAccount, renameLibroAccount } from "./api";
 import type { Book, JobStatus, LibroAccountStatus, LibroAccountSummary } from "./types";
 import { libroDeviceBackend, cancelLibroDevice } from "./libroDevice";
@@ -46,6 +46,14 @@ function LibroNickname({ account, busy, onSave, onCancel }: { account: LibroAcco
     <button type="submit" disabled={busy || nickname.trim() === (account.nickname ?? "")}>Save nickname</button>
     <button type="button" disabled={busy} onClick={onCancel}>Cancel</button>
   </form>;
+}
+
+/** A store's heading in Get books, with the way to Settings while it has no account. */
+export function StoreHeading({ store, connected, onOpenSettings }: { store: string; connected: boolean; onOpenSettings?: () => void; }) {
+  return <>
+    <div><h2>{store}</h2>{!connected ? <p>Connect your account in Settings to browse your purchases.</p> : null}</div>
+    {onOpenSettings ? <button type="button" className="purchase-settings-link" onClick={onOpenSettings}>Open Settings <ChevronRight size={14} /></button> : null}
+  </>;
 }
 
 export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polling = true, onAccountsChanged, onBooksChanged, onOpenBook, onOpenSettings, searchQuery, sortMode = "title", reversed = false, refreshKey = 0, device = false, viewMode }: {
@@ -188,8 +196,7 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
         <div className="libro-connection-copy"><KeyRound size={16} /><div><strong>Libro.fm</strong><small>{busy === "connect" ? "Connecting…" : !account ? "Loading connection…" : !account.connected ? "Connect your account" : refreshJob?.status === "failed" ? "Connection needs attention" : accounts.length === 1 && accounts[0].nickname ? `${accounts[0].nickname} · Connected` : `${accounts.length} connected account${accounts.length === 1 ? "" : "s"}`}</small></div></div>
         <div className="libro-sidebar-actions"><button type="button" className={account?.connected ? undefined : "libro-primary-action"} aria-label={account?.connected ? "Manage Libro.fm" : "Connect Libro.fm"} disabled={!account || !!busy} onClick={() => setManaging(true)}>{account?.connected ? "Manage" : "Connect"}</button>{account?.connected ? refreshButton : null}</div>
       </div> : <>
-        <div><h2>Libro.fm</h2>{!account?.connected ? <p>Connect your account in Settings to browse your purchases.</p> : null}</div>
-        {!account?.connected && onOpenSettings ? <button type="button" className="libro-settings-link" onClick={onOpenSettings}>Open Settings</button> : null}
+        <StoreHeading store="Libro.fm" onOpenSettings={account?.connected ? undefined : onOpenSettings} connected={!!account?.connected} />
       </>}
     </header>
     {!account && !pollError && mode === "catalog" ? <p role="status">Loading your connection…</p> : null}

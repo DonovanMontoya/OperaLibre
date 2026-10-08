@@ -4,7 +4,7 @@ import { progressSeekOptions, progressSeekStorage, readProgressSeekIntent } from
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor } from "@capacitor/core";
-import { fullShelfMustYield, spreadTab } from "./nativeTabs";
+import { fullShelfMustYield, spreadTab, type StoreSettingsTarget } from "./nativeTabs";
 import {
   Gamepad2,
   Headphones,
@@ -520,6 +520,7 @@ function MainApp({
     currentUser
   });
   const [nativePlayerView, setNativePlayerView] = useState<"now" | "details" | "chapters">("now");
+  const [storeSettingsTarget, setStoreSettingsTarget] = useState<StoreSettingsTarget | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const miniPlayerRef = useRef<HTMLElement | null>(null);
@@ -1819,6 +1820,10 @@ function MainApp({
     showChapterJumpTop,
     trackListSectionRef
   });
+  function openStoreSettings(target: StoreSettingsTarget) {
+    setStoreSettingsTarget(target);
+    openNativeTab("settings");
+  }
   // Playing from the full Shelf, restoring a book at launch, and opening a
   // companion all set the route without going through the tab bar. Under the
   // launch cover the layout changes without motion: the transition's
@@ -2119,7 +2124,7 @@ function MainApp({
         offlineDownloads={offlineDownloads}
         onConnectServer={onConnectServer}
         openBookDetails={openBookDetails}
-        openNativeTab={openNativeTab}
+        openStoreSettings={openStoreSettings}
         pausePlayback={pausePlayback}
         playbackBook={playbackBook}
         purchases={purchases}
@@ -2456,6 +2461,7 @@ function MainApp({
           onConnectServer={onConnectServer}
           onCurrentUserChanged={onCurrentUserChanged}
           onLogout={onLogout}
+          onStoreSettingsShown={() => setStoreSettingsTarget(null)}
           openNativeTab={openNativeTab}
           pausePlayback={pausePlayback}
           purchases={purchases}
@@ -2463,6 +2469,7 @@ function MainApp({
           readerPreferences={readerPreferences}
           rotationLockAvailable={rotationLockAvailable}
           serverAliasesState={serverAliasesState}
+          storeSettingsTarget={storeSettingsTarget}
           setBooks={setBooks}
           sharedProgressAvailable={sharedProgressAvailable}
           speed={speed}

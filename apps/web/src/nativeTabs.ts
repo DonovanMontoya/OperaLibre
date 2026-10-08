@@ -2,6 +2,8 @@ import type { AppearanceMode } from "./appearance";
 import type { ShelfLayout } from "./shelfSort";
 
 export type NativeTab = "shelf" | "reading" | "games" | "ledger" | "admin" | "settings";
+/** A book store group in Settings that another screen can send the listener to. */
+export type StoreSettingsTarget = "audible" | "libro";
 export type NativeTabItem = { id: NativeTab; title: string; symbol: string; badge?: string };
 export type NativeTabsState = {
   tabs: NativeTabItem[];
