@@ -69,6 +69,11 @@ Libation's shared database stores only one ownership row per book. When OperaLib
 
 **Add all purchases to server** scans one account at a time and downloads its titles individually. If one account needs to sign in again, the job reports that failure while continuing with the other accounts. Libation has no account selector for downloads, so OperaLibre supplies only the ASINs confirmed for the account it just scanned.
 
+OperaLibre asks Libation to create MP4/M4B downloads with faststart, so streaming
+can begin without fetching the end of the file first. This applies to manual and
+automatic imports without changing your saved Libation settings. Older files can
+still be optimized under **Administration → Downloaded books → Faststart conversion**.
+
 ## Configuration
 
 In `server.config`:

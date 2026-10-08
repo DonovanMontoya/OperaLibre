@@ -10,8 +10,8 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await server?.close(); });
 
-async function buttonContrast(button: Locator) {
-  return button.evaluate(element => {
+async function foregroundContrast(target: Locator) {
+  return target.evaluate(element => {
     const rgba = (value: string) => value.match(/[\d.]+/g)!.map(Number);
     const blend = (front: number[], back: number[]) => front.slice(0, 3).map((channel, index) => channel * (front[3] ?? 1) + back[index] * (1 - (front[3] ?? 1)));
     const luminance = (rgb: number[]) => rgb.map(channel => {
@@ -45,7 +45,7 @@ test("a narrow Libro.fm shelf keeps account forms out of the purchase list", asy
     const box = (await action.boundingBox())!;
     expect(box.x + box.width).toBeLessThanOrEqual(320);
     expect(box.height).toBeGreaterThanOrEqual(44);
-    expect(await buttonContrast(action)).toBeGreaterThanOrEqual(4.5);
+    expect(await foregroundContrast(action)).toBeGreaterThanOrEqual(4.5);
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
@@ -155,11 +155,37 @@ for (const dark of [false, true]) {
     await expect(reconnect).toBeEnabled();
     await expect(page.locator("details")).toHaveCount(0);
     await expect(page.getByRole("textbox")).toHaveCount(0);
-    expect(await buttonContrast(reconnect)).toBeGreaterThanOrEqual(4.5);
+    expect(await foregroundContrast(reconnect)).toBeGreaterThanOrEqual(4.5);
     await reconnect.press("Enter");
     await expect(page.getByLabel("Email", { exact: true })).toHaveValue("personal@example.test");
     expect(await page.getByLabel("Email", { exact: true }).evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(16);
-    expect(await buttonContrast(page.getByRole("button", { name: "Connect Libro.fm", exact: true }))).toBeGreaterThanOrEqual(4.5);
+    expect(await foregroundContrast(page.getByRole("button", { name: "Connect Libro.fm", exact: true }))).toBeGreaterThanOrEqual(4.5);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+for (const dark of [false, true]) {
+  test(`administration purchases have readable text in ${dark ? "iOS dark" : "light"} list and grid views`, async ({ page }) => {
+    await page.goto(`${url}test/libro-management.html?admin${dark ? "&native&dark" : ""}`);
+    for (const view of ["Compact list", "Cover grid"]) {
+      const toggle = page.getByRole("button", { name: view, exact: true });
+      await expect(toggle).toBeEnabled();
+      await toggle.press("Enter");
+      expect(await foregroundContrast(toggle)).toBeGreaterThanOrEqual(4.5);
+      const copy = page.locator(".libro-purchase-copy");
+      const title = copy.getByRole("heading", { name: "First Purchase", exact: true });
+      const author = copy.getByText("Fixture Author", { exact: true });
+      const account = copy.locator(".libro-purchase-account");
+      for (const label of [title, author, account]) {
+        await expect(label).toBeVisible();
+        expect(await foregroundContrast(label)).toBeGreaterThanOrEqual(4.5);
+      }
+      if (view === "Compact list") {
+        const narrator = copy.getByText("Narrated by Fixture Narrator", { exact: true });
+        await expect(narrator).toBeVisible();
+        expect(await foregroundContrast(narrator)).toBeGreaterThanOrEqual(4.5);
+      }
+      expect(await foregroundContrast(page.getByRole("button", { name: "Import First Purchase", exact: true }))).toBeGreaterThanOrEqual(4.5);
+    }
   });
 }

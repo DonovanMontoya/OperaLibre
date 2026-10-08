@@ -60,6 +60,10 @@ window.fetch = async (input, init) => {
     status.autoImportAccountIds = body.enabled ? ["family"] : [];
     result = status;
   }
+  if (path.endsWith("/setup") && params.has("setup-failure") && calls.filter(call => call.path.endsWith("/setup")).length > 1) {
+    code = 503;
+    result = { message: "Setup could not be checked." };
+  }
   return new Response(code === 204 ? null : JSON.stringify(result), { status: code, headers: { "Content-Type": "application/json" } });
 };
 

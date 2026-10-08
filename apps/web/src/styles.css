@@ -12384,6 +12384,9 @@ html.native-app .admin-shell:not(.admin-overlay) {
 .audible-section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .audible-section-head > strong { font-size: .9rem; line-height: 1.3; }
 .audible-section-head .quiet-button { flex-shrink: 0; padding: 8px 10px; min-height: 40px; font-size: .75rem; font-weight: 500; }
+.audible-setup-result { width: 18px; height: 18px; padding: 2px; box-sizing: border-box; border-radius: 50%; color: white; }
+.audible-setup-result.success { background: #237a40; }
+.audible-setup-result.failure { background: #b22f36; }
 .audible-setup p, .audible-check p, .audible-error p { margin: 4px 0; line-height: 1.5; }
 .audible-setup .audible-intro { margin: 0; color: var(--audible-muted); font-size: .82rem; }
 .audible-server-setup { display: grid; gap: 8px; padding-top: 14px; border-top: 1px solid var(--audible-border); font-size: .8rem; }
@@ -14290,7 +14293,7 @@ html.native-app .recent-row {
 }
 .admin-shell .libro-catalog {
   --catalog-ink: var(--ink);
-  --catalog-selected-text: var(--paper);
+  --catalog-selected-text: var(--on-ink);
   --catalog-muted: var(--ink-faded);
   --catalog-border: rgba(var(--ink-rgb), 0.2);
   --catalog-surface: rgba(var(--lift-rgb), 0.72);
@@ -16166,7 +16169,7 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
-  color: var(--paper);
+  color: var(--catalog-ink, var(--paper));
   font: 400 1.05rem/1.18 "Fraunces", serif;
 }
 
@@ -16174,7 +16177,7 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
   min-width: 0;
   margin: 0;
   overflow: hidden;
-  color: rgba(241, 231, 208, 0.48);
+  color: var(--catalog-muted, rgba(241, 231, 208, 0.48));
   font: 500 0.62rem/1.4 "JetBrains Mono", monospace;
   letter-spacing: 0.035em;
   text-overflow: ellipsis;

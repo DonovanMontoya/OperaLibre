@@ -30,6 +30,7 @@ export function AudibleManagement({ currentUser, native, purchases }: Management
   const { downloadAllLibationJob, isRefreshingAudible, libationAllPending, libationError, libationLoading, libationRefreshPending, libationStatus, refreshLibationJob, startAllLiberation, startLibationSync, loadLibationStatus, setLibationStatus } = purchases;
   const [setup, setSetup] = useState<LibationSetup | null>(null);
   const [checking, setChecking] = useState(false);
+  const [setupResult, setSetupResult] = useState<"ready" | "attention" | "failed" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -51,11 +52,26 @@ export function AudibleManagement({ currentUser, native, purchases }: Management
     return () => { mounted.current = false; };
   }, [currentUser.isAdmin]);
 
-  async function checkSetup() {
-    setChecking(true); setError(null);
-    try { setSetup(await getLibationSetup()); await loadLibationStatus(); }
-    catch (cause) { setError(errorMessage(cause, "Setup could not be checked.")); }
-    finally { setChecking(false); }
+  useEffect(() => {
+    if (!setupResult) return;
+    const timer = setTimeout(() => setSetupResult(null), 4000);
+    return () => clearTimeout(timer);
+  }, [setupResult]);
+
+  async function checkSetup(showResult = false) {
+    setChecking(true); setError(null); setSetupResult(null);
+    try {
+      const result = await getLibationSetup();
+      if (!mounted.current) return;
+      setSetup(result);
+      await loadLibationStatus();
+      if (mounted.current && showResult) setSetupResult(result.checks.length > 0 && result.checks.every(check => check.ready) ? "ready" : "attention");
+    } catch (cause) {
+      if (mounted.current) {
+        setError(errorMessage(cause, "Setup could not be checked."));
+        if (showResult) setSetupResult("failed");
+      }
+    } finally { if (mounted.current) setChecking(false); }
   }
 
   async function changeAccount(id: string, action: () => Promise<LibationStatus | void>, message: string) {
@@ -76,7 +92,8 @@ export function AudibleManagement({ currentUser, native, purchases }: Management
   const connectActions = <div className="store-settings-actions audible-connect-actions">
     {pending ? <><button type="button" className="download-btn audible-primary-action" aria-label="Continue sign-in" onClick={() => setLogin({ pending, account: libationStatus?.accounts.find(account => account.id === pending.profileId) })}><KeyRound size={15} />Continue sign-in</button><button type="button" className="quiet-button" aria-label="Cancel sign-in" disabled={!!busy} onClick={() => void changeAccount("cancel", () => cancelLibationLogin(pending.sessionId), "Sign-in cancelled.")}>Cancel sign-in</button></> : <button type="button" className="download-btn audible-primary-action" aria-label="Connect Audible" disabled={!setup?.canSignIn || !!busy} onClick={() => setLogin({})}><Plus size={15} />Connect Audible</button>}
   </div>;
-  const setupButton = <button type="button" className="quiet-button" disabled={checking} onClick={() => void checkSetup()}>{checking ? <LoaderCircle size={13} className="spin-icon" /> : <RefreshCcw size={13} />} Check setup</button>;
+  const setupResultMessage = setupResult === "ready" ? "Setup ready." : setupResult === "attention" ? "Setup needs attention. See server setup below." : setupResult === "failed" ? "Setup check failed." : "";
+  const setupButton = <><button type="button" className="quiet-button" title={setupResultMessage || undefined} aria-busy={checking} disabled={checking} onClick={() => void checkSetup(true)}>{checking ? <LoaderCircle size={13} className="spin-icon" /> : setupResult ? setupResult === "ready" ? <Check size={13} className="audible-setup-result success" aria-hidden="true" /> : <X size={13} className="audible-setup-result failure" aria-hidden="true" /> : <RefreshCcw size={13} />} Check setup</button><span className="sr-only" role="status">{setupResultMessage}</span></>;
   const refreshButton = <button type="button" className="download-btn audible-refresh-action" title={isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"} aria-label={isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"} onClick={() => void startLibationSync()} aria-busy={isRefreshingAudible} disabled={!enabled || libationLoading || libationRefreshPending || !!refreshLibationJob || !!pending}>
     {isRefreshingAudible ? <LoaderCircle size={13} className="spin-icon" /> : <RefreshCcw size={13} />}<span>{isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"}</span>
   </button>;
