@@ -132,6 +132,8 @@ pub(crate) fn default_libation_connection_state() -> String {
 
 pub(crate) struct PendingLibationLogin {
     pub(crate) profile_id: String,
+    /// The sign-in created this account, so cancelling it leaves nothing behind.
+    pub(crate) created_account: bool,
     pub(crate) login_url: String,
     pub(crate) expires_at: u64,
     pub(crate) response_sender: std::sync::mpsc::Sender<String>,
@@ -451,6 +453,7 @@ pub(crate) async fn start_libation_account_login(
             ));
         }
     }
+    let created_account = payload.profile_id.is_none();
     let added_by = auth.username.clone();
     let stored_locale = locale.clone();
     let profile_id = if let Some(profile) = &existing_profile {
@@ -567,6 +570,7 @@ pub(crate) async fn start_libation_account_login(
         session_id.clone(),
         PendingLibationLogin {
             profile_id: profile_id.clone(),
+            created_account,
             login_url: login_url.clone(),
             expires_at,
             response_sender: login.response_sender,
@@ -675,6 +679,7 @@ pub(crate) async fn cancel_libation_account_login(
     if let Some(pending) = pending {
         let PendingLibationLogin {
             profile_id,
+            created_account,
             response_sender,
             completion,
             _job_guard,
@@ -682,10 +687,37 @@ pub(crate) async fn cancel_libation_account_login(
         } = pending;
         drop(response_sender);
         let _ = tokio::time::timeout(Duration::from_secs(5), completion).await;
-        mark_managed_libation_account_error(&state, &profile_id, "Sign-in was cancelled.").await;
+        if created_account {
+            discard_unconnected_libation_account(&state, &profile_id).await?;
+        } else {
+            mark_managed_libation_account_error(&state, &profile_id, "Sign-in was cancelled.")
+                .await;
+        }
         drop(_job_guard);
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Removes an account whose first sign-in was cancelled, with the profile
+/// folder the login had started filling. The caller holds the job lock and the
+/// login process has already stopped.
+async fn discard_unconnected_libation_account(
+    state: &AppState,
+    profile_id: &str,
+) -> Result<(), ApiError> {
+    state
+        .libation_accounts
+        .mutate(|store| {
+            store.accounts.retain(|account| account.id != profile_id);
+            Ok(())
+        })
+        .await?;
+    let profile_dir = state.libation_accounts_root.join(profile_id);
+    match fs::remove_dir_all(&profile_dir).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub(crate) async fn update_libation_account(
