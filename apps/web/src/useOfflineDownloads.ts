@@ -1,5 +1,5 @@
 import type { AuthUser, Book, Track } from "./types";
-import { cacheLibrary, cancelBookOfflineDownload, downloadBookForOffline, getBookOfflineReadiness, removeBookDownload } from "./offline";
+import { cacheLibrary, cancelBookOfflineDownload, downloadBookForOffline, getBookOfflineReadiness, isBookDownloaded, removeBookDownload } from "./offline";
 import { getServerStorageKey, mediaUrl } from "./api";
 import { offlineDownloadMessage, type OfflineReadiness } from "./offlineReadiness";
 import { errorMessage } from "./formatting";
@@ -74,6 +74,7 @@ export function useOfflineDownloads({
   const retryDownloadIdsRef = useRef<Set<string>>(new Set());
   const cancellationsRef = useRef<Map<string, Promise<void>>>(new Map());
   const [readiness, setReadiness] = useState<Record<string, OfflineReadiness>>({});
+  const [online, setOnline] = useState(navigator.onLine !== false);
   const scope = getServerStorageKey();
   const scanKey = useMemo(() => JSON.stringify([scope, books.map((book) => [
     book.id, book.tracks.map((track) => [track.id, track.fileName, track.localFilePath]),
@@ -81,14 +82,32 @@ export function useOfflineDownloads({
   ])]), [books, scope]);
 
   useEffect(() => {
+    const update = () => setOnline(navigator.onLine !== false);
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    update();
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
-    void Promise.all(booksRef.current.map(async (book) => [
-      book.id, await getBookOfflineReadiness(book).catch(() => null)
-    ] as const)).then((states) => {
+    void (async () => {
+      const states: Record<string, OfflineReadiness> = {};
+      // Undownloaded books need only an audio check. Scan one book at a time
+      // so a large shelf cannot flood IndexedDB or the native file bridge.
+      for (const book of booksRef.current) {
+        if (cancelled) return;
+        if (!(await isBookDownloaded(book).catch(() => false))) continue;
+        const state = await getBookOfflineReadiness(book).catch(() => null);
+        if (state) states[book.id] = state;
+      }
       if (cancelled) return;
-      setReadiness(Object.fromEntries(states.filter(([, state]) => state)) as Record<string, OfflineReadiness>);
-      setDownloadedBookIds(new Set(states.filter(([, state]) => state?.audio).map(([id]) => id)));
-    });
+      setReadiness(states);
+      setDownloadedBookIds(new Set(Object.entries(states).filter(([, state]) => state.audio).map(([id]) => id)));
+    })();
     return () => { cancelled = true; };
   }, [scanKey, booksRef, setDownloadedBookIds]);
 
@@ -268,6 +287,7 @@ export function useOfflineDownloads({
   }
 
   return {
+    online,
     readiness,
     downloadStatus,
     cancelOfflineDownload,

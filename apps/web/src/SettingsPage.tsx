@@ -140,6 +140,7 @@ export function SettingsPage({
     cancelOfflineDownload,
     deleteDeviceBook,
     importFromDevice,
+    online,
     readiness,
     retryMissingFiles,
     removeOfflineDownload
@@ -270,6 +271,7 @@ export function SettingsPage({
           deviceDownloadQueue={deviceDownloadQueue}
           downloadedBookIds={downloadedBookIds}
           readiness={readiness}
+          online={online}
           retryMissingFiles={retryMissingFiles}
           canDownload={capabilities.downloads}
           removeOfflineDownload={removeOfflineDownload}
