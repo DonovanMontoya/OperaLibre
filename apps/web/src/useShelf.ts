@@ -49,7 +49,8 @@ export function useShelf({
   librarySource,
   localMode,
   native,
-  playbackFold
+  playbackFold,
+  sentenceFollowAvailable
 }: {
   books: Book[];
   demoMode: boolean;
@@ -59,6 +60,7 @@ export function useShelf({
   localMode: boolean;
   native: boolean;
   playbackFold: DeviceFoldState;
+  sentenceFollowAvailable: boolean;
 }) {
   const [sortMode, setSortMode] = useState<SortMode>(() => readStoredSortMode("local"));
   const [sortReversed, setSortReversed] = useState(() => readStoredValue("operalibre.sortReversed.local") === "true");
@@ -207,14 +209,14 @@ export function useShelf({
         || book.source === "device"
         || !!book.deviceBookId
         || downloadedBookIds.has(book.id),
-      readAlong: bookMatchesShelfReading(book, shelfFilters.reading),
+      readAlong: bookMatchesShelfReading(book, shelfFilters.reading, sentenceFollowAvailable),
       genres: bookMatchesFacet(book, "genres", shelfFilters.genres),
       tags: bookMatchesFacet(book, "tags", shelfFilters.tags)
     })).map((match) => ({
       ...match,
       downloaded: bookMatchesShelfDownload(match.availableOnDevice, shelfFilters.downloadedOnly)
     }));
-  }, [books, demoMode, downloadedBookIds, localMode, searchQuery, shelfFilters]);
+  }, [books, demoMode, downloadedBookIds, localMode, searchQuery, sentenceFollowAvailable, shelfFilters]);
 
   const shelfFacets = useMemo(() => {
     const forGenres: Book[] = [];
@@ -238,7 +240,7 @@ export function useShelf({
         downloadedCount += 1;
       }
       if (match.search && match.status && match.genres && match.tags && match.downloaded) {
-        const availability = bookReadingAvailability(match.book);
+        const availability = bookReadingAvailability(match.book, sentenceFollowAvailable);
         if (availability !== "none") readingCounts[availability] += 1;
       }
     }
@@ -249,7 +251,7 @@ export function useShelf({
       downloadedCount,
       readingCounts
     };
-  }, [allShelfFacets, shelfMatches]);
+  }, [allShelfFacets, sentenceFollowAvailable, shelfMatches]);
 
   const activeShelfFilterCount = countActiveShelfFilters(shelfFilters);
   // Genres, tags and progress are all things only your own shelf records; the
@@ -392,6 +394,7 @@ export function useShelf({
     selectPurchaseViewMode,
     selectSortMode,
     selectViewMode,
+    sentenceFollowAvailable,
     setFiltersOpen,
     setSearchQuery,
     setShelfFilters,
