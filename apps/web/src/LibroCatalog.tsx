@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { BookOpen, CloudDownload, LayoutGrid, List, LoaderCircle, RefreshCcw, Search } from "lucide-react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useModalFocus } from "./useModalFocus";
+import { KeyRound, Plus, X, BookOpen, CloudDownload, LayoutGrid, List, LoaderCircle, RefreshCcw, Search } from "lucide-react";
 import { connectLibroAccount, disconnectLibroAccount, getBooks, getLibroAccount, importLibroPurchase, refreshLibroAccount, renameLibroAccount } from "./api";
 import type { Book, JobStatus, LibroAccountStatus, LibroAccountSummary } from "./types";
 import { libroDeviceBackend, cancelLibroDevice } from "./libroDevice";
@@ -36,12 +38,13 @@ const serverBackend = { rename: renameLibroAccount, status: getLibroAccount, con
 
 const active = (job: JobStatus) => job.status === "running" || job.status === "queued";
 
-function LibroNickname({ account, busy, onSave }: { account: LibroAccountSummary; busy: boolean; onSave: (nickname: string) => void }) {
+function LibroNickname({ account, busy, onSave, onCancel }: { account: LibroAccountSummary; busy: boolean; onSave: (nickname: string) => void; onCancel: () => void }) {
   const [nickname, setNickname] = useState(account.nickname ?? "");
   useEffect(() => { setNickname(account.nickname ?? ""); }, [account.nickname]);
   return <form className="libro-nickname" onSubmit={event => { event.preventDefault(); onSave(nickname.trim()); }}>
     <label>Nickname<input aria-label={`Nickname for ${account.email}`} value={nickname} maxLength={80} placeholder="e.g. Personal" disabled={busy} onChange={event => setNickname(event.target.value)} /></label>
     <button type="submit" disabled={busy || nickname.trim() === (account.nickname ?? "")}>Save nickname</button>
+    <button type="button" disabled={busy} onClick={onCancel}>Cancel</button>
   </form>;
 }
 
@@ -67,6 +70,8 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
   const [password, setPassword] = useState("");
   const [accountFilter, setAccountFilter] = useState("all");
   const [reconnect, setReconnect] = useState(false);
+  const [managing, setManaging] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
@@ -116,6 +121,7 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
       setAccount(await backend.status());
       setRefreshTick(tick => tick + 1);
       if (key === "connect") setReconnect(false);
+      if (key === "rename") setEditing(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Libro.fm could not complete the request.");
     } finally {
@@ -145,33 +151,51 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
   });
   const refreshJob = account?.jobs.find(job => job.kind === "libro-refresh");
   const loadingLibrary = !!refreshJob && active(refreshJob);
-  return <section className="libro-catalog" aria-label="Libro.fm library" style={hidden ? { display: "none" } : undefined}>
-    <header className="libro-catalog-head">
-      {mode !== "management" || !account?.connected ? <div><h2>{mode === "management" ? "Connect Libro.fm" : "Libro.fm"}</h2>{!account?.connected ? <p>{mode === "catalog" ? "Connect your account in Settings to browse your purchases." : "Connect your account to browse and import your purchases."}</p> : null}</div> : null}
-      {mode === "catalog" && !account?.connected && onOpenSettings ? <button type="button" className="libro-settings-link" onClick={onOpenSettings}>Open Settings</button> : null}
-      {mode !== "catalog" && account?.connected ? <details className="libro-account-details"><summary>{mode === "management" ? "Manage connected accounts" : "Libro.fm accounts"} ({accounts.length})</summary>
-        {accounts.map(item => <div key={item.email}><p><span className="purchase-provider-tag">Libro.fm</span> {item.nickname || item.email}</p>{item.nickname ? <p>{item.email}</p> : null}
-          <LibroNickname account={item} busy={!!busy} onSave={nickname => void act("rename", () => backend.rename(item.email, nickname))} /><div className="libro-catalog-actions">
-          <button type="button" disabled={!!busy} onClick={() => { setEmail(item.email); setReconnect(true); }}>Reconnect</button>
-          <button type="button" aria-label={`Disconnect ${item.email}`} disabled={!!busy || account.jobs.some(active)} onClick={() => void act("disconnect", () => backend.disconnect(item.email))}>Disconnect</button>
-        </div></div>)}
-        <div className="libro-catalog-actions">
-          <button type="button" disabled={!!busy || loadingLibrary} onClick={() => void act("refresh", backend.refresh)}>{loadingLibrary ? <LoaderCircle size={15} className="spin-icon" /> : <RefreshCcw size={15} />} Refresh all accounts</button>
-          <button type="button" disabled={!!busy} onClick={() => { setEmail(""); setPassword(""); setReconnect(true); }}>Add Libro.fm account</button>
-        </div>
-      </details> : null}
-    </header>
-    {!account && !pollError ? <p role="status">Loading your connection…</p> : null}
-    {mode !== "catalog" && account && (!account.connected || reconnect) ? <form className="libro-connect" onSubmit={event => { event.preventDefault(); void act("connect", () => backend.connect(email, password)); }}>
-      <label>Email<input type="email" autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} required disabled={!!busy} /></label>
-      <label>Password<input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required disabled={!!busy} /></label>
-      <button type="submit" disabled={!!busy}>{busy === "connect" ? <LoaderCircle size={15} className="spin-icon" /> : <CloudDownload size={15} />} Connect Libro.fm</button>
-      {account.connected ? <button type="button" disabled={!!busy} onClick={() => { setReconnect(false); setPassword(""); }}>Cancel</button> : null}
-      <p>{device ? "Your sign-in goes directly from this device to Libro.fm. The token is kept in native secure storage, not sent to your server. This device connection and its cached purchases are shared by anyone using this app on this device. Disconnect before handing the device to another person." : "Your sign-in is sent to Libro.fm through this server. Only the connection token is saved. Your purchase list is private to your OperaLibre account; imported audio joins this server’s library."}</p>
-    </form> : null}
+  const feedback = <>
     {error || pollError ? <p className="libro-catalog-error" role="alert">{error ?? pollError}</p> : null}
     {account?.connected && refreshJob?.status === "failed" ? <p className="libro-catalog-error" role="alert">{refreshJob.error ?? "Library refresh failed. Try reconnecting."}</p> : null}
-    {mode !== "management" && account?.connected ? <>
+  </>;
+  const refreshButton = <button type="button" className="libro-refresh-action" aria-label="Refresh all accounts" title="Refresh all accounts" disabled={!!busy || loadingLibrary} aria-busy={loadingLibrary || busy === "refresh"} onClick={() => void act("refresh", backend.refresh)}>{loadingLibrary || busy === "refresh" ? <LoaderCircle size={15} className="spin-icon" /> : <RefreshCcw size={15} />}<span>Refresh all accounts</span></button>;
+  const managementContent = <div className="libro-management">
+    {account?.connected && !reconnect ? <>
+      <div className="libro-account-list">{accounts.map(item => <article key={item.email}>
+        <div className="libro-account-identity"><KeyRound size={16} /><div><strong>{item.nickname || item.email}</strong>{item.nickname ? <small>{item.email}</small> : null}<small>Connected</small></div></div>
+        {editing === item.email ? <LibroNickname account={item} busy={!!busy} onSave={nickname => void act("rename", () => backend.rename(item.email, nickname))} onCancel={() => setEditing(null)} /> : <div className="libro-catalog-actions">
+          <button type="button" disabled={!!busy} onClick={() => { setEmail(item.email); setPassword(""); setReconnect(true); }}>Reconnect</button>
+          <button type="button" aria-label={`Rename ${item.email}`} disabled={!!busy} onClick={() => setEditing(item.email)}>Rename</button>
+          <button type="button" aria-label={`Disconnect ${item.email}`} disabled={!!busy || account.jobs.some(active)} onClick={() => void act("disconnect", () => backend.disconnect(item.email))}>Disconnect</button>
+        </div>}
+      </article>)}</div>
+      <div className="libro-catalog-actions libro-management-actions">
+        <button type="button" className="libro-primary-action" disabled={!!busy} onClick={() => { setEmail(""); setPassword(""); setReconnect(true); }}><Plus size={15} /> Add Libro.fm account</button>
+        {refreshButton}
+      </div>
+    </> : null}
+    {account && (!account.connected || reconnect) ? <form className="libro-connect" onSubmit={event => { event.preventDefault(); void act("connect", () => backend.connect(email, password)); }}>
+      <label>Email<input type="email" autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} required disabled={!!busy} /></label>
+      <label>Password<input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required disabled={!!busy} /></label>
+      <div className="libro-catalog-actions"><button type="submit" className="libro-primary-action" disabled={!!busy}>{busy === "connect" ? <LoaderCircle size={15} className="spin-icon" /> : <KeyRound size={15} />} Connect Libro.fm</button>
+      {account.connected ? <button type="button" disabled={!!busy} onClick={() => { setReconnect(false); setPassword(""); }}>Cancel</button> : null}</div>
+      <p>{device ? "Your sign-in goes directly from this device to Libro.fm. The token is kept in native secure storage, not sent to your server. This device connection and its cached purchases are shared by anyone using this app on this device. Disconnect before handing the device to another person." : "Your sign-in is sent to Libro.fm through this server. Only the connection token is saved. Your purchase list is private to your OperaLibre account; imported audio joins this server’s library."}</p>
+    </form> : null}
+    {!account && !pollError ? <p role="status">Loading your connection…</p> : null}
+    {feedback}
+  </div>;
+  if (mode === "management") return <section className="libro-catalog" aria-label="Libro.fm accounts">{managementContent}</section>;
+  return <section className="libro-catalog" aria-label="Libro.fm library" aria-hidden={managing ? true : undefined} style={hidden ? { display: "none" } : undefined}>
+    <header className="libro-catalog-head">
+      {mode === "full" ? <div className="libro-connection-row">
+        <div className="libro-connection-copy"><KeyRound size={16} /><div><strong>Libro.fm</strong><small>{busy === "connect" ? "Connecting…" : !account ? "Loading connection…" : !account.connected ? "Connect your account" : refreshJob?.status === "failed" ? "Connection needs attention" : accounts.length === 1 && accounts[0].nickname ? `${accounts[0].nickname} · Connected` : `${accounts.length} connected account${accounts.length === 1 ? "" : "s"}`}</small></div></div>
+        <div className="libro-sidebar-actions"><button type="button" className={account?.connected ? undefined : "libro-primary-action"} aria-label={account?.connected ? "Manage Libro.fm" : "Connect Libro.fm"} disabled={!account || !!busy} onClick={() => setManaging(true)}>{account?.connected ? "Manage" : "Connect"}</button>{account?.connected ? refreshButton : null}</div>
+      </div> : <>
+        <div><h2>Libro.fm</h2>{!account?.connected ? <p>Connect your account in Settings to browse your purchases.</p> : null}</div>
+        {!account?.connected && onOpenSettings ? <button type="button" className="libro-settings-link" onClick={onOpenSettings}>Open Settings</button> : null}
+      </>}
+    </header>
+    {!account && !pollError && mode === "catalog" ? <p role="status">Loading your connection…</p> : null}
+    {!managing ? feedback : null}
+    {managing ? <LibroManagementDialog onClose={() => { setManaging(false); setReconnect(false); setEditing(null); setPassword(""); }}>{managementContent}</LibroManagementDialog> : null}
+    {account?.connected ? <>
       {filterEmail === undefined && accounts.length > 1 ? <label className="libro-account-filter">Account<select aria-label="Libro.fm account" value={accountFilter} onChange={event => setAccountFilter(event.target.value)}><option value="all">All Libro.fm accounts</option>{accounts.map(item => <option key={item.email} value={item.email}>{item.nickname || item.email}</option>)}</select></label> : null}
       {searchQuery === undefined ? <label className="libro-catalog-search"><Search size={15} /><input type="search" aria-label="Search Libro.fm purchases" placeholder="Search your purchases…" value={query} onChange={event => setQuery(event.target.value)} /></label> : null}
       <div className="libro-view-toolbar">
@@ -198,4 +222,12 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
       })}</ul>
     </> : null}
   </section>;
+}
+
+function LibroManagementDialog({ children, onClose }: { children: ReactNode; onClose: () => void; }) {
+  const dialogRef = useModalFocus<HTMLElement>(onClose);
+  return createPortal(<div className="modal-scrim libro-management-scrim" role="presentation"><section ref={dialogRef} tabIndex={-1} className="modal-card libro-catalog libro-management-dialog" role="dialog" aria-modal="true" aria-labelledby="libro-management-title">
+    <div className="modal-head"><h2 id="libro-management-title">Libro.fm accounts</h2><button type="button" className="icon-button" aria-label="Close Libro.fm management" onClick={onClose}><X size={18} /></button></div>
+    {children}
+  </section></div>, document.body);
 }
