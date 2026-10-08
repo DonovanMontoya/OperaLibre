@@ -9,7 +9,6 @@ import { summarizeSharedProgress } from "./sharedProgress";
 import { bookSortGroupCaption, type SortMode } from "./shelfSort";
 import { bookProgressLabel, bookSubtitle, durationFromTracks, formatDurationLabel } from "./formatting";
 import { CoverArt } from "./CoverArt";
-import type { OfflineReadiness } from "./offlineReadiness";
 
 /**
  * One column of the filter panel: a heading and a cloud of toggleable chips.
@@ -113,7 +112,6 @@ export const ShelfBookList = memo(function ShelfBookList({
   selectedBookId,
   playbackBookId,
   downloadedBookIds,
-  offlineReadiness,
   isOffline,
   demoMode,
   localMode,
@@ -129,7 +127,6 @@ export const ShelfBookList = memo(function ShelfBookList({
   selectedBookId: string | null;
   playbackBookId: string | null;
   downloadedBookIds: Set<string>;
-  offlineReadiness: Record<string, OfflineReadiness>;
   isOffline: boolean;
   demoMode: boolean;
   localMode: boolean;
@@ -166,12 +163,6 @@ export const ShelfBookList = memo(function ShelfBookList({
             : "Available on this device"
           : "Available from the server";
         const unavailableOffline = isOffline && !availableOnDevice;
-        // The device icon already says a download is complete; the row only
-        // speaks up when a retry is needed. The full breakdown lives in the
-        // player and in Settings.
-        const missingOfflineFiles = downloadedBookIds.has(book.id) && book.source !== "device" && !demoMode
-          ? offlineReadiness[book.id]?.missingFiles.length ?? 0
-          : 0;
         const shared = isCompactView ? null : summarizeSharedProgress(book.sharedProgress);
         // Compact abbreviates the chip and drops it entirely for a book
         // nobody has opened; the full wording stays on the tooltip so
@@ -214,13 +205,6 @@ export const ShelfBookList = memo(function ShelfBookList({
               <span className="book-text">
                 <strong>{book.title}</strong>
                 <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
-                {!isCompactView && missingOfflineFiles ? (
-                  <span className="offline-readiness">
-                    <span className="is-missing">
-                      {missingOfflineFiles} offline file{missingOfflineFiles === 1 ? "" : "s"} missing
-                    </span>
-                  </span>
-                ) : null}
                 {!isCompactView && sortMode === "series" && book.metadata.seriesPosition ? (
                   <span className="book-sort-context">Book {book.metadata.seriesPosition} in series</span>
                 ) : null}
