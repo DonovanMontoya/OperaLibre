@@ -12357,6 +12357,44 @@ html.native-app .admin-shell:not(.admin-overlay) {
 .purchase-provider-settings .account-list article { border-color: rgba(var(--ink-rgb), 0.12); background: rgba(var(--lift-rgb), 0.5); }
 .purchase-provider-settings .account-list-copy { color: var(--ink); }
 .store-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.audible-setup { display: grid; gap: 12px; width: 100%; }
+.audible-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.audible-setup-steps { display: grid; gap: 14px; padding: 0; margin: 0; list-style: none; }
+.audible-setup-steps li { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; }
+.audible-setup-steps li > span { display: grid; place-items: center; align-self: start; width: 24px; height: 24px; border: 1px solid rgba(var(--ink-rgb), .2); border-radius: 50%; font-size: .75rem; }
+.audible-setup p, .audible-check p, .audible-error p { margin: 4px 0; line-height: 1.5; }
+.audible-setup-steps p, .audible-setup-details { font-size: .8rem; }
+.audible-setup-details summary, .audible-error summary { cursor: pointer; padding: 6px 0; }
+.audible-check { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 8px; padding: 10px 0; }
+.audible-check svg { margin-top: 3px; }
+.audible-setup pre, .audible-error pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .7rem; max-height: 180px; overflow: auto; }
+.audible-setup code { overflow-wrap: anywhere; }
+.audible-accounts article { grid-template-columns: 18px minmax(0, 1fr); align-items: start; }
+.audible-accounts .account-list-copy { color: var(--ink); gap: 6px; }
+.audible-accounts .account-list-copy strong, .audible-accounts .account-list-copy small { color: inherit; white-space: normal; overflow-wrap: anywhere; }
+.audible-accounts .account-list-actions { flex-wrap: wrap; }
+.audible-accounts .account-list-actions button, .audible-accounts .account-list-actions a { color: var(--ink); border-color: rgba(var(--ink-rgb), .2); }
+.audible-auto-import { display: flex; align-items: flex-start; gap: 9px; padding-top: 8px; cursor: pointer; }
+.audible-auto-import input { flex: 0 0 auto; margin: 2px 0 0; }
+.audible-auto-import span { display: grid; gap: 4px; }
+.audible-auto-import small { font-family: inherit; line-height: 1.5; }
+.audible-account-edit { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.audible-account-edit label { display: grid; gap: 5px; }
+.audible-account-edit input { min-width: 0; max-width: 100%; }
+.audible-error { color: var(--ink); border-left: 2px solid var(--gold-soft); padding-left: 10px; font-family: inherit; letter-spacing: normal; font-size: .8rem; }
+.audible-login-scrim { z-index: 150; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
+.audible-login-dialog { width: min(560px, 100%); max-height: calc(100dvh - 64px); overflow-y: auto; box-sizing: border-box; color: var(--ink); }
+.audible-login-dialog .modal-head { align-items: center; }
+.audible-login-dialog h2 { font-size: 1.4rem; }
+.audible-login-dialog > p { font-size: .9rem; line-height: 1.5; }
+.audible-login-form { display: grid; gap: 16px; }
+.audible-login-form label { display: grid; gap: 7px; font-size: .85rem; }
+.audible-login-form input, .audible-login-form select, .audible-login-form textarea { width: 100%; min-width: 0; box-sizing: border-box; padding: 10px; border: 1px solid rgba(var(--ink-rgb), .25); color: var(--ink); background: rgba(var(--lift-rgb), .7); border-radius: 4px; font: inherit; font-size: 16px; }
+.audible-login-form small { font-size: .75rem; line-height: 1.5; }
+.audible-sign-in-steps { display: grid; gap: 14px; margin: 0; padding-left: 22px; font-size: .85rem; }
+.audible-sign-in-steps p { margin: 6px 0 0; line-height: 1.5; }
+.audible-login-dialog .download-btn, .audible-login-dialog .quiet-button { min-height: 44px; }
 @media (max-width: 520px) {
   .store-destination { grid-template-columns: minmax(0, 1fr); }
   .store-destination select { width: 100%; max-width: none; }

@@ -160,7 +160,7 @@ import { useNativeChrome } from "./useNativeChrome";
 import { renderUserMenu } from "./UserMenu";
 import { describeSyncJob } from "./syncJobProgress";
 import { renderCompanionTabs, renderEpubReader, renderReadalongPanel, renderReaderSyncActions, renderReaderSyncMessages } from "./ReaderPanel";
-import { renderAudibleManagement } from "./AudibleManagement";
+import { AudibleManagement } from "./AudibleManagement";
 import { SettingsPage } from "./SettingsPage";
 import { MiniPlayer } from "./MiniPlayer";
 import { PlayerPane } from "./PlayerPane";
@@ -1983,11 +1983,7 @@ function MainApp({
     selectedBook
   });
 
-  const audibleManagement = renderAudibleManagement({
-    currentUser,
-    native,
-    purchases
-  });
+  const audibleManagement = <AudibleManagement currentUser={currentUser} native={native} purchases={purchases} />;
 
   const shownTab = spreadTab(nativeTab, shelfSpread, shelfLayout);
 

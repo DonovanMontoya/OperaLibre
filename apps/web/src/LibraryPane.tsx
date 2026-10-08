@@ -49,6 +49,7 @@ import { LibroCatalog } from "./LibroCatalog";
 import { getDeviceBooks, mergeDeviceAndServerBooks } from "./localLibrary";
 import { hasUserConfiguredServer, SERVER_SETUP_GUIDE_URL } from "./api";
 import { CONNECT_PROMPT_DISMISSED_KEY, writeStoredValue } from "./appStorage";
+import { LibationError } from "./AudibleManagement";
 import { isLibationAdding } from "./libationState";
 import { LibationCoverArt } from "./CoverArt";
 import type { AuthUser, Book } from "./types";
@@ -882,7 +883,7 @@ export function LibraryPane({
           {libationLoading || (libationStatus?.enabled && !libationBooksLoaded) ? (
             <div className="empty-state">Loading Audible library…</div>
           ) : null}
-          {libationError ? <div className="empty-state error">{libationError}</div> : null}
+          {libationError ? <LibationError detail={libationError} /> : null}
           {!libationLoading && !libationError && libationBooksLoaded && libationStatus?.enabled && visibleLibationBooks.length === 0 ? (
             <div className="empty-state">No Libation books loaded yet.</div>
           ) : null}
@@ -912,7 +913,7 @@ export function LibraryPane({
                 confirmationPending: book.accounts.some(account => libationFinalizingAsins.has(account.catalogId)),
                 confirmationFailed: finalizationFailed
               });
-              const didFail = latestBookJob?.status === "failed" || finalizationFailed;
+              const didFail = downloadRequest?.status === "failed" || latestBookJob?.status === "failed" || finalizationFailed;
               const metaParts = [
                 book.authors,
                 formatMinutes(book.lengthMinutes),
@@ -967,11 +968,11 @@ export function LibraryPane({
                     <button
                       type="button"
                       className={`audible-download-action ${didFail ? "retry" : ""}`}
-                      aria-label={`${didFail ? "Retry" : currentUser.libationAccess === "approval" ? "Request" : "Download"} ${book.title}`}
+                      aria-label={`${didFail ? "Retry" : currentUser.libationAccess === "approval" ? "Request" : "Add to server"} ${book.title}`}
                       onClick={() => void startLiberation(book)}
                     >
                       <CloudDownload size={14} />
-                      <span>{didFail ? "Retry" : currentUser.libationAccess === "approval" ? "Request" : "Download"}</span>
+                      <span>{didFail ? "Retry" : currentUser.libationAccess === "approval" ? "Request" : "Add to server"}</span>
                     </button>
                   )}
                 </div>

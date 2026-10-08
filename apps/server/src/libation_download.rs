@@ -8,6 +8,23 @@ use tokio::{io::AsyncReadExt, process::Command};
 // Leave room for writes between observations. This is a watchdog, not an OS quota.
 const WRITE_HEADROOM: u64 = 64 * 1024 * 1024;
 
+pub(crate) fn sweep_staging(root: &Path) -> std::io::Result<usize> {
+    let mut removed = 0;
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir()
+            && entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".operalibre-libation-")
+        {
+            std::fs::remove_dir_all(entry.path())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 pub(crate) async fn download_title(
     state: &AppState,
     config: &LibationConfig,

@@ -20,6 +20,8 @@ import type {
   LibroAccountStatus,
   LibationDownloadRequest,
   LibationStatus,
+  LibationSetup,
+  LibationLoginStarted,
   LoginResponse,
   ProfileStats,
   Progress,
@@ -1183,6 +1185,42 @@ export function configureLibroImports(folder: string | null) {
 
 export function scanLibroImports() {
   return request<JobCreated>("/api/libro/scan", { method: "POST" });
+}
+
+export function getLibationSetup() {
+  return request<LibationSetup>("/api/libation/setup");
+}
+
+export function startLibationLogin(payload: { profileId?: string; label: string; accountId: string; locale: string; }) {
+  return request<LibationLoginStarted>("/api/libation/accounts/login/start", {
+    method: "POST", body: JSON.stringify(payload)
+  }, 45_000);
+}
+
+export function completeLibationLogin(sessionId: string, responseUrl: string) {
+  return request<LibationStatus>(`/api/libation/accounts/login/${encodeURIComponent(sessionId)}/complete`, {
+    method: "POST", body: JSON.stringify({ responseUrl })
+  }, 100_000);
+}
+
+export function cancelLibationLogin(sessionId: string) {
+  return request<void>(`/api/libation/accounts/login/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+}
+
+export function updateLibationAccount(profileId: string, label: string) {
+  return request<LibationStatus>(`/api/libation/accounts/${encodeURIComponent(profileId)}`, {
+    method: "PUT", body: JSON.stringify({ label })
+  });
+}
+
+export function removeLibationAccount(profileId: string) {
+  return request<void>(`/api/libation/accounts/${encodeURIComponent(profileId)}`, { method: "DELETE" });
+}
+
+export function setLibationAutoImport(profileId: string, enabled: boolean) {
+  return request<LibationStatus>(`/api/libation/accounts/${encodeURIComponent(profileId)}/auto-import`, {
+    method: "PUT", body: JSON.stringify({ enabled })
+  });
 }
 
 export async function getLibationAccess() {

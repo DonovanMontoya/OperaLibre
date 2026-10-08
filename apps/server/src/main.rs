@@ -80,6 +80,8 @@ mod http_tests;
 mod jobs;
 mod libation;
 mod libation_download;
+mod libation_recovery;
+mod libation_setup;
 mod library;
 mod libro;
 mod libro_account;
@@ -114,6 +116,7 @@ use error::*;
 use faststart_jobs::*;
 use jobs::*;
 use libation::*;
+use libation_setup::*;
 use library::*;
 use libro::*;
 use libro_account::*;
@@ -208,6 +211,7 @@ async fn main() -> anyhow::Result<()> {
     // until the scan lands. A scan that fails is logged, not fatal: the task
     // retries it on a backoff, and any other trigger's rescan counts too.
     start_startup_scan(state.clone()).await;
+    libation_recovery::recover(state.clone());
     schedule_automatic_libation_refresh(state.clone());
     schedule_libro_imports(state.clone());
     schedule_reading_session_sweeper(state.clone());
@@ -247,6 +251,9 @@ fn sweep_leftover_transfers(config: &ServerConfig) {
             "could not sweep leftover download archives in {}: {error}",
             config.download_temp_dir.display()
         ),
+    }
+    if let Err(error) = libation_download::sweep_staging(&config.library_root) {
+        tracing::warn!("could not clean interrupted Libation staging: {error}");
     }
     match sweep_upload_staging_dirs(&config.library_root) {
         Ok(0) => {}

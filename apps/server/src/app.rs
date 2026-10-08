@@ -210,6 +210,11 @@ pub(crate) fn build_router(
             get(faststart_status).post(start_faststart_conversion),
         )
         .route("/api/libation/status", get(libation_status))
+        .route("/api/libation/setup", get(libation_setup))
+        .route(
+            "/api/libation/accounts/{profile_id}/auto-import",
+            put(set_libation_auto_import),
+        )
         .route("/api/libro", get(libro_status).put(configure_libro))
         .route("/api/libro/scan", post(scan_libro))
         .route(
