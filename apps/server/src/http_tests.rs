@@ -1755,6 +1755,8 @@ const ADMIN_ONLY_ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/users"),
     ("POST", "/api/library/rescan"),
     ("GET", "/api/jobs"),
+    ("GET", "/api/libation/setup"),
+    ("PUT", "/api/libation/accounts/someone/auto-import"),
     ("GET", "/api/library/faststart"),
     ("GET", "/api/experimental-features/readalong-sync"),
     ("PUT", "/api/users/someone/book-access"),

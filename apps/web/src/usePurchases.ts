@@ -191,8 +191,8 @@ export function usePurchases({
           manualRefreshesPerHour: access.manualRefreshesPerHour
         });
       }
-    } catch {
-      setLibationStatus(null);
+    } catch (error) {
+      setLibationError(errorMessage(error, "The Audible connection status could not be checked."));
     }
   }, [currentUser.isAdmin, isOperaLibre, native]);
 
@@ -253,6 +253,31 @@ export function usePurchases({
       cancelled = true;
     };
   }, [currentUser.isAdmin]);
+
+  useEffect(() => {
+    if (!currentUser.isAdmin || !isOperaLibre || demoMode || localMode) return;
+    if (!libationStatus?.autoImportAccountIds?.length && librarySource !== "audible" && librarySource !== "all") return;
+    let cancelled = false;
+    const refreshJobs = async () => {
+      if (document.hidden || libationJobsRef.current.some(isPendingJob)) return;
+      try {
+        const jobs = await listJobs();
+        if (cancelled) return;
+        const previous = libationJobsRef.current;
+        const next = reconcileLibationJobs(jobs, previous);
+        const finished = next.filter(job => !isPendingJob(job) && !previous.some(prior => prior.id === job.id && !isPendingJob(prior)));
+        libationJobsRef.current = next;
+        setLibationJobs(next);
+        if (finished.length) {
+          void loadBooks();
+          void loadLibationBooks(false);
+        }
+      } catch { /* The next visible poll retries. */ }
+    };
+    const timer = window.setInterval(() => void refreshJobs(), 15_000);
+    document.addEventListener("visibilitychange", refreshJobs);
+    return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener("visibilitychange", refreshJobs); };
+  }, [currentUser.isAdmin, demoMode, isOperaLibre, localMode, librarySource, libationStatus?.autoImportAccountIds?.length, loadBooks, loadLibationBooks]);
 
   useEffect(() => {
     if ((librarySource === "audible" || librarySource === "all") && libationStatus?.enabled && !libationBooksLoaded && !libationLoading) {
@@ -658,6 +683,8 @@ export function usePurchases({
     libroOnDevice,
     libroRefreshKey,
     loadLibationBooks,
+    loadLibationStatus,
+    setLibationStatus,
     pendingLibationJobs,
     purchaseAccountFilter,
     refreshLibationJob,

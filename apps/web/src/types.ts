@@ -268,6 +268,22 @@ export type LibationStatus = {
   message: string | null;
   autoRefreshHours: number | null;
   manualRefreshesPerHour: number;
+  lastSuccessfulRefresh?: number | null;
+  autoImportAccountIds?: string[];
+  pendingLogin?: LibationLoginStarted | null;
+};
+
+export type LibationLoginStarted = {
+  sessionId: string;
+  profileId: string;
+  loginUrl: string;
+  expiresAt: number;
+};
+
+export type LibationSetup = {
+  checks: { id: string; label: string; ready: boolean; message: string; }[];
+  canSignIn: boolean;
+  busy: boolean;
 };
 
 export type LibroImportStatus = {
