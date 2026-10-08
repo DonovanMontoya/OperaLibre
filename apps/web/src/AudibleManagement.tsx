@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertCircle, Check, Download, ExternalLink, KeyRound, LoaderCircle, Plus, RefreshCcw, X } from "lucide-react";
 import { cancelLibationLogin, completeLibationLogin, getLibationSetup, removeLibationAccount, setLibationAutoImport, startLibationLogin, updateLibationAccount } from "./api";
@@ -37,6 +37,7 @@ export function AudibleManagement({ currentUser, native, purchases }: Management
   const [editing, setEditing] = useState<string | null>(null);
   const [label, setLabel] = useState("");
   const [removing, setRemoving] = useState<string | null>(null);
+  const [managing, setManaging] = useState(false);
   const mounted = useRef(false);
 
   useEffect(() => {
@@ -70,24 +71,25 @@ export function AudibleManagement({ currentUser, native, purchases }: Management
 
   const pending = libationStatus?.pendingLogin;
   const enabled = !!libationStatus?.enabled;
-  return <div className={native ? "store-settings-body audible-settings-body" : "purchase-console-body"}>
+  const hasAccounts = !!libationStatus?.accounts.length;
+  const checksReady = !!setup?.checks.length && setup.checks.every(check => check.ready);
+  const connectActions = <div className="store-settings-actions audible-connect-actions">
+    {pending ? <><button type="button" className="download-btn audible-primary-action" aria-label="Continue sign-in" onClick={() => setLogin({ pending, account: libationStatus?.accounts.find(account => account.id === pending.profileId) })}><KeyRound size={15} />Continue sign-in</button><button type="button" className="quiet-button" aria-label="Cancel sign-in" disabled={!!busy} onClick={() => void changeAccount("cancel", () => cancelLibationLogin(pending.sessionId), "Sign-in cancelled.")}>Cancel sign-in</button></> : <button type="button" className="download-btn audible-primary-action" aria-label="Connect Audible" disabled={!setup?.canSignIn || !!busy} onClick={() => setLogin({})}><Plus size={15} />Connect Audible</button>}
+  </div>;
+  const setupButton = <button type="button" className="quiet-button" disabled={checking} onClick={() => void checkSetup()}>{checking ? <LoaderCircle size={13} className="spin-icon" /> : <RefreshCcw size={13} />} Check setup</button>;
+  const refreshButton = <button type="button" className="download-btn audible-refresh-action" title={isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"} aria-label={isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"} onClick={() => void startLibationSync()} aria-busy={isRefreshingAudible} disabled={!enabled || libationLoading || libationRefreshPending || !!refreshLibationJob || !!pending}>
+    {isRefreshingAudible ? <LoaderCircle size={13} className="spin-icon" /> : <RefreshCcw size={13} />}<span>{isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"}</span>
+  </button>;
+  const feedback = <>
+    {error || libationError ? <LibationError detail={error ?? libationError!} /> : null}
+    {notice ? <p className="settings-hint" role="status">{notice}</p> : null}
+  </>;
+  const content = <div className="store-settings-body audible-settings-body audible-management">
     {currentUser.isAdmin ? <div className="audible-setup">
-      <div className="audible-section-head"><strong>Audible setup</strong><button type="button" className="quiet-button" disabled={checking} onClick={() => void checkSetup()}>{checking ? <LoaderCircle size={13} className="spin-icon" /> : <RefreshCcw size={13} />} Check setup</button></div>
-      <ol className="audible-setup-steps">
-        <li><span>{enabled ? <Check size={14} /> : "1"}</span><div><strong>Install Libation on the server</strong><p>{enabled ? "Libation was found. Your Audible credentials stay with Libation." : "Use the OperaLibre installer's --libation option, or configure an existing installation and restart."}</p></div></li>
-        <li><span>{libationStatus?.accounts.some(account => account.authenticated) ? <Check size={14} /> : "2"}</span><div><strong>Connect your Audible account</strong><p>Sign in with Amazon below, or use accounts already connected in Libation.</p></div></li>
-        <li><span>3</span><div><strong>Add purchases to your server library</strong><p>Choose titles in Get books → Audible. Download to this device separately for offline listening.</p></div></li>
-      </ol>
-      <details className="audible-setup-details"><summary>Installation and storage checks</summary>
-        {setup?.checks.map(check => <div className="audible-check" key={check.id}>{check.ready ? <Check size={14} /> : <AlertCircle size={14} />}<div><strong>{check.label}</strong><p>{check.ready || check.id === "installed" || check.id === "settings" || check.id === "storage" ? check.message : libationHelp(check.message)}</p>{!check.ready && <details><summary>Details</summary><pre>{check.message}</pre></details>}</div></div>)}
-        {!setup ? <p>{checking ? "Checking this server…" : "Choose Check setup to inspect this server."}</p> : null}
-        {libationStatus?.cliPath ? <p className="settings-hint">Libation: <code>{libationStatus.cliPath}</code></p> : null}
-        <a href={SETUP_DOCS} target="_blank" rel="noreferrer">Server setup instructions <ExternalLink size={12} /></a>
-      </details>
-      <div className="store-settings-actions">
-        {pending ? <><button type="button" className="download-btn" onClick={() => setLogin({ pending, account: libationStatus?.accounts.find(account => account.id === pending.profileId) })}><KeyRound size={13} /> Continue sign-in</button><button type="button" className="quiet-button" disabled={!!busy} onClick={() => void changeAccount("cancel", () => cancelLibationLogin(pending.sessionId), "Sign-in cancelled.")}>Cancel sign-in</button></> : <button type="button" className="download-btn" disabled={!setup?.canSignIn || !!busy} onClick={() => setLogin({})}><Plus size={13} /> Connect Audible</button>}
-      </div>
-      {!pending && setup && !setup.canSignIn ? <p className="settings-hint">{setup.busy ? "Finish the current Libation operation, then check setup again to sign in." : "Check installation details above to enable browser sign-in. Accounts connected in Libation remain available."}</p> : null}
+      <div className="audible-section-head"><strong>{hasAccounts ? "Audible accounts" : "Connect your account"}</strong>{setupButton}</div>
+      <p className="audible-intro">{hasAccounts ? "Manage your connections and add purchases to this server." : enabled ? "Sign in through Amazon to browse your purchases and add books to this server." : "Install Libation on this server to connect Audible. Use the OperaLibre installer's --libation option, then restart."}</p>
+      {connectActions}
+      {!pending && setup && !setup.canSignIn ? <p className="settings-hint">{setup.busy ? "Finish the current Libation operation, then check setup again to sign in." : "Check the server setup below to enable browser sign-in. Accounts connected in Libation remain available."}</p> : null}
     </div> : null}
     {libationStatus?.accounts.length ? <div className="account-list audible-accounts">
       {libationStatus.accounts.map(account => <article key={account.id} className={account.authenticated ? "ok" : "warn"}>
@@ -110,19 +112,45 @@ export function AudibleManagement({ currentUser, native, purchases }: Management
         </div>
       </article>)}
     </div> : null}
-    {error || libationError ? <LibationError detail={error ?? libationError!} /> : null}
-    {notice ? <p className="settings-hint" role="status">{notice}</p> : null}
-    <div className="store-settings-actions">
-      <button type="button" className="download-btn" onClick={() => void startLibationSync()} aria-busy={isRefreshingAudible} disabled={!enabled || libationLoading || libationRefreshPending || !!refreshLibationJob || !!pending}>
-        {isRefreshingAudible ? <LoaderCircle size={13} className="spin-icon" /> : <RefreshCcw size={13} />}<span>{isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"}</span>
-      </button>
+    {feedback}
+    {hasAccounts || !currentUser.isAdmin ? <div className="audible-import-controls"><div className="store-settings-actions">
+      {refreshButton}
       {currentUser.isAdmin && currentUser.libationAccess === "direct" ? <button type="button" className="download-btn" onClick={() => void startAllLiberation()} aria-busy={libationAllPending || !!downloadAllLibationJob} disabled={!enabled || libationLoading || libationAllPending || !!downloadAllLibationJob || !!pending}>
         {libationAllPending || downloadAllLibationJob ? <LoaderCircle size={13} className="spin-icon" /> : <Download size={13} />}<span>{libationAllPending || downloadAllLibationJob ? "Adding purchases" : "Add all purchases to server"}</span>
       </button> : null}
     </div>
-    <p className="settings-hint">{libationStatus?.autoRefreshHours ? `Checks automatically every ${libationStatus.autoRefreshHours} hours.` : "Refresh manually to check for new purchases."}{currentUser.isAdmin ? ` Last successful refresh: ${lastChecked(libationStatus?.lastSuccessfulRefresh)}.` : ""}</p>
-    {login ? <AudibleLoginDialog account={login.account} pending={login.pending} onClose={() => { setLogin(null); void checkSetup(); }} onConnected={status => { setLibationStatus(status); purchases.setLibationBooksLoaded(false); setNotice("Audible connected. Your purchases are refreshing."); setLogin(null); void checkSetup(); }} /> : null}
+    <p className="settings-hint">{libationStatus?.autoRefreshHours ? `Checks automatically every ${libationStatus.autoRefreshHours} hours.` : "Refresh manually to check for new purchases."}{currentUser.isAdmin ? ` Last successful refresh: ${lastChecked(libationStatus?.lastSuccessfulRefresh)}.` : ""}</p></div> : null}
+    {currentUser.isAdmin ? <section className="audible-server-setup" aria-label="Server setup">
+      <div className="audible-section-head"><strong>Server setup</strong>{checksReady ? <span className="audible-checks-ready"><Check size={13} /> Ready</span> : null}</div>
+      {setup?.checks.filter(check => !check.ready).map(check => <div className="audible-check" key={check.id}><AlertCircle size={14} /><div><strong>{check.label}</strong>{check.id === "sign_in" ? <LibationError detail={check.message} /> : <p>{check.message}</p>}</div></div>)}
+      {!setup ? <p>{checking ? "Checking this server…" : "Choose Check setup to inspect this server."}</p> : null}
+      <a href={SETUP_DOCS} target="_blank" rel="noreferrer">Server setup instructions <ExternalLink size={12} /></a>
+    </section> : null}
   </div>;
+  const account = libationStatus?.accounts[0];
+  const showManage = hasAccounts || !!setup && !setup.canSignIn;
+  return <>
+    {native ? content : <div className="audible-sidebar audible-management" aria-hidden={managing || !!login ? true : undefined}>
+      <div className="audible-connection-row">
+        <div className="audible-connection-copy"><KeyRound size={16} /><div><strong>{pending ? "Sign-in in progress" : hasAccounts ? libationStatus!.accounts.length === 1 ? account!.name || account!.accountId : `${libationStatus!.accounts.length} Audible accounts` : currentUser.isAdmin ? "Connect Audible" : "Audible purchases"}</strong><small>{pending ? "Continue with Amazon" : hasAccounts ? libationStatus?.accounts.some(account => !account.authenticated) ? "Sign-in needs attention" : "Connected" : currentUser.isAdmin ? enabled ? "Sign in with Amazon" : "Set up Libation first" : "Add books to your library"}</small></div></div>
+        <div className="audible-sidebar-actions">
+          {currentUser.isAdmin ? <button type="button" className={pending || !showManage ? "download-btn audible-primary-action" : "quiet-button"} aria-label={pending ? "Continue sign-in" : showManage ? "Manage Audible" : "Connect Audible"} disabled={!pending && !showManage && (!setup?.canSignIn || !!busy)} onClick={() => pending ? setLogin({ pending, account: libationStatus?.accounts.find(account => account.id === pending.profileId) }) : showManage ? setManaging(true) : setLogin({})}>{pending ? "Continue" : showManage ? "Manage" : <><Plus size={15} /> Connect</>}</button> : null}
+          {hasAccounts || !currentUser.isAdmin ? refreshButton : null}
+        </div>
+      </div>
+      {!managing ? feedback : null}
+      {managing ? <AudibleManagementDialog inactive={!!login} onClose={() => setManaging(false)}>{content}</AudibleManagementDialog> : null}
+    </div>}
+    {login ? <AudibleLoginDialog account={login.account} pending={login.pending} onClose={() => { setLogin(null); void checkSetup(); }} onConnected={status => { setLibationStatus(status); purchases.setLibationBooksLoaded(false); setNotice("Audible connected. Your purchases are refreshing."); setLogin(null); void checkSetup(); }} /> : null}
+  </>;
+}
+
+function AudibleManagementDialog({ children, inactive, onClose }: { children: ReactNode; inactive: boolean; onClose: () => void; }) {
+  const dialogRef = useModalFocus<HTMLElement>(onClose);
+  return createPortal(<div className="modal-scrim audible-management-scrim" role="presentation"><section ref={dialogRef} tabIndex={-1} className="modal-card audible-management-dialog" role="dialog" aria-modal="true" aria-labelledby="audible-management-title" aria-hidden={inactive ? true : undefined}>
+    <div className="modal-head"><h2 id="audible-management-title">Audible accounts &amp; imports</h2><button type="button" className="icon-button" aria-label="Close Audible management" onClick={onClose}><X size={18} /></button></div>
+    {children}
+  </section></div>, document.body);
 }
 
 function AudibleLoginDialog({ account, pending, onClose, onConnected }: { account?: LibationAccount; pending?: LibationLoginStarted; onClose: () => void; onConnected: (status: LibationStatus) => void; }) {
@@ -202,10 +230,10 @@ function AudibleLoginDialog({ account, pending, onClose, onConnected }: { accoun
       <label>Account label<input aria-label="Account label" aria-describedby="audible-account-label-help" data-modal-initial-focus autoComplete="off" maxLength={80} value={label} disabled={phase !== "idle" || !!account && !account.managed} onChange={event => setLabel(event.currentTarget.value)} required /><small id="audible-account-label-help">A name such as Personal or Family, shown on your books.</small></label>
       <label>Audible email or login<input autoComplete="username" maxLength={320} value={accountId} disabled={phase !== "idle" || !!account} onChange={event => setAccountId(event.currentTarget.value)} required /></label>
       <label>Marketplace<select value={locale} disabled={phase !== "idle" || !!account} onChange={event => setLocale(event.currentTarget.value)}>{MARKETPLACES.map(([value, name]) => <option key={value} value={value}>{name}</option>)}</select></label>
-      <div className="store-settings-actions"><button type="submit" className="download-btn" disabled={phase !== "idle" || !label.trim() || !accountId.trim()}>{phase === "starting" ? <LoaderCircle size={14} className="spin-icon" /> : <KeyRound size={14} />}{phase === "starting" ? "Preparing sign-in…" : "Continue to Amazon"}</button><button type="button" className="quiet-button" onClick={() => void close()}>Cancel</button></div>
+      <div className="store-settings-actions"><button type="submit" className="download-btn audible-primary-action" disabled={phase !== "idle" || !label.trim() || !accountId.trim()}>{phase === "starting" ? <LoaderCircle size={14} className="spin-icon" /> : <KeyRound size={14} />}{phase === "starting" ? "Preparing sign-in…" : "Continue to Amazon"}</button><button type="button" className="quiet-button" onClick={() => void close()}>Cancel</button></div>
     </form> : <form className="audible-login-form" onSubmit={event => { event.preventDefault(); void complete(); }}>
-      <ol className="audible-sign-in-steps"><li><strong>Open Amazon and sign in</strong><p><a className="download-btn" href={session.loginUrl} target="_blank" rel="noreferrer">Open Amazon sign-in <ExternalLink size={14} /></a></p></li><li><strong>Copy the final address</strong><p>After signing in, Amazon may show a blank page or say the page cannot open. Copy the complete address from the browser's address bar, then return here.</p></li><li><label>Paste the final sign-in address<textarea data-modal-initial-focus autoComplete="off" autoCorrect="off" spellCheck={false} maxLength={16384} value={response} disabled={phase === "completing"} onChange={event => setResponse(event.currentTarget.value)} rows={3} /><small>This address completes sign-in and is not saved in your browser.</small></label></li></ol>
-      <div className="store-settings-actions"><button type="submit" className="download-btn" disabled={phase === "completing" || !validAudibleResponse(response)}>{phase === "completing" ? <LoaderCircle size={14} className="spin-icon" /> : <Check size={14} />}{phase === "completing" ? "Finishing sign-in…" : "Finish connecting"}</button><button type="button" className="quiet-button" disabled={phase === "completing" || phase === "cancelling"} onClick={() => void close()}>Cancel sign-in</button></div>
+      <ol className="audible-sign-in-steps"><li><strong>Open Amazon and sign in</strong><p><a className="download-btn audible-primary-action" href={session.loginUrl} target="_blank" rel="noreferrer">Open Amazon sign-in <ExternalLink size={14} /></a></p></li><li><strong>Copy the final address</strong><p>After signing in, Amazon may show a blank page or say the page cannot open. Copy the complete address from the browser's address bar, then return here.</p></li><li><label>Paste the final sign-in address<textarea data-modal-initial-focus autoComplete="off" autoCorrect="off" spellCheck={false} maxLength={16384} value={response} disabled={phase === "completing"} onChange={event => setResponse(event.currentTarget.value)} rows={3} /><small>This address completes sign-in and is not saved in your browser.</small></label></li></ol>
+      <div className="store-settings-actions"><button type="submit" className="download-btn audible-primary-action" disabled={phase === "completing" || !validAudibleResponse(response)}>{phase === "completing" ? <LoaderCircle size={14} className="spin-icon" /> : <Check size={14} />}{phase === "completing" ? "Finishing sign-in…" : "Finish connecting"}</button><button type="button" className="quiet-button" disabled={phase === "completing" || phase === "cancelling"} onClick={() => void close()}>Cancel sign-in</button></div>
       {phase === "completing" ? <p role="status">Libation is completing the connection. This can take a moment.</p> : null}
     </form>}
     <p className="settings-hint">Having trouble? Connect this account in Libation on the server and choose Refresh purchases in OperaLibre. <a href={SETUP_DOCS} target="_blank" rel="noreferrer">Sign-in help</a></p>

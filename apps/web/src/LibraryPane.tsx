@@ -689,10 +689,7 @@ export function LibraryPane({
       <div id="purchase-results" className="purchase-results" role={librarySource !== "local" ? "tabpanel" : undefined} aria-labelledby={librarySource !== "local" ? `purchase-tab-${librarySource}` : undefined}>
       <div className="purchase-settings-pane">
       {!native && showAudiblePurchases && canBrowseLibation ? (
-        <details className="purchase-console">
-          <summary><span>Audible accounts &amp; downloads</span><ChevronDown size={15} /></summary>
-          {audibleManagement}
-        </details>
+        audibleManagement
       ) : null}
       {librarySource === "all" ? <label className="purchase-account-filter">
         <span className="purchase-control-label">Account</span>

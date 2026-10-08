@@ -23,7 +23,7 @@ The [one-line installer](installing-a-release.md#setting-up-the-audible-import-d
 1. Install Libation on the OperaLibre server and configure `libation_cli_path` (or place the CLI on `PATH`).
 2. Add every Audible account the server should browse in Libation itself, using its account settings or the installer's guided sign-in. You can also connect an account from OperaLibre using the browser sign-in below.
 3. Point OperaLibre at that Libation installation with `libation_files_dir`, the directory holding `AccountsSettings.json` and `Settings.json`.
-4. Sign in to OperaLibre as an administrator. In installed apps, open **Settings → Book stores → Audible**; on the web, open the account controls under **Get books → Audible**. Choose **Check setup** to check Libation, browser sign-in support, and library storage. Existing Libation accounts appear automatically.
+4. Sign in to OperaLibre as an administrator. In installed apps, open **Settings → Book stores → Audible**; on the web, open **Get books → Audible**. OperaLibre checks Libation, browser sign-in support, and library storage automatically. Existing Libation accounts appear automatically; choose **Manage** on the web to change their settings. Use **Check setup** in account management to check the server again.
 
 ### Connect or reconnect an account
 
