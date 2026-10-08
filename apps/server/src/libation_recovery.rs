@@ -29,6 +29,7 @@ pub(crate) async fn dispatch(
     pending: PendingLibationDownload,
     report_failure: bool,
 ) -> Result<Json<JobCreated>, ApiError> {
+    let shutdown = state.shutdown.subscribe();
     let result = start_libation_download_inner(
         state,
         pending.profile_id.clone(),
@@ -41,7 +42,9 @@ pub(crate) async fn dispatch(
             let state = state.clone();
             let job_id = created.job_id.clone();
             tokio::spawn(async move {
-                wait_for_terminal(&state, &job_id).await;
+                if !wait_for_terminal(&state, &job_id, shutdown).await {
+                    return;
+                }
                 if let Err(error) = remove_pending(&state, &pending.id).await {
                     tracing::warn!(
                         "could not save Libation download completion: {}",
@@ -79,9 +82,17 @@ async fn remove_pending(state: &AppState, id: &str) -> Result<(), ApiError> {
         .await
 }
 
-pub(crate) async fn wait_for_terminal(state: &AppState, job_id: &str) {
+pub(crate) async fn wait_for_terminal(
+    state: &AppState,
+    job_id: &str,
+    mut shutdown: tokio::sync::broadcast::Receiver<()>,
+) -> bool {
     loop {
-        await_job_outcome(state, job_id).await;
+        tokio::select! {
+            biased;
+            _ = shutdown.recv() => return false,
+            _ = await_job_outcome(state, job_id) => {},
+        }
         if state
             .jobs
             .read()
@@ -89,19 +100,44 @@ pub(crate) async fn wait_for_terminal(state: &AppState, job_id: &str) {
             .get(job_id)
             .is_none_or(|job| !is_active_job(job))
         {
-            return;
+            return matches!(
+                shutdown.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            );
+        }
+    }
+}
+
+pub(crate) async fn wait_for_library(
+    state: &AppState,
+    mut shutdown: tokio::sync::broadcast::Receiver<()>,
+) -> bool {
+    loop {
+        if !matches!(
+            shutdown.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ) {
+            return false;
+        }
+        if state.library.read().await.catalogue_ready {
+            return matches!(
+                shutdown.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            );
+        }
+        tokio::select! {
+            biased;
+            _ = shutdown.recv() => return false,
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {},
         }
     }
 }
 
 pub(crate) fn recover(state: AppState) {
+    let shutdown = state.shutdown.subscribe();
     tokio::spawn(async move {
-        let mut shutdown = state.shutdown.subscribe();
-        while !state.library.read().await.catalogue_ready {
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {},
-                _ = shutdown.recv() => return,
-            }
+        if !wait_for_library(&state, shutdown).await {
+            return;
         }
         if !state.libation_config.enabled() {
             // Keep intent when Libation is temporarily unavailable.
@@ -169,51 +205,42 @@ pub(crate) async fn queue_new_purchases(
     if permitted.is_empty() {
         return Ok(());
     }
-    let mut books = Vec::new();
+    let mut purchases = Vec::new();
     let mut failures = Vec::new();
     for profile in all_libation_profiles(state).await {
-        let needed = if profile.managed {
-            permitted.contains_key(&profile.id)
-        } else {
-            permitted.keys().any(|id| id.starts_with("legacy-"))
-        };
-        if !needed {
+        if !profile.managed || !permitted.contains_key(&profile.id) {
             continue;
         }
         match export_libation_books(&profile).await {
-            Ok(export) => books.extend(export),
+            Ok(books) => purchases.extend(
+                books
+                    .into_iter()
+                    .filter(is_libation_purchase)
+                    .map(|book| (book.profile_id, book.asin)),
+            ),
             Err(error) => failures.push(error.message),
         }
     }
-    let ownership = state
-        .libation_refreshes
-        .read()
-        .await
-        .legacy_ownership
-        .clone();
-    restore_legacy_ownership_books(&mut books, &ownership, &HashMap::new());
+    for (id, ownership) in &state.libation_refreshes.read().await.legacy_ownership {
+        if permitted.contains_key(id)
+            && let Some(asins) = &ownership.purchased_asins
+        {
+            purchases.extend(asins.iter().map(|asin| (id.clone(), asin.clone())));
+        }
+    }
     let pending = state
         .libation_refreshes
         .mutate(|store| {
             let mut pending = Vec::new();
-            for book in &books {
-                if !permitted.contains_key(&book.profile_id) {
-                    continue;
-                }
-                let Some(preference) = store.auto_imports.get_mut(&book.profile_id) else {
+            for (profile_id, asin) in &purchases {
+                let Some(preference) = store.auto_imports.get_mut(profile_id) else {
                     continue;
                 };
-                if !book.is_audible_plus
-                    && book
-                        .content_type
-                        .as_deref()
-                        .is_none_or(|kind| kind.eq_ignore_ascii_case("Product"))
-                    && preference.seen_asins.insert(book.asin.clone())
-                {
+                if preference.seen_asins.insert(asin.clone()) {
                     pending.push(PendingLibationDownload {
                         id: generate_session_token(),
-                        profile_id: Some(book.profile_id.clone()),
-                        asin: book.asin.clone(),
+                        profile_id: Some(profile_id.clone()),
+                        asin: asin.clone(),
                         grant_to_user: None,
                     });
                 }

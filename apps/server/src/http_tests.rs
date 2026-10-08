@@ -480,6 +480,8 @@ impl TestServer {
                 ManagedLibationAccountStore::default(),
             )),
             libation_login_sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            libation_status_accounts: Arc::new(RwLock::new(Vec::new())),
+            libation_account_registration_lock: Arc::new(Mutex::new(())),
             rescan_lock: Arc::new(Mutex::new(())),
             libation_job_lock: Arc::new(Mutex::new(())),
             libation_refresh_reservation_lock: Arc::new(Mutex::new(())),
@@ -1755,6 +1757,7 @@ const ADMIN_ONLY_ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/users"),
     ("POST", "/api/library/rescan"),
     ("GET", "/api/jobs"),
+    ("GET", "/api/libation/status"),
     ("GET", "/api/libation/setup"),
     ("PUT", "/api/libation/accounts/someone/auto-import"),
     ("GET", "/api/library/faststart"),
@@ -6981,4 +6984,42 @@ async fn a_cancelled_handoff_cannot_release_a_newer_update_pause() {
             .try_write()
             .is_ok()
     );
+}
+
+#[tokio::test]
+async fn libation_status_route_exposes_pending_sign_in_without_waiting_for_the_cli_lock() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (response_sender, _response_receiver) = std::sync::mpsc::channel::<String>();
+    let (_completion_sender, completion) =
+        tokio::sync::oneshot::channel::<Result<String, String>>();
+    let job_guard = server.state.libation_job_lock.clone().lock_owned().await;
+    server.state.libation_login_sessions.lock().await.insert(
+        "pending-sign-in".to_string(),
+        PendingLibationLogin {
+            profile_id: "test-profile".to_string(),
+            created_account: false,
+            login_url: "https://www.amazon.com/ap/signin?session=test".to_string(),
+            expires_at: unix_now_seconds().saturating_add(60),
+            response_sender,
+            completion,
+            _job_guard: Arc::new(job_guard),
+        },
+    );
+    let response = tokio::time::timeout(
+        Duration::from_secs(2),
+        server.get("/api/libation/status", &owner),
+    )
+    .await
+    .expect("status must not wait for sign-in");
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    assert_eq!(
+        response.json()["pendingLogin"]["sessionId"],
+        "pending-sign-in"
+    );
+    assert!(
+        server.state.libation_job_lock.try_lock().is_err(),
+        "status must preserve the sign-in lock"
+    );
+    server.state.libation_login_sessions.lock().await.clear();
 }

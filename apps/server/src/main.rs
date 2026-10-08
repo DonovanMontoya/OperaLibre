@@ -219,12 +219,14 @@ async fn main() -> anyhow::Result<()> {
 
     let (shutdown_reason_sender, shutdown_reason) = tokio::sync::oneshot::channel();
     let shutdown = state.shutdown.subscribe();
+    let shutdown_sender = state.shutdown.clone();
     let serve = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
         let reason = shutdown_signal(shutdown).await;
+        let _ = shutdown_sender.send(());
         let _ = shutdown_reason_sender.send(reason);
     });
     serve_until_shutdown(serve, shutdown_reason).await?;
@@ -635,6 +637,8 @@ fn build_app_state(
             snapshot.libation_accounts,
         )),
         libation_login_sessions: Arc::new(Mutex::new(HashMap::new())),
+        libation_status_accounts: Arc::new(RwLock::new(Vec::new())),
+        libation_account_registration_lock: Arc::new(Mutex::new(())),
         rescan_lock: Arc::new(Mutex::new(())),
         libation_job_lock: Arc::new(Mutex::new(())),
         libation_refresh_reservation_lock: Arc::new(Mutex::new(())),
