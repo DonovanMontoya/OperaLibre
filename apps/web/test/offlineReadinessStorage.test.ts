@@ -9,6 +9,10 @@ const state = {
   native: false,
   scope: "server-a",
   files: new Map<string, string>(),
+  directories: new Set<string>(),
+  mkdirError: null as Error | null,
+  mkdirRace: false,
+  listingFails: false,
   stores: { data: new Map<string, unknown>(), media: new Map<string, unknown>() },
   jobs: new Map<string, { state: string; fraction: number; files: BackgroundDownloadFile[] }>(),
   attempts: [] as BackgroundDownloadFile[][],
@@ -40,9 +44,16 @@ Reflect.set(globalThis, "indexedDB", { open() {
 const mocks: Record<string, string> = {
   "@capacitor/core": `export const Capacitor = { isNativePlatform: () => ${fixture}.native, convertFileSrc: value => value };`,
   "@capacitor/filesystem": `export const Directory = { Data: "DATA" }; export const Filesystem = {
-    stat: async ({path}) => { const file = ${fixture}.files.get(path); if (file !== undefined) return {size: atob(file).length};
-      if ([...${fixture}.files.keys()].some(key => key.startsWith(path + '/'))) return {size: 1}; throw Error('missing'); },
-    getUri: async ({path}) => ({uri: 'file://' + path}), mkdir: async () => {},
+    stat: async ({path}) => { const file = ${fixture}.files.get(path); if (file !== undefined) return {type: 'file', size: atob(file).length};
+      if (${fixture}.directories.has(path) || [...${fixture}.files.keys()].some(key => key.startsWith(path + '/'))) return {type: 'directory', size: 1}; throw Error('missing'); },
+    getUri: async ({path}) => ({uri: 'file://' + path}),
+    mkdir: async ({path}) => {
+      if (${fixture}.mkdirError) throw ${fixture}.mkdirError;
+      if (${fixture}.directories.has(path) || ${fixture}.files.has(path) || [...${fixture}.files.keys()].some(key => key.startsWith(path + '/'))) throw Error('Directory already exists, cannot be overwritten.');
+      ${fixture}.directories.add(path);
+      if (${fixture}.mkdirRace) throw Error('Directory already exists, cannot be overwritten.');
+    },
+    readdir: async ({path}) => { if (${fixture}.listingFails) throw Error('Temporary directory listing failure'); return {files: [...${fixture}.files.keys()].filter(key => key.startsWith(path + '/')).map((key, i) => ({name: key.slice(path.length + 1), mtime: i}))}; },
     readFile: async ({path}) => { if (!${fixture}.files.has(path)) throw Error('missing'); return {data: ${fixture}.files.get(path)}; },
     writeFile: async ({path, data}) => { ${fixture}.files.set(path, data); },
     deleteFile: async ({path}) => { ${fixture}.files.delete(path.startsWith("file://") ? path.slice(7) : path); },
@@ -90,6 +101,7 @@ const progress = { bookId: book.id, trackId: book.tracks[0].id, positionSeconds:
 function reset(native: boolean) {
   state.scope = "server-a"; state.native = native; state.files.clear(); state.stores.data.clear(); state.stores.media.clear();
   state.attempts.length = 0; state.jobs.clear(); state.hold = false; state.fail = true;
+  state.directories.clear(); state.mkdirError = null; state.mkdirRace = false; state.listingFails = false;
 }
 
 test("web partial downloads and retries survive offline reopening with listening progress intact", async (t) => {
@@ -281,4 +293,73 @@ test("switching servers during readiness cannot contaminate the original server'
   assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "available");
   state.scope = "server-b";
   assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "unsupported");
+});
+
+test("native retry reuses an existing download directory without touching audio", async () => {
+  reset(true);
+  await offline.downloadBookForOffline(book, url => url, () => {});
+  const audio = book.tracks.map(track => state.files.get(`offline-media/server-a/${book.id}/track-${track.id}.wav`));
+  state.fail = false;
+  await offline.downloadBookForOffline(book, url => url, () => {}, undefined, true);
+  assert.equal(state.attempts.length, 2);
+  assert.ok(state.attempts[1].every(file => !file.required));
+  assert.equal((await offline.getBookOfflineReadiness(book)).ebook, "available");
+  assert.deepEqual(book.tracks.map(track => state.files.get(`offline-media/server-a/${book.id}/track-${track.id}.wav`)), audio);
+});
+
+for (const native of [false, true]) {
+  test(`${native ? "native" : "web"} existing offline artwork satisfies readiness after a cover revision changes`, async (t) => {
+    reset(native);
+    const illustrated = { ...library(1)[0], coverArtUrl: '/cover?v=old', coverArtContentType: 'image/jpeg' };
+    state.fail = false;
+    t.mock.method(globalThis, "fetch", async (url: string) => new Response(url));
+    await offline.downloadBookForOffline(illustrated, url => url, () => {});
+    const revised = { ...illustrated, coverArtUrl: '/cover?v=new', coverArtContentType: 'image/png' };
+    const before = native ? new Map(state.files) : new Map(state.stores.media);
+    assert.deepEqual((await offline.getBookOfflineReadiness(revised)).missingFiles, []);
+    assert.deepEqual(native ? state.files : state.stores.media, before, "readiness does not rewrite downloaded files");
+    if (native) state.files.set(`offline-media/server-a/${illustrated.id}/cover-new.png`, "");
+    else state.stores.media.set(`server-a:${illustrated.id}:cover:new`, {key: `server-a:${illustrated.id}:cover:new`, blob: new Blob([])});
+    assert.deepEqual((await offline.getBookOfflineReadiness(revised)).missingFiles, [], "empty newer artwork must not hide a usable offline fallback");
+    if (native) state.files.delete(`offline-media/server-a/${illustrated.id}/cover-old.jpg`);
+    else {
+      state.stores.media.delete(`server-a:${illustrated.id}:cover:old`);
+      state.stores.media.delete(`server-a:${illustrated.id}:cover`);
+    }
+    assert.deepEqual((await offline.getBookOfflineReadiness(revised)).missingFiles, ["cover:new"]);
+  });
+}
+
+test("native catalogue writes can update an existing directory and tolerate a creation race", async () => {
+  reset(true);
+  state.mkdirRace = true;
+  await offline.cacheLibrary("reader", [book]);
+  state.mkdirRace = false;
+  const updated = { ...book, title: "Updated title" };
+  await offline.cacheLibrary("reader", [updated]);
+  const saved = state.files.get("offline-media/server-a/library-reader.json");
+  assert.ok(saved, "both native snapshots must be written, not only IndexedDB");
+  assert.equal(JSON.parse(atob(saved)).books[0].title, updated.title);
+});
+
+test("native migration preserves legacy audio when directory creation is denied", async () => {
+  reset(true);
+  const legacy = { ...book, id: "mkdir-denied" };
+  const audioPath = `offline-media/${legacy.id}/track-${legacy.tracks[0].id}.wav`;
+  state.files.set(audioPath, btoa("legacy audio"));
+  state.mkdirError = new Error("Permission denied");
+  await assert.rejects(offline.downloadBookForOffline(legacy, url => url, () => {}), /Permission denied/);
+  assert.equal(state.files.get(audioPath), btoa("legacy audio"));
+  assert.deepEqual(state.attempts, []);
+});
+
+test("native artwork remains ready when directory enumeration fails but an older cover is readable", async () => {
+  reset(true);
+  state.fail = false;
+  const original = { ...library(1)[0], coverArtUrl: '/cover', coverArtContentType: 'image/jpeg' };
+  await offline.downloadBookForOffline(original, url => url, () => {});
+  const revised = { ...original, coverArtUrl: '/cover?v=new', coverArtContentType: 'image/png' };
+  state.listingFails = true;
+  assert.deepEqual((await offline.getBookOfflineReadiness(revised)).missingFiles, []);
+  assert.equal(await offline.getOfflineCoverUrl(revised, true), `file://offline-media/server-a/${original.id}/cover.jpg`);
 });

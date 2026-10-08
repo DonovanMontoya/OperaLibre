@@ -746,6 +746,7 @@ test('a shelf warning opens book details and clears after retrying only missing 
   const panel = page.getByRole('region', { name: 'Offline files', exact: true });
   const retry = panel.getByRole('button', { name: `Retry missing files for ${book.title}` });
   await expect(panel).toContainText('Ebook: missing');
+  await expect(panel).toContainText('Missing: book.epub, follow-along timing');
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 844 });
     await expect(retry).toBeInViewport();
