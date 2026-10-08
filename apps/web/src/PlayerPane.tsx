@@ -239,6 +239,7 @@ export function PlayerPane({
   const {
     cancelOfflineDownload,
     downloadForOffline,
+    online,
     readiness,
     retryMissingFiles,
     removeOfflineDownload
@@ -772,7 +773,7 @@ export function PlayerPane({
                     <span className="offline-readiness-panel">
                       <OfflineBookReadiness readiness={readiness[selectedBook.id]} />
                       {capabilities.downloads && !!readiness[selectedBook.id]?.missingFiles.length ? (
-                        <button type="button" className="download-btn" disabled={!!selectedDownload || navigator.onLine === false}
+                        <button type="button" className="download-btn" disabled={!!selectedDownload || !online}
                           onClick={() => void retryMissingFiles(selectedBook)}>
                           Retry missing files
                         </button>

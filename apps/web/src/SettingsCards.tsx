@@ -314,6 +314,7 @@ export function ServerDownloadSettings({
   deviceDownloadQueue,
   downloadedBookIds,
   readiness,
+  online,
   retryMissingFiles,
   canDownload,
   removeOfflineDownload
@@ -324,6 +325,7 @@ export function ServerDownloadSettings({
   deviceDownloadQueue: DeviceDownloadActivity[];
   downloadedBookIds: Set<string>;
   readiness: Record<string, OfflineReadiness>;
+  online: boolean;
   retryMissingFiles: (book: Book) => Promise<void>;
   canDownload: boolean;
   removeOfflineDownload: (book: Book) => Promise<void>;
@@ -377,7 +379,7 @@ export function ServerDownloadSettings({
                       <OfflineBookReadiness readiness={readiness[book.id]} />
                       {canDownload && !!readiness[book.id]?.missingFiles.length ? (
                         <button type="button" className="download-btn"
-                          disabled={deviceDownloadQueue.some((activity) => activity.bookId === book.id) || navigator.onLine === false}
+                          disabled={deviceDownloadQueue.some((activity) => activity.bookId === book.id) || !online}
                           onClick={() => void retryMissingFiles(book)} aria-label={`Retry missing files for ${book.title}`}>
                           Retry missing files
                         </button>
