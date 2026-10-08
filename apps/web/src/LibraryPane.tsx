@@ -866,7 +866,6 @@ export function LibraryPane({
             selectedBookId={selectedBook?.id ?? null}
             playbackBookId={playbackBook?.id ?? null}
             downloadedBookIds={downloadedBookIds}
-            offlineReadiness={offlineDownloads.readiness}
             isOffline={isOffline}
             demoMode={demoMode}
             localMode={localMode}
