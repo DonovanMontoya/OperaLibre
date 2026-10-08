@@ -352,12 +352,15 @@ test('an offline CarPlay restart survives native acknowledgement and reload', as
 
 test('web readers can connect Libro.fm without native Settings', async ({ page }) => {
   const { writes } = await openShell(page, false);
-  await page.getByRole('button', { name: 'Get books', exact: true }).click();
+  await page.getByRole('button', { name: 'Get books', exact: true }).press('Enter');
   await expect(page.getByRole('button', { name: 'Open Settings', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Connect Libro.fm', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Connect Libro.fm', exact: true }).press('Enter');
   await page.getByRole('textbox', { name: 'Email', exact: true }).fill('reader@example.com');
   await page.getByLabel('Password', { exact: true }).fill('fixture-password');
-  await page.getByRole('button', { name: 'Connect Libro.fm', exact: true }).click();
-  await expect(page.getByText('Libro.fm accounts (1)', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Connect Libro.fm', exact: true }).press('Enter');
+  await page.getByRole('button', { name: 'Close Libro.fm management' }).press('Enter');
+  await expect(page.getByRole('button', { name: 'Manage Libro.fm', exact: true })).toBeVisible();
   expect(writes).toContain('/api/me/libro');
 });
 
@@ -371,8 +374,8 @@ test('web Audible management can request a purchase refresh', async ({ page }) =
 
 test('native server clients can manage Libro.fm without the device plugin', async ({ page }) => {
   await openShell(page, true);
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.locator('.store-settings-group > summary').filter({ hasText: 'Libro.fm' }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).press('Enter');
+  await page.locator('.store-settings-group > summary').filter({ hasText: 'Libro.fm' }).press('Enter');
   await expect(page.getByRole('button', { name: 'Connect Libro.fm', exact: true })).toBeVisible();
   await expect(page.getByLabel('Download purchases to')).toHaveCount(0);
 });
@@ -479,10 +482,9 @@ test('native Libro.fm settings show failed background refreshes', async ({ page 
     refreshed = true;
     return route.fulfill({ json: { jobId: 'failed-refresh' } });
   });
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.locator('.store-settings-group > summary').filter({ hasText: 'Libro.fm' }).click();
-  await page.getByText('Manage connected accounts (1)', { exact: true }).click();
-  await page.getByRole('button', { name: 'Refresh all accounts', exact: true }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).press('Enter');
+  await page.locator('.store-settings-group > summary').filter({ hasText: 'Libro.fm' }).press('Enter');
+  await page.getByRole('button', { name: 'Refresh all accounts', exact: true }).press('Enter');
   await expect(page.getByRole('alert').filter({ hasText: 'Libro.fm connection expired. Reconnect your account.' })).toBeVisible();
 });
 

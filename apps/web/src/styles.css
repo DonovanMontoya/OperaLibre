@@ -12352,7 +12352,6 @@ html.native-app .admin-shell:not(.admin-overlay) {
 }
 .purchase-provider-settings .libro-catalog-head { margin-bottom: 4px; }
 .purchase-provider-settings .libro-catalog h2 { font-size: 1.25rem; }
-.purchase-provider-settings .libro-account-details { border-top: 1px solid rgba(var(--ink-rgb), 0.1); }
 .purchase-provider-settings .account-list { width: 100%; }
 .purchase-provider-settings .account-list article { border-color: rgba(var(--ink-rgb), 0.12); background: rgba(var(--lift-rgb), 0.5); }
 .purchase-provider-settings .account-list-copy { color: var(--ink); }
@@ -14307,11 +14306,35 @@ html.native-app .recent-row {
 .libro-catalog button:focus-visible, .libro-catalog input:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 2px; }
 .libro-catalog button:disabled { opacity: 0.6; cursor: default; }
 .libro-catalog-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.libro-account-details { width: 100%; font-size: 0.8rem; }
-.libro-account-details > summary { cursor: pointer; padding: 10px 0; min-height: 24px; }
-.libro-account-details > summary:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 2px; }
-.libro-account-details > .libro-catalog-actions { margin-top: 10px; }
-.libro-catalog:has(.libro-account-details) .libro-catalog-head { margin-bottom: 0; }
+.libro-connection-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; width: 100%; padding: 16px 0; border-block: 1px solid var(--catalog-border); font: 400 .8rem/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.libro-connection-copy, .libro-account-identity { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.libro-connection-copy > svg, .libro-account-identity > svg { flex: 0 0 auto; color: var(--gold-soft); }
+.libro-connection-copy strong { display: block; font-weight: 500; }
+.libro-connection-copy small { display: block; margin-top: 3px; font-size: .72rem; color: var(--catalog-muted); overflow-wrap: anywhere; }
+.libro-sidebar-actions { display: flex; gap: 6px; }
+.libro-catalog .libro-sidebar-actions > button { padding: 8px 10px; font: 600 .76rem/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: normal; text-transform: none; }
+.libro-catalog .libro-sidebar-actions .libro-refresh-action { width: 44px; padding: 8px; }
+.libro-sidebar-actions .libro-refresh-action > span { display: none; }
+.libro-catalog-head:has(.libro-connection-row) { margin-bottom: 0; }
+.library-pane .libro-catalog:has(.libro-connection-row) { padding: 0; }
+.libro-management { display: grid; gap: 16px; color: var(--catalog-ink); font: 400 .875rem/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.libro-management button { font: 500 .8rem/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: normal; text-transform: none; }
+.libro-catalog .libro-management input { font-size: 16px; }
+.libro-account-list { display: grid; gap: 16px; }
+.libro-account-list article { display: grid; gap: 12px; min-width: 0; padding-bottom: 16px; border-bottom: 1px solid var(--catalog-border); }
+.libro-account-identity { align-items: flex-start; }
+.libro-account-identity > svg { margin-top: 3px; }
+.libro-account-identity > div { min-width: 0; }
+.libro-account-identity strong, .libro-account-identity small { display: block; overflow-wrap: anywhere; }
+.libro-account-identity small { margin-top: 3px; color: var(--catalog-muted); font-size: .78rem; }
+.libro-catalog .libro-primary-action { background: var(--gold-soft); border-color: var(--gold-soft); color: var(--on-gold); }
+.libro-catalog .libro-primary-action:not(:disabled):hover { background: #e5c58f; }
+.libro-management-scrim { z-index: 149; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
+.libro-management-dialog { --catalog-ink: var(--ink); --catalog-muted: var(--ink-faded); --catalog-border: rgba(var(--ink-rgb), .22); --catalog-surface: rgba(var(--lift-rgb), .65); background: rgb(var(--sheet-rgb)); width: min(560px, 100%); max-height: calc(100dvh - 64px); padding: 24px; box-sizing: border-box; }
+.libro-management-dialog h2 { font: 600 1.25rem/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.libro-management-dialog .icon-button { flex: 0 0 44px; width: 44px; padding: 8px; }
+.libro-management-dialog .libro-catalog-error { font: 400 .8rem/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+
 
 /* Keep the first purchase above the phone mini-player without shrinking taps. */
 @media (max-width: 700px) and (orientation: portrait) {
@@ -14348,8 +14371,6 @@ html.native-app .recent-row {
   html.native-app .library-pane.purchase-browsing .libro-catalog > * { width: 100%; }
   html.native-app .library-pane.purchase-browsing .libro-catalog > .libro-catalog-head { width: auto; flex: 1; order: -1; }
   html.native-app .library-pane.purchase-browsing .libro-catalog > .libro-view-toolbar { width: auto; margin: 0 0 8px; order: -1; gap: 8px; }
-  html.native-app .library-pane.purchase-browsing .libro-catalog:has(details[open]) > .libro-catalog-head { flex-basis: 100%; }
-  html.native-app .library-pane.purchase-browsing .libro-account-details > summary { font-size: 0.7rem; }
   html.native-app .library-pane.purchase-browsing .libro-view-toolbar .libro-catalog-summary { font-size: 0.7rem; }
 }
 .libro-connect { display: grid; gap: 14px; max-width: 32rem; }
@@ -16230,7 +16251,6 @@ html.native-app .native-shell.shelf-landscape .purchase-account-filter { margin-
 html.native-app .native-shell.shelf-landscape .libro-catalog { padding: 10px 0; }
 html.native-app .native-shell.shelf-landscape .libro-catalog-head { align-items: center; gap: 4px 12px; }
 html.native-app .native-shell.shelf-landscape .libro-catalog h2 { margin: 0; font-size: 1.4rem; }
-html.native-app .native-shell.shelf-landscape .libro-account-details:not([open]) { width: auto; }
 html.native-app .native-shell.shelf-landscape .libro-catalog-summary { padding: 0; }
 html.native-app .native-shell.shelf-landscape .libro-view-toolbar { margin: 4px 0; }
 
