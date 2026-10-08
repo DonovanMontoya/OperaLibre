@@ -39,7 +39,10 @@ async function openShell(page: Page, native: boolean, admin = false, inProgress 
     else if (path === '/api/me/libro' && method === 'POST') { connected = true; body = {}; }
     else if (path === '/api/me/libro') body = { connected, email: connected ? 'reader@example.com' : null,
       accounts: connected ? [{ email: 'reader@example.com', syncedAt: null }] : [], syncedAt: null, books: [], jobs: [] };
-    else if (path === '/api/libation/status') body = { enabled: true, authenticated: true, accounts: [],
+    else if (path === '/api/libation/setup') body = { canSignIn: true, busy: false,
+      checks: [{ id: 'installed', label: 'Libation installed', ready: true, message: 'Libation is installed.' }] };
+    else if (path === '/api/libation/status') body = { enabled: true, authenticated: true,
+      accounts: admin ? [{ id: 'personal', name: 'Personal', accountId: 'owner@example.test', locale: 'us', authenticated: true, managed: true, scanLibrary: true }] : [],
       cliPath: null, libationFilesDir: null, libraryRoot: '', message: null, autoRefreshHours: null, manualRefreshesPerHour: 2 };
     else if (path === '/api/libation/sync') body = { jobId: 'refresh-fixture' };
     await route.fulfill({ json: body });
@@ -366,9 +369,11 @@ test('web readers can connect Libro.fm without native Settings', async ({ page }
 
 test('web Audible management can request a purchase refresh', async ({ page }) => {
   const { writes } = await openShell(page, false, true);
-  await page.getByRole('button', { name: 'Get books', exact: true }).click();
-  await page.getByText('Audible accounts & downloads', { exact: true }).click();
-  await page.getByRole('button', { name: 'Refresh purchases', exact: true }).click();
+  await page.getByRole('button', { name: 'Get books', exact: true }).press('Enter');
+  await page.getByRole('button', { name: 'Manage Audible', exact: true }).press('Enter');
+  const management = page.getByRole('dialog', { name: 'Audible accounts & imports', exact: true });
+  await expect(management).toBeVisible();
+  await management.getByRole('button', { name: 'Refresh purchases', exact: true }).press('Enter');
   await expect.poll(() => writes).toContain('/api/libation/sync');
 });
 

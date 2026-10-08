@@ -69,7 +69,7 @@ test("account management opens outside the shelf and returns focus when closed",
   const autoImport = dialog.getByRole("checkbox");
   await autoImport.press("Space");
   await expect(autoImport).toBeChecked();
-  await expect(dialog.getByRole("status")).toHaveText("Future purchases will be imported after a refresh.");
+  await expect(dialog.getByRole("status").filter({ hasText: "Future purchases will be imported after a refresh." })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(manage).toBeFocused();
