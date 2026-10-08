@@ -12358,23 +12358,49 @@ html.native-app .admin-shell:not(.admin-overlay) {
 .purchase-provider-settings .account-list-copy { color: var(--ink); }
 .store-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
+.audible-management, .audible-login-dialog {
+  --audible-ink: var(--ink);
+  --audible-muted: var(--ink-faded);
+  --audible-border: rgba(var(--ink-rgb), .22);
+  --audible-surface: rgba(var(--lift-rgb), .65);
+  color: var(--audible-ink);
+  font: 400 .875rem/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.audible-management { gap: 16px; }
+.audible-management :is(.download-btn, .quiet-button), .audible-login-dialog :is(.download-btn, .quiet-button) {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 44px; padding: 10px 14px; border: 1px solid var(--audible-border); border-radius: 8px;
+  background: var(--audible-surface); color: var(--audible-ink); font: 600 .82rem/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: normal; text-transform: none; text-decoration: none; transform: none;
+}
+.audible-management .audible-primary-action, .audible-login-dialog .audible-primary-action { background: var(--gold-soft); border-color: var(--gold-soft); color: var(--on-gold); }
+.audible-management :is(.download-btn, .quiet-button):not(:disabled):hover, .audible-login-dialog :is(.download-btn, .quiet-button):not(:disabled):hover { border-color: var(--gold); transform: none; }
+.audible-management .audible-primary-action:not(:disabled):hover, .audible-login-dialog .audible-primary-action:not(:disabled):hover { background: #e5c58f; color: var(--on-gold); }
+.audible-management button:disabled, .audible-login-dialog button:disabled { opacity: .65; cursor: not-allowed; }
+.audible-management :is(button, a, input):focus-visible, .audible-login-dialog :is(button, a, input, select, textarea):focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+.audible-management a:not(.download-btn), .audible-login-dialog a:not(.download-btn) { color: var(--audible-ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--gold); }
+.audible-management .store-settings-actions .download-btn { flex: 1 1 140px; }
+.audible-management .settings-hint, .audible-login-dialog .settings-hint { color: var(--audible-muted); font: inherit; font-size: .78rem; line-height: 1.5; font-style: normal; margin: 0; }
 .audible-setup { display: grid; gap: 12px; width: 100%; }
-.audible-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.audible-setup-steps { display: grid; gap: 14px; padding: 0; margin: 0; list-style: none; }
-.audible-setup-steps li { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; }
-.audible-setup-steps li > span { display: grid; place-items: center; align-self: start; width: 24px; height: 24px; border: 1px solid rgba(var(--ink-rgb), .2); border-radius: 50%; font-size: .75rem; }
+.audible-section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.audible-section-head > strong { font-size: .9rem; line-height: 1.3; }
+.audible-section-head .quiet-button { flex-shrink: 0; padding: 8px 10px; min-height: 40px; font-size: .75rem; font-weight: 500; }
 .audible-setup p, .audible-check p, .audible-error p { margin: 4px 0; line-height: 1.5; }
-.audible-setup-steps p, .audible-setup-details { font-size: .8rem; }
-.audible-setup-details summary, .audible-error summary { cursor: pointer; padding: 6px 0; }
+.audible-setup .audible-intro { margin: 0; color: var(--audible-muted); font-size: .82rem; }
+.audible-server-setup { display: grid; gap: 8px; padding-top: 14px; border-top: 1px solid var(--audible-border); font-size: .8rem; }
+.audible-checks-ready { display: inline-flex; align-items: center; gap: 4px; color: var(--audible-muted); font-size: .72rem; white-space: nowrap; }
+.audible-error summary { cursor: pointer; padding: 6px 0; }
 .audible-check { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 8px; padding: 10px 0; }
 .audible-check svg { margin-top: 3px; }
+.audible-check p { color: var(--audible-muted); }
 .audible-setup pre, .audible-error pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .7rem; max-height: 180px; overflow: auto; }
 .audible-setup code { overflow-wrap: anywhere; }
 .audible-accounts article { grid-template-columns: 18px minmax(0, 1fr); align-items: start; }
-.audible-accounts .account-list-copy { color: var(--ink); gap: 6px; }
+.audible-management .audible-accounts article { border-color: var(--audible-border); background: var(--audible-surface); }
+.audible-accounts .account-list-copy { grid-template-columns: minmax(0, 1fr); color: var(--audible-ink); gap: 6px; font: inherit; font-size: .8rem; letter-spacing: normal; }
 .audible-accounts .account-list-copy strong, .audible-accounts .account-list-copy small { color: inherit; white-space: normal; overflow-wrap: anywhere; }
-.audible-accounts .account-list-actions { flex-wrap: wrap; }
-.audible-accounts .account-list-actions button, .audible-accounts .account-list-actions a { color: var(--ink); border-color: rgba(var(--ink-rgb), .2); }
+.audible-accounts .account-list-actions { grid-column: auto; flex-wrap: wrap; }
+.audible-management .account-list-actions :is(button, a) { display: inline-flex; align-items: center; gap: 4px; min-height: 44px; padding: 8px 10px; color: var(--audible-ink); border: 1px solid var(--audible-border); border-radius: 6px; font: inherit; font-size: .78rem; letter-spacing: normal; text-transform: none; }
 .audible-auto-import { display: flex; align-items: flex-start; gap: 9px; padding-top: 8px; cursor: pointer; }
 .audible-auto-import input { flex: 0 0 auto; margin: 2px 0 0; }
 .audible-auto-import span { display: grid; gap: 4px; }
@@ -12382,12 +12408,18 @@ html.native-app .admin-shell:not(.admin-overlay) {
 .audible-account-edit { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
 .audible-account-edit label { display: grid; gap: 5px; }
 .audible-account-edit input { min-width: 0; max-width: 100%; }
-.audible-error { color: var(--ink); border-left: 2px solid var(--gold-soft); padding-left: 10px; font-family: inherit; letter-spacing: normal; font-size: .8rem; }
+.audible-error { color: var(--audible-ink, inherit); border-left: 2px solid var(--gold-soft); padding-left: 10px; font-family: inherit; letter-spacing: normal; font-size: .8rem; }
+.audible-import-controls { display: grid; gap: 10px; padding-top: 14px; border-top: 1px solid var(--audible-border); }
+.audible-management-scrim { z-index: 149; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
+.audible-management-dialog { width: min(560px, 100%); max-height: calc(100dvh - 64px); overflow-y: auto; box-sizing: border-box; background: rgb(var(--sheet-rgb)); }
+.audible-management-dialog h2 { font: 600 1.25rem/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.audible-management-dialog .audible-accounts article { padding: 12px 0; border: 0; border-top: 1px solid var(--audible-border); border-radius: 0; background: transparent; }
 .audible-login-scrim { z-index: 150; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
 .audible-login-dialog { width: min(560px, 100%); max-height: calc(100dvh - 64px); overflow-y: auto; box-sizing: border-box; color: var(--ink); }
 .audible-login-dialog .modal-head { align-items: center; }
 .audible-login-dialog h2 { font-size: 1.4rem; }
 .audible-login-dialog > p { font-size: .9rem; line-height: 1.5; }
+.audible-login-dialog h2 { font-family: inherit; font-weight: 600; }
 .audible-login-form { display: grid; gap: 16px; }
 .audible-login-form label { display: grid; gap: 7px; font-size: .85rem; }
 .audible-login-form input, .audible-login-form select, .audible-login-form textarea { width: 100%; min-width: 0; box-sizing: border-box; padding: 10px; border: 1px solid rgba(var(--ink-rgb), .25); color: var(--ink); background: rgba(var(--lift-rgb), .7); border-radius: 4px; font: inherit; font-size: 16px; }
@@ -16027,6 +16059,16 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 .purchase-console-body { display: grid; gap: 8px; padding: 0 12px 12px; }
 .purchase-console-body > p { margin: 0; font-size: 0.78rem; }
 .purchase-console-body > .settings-hint { color: inherit; }
+.audible-sidebar { --audible-ink: #f1e7d0; --audible-muted: #c7bba5; --audible-border: rgba(217, 181, 116, .3); --audible-surface: rgba(217, 181, 116, .07); display: grid; gap: 8px; padding: 10px 0; border-top: 1px solid rgba(217, 181, 116, .22); border-bottom: 1px solid rgba(217, 181, 116, .22); }
+.audible-sidebar-actions { display: flex; align-items: center; gap: 6px; }
+.audible-sidebar .audible-sidebar-actions > button { flex: none; padding: 8px 10px; border-radius: 6px; font-size: .76rem; }
+.audible-sidebar .audible-refresh-action { width: 44px; padding: 8px; }
+.audible-sidebar .audible-refresh-action > span { display: none; }
+.audible-connection-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 6px 0; }
+.audible-connection-copy { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.audible-connection-copy > svg { flex: 0 0 auto; color: var(--gold-soft); }
+.audible-connection-copy strong { display: block; font-size: .8rem; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
+.audible-connection-copy small { display: block; margin-top: 3px; color: var(--audible-muted); font-size: .72rem; line-height: 1.4; }
 .purchase-console .audible-job { margin: 0; padding: 0; border: 0; background: transparent; }
 .purchase-settings-link,
 .libro-settings-link {

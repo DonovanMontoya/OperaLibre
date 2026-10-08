@@ -7,6 +7,9 @@ import type { AuthUser, LibationAccount, LibationStatus } from "../src/types";
 import "../src/styles.css";
 
 const params = new URLSearchParams(location.search);
+const native = params.has("native");
+if (native) document.documentElement.classList.add("native-app", "platform-ios");
+if (params.has("dark")) document.documentElement.classList.add("dark-mode");
 const account: LibationAccount = {
   id: params.has("legacy") ? "legacy-fixture" : "family", name: params.has("legacy") ? null : "Family", accountId: "family@example.test", locale: "us",
   authenticated: false, managed: !params.has("legacy"), scanLibrary: true, connectionState: "needs_sign_in",
@@ -14,9 +17,10 @@ const account: LibationAccount = {
   lastError: params.has("icu") ? "No region is associated with the Invariant Culture" : "This Audible account needs to be signed in again.",
   addedBy: "owner", addedAt: "1700000000"
 };
+if (params.has("connected")) Object.assign(account, { authenticated: true, connectionState: "connected", lastError: null });
 let status: LibationStatus = {
   enabled: !params.has("missing"), cliPath: "/server/libation/LibationCli", libationFilesDir: null,
-  libraryRoot: "/server/audiobooks", accounts: params.has("missing") ? [] : [account],
+  libraryRoot: "/server/audiobooks", accounts: params.has("missing") || params.has("empty") ? [] : [account],
   authenticated: false, message: null, autoRefreshHours: 24, manualRefreshesPerHour: 3,
   lastSuccessfulRefresh: 1700000000, autoImportAccountIds: [], pendingLogin: params.has("pending") ? {
     sessionId: "pending-session", profileId: "family", loginUrl: "https://www.amazon.com/ap/signin?fixture=true", expiresAt: Math.floor(Date.now() / 1000) + 600
@@ -75,8 +79,10 @@ function Fixture() {
     libationLoading: false, libationAllPending: false, libationRefreshPending: false, isRefreshingAudible: false,
     libationError: null, downloadAllLibationJob: undefined, refreshLibationJob: undefined
   } as ReturnType<typeof usePurchases>;
-  return <main className="settings-card purchase-provider-settings" style={{ maxWidth: 700, margin: "24px auto", padding: 24 }}>
-    <h1>Audible</h1><AudibleManagement currentUser={currentUser} native={params.has("native")} purchases={purchases} />
+  const management = <AudibleManagement currentUser={currentUser} native={native} purchases={purchases} />;
+  return <main className={native ? "settings-card purchase-provider-settings" : "library-pane open"} style={native ? { maxWidth: 700, margin: "24px auto", padding: 24 } : { width: "min(380px, 100%)", minHeight: "100dvh", padding: 24 }}>
+    <h1>Audible</h1>
+    {management}
   </main>;
 }
 createRoot(document.getElementById("root")!).render(<Fixture />);
