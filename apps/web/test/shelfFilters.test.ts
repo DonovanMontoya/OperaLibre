@@ -4,7 +4,8 @@ import {
   bookFacetValues,
   bookMatchesFacet,
   bookMatchesShelfDownload,
-  bookMatchesShelfReadAlong,
+  bookMatchesShelfReading,
+  bookReadingAvailability,
   bookMatchesShelfSearch,
   bookMatchesShelfStatus,
   compareShelfAddedAt,
@@ -138,13 +139,44 @@ test("the downloaded filter only narrows the shelf when selected", () => {
   assert.equal(bookMatchesShelfDownload(false, true), false);
 });
 
-test("the read along filter keeps only books that carry their text", () => {
-  const withText = { readingFile: { fileName: "Elantris.epub" } } as Pick<Book, "readingFile">;
-  const audioOnly = { readingFile: null };
-  assert.equal(bookMatchesShelfReadAlong(withText, false), true);
-  assert.equal(bookMatchesShelfReadAlong(audioOnly, false), true);
-  assert.equal(bookMatchesShelfReadAlong(withText, true), true);
-  assert.equal(bookMatchesShelfReadAlong(audioOnly, true), false);
+test("reading filters distinguish unsynced ebooks, synced EPUBs, and audio-only books", () => {
+  const readingFile = { fileName: "Elantris.epub", extension: "epub" } as Book["readingFile"];
+  const ebook = { readingFile, syncFile: null };
+  const synced = { readingFile, syncFile: { source: "generated", outdated: true } as Book["syncFile"] };
+  const sidecar = { ...synced, syncFile: { source: "sidecar" } as Book["syncFile"] };
+  const audioOnly = { readingFile: null, syncFile: null };
+  const legacy = {} as Pick<Book, "readingFile" | "syncFile">;
+  assert.deepEqual([ebook, synced, sidecar, audioOnly, legacy].map((candidate) => bookReadingAvailability(candidate, true)),
+    ["ebook", "followAlong", "followAlong", "none", "none"]);
+  for (const candidate of [ebook, synced, sidecar, audioOnly, legacy]) {
+    assert.equal(bookMatchesShelfReading(candidate, "all", true), true);
+    assert.equal(bookMatchesShelfReading(candidate, "ebook", true), candidate === ebook);
+    assert.equal(bookMatchesShelfReading(candidate, "followAlong", true), candidate === synced || candidate === sidecar);
+  }
+});
+
+test("disabling sentence following moves saved maps into the ebook filter and re-enabling restores them", () => {
+  const synced = {
+    readingFile: { extension: "epub" } as Book["readingFile"],
+    syncFile: { source: "generated" } as Book["syncFile"]
+  };
+  for (const enabled of [true, false, true]) {
+    assert.equal(bookReadingAvailability(synced, enabled), enabled ? "followAlong" : "ebook");
+    assert.equal(bookMatchesShelfReading(synced, "followAlong", enabled), enabled);
+    assert.equal(bookMatchesShelfReading(synced, "ebook", enabled), !enabled);
+    assert.equal(bookMatchesShelfReading(synced, "all", enabled), true);
+  }
+});
+
+test("a sync file alone, an unknown source, or a non-EPUB companion does not promise follow along", () => {
+  const syncFile = { source: "generated" } as Book["syncFile"];
+  assert.equal(bookReadingAvailability({ readingFile: null, syncFile }, true), "none");
+  for (const extension of ["pdf", "txt", "html"]) {
+    assert.equal(bookReadingAvailability({ readingFile: { extension } as Book["readingFile"], syncFile }, true), "ebook");
+  }
+  const readingFile = { extension: "EPUB" } as Book["readingFile"];
+  assert.equal(bookReadingAvailability({ readingFile, syncFile }, true), "followAlong");
+  assert.equal(bookReadingAvailability({ readingFile, syncFile: { source: "unknown" } as Book["syncFile"] }, true), "ebook");
 });
 
 test("removing a merged imported copy invalidates the native download scan", () => {
@@ -273,7 +305,7 @@ test("toggling leaves the filters it was given untouched", () => {
   const before: ShelfFilters = {
     status: "finished",
     downloadedOnly: true,
-    readAlongOnly: false,
+    reading: "all",
     genres: ["fantasy"],
     tags: []
   };
@@ -287,14 +319,14 @@ test("toggling leaves the filters it was given untouched", () => {
 test("the badge counts every chip that is on, and nothing when none are", () => {
   assert.equal(countActiveShelfFilters(EMPTY_SHELF_FILTERS), 0);
   assert.equal(
-    countActiveShelfFilters({ status: "finished", downloadedOnly: true, readAlongOnly: true, genres: [], tags: [] }),
+    countActiveShelfFilters({ status: "finished", downloadedOnly: true, reading: "followAlong", genres: [], tags: [] }),
     3
   );
   assert.equal(
     countActiveShelfFilters({
       status: "inProgress",
       downloadedOnly: false,
-      readAlongOnly: false,
+      reading: "all",
       genres: ["fantasy", "mystery"],
       tags: ["cosmere"]
     }),
