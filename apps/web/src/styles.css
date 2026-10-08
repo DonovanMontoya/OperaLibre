@@ -12648,6 +12648,37 @@ html.native-app.platform-ios.dark-mode .timeline input[type="range"]::-webkit-sl
   border-bottom: 1px dotted rgba(var(--ink-rgb), 0.18);
 }
 
+.settings-download-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.offline-readiness-panel {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.offline-readiness {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-family: "DM Sans", sans-serif;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--ink-muted);
+}
+
+.offline-readiness .is-missing {
+  color: var(--accent);
+}
+
 .settings-download-row:first-child {
   padding-top: 0;
 }
