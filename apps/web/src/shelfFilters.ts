@@ -104,16 +104,16 @@ export function bookMatchesShelfDownload(availableOnDevice: boolean, downloadedO
 }
 
 /** Outdated maps remain usable, and still offer follow-along reading. */
-export function bookReadingAvailability(book: Pick<Book, "readingFile" | "syncFile">) {
+export function bookReadingAvailability(book: Pick<Book, "readingFile" | "syncFile">, sentenceFollowAvailable: boolean) {
   if (!book.readingFile) return "none";
   const source = book.syncFile?.source;
-  return book.readingFile.extension.toLowerCase() === "epub" && (source === "sidecar" || source === "generated")
+  return sentenceFollowAvailable && book.readingFile.extension.toLowerCase() === "epub" && (source === "sidecar" || source === "generated")
     ? "followAlong"
     : "ebook";
 }
 
-export function bookMatchesShelfReading(book: Pick<Book, "readingFile" | "syncFile">, reading: ShelfReadingFilter) {
-  return reading === "all" || bookReadingAvailability(book) === reading;
+export function bookMatchesShelfReading(book: Pick<Book, "readingFile" | "syncFile">, reading: ShelfReadingFilter, sentenceFollowAvailable: boolean) {
+  return reading === "all" || bookReadingAvailability(book, sentenceFollowAvailable) === reading;
 }
 
 /**

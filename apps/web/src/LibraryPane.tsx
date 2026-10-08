@@ -871,6 +871,7 @@ export function LibraryPane({
             localMode={localMode}
             native={native}
             readalongEnabled={readalongEnabled}
+            sentenceFollowAvailable={shelf.sentenceFollowAvailable}
             onSelectBook={selectFromShelf}
           />
         </>

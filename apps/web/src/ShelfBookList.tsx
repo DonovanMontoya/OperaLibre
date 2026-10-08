@@ -117,6 +117,7 @@ export const ShelfBookList = memo(function ShelfBookList({
   localMode,
   native,
   readalongEnabled,
+  sentenceFollowAvailable,
   onSelectBook
 }: {
   columns: ShelfRun[][];
@@ -131,6 +132,7 @@ export const ShelfBookList = memo(function ShelfBookList({
   localMode: boolean;
   native: boolean;
   readalongEnabled: boolean;
+  sentenceFollowAvailable: boolean;
   onSelectBook: (book: Book) => void;
 }) {
   const isCompactView = viewMode === "compact";
@@ -167,7 +169,7 @@ export const ShelfBookList = memo(function ShelfBookList({
         // shortening it costs a screen reader nothing.
         const progressLabel = isCompactView ? compactProgressLabel(book) : bookProgressLabel(book);
         const compactProgressTitle = isCompactView ? bookProgressLabel(book) : undefined;
-        const followAlong = bookReadingAvailability(book) === "followAlong";
+        const followAlong = bookReadingAvailability(book, sentenceFollowAvailable) === "followAlong";
         const readingLabel = followAlong ? "Follow along" : "Ebook";
         const readingTitle = followAlong ? "Synced ebook: text follows the audio" : "Ebook included: read beside the audio";
         const sortTag = tagForShelfSort(book, shelfTags);
