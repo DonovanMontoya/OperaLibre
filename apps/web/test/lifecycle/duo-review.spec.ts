@@ -692,3 +692,94 @@ test('cancelling the device picker stays silent and leaves the shelf usable', as
   await expect(action).toBeEnabled();
   await expect(page.locator('.library-pane').getByRole('alert')).toHaveCount(0);
 });
+
+
+test('a shelf warning opens book details and clears after retrying only missing files', async ({ page, context }) => {
+  const books = library(2);
+  const book = books[0];
+  book.readingFile = { id: 'ebook', fileName: 'book.epub', extension: 'epub', contentType: 'application/epub+zip', url: '/fixture-book.epub' };
+  book.syncFile = { fileName: 'sync.json', source: 'sidecar', url: '/fixture-sync.json' };
+  book.tracks.forEach(track => { track.streamUrl = `/fixture-${track.index}.wav`; });
+  let filesAvailable = false;
+  let audioRequests = 0;
+  let ebookRequests = 0;
+  let syncRequests = 0;
+  const progressWrites: string[] = [];
+  page.on('request', request => {
+    if (/\/fixture-\d+\.wav/.test(request.url())) audioRequests++;
+    if (/\/progress(?:\?|$)/.test(request.url()) && request.method() !== 'GET') progressWrites.push(request.method());
+  });
+  await openShell(page, false, false, true, books);
+  await serveFixtureAudio(page);
+  await page.route('**/fixture-book.epub*', route => {
+    ebookRequests++;
+    return route.fulfill({ status: filesAvailable ? 200 : 503, contentType: 'application/epub+zip', body: 'fixture ebook bytes' });
+  });
+  await page.route('**/fixture-sync.json*', route => {
+    syncRequests++;
+    return route.fulfill({ status: filesAvailable ? 200 : 503, json: { version: 1, fragments: [{ startSeconds: 0, endSeconds: 1, href: 'chapter.xhtml', text: 'Fixture sentence.' }] } });
+  });
+  await page.evaluate(async book => {
+    // @ts-expect-error Browser-only Vite import, resolved by the fixture server.
+    const offline = await import('/src/offline.ts');
+    await offline.downloadBookForOffline(book, (path: string) => path, () => {});
+  }, book);
+  await page.reload();
+  const row = page.locator('.book-row').filter({ hasText: book.title });
+  const warning = row.locator('.offline-warning-icon');
+  await expect(warning).toBeVisible();
+  await expect(row.getByRole('img')).toHaveAccessibleName(/Some offline files are missing.*Open book details to retry/);
+  await expect(page.locator('.book-row').filter({ hasText: books[1].title }).locator('.offline-warning-icon')).toHaveCount(0);
+  await expect(row.locator('.offline-readiness')).toHaveCount(0);
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    if (width === 390) await page.getByRole('button', { name: 'Open library', exact: true }).click();
+    await expect(row).toBeInViewport();
+    await expect(warning).toBeVisible();
+    await expect(async () => {
+      const badge = await row.locator('.book-availability').boundingBox();
+      const title = await row.locator('.book-text strong').boundingBox();
+      expect(title!.x + title!.width).toBeLessThanOrEqual(badge!.x);
+    }).toPass();
+  }
+  await row.getByRole('img').click();
+  const panel = page.getByRole('region', { name: 'Offline files', exact: true });
+  const retry = panel.getByRole('button', { name: `Retry missing files for ${book.title}` });
+  await expect(panel).toContainText('Ebook: missing');
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect(retry).toBeInViewport();
+    await expect(async () => {
+      const bounds = await retry.boundingBox();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+    }).toPass();
+  }
+  await context.setOffline(true);
+  await expect(retry).toBeDisabled();
+  await expect(panel).toContainText('Connect to your server to retry missing files.');
+  await context.setOffline(false);
+  await expect(retry).toBeEnabled();
+  const originalAudioRequests = audioRequests;
+  await retry.click();
+  await expect(page.locator('.player-pane').getByRole('status')).toContainText('Retry missing files when connected.');
+  await expect(retry).toBeEnabled();
+  await expect(warning).toHaveCount(1);
+  const failedEbookRequests = ebookRequests;
+  const failedSyncRequests = syncRequests;
+  filesAvailable = true;
+  await retry.click();
+  await expect(panel).toContainText('Ebook: ready');
+  await expect(panel).toContainText('Sentence sync: ready');
+  await expect(retry).toHaveCount(0);
+  await expect(warning).toHaveCount(0);
+  expect(audioRequests).toBe(originalAudioRequests);
+  expect(ebookRequests).toBe(failedEbookRequests + 1);
+  expect(syncRequests).toBe(failedSyncRequests + 1);
+  expect(progressWrites).toEqual([]);
+  expect(await page.evaluate(async book => {
+    // @ts-expect-error Browser-only Vite import, resolved by the fixture server.
+    const offline = await import('/src/offline.ts');
+    return offline.isBookDownloaded(book);
+  }, book)).toBe(true);
+});
