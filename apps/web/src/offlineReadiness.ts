@@ -15,12 +15,9 @@ export function offlineCompanions(book: Pick<Book, "companions" | "readingFile">
   return [...companions, { ...book.readingFile, kind: "book", sizeBytes: 0 }];
 }
 
-/** What a stored sync map offers: sentence timings, a coarser precision, or nothing usable. */
-export type StoredSyncTimings = "sentence" | "other" | "none";
-
-export function storedSyncTimings(map: SyncMap | null): StoredSyncTimings {
-  if (map && (map.precision ?? "sentence") !== "sentence") return "other";
-  return map && Array.isArray(map.fragments) && map.fragments.length > 0 ? "sentence" : "none";
+export function hasSentenceTimings(map: SyncMap | null) {
+  return !!map && (map.precision ?? "sentence") === "sentence"
+    && Array.isArray(map.fragments) && map.fragments.length > 0;
 }
 
 /** Inspect durable files, rather than trusting a completed transfer or an old badge. */
@@ -28,7 +25,7 @@ export async function inspectOfflineReadiness(
   book: Book,
   audio: boolean,
   exists: (kind: string) => Promise<boolean>,
-  readSync: () => Promise<StoredSyncTimings>,
+  readSync: () => Promise<SyncMap | null>,
   coverKind: string
 ): Promise<OfflineReadiness> {
   const companions = offlineCompanions(book);
@@ -39,14 +36,15 @@ export async function inspectOfflineReadiness(
   const ebookState: OfflineAvailability = !ebook ? "not-present"
     : ebook.extension.toLowerCase() !== "epub" || ebook.unreadable ? "unsupported"
     : stored.get(ebook.id) ? "available" : "missing";
-  const timings = book.syncFile ? await readSync() : "none";
+  const map = book.syncFile ? await readSync() : null;
+  const mapPresent = hasSentenceTimings(map);
   const sentenceSync: OfflineAvailability = ebookState === "unsupported" || ebookState === "not-present"
     ? "unsupported" : !book.syncFile ? "not-present"
-    : timings === "other" ? "unsupported"
-    : timings === "none" ? "missing" : ebookState !== "available" ? "needs-ebook" : "available";
+    : map && (map.precision ?? "sentence") !== "sentence" ? "unsupported"
+    : !mapPresent ? "missing" : ebookState !== "available" ? "needs-ebook" : "available";
   const missingFiles = companions.filter((file) => !stored.get(file.id)).map((file) => `companion:${file.id}`);
   if (book.coverArtUrl && !(await exists(coverKind))) missingFiles.push(coverKind);
-  if (book.syncFile && timings === "none") missingFiles.push("sync");
+  if (book.syncFile && !mapPresent && (!map || (map.precision ?? "sentence") === "sentence")) missingFiles.push("sync");
   return { audio, ebook: ebookState, sentenceSync, missingFiles };
 }
 

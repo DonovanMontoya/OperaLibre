@@ -13,7 +13,7 @@ import { fileExtension, storedMediaExtension } from "./mediaFiles";
 import { coverMediaKind, coverRevision } from "./bookCover.ts";
 import { revalidatedCompanion } from "./companionCache";
 import { downloadWebBook } from "./offlineDownload";
-import { inspectOfflineReadiness, offlineCompanions, storedSyncTimings, type StoredSyncTimings } from "./offlineReadiness.ts";
+import { inspectOfflineReadiness, offlineCompanions } from "./offlineReadiness.ts";
 import type { AuthUser, Book, CompanionFile, Progress, SyncMap, Track } from "./types";
 
 const DB_NAME = "operalibre-offline";
@@ -104,11 +104,12 @@ async function removeRecordsWithPrefix(storeName: string, prefix: string): Promi
 }
 
 async function readMedia(bookId: string, kind: string) {
-  const scoped = await read<StoredMedia>("media", mediaKey(bookId, kind));
+  const key = mediaKey(bookId, kind);
+  const scoped = await read<StoredMedia>("media", key);
   if (scoped) return scoped;
   const legacy = await read<StoredMedia>("media", `${bookId}:${kind}`);
   if (legacy) {
-    await write("media", { ...legacy, key: mediaKey(bookId, kind) });
+    await write("media", { ...legacy, key });
     await removeRecord("media", `${bookId}:${kind}`);
   }
   return legacy;
@@ -490,39 +491,10 @@ async function offlineFileExists(book: Book, kind: string) {
   }
 }
 
-// A shelf scan inspects every downloaded book, and a sync map can run to
-// megabytes. Parse each stored map once and reuse the verdict until the file
-// changes size or, on native, modification time.
-const storedSyncTimingsCache = new Map<string, { fingerprint: string; timings: StoredSyncTimings }>();
-
-async function syncMapFingerprint(book: Book) {
-  if (Capacitor.isNativePlatform()) {
-    await migrateLegacyBookDirectory(book).catch(() => undefined);
-    const file = await Filesystem.stat({ path: syncMapFilePath(book), directory: MEDIA_DIRECTORY }).catch(() => null);
-    return file ? `${file.size}:${file.mtime}` : null;
-  }
-  const record = await readMedia(book.id, SYNC_MAP_KIND).catch(() => null);
-  return record ? String(record.blob.size) : null;
-}
-
-async function readStoredSyncTimings(book: Book): Promise<StoredSyncTimings> {
-  const key = mediaKey(book.id, SYNC_MAP_KIND);
-  const fingerprint = await syncMapFingerprint(book);
-  if (!fingerprint) {
-    storedSyncTimingsCache.delete(key);
-    return "none";
-  }
-  const cached = storedSyncTimingsCache.get(key);
-  if (cached?.fingerprint === fingerprint) return cached.timings;
-  const timings = storedSyncTimings(await getOfflineSyncMap(book));
-  storedSyncTimingsCache.set(key, { fingerprint, timings });
-  return timings;
-}
-
 /** Pass `audio` when the caller has just checked it, to skip a second pass over every track. */
 export async function getBookOfflineReadiness(book: Book, audio?: boolean) {
   return inspectOfflineReadiness(book, audio ?? await isBookDownloaded(book),
-    (kind) => offlineFileExists(book, kind), () => readStoredSyncTimings(book), coverMediaKind(book));
+    (kind) => offlineFileExists(book, kind), () => getOfflineSyncMap(book), coverMediaKind(book));
 }
 
 export async function downloadBookForOffline(
@@ -618,10 +590,7 @@ export async function downloadBookForOffline(
   await downloadWebBook(
     retryMissing ? { ...book, tracks: [] } : book,
     resolveUrl,
-    async (kind, blob) => {
-      await write("media", { key: prefix + kind, blob });
-      if (kind === SYNC_MAP_KIND) storedSyncTimingsCache.delete(prefix + kind);
-    },
+    (kind, blob) => write("media", { key: prefix + kind, blob }),
     (kind) => removeRecord("media", prefix + kind),
     onProgress,
     signal,
@@ -801,8 +770,9 @@ export async function loadCompanionBytes(
 export async function getOfflineSyncMap(book: Book): Promise<SyncMap | null> {
   try {
     if (Capacitor.isNativePlatform()) {
+      const path = syncMapFilePath(book);
       await migrateLegacyBookDirectory(book);
-      const url = await nativeFileUrl(syncMapFilePath(book));
+      const url = await nativeFileUrl(path);
       return url ? ((await (await fetch(url)).json()) as SyncMap) : null;
     }
     const record = await readMedia(book.id, SYNC_MAP_KIND);
@@ -842,14 +812,12 @@ export async function saveOfflineSyncMap(book: Book, map: SyncMap, signal?: Abor
         directory: MEDIA_DIRECTORY,
         data: toBase64(new TextEncoder().encode(json).buffer as ArrayBuffer)
       });
-      storedSyncTimingsCache.delete(key);
       return;
     }
     await write("media", {
       key,
       blob: new Blob([json], { type: "application/json" })
     });
-    storedSyncTimingsCache.delete(key);
   } catch {
     // Left as it was; the next open tries again.
   }

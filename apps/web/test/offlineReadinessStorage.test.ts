@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import { test } from "node:test";
 import { library } from "./performance/fixtures.ts";
-import type { Book, Progress } from "../src/types.ts";
+import type { Book, Progress, SyncMap } from "../src/types.ts";
 import type { BackgroundDownloadFile } from "../src/backgroundDownloads.ts";
 
 const state = {
   native: false,
+  scope: "server-a",
   files: new Map<string, string>(),
   stores: { data: new Map<string, unknown>(), media: new Map<string, unknown>() },
   jobs: new Map<string, { state: string; fraction: number; files: BackgroundDownloadFile[] }>(),
@@ -47,7 +48,7 @@ const mocks: Record<string, string> = {
     deleteFile: async ({path}) => { ${fixture}.files.delete(path.startsWith("file://") ? path.slice(7) : path); },
     rmdir: async ({path}) => { for (const key of ${fixture}.files.keys()) if (key.startsWith(path + '/')) ${fixture}.files.delete(key); }
   };`,
-  "./api": `export const getServerStorageKey = () => 'server-a'; export const getServerUrl = () => '';`,
+  "./api": `export const getServerStorageKey = () => ${fixture}.scope; export const getServerUrl = () => '';`,
   "./backgroundDownloads": `
     export const getBackgroundBookDownloadStatus = async id => { const job = ${fixture}.jobs.get(id); if (!job) throw Error('missing job'); return job; };
     export const cancelBackgroundBookDownload = async id => {
@@ -87,7 +88,7 @@ const book: Book = { ...library(1)[0], readingFile: epub,
 const progress = { bookId: book.id, trackId: book.tracks[0].id, positionSeconds: 42, bookPositionSeconds: 42, updatedAt: "2026-10-07T00:00:00Z" } as Progress;
 
 function reset(native: boolean) {
-  state.native = native; state.files.clear(); state.stores.data.clear(); state.stores.media.clear();
+  state.scope = "server-a"; state.native = native; state.files.clear(); state.stores.data.clear(); state.stores.media.clear();
   state.attempts.length = 0; state.jobs.clear(); state.hold = false; state.fail = true;
 }
 
@@ -162,21 +163,122 @@ test("native missing-file jobs exclude audio, preserve progress, and reopen usin
   assert.deepEqual(await reopened.getCachedProgress("reader", book.id), progress);
 });
 
-test("readiness parses a stored sync map once and rereads it after the file changes", async (t) => {
-  reset(false);
-  const sentenceMap = {version: 1, precision: "sentence", fragments: [{startSeconds: 0, endSeconds: 1, href: 'chapter.xhtml', text: 'Hello'}]};
-  t.mock.method(globalThis, "fetch", async (url: string) =>
-    new Response(url === '/sync' ? JSON.stringify(sentenceMap) : url));
-  await offline.downloadBookForOffline(book, url => url, () => {});
-  const parse = t.mock.method(JSON, "parse");
-  const mapReads = () => parse.mock.calls.filter(call => String(call.arguments[0]).includes('"fragments"')).length;
-  for (let scan = 0; scan < 3; scan++) {
+const sentenceMap: SyncMap = { version: 1, precision: "sentence", fragments: [
+  { startSeconds: 0, endSeconds: 1, href: "chapter.xhtml", text: "Hello" }
+] };
+const chapterMap: SyncMap = { ...sentenceMap, precision: "chapter", fragments: [
+  { ...sentenceMap.fragments[0], text: "Hello!" }
+] };
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+for (const native of [false, true]) {
+  test(`${native ? "native" : "web"} readiness observes same-size sync replacements and removals`, async (t) => {
+    reset(native);
+    state.fail = false;
+    t.mock.method(globalThis, "fetch", async (url: string) => new Response(url.startsWith("file://")
+      ? atob(state.files.get(url.slice(7))!) : url === "/sync" ? JSON.stringify(sentenceMap) : url));
+    await offline.downloadBookForOffline(book, url => url, () => {});
+    await offline.saveOfflineSyncMap(book, sentenceMap);
     assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "available");
-  }
-  assert.equal(mapReads(), 1, "later scans must reuse the verdict for an unchanged map");
-  // Same length, different precision: only the write itself can tell the cache.
-  await offline.saveOfflineSyncMap(book, {...sentenceMap, precision: "chapter!"});
+    assert.equal(JSON.stringify(sentenceMap).length, JSON.stringify(chapterMap).length);
+    // Another WebView/tab has its own module state but shares durable storage.
+    const otherView = await import(`../src/offline.ts?replacement-${native}` as string);
+    await otherView.saveOfflineSyncMap(book, chapterMap);
+    assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "unsupported");
+    if (native) state.files.delete(`offline-media/server-a/${book.id}/sync.json`);
+    else state.stores.media.delete(`server-a:${book.id}:sync`);
+    assert.deepEqual((await offline.getBookOfflineReadiness(book)).missingFiles, ["sync"]);
+  });
+
+  test(`${native ? "native" : "web"} readiness retries a transient stored-map read failure`, async (t) => {
+    reset(native);
+    state.fail = false;
+    t.mock.method(globalThis, "fetch", async (url: string) => new Response(url.startsWith("file://")
+      ? atob(state.files.get(url.slice(7))!) : url === "/sync" ? JSON.stringify(sentenceMap) : url));
+    await offline.downloadBookForOffline(book, url => url, () => {});
+    await offline.saveOfflineSyncMap(book, sentenceMap);
+    if (native) {
+      const fetchFile = globalThis.fetch;
+      let fail = true;
+      t.mock.method(globalThis, "fetch", async (...args: Parameters<typeof fetch>) => {
+        if (fail && String(args[0]).endsWith("/sync.json")) {
+          fail = false;
+          throw new TypeError("Temporary local file read failure");
+        }
+        return fetchFile(...args);
+      });
+    } else {
+      const readBlob = Blob.prototype.text;
+      let fail = true;
+      t.mock.method(Blob.prototype, "text", async function(this: Blob) {
+        if (fail && this.type === "application/json") {
+          fail = false;
+          throw new Error("Temporary stored blob read failure");
+        }
+        return readBlob.call(this);
+      });
+    }
+    assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "missing");
+    const recovered = await offline.getBookOfflineReadiness(book);
+    assert.equal(recovered.sentenceSync, "available");
+    assert.deepEqual(recovered.missingFiles, []);
+  });
+}
+
+test("a concurrent same-size sync save is visible after an older readiness read completes", async (t) => {
+  reset(false);
+  t.mock.method(globalThis, "fetch", async (url: string) =>
+    new Response(url === "/sync" ? JSON.stringify(sentenceMap) : url));
+  await offline.downloadBookForOffline(book, url => url, () => {});
+  await offline.saveOfflineSyncMap(book, sentenceMap);
+  const reading = deferred();
+  const release = deferred();
+  const readBlob = Blob.prototype.text;
+  let held = false;
+  t.mock.method(Blob.prototype, "text", async function(this: Blob) {
+    const text = await readBlob.call(this);
+    if (!held && this.type === "application/json") {
+      held = true;
+      reading.resolve();
+      await release.promise;
+    }
+    return text;
+  });
+  const oldRead = offline.getBookOfflineReadiness(book);
+  await reading.promise;
+  await offline.saveOfflineSyncMap(book, chapterMap);
+  release.resolve();
+  await oldRead;
   assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "unsupported");
-  state.stores.media.delete(`server-a:${book.id}:sync`);
-  assert.deepEqual((await offline.getBookOfflineReadiness(book)).missingFiles, ["sync"]);
+});
+
+test("switching servers during readiness cannot contaminate the original server's next inspection", async (t) => {
+  reset(false);
+  t.mock.method(globalThis, "fetch", async (url: string) =>
+    new Response(url === "/sync" ? JSON.stringify(sentenceMap) : url));
+  await offline.downloadBookForOffline(book, url => url, () => {});
+  state.scope = "server-b";
+  await offline.downloadBookForOffline(book, url => url, () => {});
+  await offline.saveOfflineSyncMap(book, chapterMap);
+  state.scope = "server-a";
+  const readRecord = state.stores.media.get.bind(state.stores.media);
+  let switched = false;
+  t.mock.method(state.stores.media, "get", (key: string) => {
+    const record = readRecord(key);
+    if (!switched && key === `server-a:${book.id}:sync`) {
+      switched = true;
+      state.scope = "server-b";
+    }
+    return record;
+  });
+  await offline.getBookOfflineReadiness(book);
+  state.scope = "server-a";
+  assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "available");
+  state.scope = "server-b";
+  assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "unsupported");
 });
