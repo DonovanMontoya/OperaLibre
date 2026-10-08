@@ -54,6 +54,7 @@ register(`data:text/javascript,${encodeURIComponent(`
 const {
   cacheLibrary,
   getCachedLibrary,
+  getOfflineSyncMap,
   getOfflineTrackUrl,
   isBookDownloaded,
   newestLibrarySnapshot,
@@ -127,6 +128,28 @@ test("native sync-map persistence", async (t) => {
     state.writeFile = async () => { throw new Error("disk full"); };
     await assert.doesNotReject(saveOfflineSyncMap(book, map));
   });
+});
+
+test("an in-flight native sync-map read stays on its original server", async (t) => {
+  state.scope = "server-a";
+  const sourceBook = { ...book, id: "sync-map-read-scope" };
+  const reading = deferred();
+  const release = deferred();
+  state.stat = async (options) => {
+    if (options?.path === "offline-media/server-a/sync-map-read-scope") {
+      reading.resolve();
+      await release.promise;
+    }
+  };
+  t.after(() => { state.scope = "server-a"; state.stat = async () => {}; });
+  t.mock.method(globalThis, "fetch", async (url: string) => new Response(JSON.stringify(
+    url.includes("/server-a/") ? map : { ...map, precision: "chapter" }
+  )));
+  const pending = getOfflineSyncMap(sourceBook);
+  await reading.promise;
+  state.scope = "server-b";
+  release.resolve();
+  assert.deepEqual(await pending, map);
 });
 
 test("native library cache survives unavailable IndexedDB", async () => {
