@@ -14,10 +14,17 @@ import type { Book } from "./types.ts";
  */
 export type ShelfStatusFilter = ReadingStatus | "all";
 
+export type ShelfReadingFilter = "all" | "ebook" | "followAlong";
+
+export const SHELF_READING_OPTIONS: { value: Exclude<ShelfReadingFilter, "all">; label: string }[] = [
+  { value: "ebook", label: "Ebook only" },
+  { value: "followAlong", label: "Follow along" }
+];
+
 export type ShelfFilters = {
   status: ShelfStatusFilter;
   downloadedOnly: boolean;
-  readAlongOnly: boolean;
+  reading: ShelfReadingFilter;
   genres: string[];
   tags: string[];
 };
@@ -32,7 +39,7 @@ export type ShelfFacetOption = ShelfFacetValue & { count: number };
 export const EMPTY_SHELF_FILTERS: ShelfFilters = {
   status: "all",
   downloadedOnly: false,
-  readAlongOnly: false,
+  reading: "all",
   genres: [],
   tags: []
 };
@@ -96,9 +103,17 @@ export function bookMatchesShelfDownload(availableOnDevice: boolean, downloadedO
   return !downloadedOnly || availableOnDevice;
 }
 
-/** The same test the shelf's Read along badge uses: the book's text is beside its audio. */
-export function bookMatchesShelfReadAlong(book: Pick<Book, "readingFile">, readAlongOnly: boolean) {
-  return !readAlongOnly || !!book.readingFile;
+/** Outdated maps remain usable, and still offer follow-along reading. */
+export function bookReadingAvailability(book: Pick<Book, "readingFile" | "syncFile">, sentenceFollowAvailable: boolean) {
+  if (!book.readingFile) return "none";
+  const source = book.syncFile?.source;
+  return sentenceFollowAvailable && book.readingFile.extension.toLowerCase() === "epub" && (source === "sidecar" || source === "generated")
+    ? "followAlong"
+    : "ebook";
+}
+
+export function bookMatchesShelfReading(book: Pick<Book, "readingFile" | "syncFile">, reading: ShelfReadingFilter, sentenceFollowAvailable: boolean) {
+  return reading === "all" || bookReadingAvailability(book, sentenceFollowAvailable) === reading;
 }
 
 /**
@@ -113,19 +128,27 @@ export function shelfDownloadScanKey(books: Book[]) {
   ]));
 }
 
-/** `query` is already trimmed and lower-cased by the caller; empty matches all. */
-export function bookMatchesShelfSearch(book: Book, query: string) {
-  if (!query) return true;
-  return [
+/** Split once per shelf update rather than once per book in a large library. */
+export function shelfSearchWords(query: string): string[] {
+  const normalized = query.trim().toLowerCase();
+  return normalized ? normalized.split(/\s+/) : [];
+}
+
+/** Every word must appear somewhere on this book; empty matches all. */
+export function bookMatchesShelfSearch(book: Book, query: string | readonly string[]) {
+  const words = typeof query === "string" ? shelfSearchWords(query) : query;
+  if (words.length === 0) return true;
+  const fields = [
     book.title,
     book.author,
     book.narrator,
-    book.metadata.series,
+    book.metadata?.series,
     ...tagsForBook(book).map((tag) => tag.name),
-    ...book.genres
+    ...(book.genres ?? [])
   ]
     .filter(Boolean)
-    .some((field) => field!.toLowerCase().includes(query));
+    .map((field) => field!.toLowerCase());
+  return words.every((word) => fields.some((field) => field.includes(word)));
 }
 
 /**
@@ -179,7 +202,7 @@ export function compareShelfAddedAt(left: string | null | undefined, right: stri
 export function countActiveShelfFilters(filters: ShelfFilters) {
   return (filters.status === "all" ? 0 : 1)
     + (filters.downloadedOnly ? 1 : 0)
-    + (filters.readAlongOnly ? 1 : 0)
+    + (filters.reading === "all" ? 0 : 1)
     + filters.genres.length
     + filters.tags.length;
 }

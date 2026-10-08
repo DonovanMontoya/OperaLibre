@@ -4,7 +4,8 @@ import {
   bookFacetValues,
   bookMatchesFacet,
   bookMatchesShelfDownload,
-  bookMatchesShelfReadAlong,
+  bookMatchesShelfReading,
+  bookReadingAvailability,
   bookMatchesShelfSearch,
   bookMatchesShelfStatus,
   compareShelfAddedAt,
@@ -13,12 +14,14 @@ import {
   EMPTY_SHELF_FILTERS,
   shelfFacetKey,
   shelfDownloadScanKey,
+  shelfSearchWords,
   tagForShelfSort,
   toggleShelfFacet,
   updateShelfFacetCounts
 } from "../src/shelfFilters.ts";
 import type { ShelfFilters } from "../src/shelfFilters.ts";
 import type { Book, BookProgress, BookTag } from "../src/types.ts";
+import { getDemoBooks } from "../src/demo.ts";
 
 type ShelfBook = Pick<Book, "title" | "author" | "narrator" | "metadata" | "genres" | "tags" | "progress">;
 
@@ -136,13 +139,44 @@ test("the downloaded filter only narrows the shelf when selected", () => {
   assert.equal(bookMatchesShelfDownload(false, true), false);
 });
 
-test("the read along filter keeps only books that carry their text", () => {
-  const withText = { readingFile: { fileName: "Elantris.epub" } } as Pick<Book, "readingFile">;
-  const audioOnly = { readingFile: null };
-  assert.equal(bookMatchesShelfReadAlong(withText, false), true);
-  assert.equal(bookMatchesShelfReadAlong(audioOnly, false), true);
-  assert.equal(bookMatchesShelfReadAlong(withText, true), true);
-  assert.equal(bookMatchesShelfReadAlong(audioOnly, true), false);
+test("reading filters distinguish unsynced ebooks, synced EPUBs, and audio-only books", () => {
+  const readingFile = { fileName: "Elantris.epub", extension: "epub" } as Book["readingFile"];
+  const ebook = { readingFile, syncFile: null };
+  const synced = { readingFile, syncFile: { source: "generated", outdated: true } as Book["syncFile"] };
+  const sidecar = { ...synced, syncFile: { source: "sidecar" } as Book["syncFile"] };
+  const audioOnly = { readingFile: null, syncFile: null };
+  const legacy = {} as Pick<Book, "readingFile" | "syncFile">;
+  assert.deepEqual([ebook, synced, sidecar, audioOnly, legacy].map((candidate) => bookReadingAvailability(candidate, true)),
+    ["ebook", "followAlong", "followAlong", "none", "none"]);
+  for (const candidate of [ebook, synced, sidecar, audioOnly, legacy]) {
+    assert.equal(bookMatchesShelfReading(candidate, "all", true), true);
+    assert.equal(bookMatchesShelfReading(candidate, "ebook", true), candidate === ebook);
+    assert.equal(bookMatchesShelfReading(candidate, "followAlong", true), candidate === synced || candidate === sidecar);
+  }
+});
+
+test("disabling sentence following moves saved maps into the ebook filter and re-enabling restores them", () => {
+  const synced = {
+    readingFile: { extension: "epub" } as Book["readingFile"],
+    syncFile: { source: "generated" } as Book["syncFile"]
+  };
+  for (const enabled of [true, false, true]) {
+    assert.equal(bookReadingAvailability(synced, enabled), enabled ? "followAlong" : "ebook");
+    assert.equal(bookMatchesShelfReading(synced, "followAlong", enabled), enabled);
+    assert.equal(bookMatchesShelfReading(synced, "ebook", enabled), !enabled);
+    assert.equal(bookMatchesShelfReading(synced, "all", enabled), true);
+  }
+});
+
+test("a sync file alone, an unknown source, or a non-EPUB companion does not promise follow along", () => {
+  const syncFile = { source: "generated" } as Book["syncFile"];
+  assert.equal(bookReadingAvailability({ readingFile: null, syncFile }, true), "none");
+  for (const extension of ["pdf", "txt", "html"]) {
+    assert.equal(bookReadingAvailability({ readingFile: { extension } as Book["readingFile"], syncFile }, true), "ebook");
+  }
+  const readingFile = { extension: "EPUB" } as Book["readingFile"];
+  assert.equal(bookReadingAvailability({ readingFile, syncFile }, true), "followAlong");
+  assert.equal(bookReadingAvailability({ readingFile, syncFile: { source: "unknown" } as Book["syncFile"] }, true), "ebook");
 });
 
 test("removing a merged imported copy invalidates the native download scan", () => {
@@ -176,8 +210,78 @@ test("search reaches the tag and genre a book carries, not just its title", () =
   assert.equal(bookMatchesShelfSearch(shelf, "mistborn"), false);
 });
 
-test("an empty query is not a filter", () => {
-  assert.equal(bookMatchesShelfSearch(book(), ""), true);
+test("search finds the demo's Alice using words from its author and title in either order", () => {
+  const alice = getDemoBooks()[0];
+  for (const query of ["Carroll Wonderland", "wonderland carroll", "  CARROLL\t\nWonderland  "]) {
+    assert.equal(bookMatchesShelfSearch(alice, query), true, query);
+    assert.equal(bookMatchesShelfSearch(alice, shelfSearchWords(query)), true, query);
+  }
+  assert.equal(bookMatchesShelfSearch(alice, "Carroll Wonderland missing"), false);
+});
+
+test("all search words can span title, author, narrator, series, tags and genres", () => {
+  const novel = book({
+    title: "The Final Empire",
+    metadata: { series: "Mistborn", seriesPosition: "1", publisher: null } as Book["metadata"],
+    genres: ["Epic Fantasy"],
+    tags: [tag("Favorites"), tag("Cosmere", "1")]
+  });
+  const query = "empire sanderson garrett mistborn cosmere fantasy";
+  assert.equal(bookMatchesShelfSearch(novel, query), true);
+  assert.equal(bookMatchesShelfSearch(novel, `${query} mystery`), false);
+});
+
+test("existing phrase and partial-word searches still find their books", () => {
+  const novel = book({ title: "The Final Empire", genres: ["Epic Fantasy"] });
+  for (const query of ["final empire", "brandon sanderson", "jack garrett", "epic fantasy", "sand gar", "Final\t  Empire"]) {
+    assert.equal(bookMatchesShelfSearch(novel, query), true, query);
+  }
+  assert.equal(bookMatchesShelfSearch(novel, "final-empire"), false);
+});
+
+test("Jellyfin and device book shapes search with null or partial metadata", () => {
+  const jellyfin = book({
+    title: "Alice’s Adventures in Wonderland",
+    author: "Lewis Carroll",
+    narrator: null,
+    tags: [],
+    genres: ["Classics"],
+    metadata: { series: null } as Book["metadata"]
+  });
+  assert.equal(bookMatchesShelfSearch(jellyfin, "classics carroll wonderland"), true);
+  assert.equal(bookMatchesShelfSearch(jellyfin, "carroll mcquillin"), false);
+
+  const device = { ...jellyfin, source: "device" as const };
+  // Older cached books can omit fields added by newer frontends.
+  for (const key of ["metadata", "tags", "genres"] as const) Reflect.deleteProperty(device, key);
+  assert.equal(bookMatchesShelfSearch(device, "Carroll Wonderland"), true);
+  assert.equal(bookMatchesShelfSearch(device, "Carroll Classics"), false);
+
+  const titleOnly = book({ author: null, narrator: null });
+  assert.equal(bookMatchesShelfSearch(titleOnly, "ELANTRIS"), true);
+  assert.equal(bookMatchesShelfSearch(titleOnly, "elantris sanderson"), false);
+});
+
+test("search words must match one book and facet counts use only matching books", () => {
+  const alice = book({ title: "Wonderland", author: "Lewis Carroll", genres: ["Fantasy"], tags: [tag("Favorites")] });
+  const other = book({ title: "Wonderland", author: "Another Author", genres: ["Mystery"], tags: [tag("Other")] });
+  const authorOnly = book({ author: "Lewis Carroll", genres: ["Mystery"] });
+  const shelf = [alice, other, authorOnly];
+  const words = shelfSearchWords("Carroll Wonderland");
+  const matches = shelf.filter((candidate) => bookMatchesShelfSearch(candidate, words));
+  assert.deepEqual(matches, [alice]);
+  assert.deepEqual(updateShelfFacetCounts(countShelfFacet(shelf, "genres"), matches, "genres"), [
+    { key: "mystery", label: "Mystery", count: 0 },
+    { key: "fantasy", label: "Fantasy", count: 1 }
+  ]);
+  assert.deepEqual(countShelfFacet(matches, "tags"), [{ key: "favorites", label: "Favorites", count: 1 }]);
+});
+
+test("an empty or whitespace-only query is not a filter", () => {
+  for (const query of ["", " \t\n "]) {
+    assert.equal(bookMatchesShelfSearch(book(), query), true);
+    assert.equal(bookMatchesShelfSearch(book(), shelfSearchWords(query)), true);
+  }
 });
 
 test("toggling a chip adds it, then takes it back off, without touching the other group", () => {
@@ -201,7 +305,7 @@ test("toggling leaves the filters it was given untouched", () => {
   const before: ShelfFilters = {
     status: "finished",
     downloadedOnly: true,
-    readAlongOnly: false,
+    reading: "all",
     genres: ["fantasy"],
     tags: []
   };
@@ -215,14 +319,14 @@ test("toggling leaves the filters it was given untouched", () => {
 test("the badge counts every chip that is on, and nothing when none are", () => {
   assert.equal(countActiveShelfFilters(EMPTY_SHELF_FILTERS), 0);
   assert.equal(
-    countActiveShelfFilters({ status: "finished", downloadedOnly: true, readAlongOnly: true, genres: [], tags: [] }),
+    countActiveShelfFilters({ status: "finished", downloadedOnly: true, reading: "followAlong", genres: [], tags: [] }),
     3
   );
   assert.equal(
     countActiveShelfFilters({
       status: "inProgress",
       downloadedOnly: false,
-      readAlongOnly: false,
+      reading: "all",
       genres: ["fantasy", "mystery"],
       tags: ["cosmere"]
     }),

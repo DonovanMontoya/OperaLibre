@@ -61,6 +61,11 @@ Use **Sort by** to choose the order and the arrow beside it to reverse that
 order. Your choice is remembered separately for Your Library and Audible.
 The count below the controls shows how many books match.
 
+Search Your Library with words from a book's title, author, narrator, series,
+tags, or genres. Every word must match the book, but they can come from different
+fields: **Carroll Wonderland** finds **Alice’s Adventures in Wonderland** by
+Lewis Carroll. Capitalization and extra spaces do not matter.
+
 Open **Filters** to combine reading progress, genres, and tags, and to show
 only books downloaded on this device or books you can read along with. Selecting
 multiple genres or tags includes any of those choices within that group;
@@ -207,7 +212,7 @@ There is also an [OPDS](https://opds.io/) catalog for generic reading apps; see 
 
 The ebook reader is available by default when a book has a text companion. Open it from the book details or the Read along button while listening.
 
-To read while listening, place an EPUB, PDF, text, or HTML companion beside the audio as described in [Library Layout](library-layout.md#readalong-companions). Books that have one show a **Read along** tag in the library, and their details page opens with an invitation to **Open reader**. On the phone apps the Now Playing screen has a **Read along** button as well. The reader remembers that you had it open for a book and your place in it, so selecting the book again brings the text straight back.
+To read while listening, place an EPUB, PDF, text, or HTML companion beside the audio as described in [Library Layout](library-layout.md#readalong-companions). Books with a text companion show an **Ebook** tag with a book icon in the library. Synced EPUBs show **Follow along** with a book-and-headphones icon instead when the follow-along add-on is enabled: their text follows the audio. Disabling the add-on returns them to **Ebook** until it is enabled again. Use the library’s **Ebook only** and **Follow along** filters to find either group. Their details page opens with an invitation to **Open reader**. On the phone apps the Now Playing screen has a **Read along** button as well. The reader remembers that you had it open for a book and your place in it, so selecting the book again brings the text straight back.
 
 In a browser the reader fills the window. The book's contents run down the left, with the title above them as the way back to the book; the page sits in the middle; and on a wide window the right-hand column shows whether the page is following the narration, your place, and the sync tools. The player stays docked along the bottom with speed, the sleep timer, and the chapter list. A narrow window reads full screen instead, with the same bars as the phone apps.
 
