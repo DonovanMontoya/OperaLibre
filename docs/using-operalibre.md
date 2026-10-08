@@ -100,9 +100,9 @@ Open an imported book's details and choose **Add EPUB** to pair an unencrypted e
 
 ### Download server books for offline use
 
-In the native iPhone, iPad, and Android apps, open a book's details and choose **Download**. The app saves its audio, cover, companions, and available sync map. Wait for the book to show as downloaded before disconnecting. Downloads and cached server shelves belong to the selected server account; imported device books are separate.
+In the native iPhone, iPad, and Android apps, open a book's details and choose **Download**. The app saves its audio, cover, companions, and available sync map. Before disconnecting, check **Audio**, **Ebook**, and **Sentence sync** on the book’s details or under **Settings → Server downloads**. Audio can finish even if an ebook, cover, companion, or sync map could not be saved. **Retry missing files** fetches those files without downloading the audio again or changing your listening position. Canceling a retry keeps your existing download. Downloads and cached server shelves belong to the selected server account; imported device books are separate.
 
-After downloading, the book can play and its EPUB can open without reaching the server, including after restarting the app. Progress is kept locally and reconciled when the server becomes reachable again. Tap the downloaded control to remove the device copy; the server's book and your listening progress remain. The browser and home-screen web app do not create this offline library.
+Files marked **ready** remain available without reaching the server, including after restarting the app. An ebook needs an EPUB; sentence sync needs both the EPUB and a sentence timing map. **Not provided** or **not supported** means the book does not offer that feature, rather than a failed download. Progress is kept locally and reconciled when the server becomes reachable again. Tap the downloaded control to remove the device copy; the server's book and your listening progress remain. The browser and home-screen web app do not create this offline library.
 
 <a id="native-iphone-app"></a>
 

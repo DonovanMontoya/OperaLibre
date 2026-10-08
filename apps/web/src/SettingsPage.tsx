@@ -140,6 +140,8 @@ export function SettingsPage({
     cancelOfflineDownload,
     deleteDeviceBook,
     importFromDevice,
+    readiness,
+    retryMissingFiles,
     removeOfflineDownload
   } = offlineDownloads;
   const {
@@ -267,6 +269,9 @@ export function SettingsPage({
           demoMode={demoMode}
           deviceDownloadQueue={deviceDownloadQueue}
           downloadedBookIds={downloadedBookIds}
+          readiness={readiness}
+          retryMissingFiles={retryMissingFiles}
+          canDownload={capabilities.downloads}
           removeOfflineDownload={removeOfflineDownload}
         /> : null}
 

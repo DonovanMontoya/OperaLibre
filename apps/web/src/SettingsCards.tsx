@@ -38,6 +38,8 @@ import type { AuthUser, Book, LibationAccount, LibroAccountSummary } from "./typ
 import type { DeviceNotice } from "./ConfirmDialogs";
 import type { NativeTab } from "./nativeTabs";
 import type { ServerCapabilities } from "./serverCapabilities";
+import { OfflineBookReadiness } from "./OfflineBookReadiness";
+import type { OfflineReadiness } from "./offlineReadiness";
 
 export type DeviceDownloadActivity = {
   bookId: string;
@@ -311,6 +313,9 @@ export function ServerDownloadSettings({
   demoMode,
   deviceDownloadQueue,
   downloadedBookIds,
+  readiness,
+  retryMissingFiles,
+  canDownload,
   removeOfflineDownload
 }: {
   books: Book[];
@@ -318,6 +323,9 @@ export function ServerDownloadSettings({
   demoMode: boolean;
   deviceDownloadQueue: DeviceDownloadActivity[];
   downloadedBookIds: Set<string>;
+  readiness: Record<string, OfflineReadiness>;
+  retryMissingFiles: (book: Book) => Promise<void>;
+  canDownload: boolean;
   removeOfflineDownload: (book: Book) => Promise<void>;
 }) {
   return (
@@ -364,10 +372,21 @@ export function ServerDownloadSettings({
                 .filter((book) => downloadedBookIds.has(book.id) && !book.deviceBookId)
                 .map((book) => (
                   <div key={book.id} className="settings-download-row">
-                    <strong>{book.title}</strong>
+                    <div className="settings-download-info">
+                      <strong>{book.title}</strong>
+                      <OfflineBookReadiness readiness={readiness[book.id]} />
+                      {canDownload && !!readiness[book.id]?.missingFiles.length ? (
+                        <button type="button" className="download-btn"
+                          disabled={deviceDownloadQueue.some((activity) => activity.bookId === book.id) || navigator.onLine === false}
+                          onClick={() => void retryMissingFiles(book)} aria-label={`Retry missing files for ${book.title}`}>
+                          Retry missing files
+                        </button>
+                      ) : null}
+                    </div>
                     <button
                       type="button"
                       className="download-btn"
+                      disabled={deviceDownloadQueue.some((activity) => activity.bookId === book.id)}
                       onClick={() => void removeOfflineDownload(book)}
                       aria-label={`Remove downloaded copy of ${book.title}`}
                     >

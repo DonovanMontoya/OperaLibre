@@ -1,15 +1,17 @@
 import { coverMediaKind } from "./bookCover.ts";
 import { optionalCompanionDownload } from "./companionCache.ts";
 import type { Book } from "./types";
+import { offlineCompanions } from "./offlineReadiness.ts";
 
 /** Browser download storage, with rollback if required audio fails. */
 export async function downloadWebBook(
-  book: Pick<Book, "tracks" | "coverArtUrl" | "companions" | "syncFile">,
+  book: Pick<Book, "tracks" | "coverArtUrl" | "companions" | "syncFile"> & Partial<Pick<Book, "readingFile">>,
   resolveUrl: (path: string) => string,
   save: (kind: string, blob: Blob) => Promise<void>,
   remove: (kind: string) => Promise<void>,
   onProgress: (completed: number, total: number) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  exists: (kind: string) => Promise<boolean> = async () => false
 ) {
   const total = book.tracks.length;
   // Records written by this attempt, so an abort or failure part-way leaves
@@ -18,6 +20,8 @@ export async function downloadWebBook(
   const written: string[] = [];
   let downloadedCover: Blob | null = null;
   async function download(kind: string, url: string, label: string) {
+    signal?.throwIfAborted();
+    if (await exists(kind)) return;
     signal?.throwIfAborted();
     const response = await fetch(resolveUrl(url), { signal });
     if (!response.ok) throw new Error(`Could not download ${label} (${response.status}).`);
@@ -42,7 +46,7 @@ export async function downloadWebBook(
         () => download(coverMediaKind(book), book.coverArtUrl!, "cover art"), signal
       );
     }
-    for (const companion of book.companions ?? []) {
+    for (const companion of offlineCompanions({ ...book, readingFile: book.readingFile ?? null })) {
       await optionalCompanionDownload(
         () => download(`companion:${companion.id}`, companion.url, companion.fileName), signal
       );
