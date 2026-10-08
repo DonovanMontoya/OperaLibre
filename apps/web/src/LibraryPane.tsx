@@ -23,6 +23,8 @@ import {
   Library,
   List,
   LoaderCircle,
+  BookOpen,
+  BookHeadphones,
   Network,
   PanelLeftClose,
   RefreshCcw,
@@ -37,7 +39,7 @@ import { finishAnnouncement, finishedAgoLabel } from "./finishFeed";
 import { createPortal } from "react-dom";
 import { isSortModeSupported, type LibrarySource, SORT_OPTIONS, type SortMode } from "./shelfSort";
 import { SHELF_VIEW_MODE_OPTIONS } from "./shelfView";
-import { SHELF_STATUS_OPTIONS, toggleShelfFacet } from "./shelfFilters";
+import { SHELF_STATUS_OPTIONS, SHELF_READING_OPTIONS, toggleShelfFacet } from "./shelfFilters";
 import { ShelfBookList, ShelfFacetGroup } from "./ShelfBookList";
 import { DeviceImportNotice } from "./DeviceImportNotice";
 import { ContinueReading } from "./ContinueReading";
@@ -591,21 +593,23 @@ export function LibraryPane({
                     <span className="facet-chip-label">Downloaded on Device</span>
                     <em>{shelfFacets.downloadedCount}</em>
                   </button>
-                  {readalongEnabled || shelfFilters.readAlongOnly ? (
+                  {readalongEnabled || shelfFilters.reading !== "all" ? SHELF_READING_OPTIONS.map((option) => (
                     <button
                       type="button"
-                      className={`facet-chip ${shelfFilters.readAlongOnly ? "selected" : ""}`}
-                      aria-pressed={shelfFilters.readAlongOnly}
-                      disabled={shelfFacets.readAlongCount === 0 && !shelfFilters.readAlongOnly}
+                      key={option.value}
+                      className={`facet-chip ${shelfFilters.reading === option.value ? "selected" : ""}`}
+                      aria-pressed={shelfFilters.reading === option.value}
+                      disabled={shelfFacets.readingCounts[option.value] === 0 && shelfFilters.reading !== option.value}
                       onClick={() => setShelfFilters({
                         ...shelfFilters,
-                        readAlongOnly: !shelfFilters.readAlongOnly
+                        reading: shelfFilters.reading === option.value ? "all" : option.value
                       })}
                     >
-                      <span className="facet-chip-label">Read along</span>
-                      <em>{shelfFacets.readAlongCount}</em>
+                      {option.value === "followAlong" ? <BookHeadphones size={13} /> : <BookOpen size={13} />}
+                      <span className="facet-chip-label">{option.label}</span>
+                      <em>{shelfFacets.readingCounts[option.value]}</em>
                     </button>
-                  ) : null}
+                  )) : null}
                 </div>
               </div>
 
@@ -867,6 +871,7 @@ export function LibraryPane({
             localMode={localMode}
             native={native}
             readalongEnabled={readalongEnabled}
+            sentenceFollowAvailable={shelf.sentenceFollowAvailable}
             onSelectBook={selectFromShelf}
           />
         </>
