@@ -23,7 +23,7 @@ import { LibroCatalog } from "./LibroCatalog";
 import { getDeviceBooks, mergeDeviceAndServerBooks } from "./localLibrary";
 import { PageTurnSetting } from "./PageTurnSetting";
 import { FOLLOW_AGGRESSIVENESS_LABELS, type FollowAggressiveness } from "./readalongPreferences";
-import { Fragment } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import type { CSSProperties, Dispatch, FormEvent, ReactNode, RefObject, SetStateAction } from "react";
 import {
   getServerAliases,
@@ -36,7 +36,7 @@ import {
 import type { AppearanceMode } from "./appearance";
 import type { AuthUser, Book, LibationAccount, LibroAccountSummary } from "./types";
 import type { DeviceNotice } from "./ConfirmDialogs";
-import type { NativeTab } from "./nativeTabs";
+import type { NativeTab, StoreSettingsTarget } from "./nativeTabs";
 import type { ServerCapabilities } from "./serverCapabilities";
 import { OfflineBookReadiness } from "./OfflineBookReadiness";
 import type { OfflineReadiness } from "./offlineReadiness";
@@ -131,7 +131,9 @@ export function BookStoreSettings({
   nativeTab,
   setBooks,
   setLibroAccounts,
-  setLibroDestination
+  setLibroDestination,
+  target,
+  onTargetShown
 }: {
   allAudibleAccounts: { id: string; name: string; }[];
   applyAdminLibraryChange: (nextBooks: Book[]) => void;
@@ -149,13 +151,45 @@ export function BookStoreSettings({
   setBooks: Dispatch<SetStateAction<Book[]>>;
   setLibroAccounts: Dispatch<SetStateAction<LibroAccountSummary[] | null>>;
   setLibroDestination: Dispatch<SetStateAction<"server" | "device">>;
+  /** The store another screen sent the listener here to set up. */
+  target: StoreSettingsTarget | null;
+  onTargetShown: () => void;
 }) {
+  const libroGroup = useRef<HTMLDetailsElement>(null);
+  const audibleGroup = useRef<HTMLDetailsElement>(null);
+  const stopCentering = useRef<(() => void) | null>(null);
+  useEffect(() => () => stopCentering.current?.(), []);
+  useEffect(() => {
+    const group = target === "libro" ? libroGroup.current : target === "audible" ? audibleGroup.current : null;
+    if (!group) return;
+    group.open = true;
+    // A group taller than the screen cannot be centered without losing its
+    // heading, so the heading is brought back when centering pushed it off.
+    const center = () => {
+      group.scrollIntoView({ block: "center" });
+      group.querySelector("summary")?.scrollIntoView({ block: "nearest" });
+    };
+    // Settings mounts as its tab opens, so the group is still loading and
+    // changing height. Hold it centered until the listener takes over.
+    const observer = new ResizeObserver(center);
+    const inputs = ["pointerdown", "wheel", "keydown"] as const;
+    const stop = () => {
+      observer.disconnect();
+      for (const input of inputs) window.removeEventListener(input, stop, true);
+    };
+    stopCentering.current?.();
+    stopCentering.current = stop;
+    for (const input of inputs) window.addEventListener(input, stop, { capture: true, passive: true });
+    observer.observe(group);
+    center();
+    onTargetShown();
+  }, [target, onTargetShown]);
   return (
     <section className="settings-card purchase-provider-settings">
       <span className="section-label"><CloudDownload size={13} /> Book stores</span>
       <p className="settings-hint">Connections and download behavior live here. Get Books stays focused on finding titles.</p>
 
-      {libroAvailable ? <details className="store-settings-group">
+      {libroAvailable ? <details className="store-settings-group" ref={libroGroup}>
         <summary>
           <span><strong>Libro.fm</strong><small>{libroAccounts?.length ? `${libroAccounts.length} connected account${libroAccounts.length === 1 ? "" : "s"}` : "Account and download settings"}</small></span>
           <ChevronDown size={16} />
@@ -180,7 +214,7 @@ export function BookStoreSettings({
         </div>
       </details> : null}
 
-      {canBrowseLibation ? <details className="store-settings-group">
+      {canBrowseLibation ? <details className="store-settings-group" ref={audibleGroup}>
         <summary>
           <span><strong>Audible</strong><small>{brokenLibationAccounts.length > 0 ? `${brokenLibationAccounts.length} account${brokenLibationAccounts.length === 1 ? " needs" : "s need"} attention` : `${allAudibleAccounts.length} connected account${allAudibleAccounts.length === 1 ? "" : "s"}`}</small></span>
           <ChevronDown size={16} />

@@ -124,10 +124,10 @@ jobs:
       - name: Test development proxy
         run: node --experimental-strip-types --test script/dev_proxy.test.mjs
 
-      - name: Test Duo layouts, offline shelf, modal interactions, and per-address sign-in
+      - name: Test Duo layouts, offline shelf, modal interactions, and sign-in
         run: |
           npx playwright install --with-deps chromium
-          npm run test:lifecycle -w @operalibre/web -- modal-focus.spec.ts duo-review.spec.ts duo-layout.spec.ts duo-reader-rail.spec.ts native-viewport.spec.ts address-sign-in.spec.ts cover-editor.spec.ts
+          npm run test:lifecycle -w @operalibre/web -- modal-focus.spec.ts duo-review.spec.ts duo-layout.spec.ts duo-reader-rail.spec.ts native-viewport.spec.ts address-sign-in.spec.ts audible-management.spec.ts libro-management.spec.ts book-store-settings.spec.ts cover-editor.spec.ts
 
       - name: Upload cover editor screenshot
         if: always()

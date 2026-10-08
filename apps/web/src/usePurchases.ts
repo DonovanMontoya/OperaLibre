@@ -75,6 +75,9 @@ export function usePurchases({
   const libationRequestsLoadedRef = useRef(false);
   const [libationLoading, setLibationLoading] = useState(false);
   const [libationError, setLibationError] = useState<string | null>(null);
+  const [libationStatusError, setLibationStatusError] = useState<string | null>(null);
+  const libationCatalogGenerationRef = useRef(0);
+  const libationAccountGenerationRef = useRef(0);
   const [libationRequests, setLibationRequests] = useState<Set<string>>(new Set());
   const [libationAllPending, setLibationAllPending] = useState(false);
   const [libationJobs, setLibationJobs] = useState<JobStatus[]>([]);
@@ -170,15 +173,20 @@ export function usePurchases({
   }, [audibleAccountFilter, audibleProfiles, libationStatus]);
 
   const loadLibationStatus = useCallback(async () => {
+    const generation = libationAccountGenerationRef.current;
     if (!isOperaLibre || (!currentUser.isAdmin && !native)) {
       setLibationStatus(null);
-      return;
+      setLibationStatusError(null);
+      return false;
     }
     try {
       if (currentUser.isAdmin) {
-        setLibationStatus(await getLibationStatus());
+        const status = await getLibationStatus();
+        if (generation !== libationAccountGenerationRef.current) return false;
+        setLibationStatus(status);
       } else {
         const access = await getLibationAccess();
+        if (generation !== libationAccountGenerationRef.current) return false;
         setLibationStatus({
           enabled: access.enabled,
           cliPath: null,
@@ -191,18 +199,24 @@ export function usePurchases({
           manualRefreshesPerHour: access.manualRefreshesPerHour
         });
       }
-    } catch {
-      setLibationStatus(null);
+      setLibationStatusError(null);
+      return true;
+    } catch (error) {
+      if (generation !== libationAccountGenerationRef.current) return false;
+      setLibationStatusError(errorMessage(error, "The Audible connection status could not be checked."));
+      return false;
     }
   }, [currentUser.isAdmin, isOperaLibre, native]);
 
   const loadLibationBooks = useCallback(async (clearError = true) => {
+    const generation = ++libationCatalogGenerationRef.current;
     setLibationLoading(true);
     if (clearError) {
       setLibationError(null);
     }
     try {
       const nextBooks = await getLibationBooks();
+      if (generation !== libationCatalogGenerationRef.current) return;
       setLibationBooks(nextBooks);
       const confirmedAsins = new Set(nextBooks.filter((book) => !!book.localBookId).map((book) => book.catalogId));
       setLibationFinalizingAsins((current) => {
@@ -212,12 +226,43 @@ export function usePurchases({
       setLibationBooksLoaded(true);
       await loadLibationStatus();
     } catch {
+      if (generation !== libationCatalogGenerationRef.current) return;
       setLibationError("Libation books could not be loaded.");
       setLibationBooksLoaded(true);
     } finally {
-      setLibationLoading(false);
+      if (generation === libationCatalogGenerationRef.current) setLibationLoading(false);
     }
   }, [loadLibationStatus, setLibationBooks, setLibationBooksLoaded]);
+
+  function applyLibationAccountChange(profileId: string, status: LibationStatus | void) {
+    // Keep the cached catalog correct even if the reload fails or an older
+    // listing finishes after this account was changed.
+    libationCatalogGenerationRef.current += 1;
+    libationAccountGenerationRef.current += 1;
+    if (status) {
+      setLibationStatus(status);
+      setLibationStatusError(null);
+    }
+    else setLibationStatus(current => current ? {
+      ...current,
+      accounts: current.accounts.filter(account => account.id !== profileId),
+      autoImportAccountIds: current.autoImportAccountIds?.filter(id => id !== profileId)
+    } : current);
+    const account = status?.accounts.find(account => account.id === profileId);
+    setLibationBooks(current => status
+      ? current.map(book => book.profileId === profileId && account ? { ...book, profileName: account.name || account.accountId } : book)
+      : current.filter(book => book.profileId !== profileId));
+    if (!status) {
+      const belongsToAccount = (id: string) => id.startsWith(`${profileId}:`);
+      setLibationFinalizingAsins(current => new Set([...current].filter(id => !belongsToAccount(id))));
+      setLibationFinalizationFailures(current => new Set([...current].filter(id => !belongsToAccount(id))));
+      for (const id of libationFinalizationStartedRef.current.keys()) {
+        if (belongsToAccount(id)) libationFinalizationStartedRef.current.delete(id);
+      }
+    }
+    setLibationLoading(false);
+    setLibationBooksLoaded(false);
+  }
 
   useEffect(() => {
     if (currentUser.isAdmin || native) {
@@ -253,6 +298,32 @@ export function usePurchases({
       cancelled = true;
     };
   }, [currentUser.isAdmin]);
+
+  useEffect(() => {
+    if (!currentUser.isAdmin || !isOperaLibre || demoMode || localMode) return;
+    if (!libationStatus?.autoImportAccountIds?.length && librarySource !== "audible" && librarySource !== "all") return;
+    let cancelled = false;
+    const refreshJobs = async () => {
+      if (document.hidden || libationJobsRef.current.some(isPendingJob)) return;
+      try {
+        const generation = libationJobsGenerationRef.current;
+        const jobs = await listJobs();
+        if (cancelled || generation !== libationJobsGenerationRef.current) return;
+        const previous = libationJobsRef.current;
+        const next = reconcileLibationJobs(jobs, previous);
+        const finished = next.filter(job => !isPendingJob(job) && !previous.some(prior => prior.id === job.id && !isPendingJob(prior)));
+        libationJobsRef.current = next;
+        setLibationJobs(next);
+        if (finished.length) {
+          void loadBooks();
+          void loadLibationBooks(false);
+        }
+      } catch { /* The next visible poll retries. */ }
+    };
+    const timer = window.setInterval(() => void refreshJobs(), 15_000);
+    document.addEventListener("visibilitychange", refreshJobs);
+    return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener("visibilitychange", refreshJobs); };
+  }, [currentUser.isAdmin, demoMode, isOperaLibre, localMode, librarySource, libationStatus?.autoImportAccountIds?.length, loadBooks, loadLibationBooks]);
 
   useEffect(() => {
     if ((librarySource === "audible" || librarySource === "all") && libationStatus?.enabled && !libationBooksLoaded && !libationLoading) {
@@ -433,8 +504,9 @@ export function usePurchases({
       }
       checking = true;
       try {
+        const generation = libationCatalogGenerationRef.current;
         const nextBooks = await getLibationBooks();
-        if (cancelled) {
+        if (cancelled || generation !== libationCatalogGenerationRef.current) {
           return;
         }
         setLibationBooks(nextBooks);
@@ -644,7 +716,7 @@ export function usePurchases({
     libationBooksLoaded,
     libationBooksRef,
     libationDownloadRequests,
-    libationError,
+    libationError: libationError ?? libationStatusError,
     libationFinalizationFailures,
     libationFinalizingAsins,
     libationJobs,
@@ -658,6 +730,13 @@ export function usePurchases({
     libroOnDevice,
     libroRefreshKey,
     loadLibationBooks,
+    loadLibationStatus,
+    applyLibationAccountChange,
+    setLibationStatus: (status: LibationStatus) => {
+      libationAccountGenerationRef.current += 1;
+      setLibationStatus(status);
+      setLibationStatusError(null);
+    },
     pendingLibationJobs,
     purchaseAccountFilter,
     refreshLibationJob,

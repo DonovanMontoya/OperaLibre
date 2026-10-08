@@ -254,9 +254,11 @@ Audible titles often come with a PDF of maps or illustrations rather than the bo
 
 ## Import Audible books with Libation (optional)
 
-Install a recent [Libation](https://github.com/rmcrackan/Libation) CLI on the same computer as OperaLibre. Add every Audible account in Libation itself; OperaLibre reads the accounts Libation already knows about rather than signing them in. Give each account a short label such as **Dad** or **UK**; that label appears on its books instead of the Audible email address. The catalog can be filtered or sorted by account.
+Install a recent [Libation](https://github.com/rmcrackan/Libation) CLI on the same computer as OperaLibre, or use the OperaLibre installer's optional Audible setup. Add the CLI path and `libation_files_dir` for an existing installation to `server.config`, then restart.
 
-Add the Libation CLI path and `libation_files_dir` to `server.config`, restart OperaLibre, and choose **Get books → Audible** to browse purchases and download or request a title. In the native apps, account status and refresh controls are under **Settings → Book stores → Audible**. Detailed path examples and troubleshooting are in [Libation / Audible Import](libation.md).
+In installed apps, open **Settings → Book stores → Audible**; on the web, open the account controls under **Get books → Audible**. **Check setup** checks the server's installation and storage. Connect an account with the guided Amazon browser sign-in, or use accounts already configured in Libation. Choose **Reconnect** if a sign-in expires. Give each account a short label such as **Personal** or **UK** so books show the label rather than an email address.
+
+Choose **Add to server** to import a purchase into the shared library. Download it to your device separately for offline listening. Administrators with direct-download access can enable **Automatically add new purchases** per account; existing purchases and Audible Plus titles stay manual. Queued imports resume after a server restart, and approved reader requests retain their approval. Detailed setup and troubleshooting are in [Libation / Audible Import](libation.md).
 
 ## Games
 

@@ -19,7 +19,7 @@ import {
 import { ProgressSharingCard } from "./ProgressSharing";
 import type { AuthUser, Book } from "./types";
 import type { DeviceNotice } from "./ConfirmDialogs";
-import type { NativeTab } from "./nativeTabs";
+import type { NativeTab, StoreSettingsTarget } from "./nativeTabs";
 import type { Dispatch, ReactNode, RefObject, SetStateAction } from "react";
 import type { ServerCapabilities } from "./serverCapabilities";
 
@@ -48,6 +48,7 @@ export function SettingsPage({
   onConnectServer,
   onCurrentUserChanged,
   onLogout,
+  onStoreSettingsShown,
   openNativeTab,
   pausePlayback,
   purchases,
@@ -55,6 +56,7 @@ export function SettingsPage({
   readerPreferences,
   rotationLockAvailable,
   serverAliasesState,
+  storeSettingsTarget,
   setBooks,
   sharedProgressAvailable,
   speed,
@@ -86,6 +88,7 @@ export function SettingsPage({
   onConnectServer: () => void;
   onCurrentUserChanged: (user: AuthUser) => void;
   onLogout: () => void | Promise<void>;
+  onStoreSettingsShown: () => void;
   openNativeTab: (tab: NativeTab) => void;
   pausePlayback: (audio: HTMLAudioElement | null | undefined) => void;
   purchases: ReturnType<typeof usePurchases>;
@@ -93,6 +96,7 @@ export function SettingsPage({
   readerPreferences: ReturnType<typeof useReaderPreferences>;
   rotationLockAvailable: boolean;
   serverAliasesState: ReturnType<typeof useServerAliases>;
+  storeSettingsTarget: StoreSettingsTarget | null;
   setBooks: Dispatch<SetStateAction<Book[]>>;
   sharedProgressAvailable: boolean;
   speed: number;
@@ -236,6 +240,8 @@ export function SettingsPage({
           setBooks={setBooks}
           setLibroAccounts={setLibroAccounts}
           setLibroDestination={setLibroDestination}
+          target={storeSettingsTarget}
+          onTargetShown={onStoreSettingsShown}
         /> : null}
         </div>
         <div

@@ -27,7 +27,7 @@ pub(crate) const LIBATION_LOGIN_START_TIMEOUT_SECONDS: u64 = 30;
 /// How long a sign-in start waits for the Libation job lock. Together with
 /// the sign-in URL wait above it must stay under the 90 second request
 /// timeout, or the account is left `signing_in` behind a 408.
-pub(crate) const LIBATION_LOGIN_LOCK_WAIT_SECONDS: u64 = 45;
+pub(crate) const LIBATION_LOGIN_LOCK_WAIT_SECONDS: u64 = 2;
 
 /// How long one profile's library export is reused before the CLI is run
 /// again. A finished liberate or refresh job clears it early.
@@ -62,6 +62,30 @@ pub(crate) struct LibationRefreshStore {
     pub(crate) manual_refreshes: HashMap<String, Vec<u64>>,
     #[serde(default)]
     pub(crate) legacy_ownership: HashMap<String, LegacyLibationOwnership>,
+    #[serde(default)]
+    pub(crate) auto_imports: HashMap<String, LibationAutoImport>,
+    #[serde(default)]
+    pub(crate) pending_downloads: Vec<PendingLibationDownload>,
+    #[serde(default)]
+    pub(crate) bulk_download_pending: bool,
+    #[serde(default)]
+    pub(crate) bulk_download_job_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LibationAutoImport {
+    pub(crate) enabled_by: String,
+    pub(crate) seen_asins: HashSet<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PendingLibationDownload {
+    pub(crate) id: String,
+    pub(crate) profile_id: Option<String>,
+    pub(crate) asin: String,
+    pub(crate) grant_to_user: Option<String>,
 }
 
 /// Ownership captured immediately after scanning one account in a shared
@@ -72,6 +96,8 @@ pub(crate) struct LegacyLibationOwnership {
     pub(crate) account_id: String,
     pub(crate) locale: String,
     pub(crate) asins: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) purchased_asins: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -108,10 +134,13 @@ pub(crate) fn default_libation_connection_state() -> String {
 
 pub(crate) struct PendingLibationLogin {
     pub(crate) profile_id: String,
+    /// The sign-in created this account, so cancelling it leaves nothing behind.
+    pub(crate) created_account: bool,
+    pub(crate) login_url: String,
     pub(crate) expires_at: u64,
     pub(crate) response_sender: std::sync::mpsc::Sender<String>,
     pub(crate) completion: tokio::sync::oneshot::Receiver<Result<String, String>>,
-    pub(crate) _job_guard: OwnedMutexGuard<()>,
+    pub(crate) _job_guard: Arc<OwnedMutexGuard<()>>,
 }
 
 pub(crate) struct InteractiveLibationLogin {
@@ -191,7 +220,7 @@ pub(crate) struct UpdateLibationAccountRequest {
     pub(crate) label: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LibationLoginStarted {
     pub(crate) session_id: String,
@@ -240,6 +269,9 @@ pub(crate) struct LibationStatus {
     pub(crate) message: Option<String>,
     pub(crate) auto_refresh_hours: Option<u64>,
     pub(crate) manual_refreshes_per_hour: u64,
+    pub(crate) last_successful_refresh: Option<u64>,
+    pub(crate) auto_import_account_ids: Vec<String>,
+    pub(crate) pending_login: Option<LibationLoginStarted>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -366,9 +398,69 @@ pub(crate) async fn start_libation_account_login(
     }
 
     prune_expired_libation_login_sessions(&state).await;
+    let job_guard = tokio::time::timeout(
+        Duration::from_secs(LIBATION_LOGIN_LOCK_WAIT_SECONDS),
+        state.libation_job_lock.clone().lock_owned(),
+    )
+    .await
+    .map_err(|_| {
+        ApiError::conflict("Libation is busy. Try signing in after the current operation finishes.")
+    })?;
+    let existing_profile = if let Some(id) = payload
+        .profile_id
+        .as_deref()
+        .filter(|id| id.starts_with("legacy-"))
+    {
+        let profile = find_libation_profile(&state, id)
+            .await
+            .ok_or(ApiError::not_found("Audible account not found."))?;
+        let listed = run_libation(
+            &profile.config,
+            vec!["list-accounts".to_string(), "--bare".to_string()],
+        )
+        .await
+        .map_err(ApiError::from)?;
+        let accounts = parse_libation_accounts(&String::from_utf8_lossy(&listed.stdout));
+        if !accounts.iter().any(|account| {
+            account.id == id
+                && account.account_id.eq_ignore_ascii_case(account_id)
+                && account.locale == locale
+        }) {
+            return Err(ApiError::bad_request(
+                "Reconnect the existing account with its original login and marketplace.",
+            ));
+        }
+        *state.libation_status_accounts.write().await = accounts;
+        Some(profile)
+    } else {
+        None
+    };
+    if payload.profile_id.is_none() {
+        let listed = run_libation(
+            &state.libation_config,
+            vec!["list-accounts".to_string(), "--bare".to_string()],
+        )
+        .await;
+        if let Ok(output) = listed
+            && output.status.success()
+            && parse_libation_accounts(&String::from_utf8_lossy(&output.stdout))
+                .iter()
+                .any(|account| {
+                    account.account_id.eq_ignore_ascii_case(account_id) && account.locale == locale
+                })
+        {
+            return Err(ApiError::conflict(
+                "That account is already connected in Libation. Use Reconnect on its existing entry.",
+            ));
+        }
+    }
+    let created_account = payload.profile_id.is_none();
     let added_by = auth.username.clone();
     let stored_locale = locale.clone();
-    let profile_id = state
+    let profile_id = if let Some(profile) = &existing_profile {
+        profile.id.clone()
+    } else {
+        state
         .libation_accounts
         .mutate(move |store| {
             let locale = stored_locale;
@@ -424,30 +516,33 @@ pub(crate) async fn start_libation_account_login(
                 Ok(id)
             }
         })
-        .await?;
-
-    let profile_dir = state.libation_accounts_root.join(&profile_id);
-    initialize_managed_libation_profile(&profile_dir, &state.library_root).await?;
-    let profile_config = state.libation_config.with_files_dir(profile_dir);
-    // The account is already `signing_in`. A wait that outlasted the request
-    // timeout would 408 with it stuck there, so give up well before that and
-    // hand the account back with a clear message instead.
-    let job_guard = match tokio::time::timeout(
-        Duration::from_secs(LIBATION_LOGIN_LOCK_WAIT_SECONDS),
-        state.libation_job_lock.clone().lock_owned(),
-    )
-    .await
-    {
-        Ok(guard) => guard,
-        Err(_) => {
-            let message =
-                "Libation is busy with another job. Try the sign-in again once it finishes.";
-            mark_managed_libation_account_error(&state, &profile_id, message).await;
-            return Err(ApiError::conflict(message));
+        .await?
+    };
+    let profile_config = if let Some(profile) = existing_profile {
+        profile.config
+    } else {
+        let profile_dir = state.libation_accounts_root.join(&profile_id);
+        if let Err(error) =
+            initialize_managed_libation_profile(&profile_dir, &state.library_root).await
+        {
+            mark_managed_libation_account_error(&state, &profile_id, &error.message).await;
+            return Err(error);
+        }
+        state.libation_config.with_files_dir(profile_dir)
+    };
+    let job_guard = Arc::new(job_guard);
+    let login = match start_interactive_libation_login(
+        profile_config,
+        account_id.to_string(),
+        locale,
+        job_guard.clone(),
+    ) {
+        Ok(login) => login,
+        Err(error) => {
+            mark_managed_libation_account_error(&state, &profile_id, &error.to_string()).await;
+            return Err(ApiError::from(error));
         }
     };
-    let login = start_interactive_libation_login(profile_config, account_id.to_string(), locale)
-        .map_err(ApiError::from)?;
     let login_url = match tokio::time::timeout(
         Duration::from_secs(LIBATION_LOGIN_START_TIMEOUT_SECONDS + 5),
         login.started,
@@ -476,6 +571,8 @@ pub(crate) async fn start_libation_account_login(
         session_id.clone(),
         PendingLibationLogin {
             profile_id: profile_id.clone(),
+            created_account,
+            login_url: login_url.clone(),
             expires_at,
             response_sender: login.response_sender,
             completion: login.completion,
@@ -510,6 +607,18 @@ pub(crate) async fn complete_libation_account_login(
         .ok_or(ApiError::not_found(
             "Audible sign-in session not found or expired.",
         ))?;
+    // Closing the client request must not release the CLI lock while login is
+    // still writing credentials. The bounded completion task owns the session.
+    tokio::spawn(finish_libation_account_login(state, pending, response_url))
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+}
+
+async fn finish_libation_account_login(
+    state: AppState,
+    pending: PendingLibationLogin,
+    response_url: String,
+) -> Result<Json<LibationStatus>, ApiError> {
     if unix_now_seconds() > pending.expires_at {
         mark_managed_libation_account_error(
             &state,
@@ -528,34 +637,22 @@ pub(crate) async fn complete_libation_account_login(
     let profile_id = pending.profile_id.clone();
     match tokio::time::timeout(Duration::from_secs(90), pending.completion).await {
         Ok(Ok(Ok(_))) => {
-            secure_managed_libation_profile(&state.libation_accounts_root.join(&profile_id))
-                .await?;
-            mark_managed_libation_account_authenticated(&state, &profile_id).await?;
-            if let Some(profile) = find_libation_profile(&state, &profile_id).await {
-                let scanned = run_libation(&profile.config, vec!["scan".to_string()]).await;
-                invalidate_libation_export_cache().await;
-                match scanned {
-                    Ok(output) if output.status.success() => {
-                        mark_managed_libation_account_refreshed(&state, &profile_id).await;
-                    }
-                    Ok(output) => {
-                        mark_managed_libation_account_scan_error(
-                            &state,
-                            &profile_id,
-                            &command_output_text(&output),
-                        )
-                        .await;
-                    }
-                    Err(error) => {
-                        mark_managed_libation_account_scan_error(
-                            &state,
-                            &profile_id,
-                            &error.to_string(),
-                        )
-                        .await;
-                    }
-                }
+            if !profile_id.starts_with("legacy-") {
+                secure_managed_libation_profile(&state.libation_accounts_root.join(&profile_id))
+                    .await?;
+                mark_managed_libation_account_authenticated(&state, &profile_id).await?;
+            } else if let Some(account) = state
+                .libation_status_accounts
+                .write()
+                .await
+                .iter_mut()
+                .find(|account| account.id == profile_id)
+            {
+                account.authenticated = true;
+                account.connection_state = "connected".to_string();
+                account.last_error = None;
             }
+            invalidate_libation_export_cache().await;
         }
         Ok(Ok(Err(message))) => {
             mark_managed_libation_account_error(&state, &profile_id, &message).await;
@@ -573,6 +670,10 @@ pub(crate) async fn complete_libation_account_login(
         }
     }
     drop(pending._job_guard);
+    let (job_id, created) = create_queued_job(&state, "libation-sync", None).await;
+    if created {
+        spawn_libation_sync_job(state.clone(), job_id);
+    }
     Ok(Json(read_libation_status(&state).await))
 }
 
@@ -587,10 +688,47 @@ pub(crate) async fn cancel_libation_account_login(
         .await
         .remove(&session_id);
     if let Some(pending) = pending {
-        mark_managed_libation_account_error(&state, &pending.profile_id, "Sign-in was cancelled.")
-            .await;
+        let PendingLibationLogin {
+            profile_id,
+            created_account,
+            response_sender,
+            completion,
+            _job_guard,
+            ..
+        } = pending;
+        drop(response_sender);
+        let _ = tokio::time::timeout(Duration::from_secs(5), completion).await;
+        if created_account {
+            discard_unconnected_libation_account(&state, &profile_id).await?;
+        } else {
+            mark_managed_libation_account_error(&state, &profile_id, "Sign-in was cancelled.")
+                .await;
+        }
+        drop(_job_guard);
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Removes an account whose first sign-in was cancelled, with the profile
+/// folder the login had started filling. The caller holds the job lock and the
+/// login process has already stopped.
+async fn discard_unconnected_libation_account(
+    state: &AppState,
+    profile_id: &str,
+) -> Result<(), ApiError> {
+    state
+        .libation_accounts
+        .mutate(|store| {
+            store.accounts.retain(|account| account.id != profile_id);
+            Ok(())
+        })
+        .await?;
+    let profile_dir = state.libation_accounts_root.join(profile_id);
+    match fs::remove_dir_all(&profile_dir).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub(crate) async fn update_libation_account(
@@ -617,6 +755,7 @@ pub(crate) async fn update_libation_account(
             Ok(())
         })
         .await?;
+    invalidate_libation_export_cache().await;
     Ok(Json(read_libation_status(&state).await))
 }
 
@@ -625,6 +764,7 @@ pub(crate) async fn delete_libation_account(
     _: OwnerUser,
     Path(profile_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    let _registration_guard = state.libation_account_registration_lock.lock().await;
     // An expired browser flow still parks the global Libation job lock until
     // it is removed. Clear those before deciding that a sign-in blocks this
     // deletion, rather than waiting for the scheduled cleanup task to run.
@@ -648,14 +788,42 @@ pub(crate) async fn delete_libation_account(
         .iter()
         .any(|request| {
             request.profile_id.as_deref() == Some(profile_id.as_str())
-                && request.status == "pending"
+                && matches!(request.status.as_str(), "pending" | "approved")
         })
     {
         return Err(ApiError::conflict(
             "Resolve pending download requests for this Audible account before removing it.",
         ));
     }
-    let _libation_guard = state.libation_job_lock.lock().await;
+    if state
+        .libation_refreshes
+        .read()
+        .await
+        .pending_downloads
+        .iter()
+        .any(|pending| pending.profile_id.as_deref() == Some(&profile_id))
+        || state.jobs.read().await.values().any(|job| {
+            is_active_job(job)
+                && job
+                    .target_id
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with(&format!("{profile_id}:")))
+        })
+    {
+        return Err(ApiError::conflict(
+            "Finish this account's queued downloads before disconnecting it.",
+        ));
+    }
+    let _libation_guard = state.libation_job_lock.try_lock().map_err(|_| {
+        ApiError::conflict("Libation is busy. Disconnect after the current operation finishes.")
+    })?;
+    state
+        .libation_refreshes
+        .mutate(|store| {
+            store.auto_imports.remove(&profile_id);
+            Ok(())
+        })
+        .await?;
     state
         .libation_accounts
         .mutate(|store| {
@@ -948,7 +1116,6 @@ pub(crate) async fn libation_status(
     State(state): State<AppState>,
     _: AdminUser,
 ) -> Result<Json<LibationStatus>, ApiError> {
-    let _libation_guard = acquire_libation_job_lock(&state).await;
     Ok(Json(read_libation_status(&state).await))
 }
 
@@ -1006,6 +1173,7 @@ pub(crate) async fn create_libation_download_request(
     }
     let asin = normalize_asin(&asin)
         .ok_or_else(|| ApiError::bad_request("Invalid Audible product id."))?;
+    let registration_guard = state.libation_account_registration_lock.lock().await;
     let profile_id = payload.profile_id.as_deref().unwrap_or("legacy");
     let profile = find_libation_profile(&state, profile_id)
         .await
@@ -1026,12 +1194,17 @@ pub(crate) async fn create_libation_download_request(
         .mutate(move |requests| {
             // Deduplication, the quota check, and the insert all happen inside
             // the lock so two simultaneous requests cannot both pass.
-            if let Some(existing) = requests.requests.iter().find(|request| {
+            if let Some(existing) = requests.requests.iter_mut().rev().find(|request| {
                 request.user_id == user_id
                     && request.asin == asin
                     && request.profile_id.as_deref().unwrap_or("legacy") == profile.id
-                    && request.status == "pending"
+                    && (matches!(request.status.as_str(), "pending" | "approved")
+                        || (request.status == "failed" && request.decided_by.is_some()))
             }) {
+                if existing.status == "failed" {
+                    existing.status = "approved".to_string();
+                    existing.job_id = None;
+                }
                 return Ok(existing.clone());
             }
             if requests
@@ -1050,7 +1223,9 @@ pub(crate) async fn create_libation_download_request(
                     .requests
                     .iter()
                     .enumerate()
-                    .filter(|(_, request)| request.status != "pending")
+                    .filter(|(_, request)| {
+                        !matches!(request.status.as_str(), "pending" | "approved")
+                    })
                     .min_by_key(|(_, request)| &request.requested_at)
                     .map(|(index, _)| index)
                 else {
@@ -1085,6 +1260,10 @@ pub(crate) async fn create_libation_download_request(
             Ok(request)
         })
         .await?;
+    drop(registration_guard);
+    if request.status == "approved" && request.job_id.is_none() {
+        return attach_approved_libation_download(&state, request).await;
+    }
     Ok(Json(request))
 }
 
@@ -1136,8 +1315,16 @@ pub(crate) async fn decide_libation_download_request(
         return Ok(Json(request));
     }
 
-    let created = match start_libation_download(
-        &state,
+    attach_approved_libation_download(&state, request).await
+}
+
+pub(crate) async fn attach_approved_libation_download(
+    state: &AppState,
+    request: LibationDownloadRequest,
+) -> Result<Json<LibationDownloadRequest>, ApiError> {
+    let shutdown = state.shutdown.subscribe();
+    let created = match start_libation_download_inner(
+        state,
         request.profile_id.clone(),
         request.asin.clone(),
         Some(request.user_id.clone()),
@@ -1146,21 +1333,20 @@ pub(crate) async fn decide_libation_download_request(
     {
         Ok(created) => created.0,
         Err(error) => {
-            let _ = state
+            state
                 .libation_requests
-                .mutate(|requests| {
-                    if let Some(stored) = requests
+                .mutate(|store| {
+                    if let Some(stored) = store
                         .requests
                         .iter_mut()
-                        .find(|item| item.id == request.id)
+                        .find(|stored| stored.id == request.id)
                     {
-                        stored.status = "pending".to_string();
-                        stored.decided_at = None;
-                        stored.decided_by = None;
+                        stored.status = "failed".to_string();
+                        stored.job_id = None;
                     }
                     Ok(())
                 })
-                .await;
+                .await?;
             return Err(error);
         }
     };
@@ -1180,6 +1366,7 @@ pub(crate) async fn decide_libation_download_request(
         state.clone(),
         response.id.clone(),
         response.job_id.clone().unwrap_or_default(),
+        shutdown,
     );
     Ok(Json(response))
 }
@@ -1188,9 +1375,19 @@ pub(crate) fn schedule_libation_request_completion(
     state: AppState,
     request_id: String,
     job_id: String,
+    shutdown: tokio::sync::broadcast::Receiver<()>,
 ) {
     tokio::spawn(async move {
-        let final_status = if await_job_outcome(&state, &job_id).await {
+        if !crate::libation_recovery::wait_for_terminal(&state, &job_id, shutdown).await {
+            return;
+        }
+        let final_status = if state
+            .jobs
+            .read()
+            .await
+            .get(&job_id)
+            .is_some_and(|job| job.status == "completed")
+        {
             "completed"
         } else {
             "failed"
@@ -1198,11 +1395,11 @@ pub(crate) fn schedule_libation_request_completion(
         let stored = state
             .libation_requests
             .mutate(|requests| {
-                let Some(request) = requests
-                    .requests
-                    .iter_mut()
-                    .find(|request| request.id == request_id && request.status == "approved")
-                else {
+                let Some(request) = requests.requests.iter_mut().find(|request| {
+                    request.id == request_id
+                        && request.status == "approved"
+                        && request.job_id.as_deref() == Some(&job_id)
+                }) else {
                     return Ok(false);
                 };
                 request.status = final_status.to_string();
@@ -1843,6 +2040,7 @@ async fn capture_legacy_ownership(
                     account_id: account.account_id.clone(),
                     locale: account.locale.clone(),
                     asins: Vec::new(),
+                    purchased_asins: Some(Vec::new()),
                 },
             )
         })
@@ -1857,6 +2055,11 @@ async fn capture_legacy_ownership(
                 .iter()
                 .any(|asin| asin.eq_ignore_ascii_case(&book.asin))
         {
+            if is_libation_purchase(&book) {
+                row.purchased_asins
+                    .get_or_insert_with(Vec::new)
+                    .push(book.asin.clone());
+            }
             row.asins.push(book.asin);
         }
     }
@@ -1896,6 +2099,7 @@ async fn preserve_unscanned_legacy_ownership(
         if !book.profile_id.starts_with("legacy-") || known.contains(&book.profile_id) {
             continue;
         }
+        let purchased = is_libation_purchase(&book);
         let Some(account_id) = book.account_id else {
             continue;
         };
@@ -1905,12 +2109,18 @@ async fn preserve_unscanned_legacy_ownership(
                 account_id,
                 locale: book.locale.unwrap_or_default(),
                 asins: Vec::new(),
+                purchased_asins: Some(Vec::new()),
             });
         if !row
             .asins
             .iter()
             .any(|asin| asin.eq_ignore_ascii_case(&book.asin))
         {
+            if purchased {
+                row.purchased_asins
+                    .get_or_insert_with(Vec::new)
+                    .push(book.asin.clone());
+            }
             row.asins.push(book.asin);
         }
     }
@@ -1954,12 +2164,14 @@ async fn record_selected_legacy_ownership(
 }
 
 pub(crate) fn spawn_libation_sync_job(state: AppState, job_id: String) {
+    let mut shutdown = state.shutdown.subscribe();
     tokio::spawn(run_job(state.clone(), job_id.clone(), async move {
         let _libation_guard = acquire_libation_job_lock(&state).await;
         update_job_running(&state, &job_id).await;
         update_job_output(&state, &job_id, "Starting Libation library scan.\n").await;
         let profiles = all_libation_profiles(&state).await;
         let mut failures = Vec::new();
+        let mut successful_profiles = HashSet::new();
         let mut exit_code = Some(0);
         for profile in profiles {
             update_job_output(&state, &job_id, &format!("\nChecking {}.\n", profile.name)).await;
@@ -1979,6 +2191,12 @@ pub(crate) fn spawn_libation_sync_job(state: AppState, job_id: String) {
                 match attempt.result {
                     Ok(output) if output.status.success() => {
                         append_job_command_output(&state, &job_id, &output).await;
+                        if profile.managed {
+                            successful_profiles.insert(profile.id.clone());
+                        }
+                        if let Some(ownership) = &attempt.ownership {
+                            successful_profiles.extend(ownership.keys().cloned());
+                        }
                         if let Some(ownership) = attempt.ownership
                             && let Err(error) = record_legacy_ownership(&state, ownership).await
                         {
@@ -2019,6 +2237,17 @@ pub(crate) fn spawn_libation_sync_job(state: AppState, job_id: String) {
                     }
                 }
             }
+        }
+        if !matches!(
+            shutdown.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ) {
+            return;
+        }
+        if let Err(error) =
+            crate::libation_recovery::queue_new_purchases(&state, &successful_profiles).await
+        {
+            failures.push(format!("Automatic imports: {}", error.message));
         }
         invalidate_libation_export_cache().await;
         if failures.is_empty() {
@@ -2071,6 +2300,7 @@ pub(crate) fn schedule_automatic_libation_refresh(state: AppState) {
         return;
     }
 
+    let mut shutdown = state.shutdown.subscribe();
     tokio::spawn(async move {
         let interval_seconds = interval_hours.saturating_mul(60 * 60);
         let poll_seconds = interval_seconds.clamp(1, LIBATION_REFRESH_SCHEDULER_POLL_SECONDS);
@@ -2084,7 +2314,11 @@ pub(crate) fn schedule_automatic_libation_refresh(state: AppState) {
         let mut consecutive_failures: u32 = 0;
         let mut last_attempt: Option<std::time::Instant> = None;
         loop {
-            timer.tick().await;
+            tokio::select! {
+                biased;
+                _ = shutdown.recv() => return,
+                _ = timer.tick() => {},
+            }
             let due = {
                 let refreshes = state.libation_refreshes.read().await;
                 refreshes
@@ -2111,7 +2345,12 @@ pub(crate) fn schedule_automatic_libation_refresh(state: AppState) {
                 );
                 last_attempt = Some(std::time::Instant::now());
                 spawn_libation_sync_job(state.clone(), job_id.clone());
-                if await_job_outcome(&state, &job_id).await {
+                let completed = tokio::select! {
+                    biased;
+                    _ = shutdown.recv() => return,
+                    completed = await_job_outcome(&state, &job_id) => completed,
+                };
+                if completed {
                     consecutive_failures = 0;
                 } else {
                     consecutive_failures = consecutive_failures.saturating_add(1);
@@ -2230,11 +2469,22 @@ pub(crate) async fn start_libation_download(
     asin: String,
     grant_to_user: Option<String>,
 ) -> Result<Json<JobCreated>, ApiError> {
+    crate::libation_recovery::start(state, profile_id, asin, grant_to_user).await
+}
+
+pub(crate) async fn start_libation_download_inner(
+    state: &AppState,
+    profile_id: Option<String>,
+    asin: String,
+    grant_to_user: Option<String>,
+) -> Result<Json<JobCreated>, ApiError> {
     if !state.libation_config.enabled() {
         return Err(ApiError::bad_request(
             "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH.",
         ));
     }
+    let worker_shutdown = state.shutdown.subscribe();
+    let _registration_guard = state.libation_account_registration_lock.lock().await;
 
     let profile = if let Some(profile_id) = profile_id.as_deref() {
         find_libation_profile(state, profile_id)
@@ -2251,7 +2501,13 @@ pub(crate) async fn start_libation_download(
     let catalog_id = format!("{}:{asin}", profile.id);
 
     if let Some(user_id) = grant_to_user.as_deref() {
-        let local_book_id = find_book_id_by_asin(&state.library.read().await.books, &asin);
+        let local_book_id = {
+            let library = state.library.read().await;
+            library
+                .catalogue_ready
+                .then(|| find_book_id_by_asin(&library.books, &asin))
+                .flatten()
+        };
         if let Some(book_id) = local_book_id {
             let (job_id, _) = create_job_with_state(
                 state,
@@ -2307,7 +2563,13 @@ pub(crate) async fn start_libation_download(
         tokio::spawn(run_job(
             state.clone(),
             job_id.clone(),
-            run_libation_liberate_job(state.clone(), job_id.clone(), profile, asin),
+            run_libation_liberate_job(
+                state.clone(),
+                job_id.clone(),
+                profile,
+                asin,
+                worker_shutdown,
+            ),
         ));
     }
     Ok(Json(JobCreated {
@@ -2323,7 +2585,11 @@ async fn run_libation_liberate_job(
     job_id: String,
     profile: LibationProfile,
     asin: String,
+    shutdown: tokio::sync::broadcast::Receiver<()>,
 ) {
+    if !crate::libation_recovery::wait_for_library(&state, shutdown).await {
+        return;
+    }
     let _libation_guard = acquire_libation_job_lock(&state).await;
     update_job_running(&state, &job_id).await;
     // Discover owners before an attempt changes the shared Libation export.
@@ -2684,19 +2950,42 @@ pub(crate) async fn liberate_all_libation_books(
             "This administrator must request approval for Libation downloads.",
         ));
     }
+    start_all_libation_downloads(state).await
+}
+
+pub(crate) async fn start_all_libation_downloads(
+    state: AppState,
+) -> Result<Json<JobCreated>, ApiError> {
     if !state.libation_config.enabled() {
         return Err(ApiError::bad_request(
             "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH.",
         ));
     }
 
+    let worker_shutdown = state.shutdown.subscribe();
+    let completion_shutdown = state.shutdown.subscribe();
     let (job_id, created) = create_queued_job(&state, "libation-liberate-all", None).await;
     if !created {
         return Ok(Json(JobCreated { job_id }));
     }
+    let stored = state
+        .libation_refreshes
+        .mutate(|store| {
+            store.bulk_download_pending = true;
+            store.bulk_download_job_id = Some(job_id.clone());
+            Ok(())
+        })
+        .await;
+    if let Err(error) = stored {
+        update_job_finished(&state, &job_id, "failed", None, Some(error.message.clone())).await;
+        return Err(error);
+    }
     let state_for_job = state.clone();
     let job_id_for_task = job_id.clone();
     tokio::spawn(run_job(state.clone(), job_id.clone(), async move {
+        if !crate::libation_recovery::wait_for_library(&state_for_job, worker_shutdown).await {
+            return;
+        }
         let _libation_guard = acquire_libation_job_lock(&state_for_job).await;
         update_job_running(&state_for_job, &job_id_for_task).await;
         update_job_output(
@@ -2965,6 +3254,32 @@ pub(crate) async fn liberate_all_libation_books(
         }
     }));
 
+    let completion_state = state.clone();
+    let completion_job = job_id.clone();
+    tokio::spawn(async move {
+        if !crate::libation_recovery::wait_for_terminal(
+            &completion_state,
+            &completion_job,
+            completion_shutdown,
+        )
+        .await
+        {
+            return;
+        }
+        if let Err(error) = completion_state
+            .libation_refreshes
+            .mutate(|store| {
+                if store.bulk_download_job_id.as_deref() == Some(&completion_job) {
+                    store.bulk_download_pending = false;
+                    store.bulk_download_job_id = None;
+                }
+                Ok(())
+            })
+            .await
+        {
+            tracing::warn!("could not save bulk Libation completion: {}", error.message);
+        }
+    });
     Ok(Json(JobCreated { job_id }))
 }
 
@@ -3214,10 +3529,7 @@ impl LibationConfig {
             .clone()
             .filter(|path| path.is_file())
             .or_else(find_libation_cli_on_path);
-        let libation_files_dir = config
-            .libation_files_dir
-            .clone()
-            .filter(|path| path.is_dir());
+        let libation_files_dir = config.libation_files_dir.clone();
 
         Self {
             cli_path,
@@ -3360,7 +3672,24 @@ pub(crate) fn find_libation_cli_on_path() -> Option<PathBuf> {
 }
 
 pub(crate) async fn read_libation_status(state: &AppState) -> LibationStatus {
+    prune_expired_libation_login_sessions(state).await;
     let config = state.libation_config.clone();
+    let pending_login = state
+        .libation_login_sessions
+        .lock()
+        .await
+        .iter()
+        .next()
+        .map(|(id, pending)| LibationLoginStarted {
+            session_id: id.clone(),
+            profile_id: pending.profile_id.clone(),
+            login_url: pending.login_url.clone(),
+            expires_at: pending.expires_at,
+        });
+    let refreshes = state.libation_refreshes.read().await;
+    let last_successful_refresh = refreshes.last_successful_scan;
+    let auto_import_account_ids = refreshes.auto_imports.keys().cloned().collect::<Vec<_>>();
+    drop(refreshes);
     let Some(cli_path) = config.cli_path.as_ref() else {
         return LibationStatus {
             enabled: false,
@@ -3378,32 +3707,68 @@ pub(crate) async fn read_libation_status(state: &AppState) -> LibationStatus {
             ),
             auto_refresh_hours: config.auto_refresh_hours,
             manual_refreshes_per_hour: config.reader_refreshes_per_hour,
+            last_successful_refresh,
+            auto_import_account_ids,
+            pending_login,
         };
     };
 
     let managed_snapshot = state.libation_accounts.read().await.accounts.clone();
-    let mut accounts = probe_managed_accounts(state, &managed_snapshot).await;
-
-    if config.libation_files_dir.is_some() || managed_snapshot.is_empty() {
-        match run_libation(
-            &config,
-            vec!["list-accounts".to_string(), "--bare".to_string()],
-        )
-        .await
-        {
-            Ok(output) if output.status.success() => {
-                accounts.extend(parse_libation_accounts(&String::from_utf8_lossy(
-                    &output.stdout,
-                )));
+    // A pending browser login holds this lock until completion. Serve the last
+    // account probe so reopening the app can resume it without reading files
+    // while Libation writes credentials or refreshing account health mid-job.
+    let guard = state.libation_job_lock.try_lock();
+    let mut accounts = if guard.is_ok() {
+        probe_managed_accounts(state, &managed_snapshot).await
+    } else {
+        managed_snapshot
+            .iter()
+            .map(managed_account_status)
+            .collect()
+    };
+    if guard.is_err() {
+        accounts.extend(
+            state
+                .libation_status_accounts
+                .read()
+                .await
+                .iter()
+                .filter(|account| !account.managed)
+                .cloned(),
+        );
+        if let Some(pending) = &pending_login {
+            for account in &mut accounts {
+                if account.id == pending.profile_id {
+                    account.authenticated = false;
+                    account.connection_state = "signing_in".to_string();
+                    account.last_error = None;
+                }
             }
-            Ok(output) if accounts.is_empty() => {
-                accounts.push(legacy_probe_failure(command_output_text(&output)));
-            }
-            Err(error) if accounts.is_empty() => {
-                accounts.push(legacy_probe_failure(error.to_string()));
-            }
-            _ => {}
         }
+    } else {
+        if config.libation_files_dir.is_some() || managed_snapshot.is_empty() {
+            match run_libation(
+                &config,
+                vec!["list-accounts".to_string(), "--bare".to_string()],
+            )
+            .await
+            {
+                Ok(output) if output.status.success() => {
+                    accounts.extend(parse_libation_accounts(&String::from_utf8_lossy(
+                        &output.stdout,
+                    )));
+                }
+                Ok(output) if accounts.is_empty() => {
+                    accounts.push(legacy_probe_failure(command_output_text(&output)));
+                }
+                Err(error) if accounts.is_empty() => {
+                    accounts.push(legacy_probe_failure(error.to_string()));
+                }
+                _ => {}
+            }
+        }
+
+        *state.libation_status_accounts.write().await = accounts.clone();
     }
 
     let authenticated =
@@ -3439,7 +3804,36 @@ pub(crate) async fn read_libation_status(state: &AppState) -> LibationStatus {
         message,
         auto_refresh_hours: config.auto_refresh_hours,
         manual_refreshes_per_hour: config.reader_refreshes_per_hour,
+        last_successful_refresh,
+        auto_import_account_ids,
+        pending_login,
     }
+}
+
+fn managed_account_status(managed: &ManagedLibationAccount) -> LibationAccount {
+    LibationAccount {
+        id: managed.id.clone(),
+        account_id: managed.account_id.clone(),
+        name: Some(managed.label.clone()),
+        locale: managed.locale.clone(),
+        scan_library: true,
+        authenticated: managed.authenticated,
+        managed: true,
+        connection_state: managed.connection_state.clone(),
+        last_successful_auth: managed.last_successful_auth.clone(),
+        last_successful_refresh: managed.last_successful_refresh.clone(),
+        last_error: managed.last_error.clone(),
+        added_by: Some(managed.added_by.clone()),
+        added_at: Some(managed.added_at.clone()),
+    }
+}
+
+pub(crate) fn is_libation_purchase(book: &LibationBook) -> bool {
+    !book.is_audible_plus
+        && book
+            .content_type
+            .as_deref()
+            .is_none_or(|kind| kind.eq_ignore_ascii_case("Product"))
 }
 
 /// Probes each linked account's sign-in state through the CLI, persisting any
@@ -3506,19 +3900,10 @@ async fn probe_managed_accounts(
             );
         }
         accounts.push(LibationAccount {
-            id: managed.id.clone(),
-            account_id: managed.account_id.clone(),
-            name: Some(managed.label.clone()),
-            locale: managed.locale.clone(),
-            scan_library: true,
             authenticated,
-            managed: true,
             connection_state,
-            last_successful_auth: managed.last_successful_auth.clone(),
-            last_successful_refresh: managed.last_successful_refresh.clone(),
             last_error: error.or_else(|| managed.last_error.clone()),
-            added_by: Some(managed.added_by.clone()),
-            added_at: Some(managed.added_at.clone()),
+            ..managed_account_status(managed)
         });
     }
     if !changed_health.is_empty() {
@@ -3733,6 +4118,7 @@ pub(crate) fn start_interactive_libation_login(
     config: LibationConfig,
     account_id: String,
     locale: String,
+    job_guard: Arc<OwnedMutexGuard<()>>,
 ) -> anyhow::Result<InteractiveLibationLogin> {
     let cli_path = config
         .cli_path
@@ -3752,6 +4138,9 @@ pub(crate) fn start_interactive_libation_login(
     std::thread::Builder::new()
         .name("libation-login".to_string())
         .spawn(move || {
+            // Cancellation releases the lock only after the captured process
+            // has stopped writing its profile.
+            let _job_guard = job_guard;
             let result =
                 run_interactive_libation_login(&cli_path, &args, started_sender, response_receiver);
             let _ = completion_sender.send(result);
@@ -3762,6 +4151,17 @@ pub(crate) fn start_interactive_libation_login(
         response_sender,
         completion: completion_receiver,
     })
+}
+
+struct LibationLoginChild(Box<dyn portable_pty::Child + Send + Sync>);
+
+impl Drop for LibationLoginChild {
+    fn drop(&mut self) {
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
 }
 
 pub(crate) fn run_interactive_libation_login(
@@ -3788,7 +4188,7 @@ pub(crate) fn run_interactive_libation_login(
     command.args(args);
     command.env(DOTNET_GLOBALIZATION_INVARIANT, "0");
     // As above, Libation login must use the host's normal globalization mode.
-    let mut child = match pair.slave.spawn_command(command) {
+    let child = match pair.slave.spawn_command(command) {
         Ok(child) => child,
         Err(error) => {
             let message = format!("Could not start Libation login: {error}");
@@ -3796,6 +4196,7 @@ pub(crate) fn run_interactive_libation_login(
             return Err(message);
         }
     };
+    let mut child = LibationLoginChild(child);
     drop(pair.slave);
 
     let mut reader = pair
@@ -3827,8 +4228,8 @@ pub(crate) fn run_interactive_libation_login(
     let login_url = loop {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.0.kill();
+            let _ = child.0.wait();
             let message = "Libation did not provide an Audible sign-in URL in time.".to_string();
             let _ = started_sender.send(Err(message.clone()));
             return Err(message);
@@ -3845,7 +4246,7 @@ pub(crate) fn run_interactive_libation_login(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                let status = child.wait().ok();
+                let status = child.0.try_wait().ok().flatten();
                 let message = format!(
                     "Libation exited before providing a sign-in URL{}: {}",
                     status
@@ -3858,9 +4259,17 @@ pub(crate) fn run_interactive_libation_login(
             }
         }
     };
+    let login_url = match validate_libation_response_url(&login_url) {
+        Ok(url) => url,
+        Err(_) => {
+            let message = "Libation returned an unsupported sign-in address.".to_string();
+            let _ = started_sender.send(Err(message.clone()));
+            return Err(message);
+        }
+    };
     if started_sender.send(Ok(login_url)).is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
+        let _ = child.0.kill();
+        let _ = child.0.wait();
         return Err("The Libation login request was cancelled.".to_string());
     }
 
@@ -3868,8 +4277,8 @@ pub(crate) fn run_interactive_libation_login(
         match response_receiver.recv_timeout(Duration::from_secs(LIBATION_LOGIN_SESSION_SECONDS)) {
             Ok(response_url) => response_url,
             Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.0.kill();
+                let _ = child.0.wait();
                 return Err("The Libation login session expired or was cancelled.".to_string());
             }
         };
@@ -3880,13 +4289,28 @@ pub(crate) fn run_interactive_libation_login(
         .map_err(|error| format!("Could not submit the Audible response to Libation: {error}"))?;
     drop(writer);
 
-    let status = child
-        .wait()
-        .map_err(|error| format!("Could not wait for Libation login: {error}"))?;
-    let _ = reader_thread.join();
-    while let Ok(chunk) = output_receiver.try_recv() {
-        output.push_str(&String::from_utf8_lossy(&chunk));
-    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(85);
+    let status = loop {
+        while let Ok(chunk) = output_receiver.try_recv() {
+            output.push_str(&String::from_utf8_lossy(&chunk));
+            if output.len() > 128 * 1024 {
+                output = text_tail(&output, 128 * 1024);
+            }
+        }
+        if let Some(status) = child
+            .0
+            .try_wait()
+            .map_err(|error| format!("Could not wait for Libation login: {error}"))?
+        {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("Libation did not finish sign-in. Try again or connect this account in Libation on the server.".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    // An inherited terminal descriptor must not make completion wait forever.
+    drop(reader_thread);
     let safe_output = sanitize_libation_login_output(&output);
     if status.success() {
         Ok(safe_output)
@@ -3941,11 +4365,7 @@ pub(crate) fn recover_interrupted_libation_requests(store: &mut LibationRequestS
     let mut changed = false;
     for request in &mut store.requests {
         if request.status == "approved" {
-            request.status = "pending".to_string();
-            request.decided_at = None;
-            request.decided_by = None;
-            request.job_id = None;
-            changed = true;
+            changed |= request.job_id.take().is_some();
         }
     }
     changed
