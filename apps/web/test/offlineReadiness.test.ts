@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { downloadWebBook } from "../src/offlineDownload.ts";
-import { inspectOfflineReadiness, offlineDownloadMessage } from "../src/offlineReadiness.ts";
+import { inspectOfflineReadiness, offlineDownloadMessage, storedSyncTimings } from "../src/offlineReadiness.ts";
 import { library } from "./performance/fixtures.ts";
 import type { Book, SyncMap } from "../src/types.ts";
 
@@ -13,7 +13,7 @@ const map: SyncMap = { version: 1, fragments: [{ startSeconds: 0, endSeconds: 1,
 async function readiness(book: Book, stored: Map<string, Blob>) {
   return inspectOfflineReadiness(book, book.tracks.every((track) => stored.has(`track:${track.id}`)),
     async (key) => stored.has(key), async () => {
-      try { return JSON.parse(await stored.get("sync")!.text()); } catch { return null; }
+      try { return storedSyncTimings(JSON.parse(await stored.get("sync")!.text())); } catch { return "none"; }
     }, "cover");
 }
 

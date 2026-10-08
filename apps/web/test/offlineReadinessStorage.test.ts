@@ -161,3 +161,22 @@ test("native missing-file jobs exclude audio, preserve progress, and reopen usin
   assert.equal(state.jobs.size, 0, "removal must stop persisted jobs before they can recreate files");
   assert.deepEqual(await reopened.getCachedProgress("reader", book.id), progress);
 });
+
+test("readiness parses a stored sync map once and rereads it after the file changes", async (t) => {
+  reset(false);
+  const sentenceMap = {version: 1, precision: "sentence", fragments: [{startSeconds: 0, endSeconds: 1, href: 'chapter.xhtml', text: 'Hello'}]};
+  t.mock.method(globalThis, "fetch", async (url: string) =>
+    new Response(url === '/sync' ? JSON.stringify(sentenceMap) : url));
+  await offline.downloadBookForOffline(book, url => url, () => {});
+  const parse = t.mock.method(JSON, "parse");
+  const mapReads = () => parse.mock.calls.filter(call => String(call.arguments[0]).includes('"fragments"')).length;
+  for (let scan = 0; scan < 3; scan++) {
+    assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "available");
+  }
+  assert.equal(mapReads(), 1, "later scans must reuse the verdict for an unchanged map");
+  // Same length, different precision: only the write itself can tell the cache.
+  await offline.saveOfflineSyncMap(book, {...sentenceMap, precision: "chapter!"});
+  assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "unsupported");
+  state.stores.media.delete(`server-a:${book.id}:sync`);
+  assert.deepEqual((await offline.getBookOfflineReadiness(book)).missingFiles, ["sync"]);
+});
