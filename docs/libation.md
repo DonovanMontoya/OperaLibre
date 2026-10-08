@@ -40,7 +40,8 @@ added in OperaLibre use a private profile on the server. If browser sign-in is
 unavailable, update Libation or sign in through Libation on the server instead.
 
 An unfinished sign-in can be continued after reloading OperaLibre. Cancel it if
-you do not intend to finish; it expires automatically after ten minutes. Libation
+you do not intend to finish; cancelling a new account's first sign-in removes the
+account, and an unfinished sign-in expires automatically after ten minutes. Libation
 runs one operation at a time, so finish downloads or refreshes before signing in.
 Once connected, your purchases refresh in the background. Owners can disconnect
 accounts added in OperaLibre; downloaded books and listening progress are kept.

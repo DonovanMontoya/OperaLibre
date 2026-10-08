@@ -5854,6 +5854,7 @@ async fn an_expired_libation_sign_in_releases_the_job_lock() {
         super::PendingLibationLogin {
             login_url: "https://www.amazon.com/ap/signin".to_string(),
             profile_id: "profile-1".to_string(),
+            created_account: false,
             expires_at: super::unix_now_seconds().saturating_sub(1),
             response_sender,
             completion,
@@ -5915,6 +5916,7 @@ async fn an_expired_libation_sign_in_does_not_block_account_deletion() {
         super::PendingLibationLogin {
             login_url: "https://www.amazon.com/ap/signin".to_string(),
             profile_id: "profile-1".to_string(),
+            created_account: false,
             expires_at: super::unix_now_seconds().saturating_sub(1),
             response_sender,
             completion,
@@ -8521,11 +8523,59 @@ async fn libation_cancel_stops_the_login_before_releasing_the_job_lock() {
     .await
     .expect("cancelled CLI must stop and release the lock");
     assert!(state.libation_login_sessions.lock().await.is_empty());
-    assert_eq!(
-        state.libation_accounts.read().await.accounts[0].connection_state,
-        "needs_sign_in"
+    assert!(state.libation_accounts.read().await.accounts.is_empty());
+    assert!(
+        !state
+            .libation_accounts_root
+            .join(&started.profile_id)
+            .exists()
     );
     assert!(!root.path().join("libation-accounts.tsv").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancelling_a_reconnect_keeps_the_existing_account() {
+    let root = tempfile::tempdir().unwrap();
+    let state = libation_browser_fixture(root.path());
+    state
+        .libation_accounts
+        .mutate(|store| {
+            store.accounts.push(super::ManagedLibationAccount {
+                id: "profile-1".to_string(),
+                label: "Personal".to_string(),
+                account_id: "fixture@example.test".to_string(),
+                locale: "us".to_string(),
+                added_by: "admin".to_string(),
+                added_at: super::now_unix_string(),
+                connection_state: "connected".to_string(),
+                authenticated: true,
+                last_successful_auth: Some(super::now_unix_string()),
+                last_successful_refresh: None,
+                last_error: None,
+            });
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let started = super::start_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Json(browser_login_request(Some("profile-1".to_string()))),
+    )
+    .await
+    .unwrap()
+    .0;
+    super::cancel_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Path(started.session_id),
+    )
+    .await
+    .unwrap();
+    let accounts = state.libation_accounts.read().await;
+    assert_eq!(accounts.accounts.len(), 1);
+    assert_eq!(accounts.accounts[0].connection_state, "needs_sign_in");
 }
 
 #[cfg(unix)]
