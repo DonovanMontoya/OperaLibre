@@ -156,26 +156,36 @@ pub(crate) async fn set_libation_auto_import(
             "Choose an individual Audible account.",
         ));
     }
-    let mut books = export_libation_books(&profile).await?;
-    let ownership = state
+    let books = export_libation_books(&profile).await?;
+    let current_asins = books
+        .iter()
+        .filter(|book| book.profile_id == profile_id)
+        .map(|book| book.asin.clone())
+        .collect::<HashSet<_>>();
+    let mut seen_asins = books
+        .into_iter()
+        .filter(|book| book.profile_id == profile_id && is_libation_purchase(book))
+        .map(|book| book.asin)
+        .collect::<HashSet<_>>();
+    if let Some(ownership) = state
         .libation_refreshes
         .read()
         .await
         .legacy_ownership
-        .clone();
-    restore_legacy_ownership_books(&mut books, &ownership, &HashMap::new());
-    let seen_asins = books
-        .into_iter()
-        .filter(|book| {
-            book.profile_id == profile_id
-                && !book.is_audible_plus
-                && book
-                    .content_type
-                    .as_deref()
-                    .is_none_or(|kind| kind.eq_ignore_ascii_case("Product"))
-        })
-        .map(|book| book.asin)
-        .collect();
+        .get(&profile_id)
+    {
+        // Older snapshots only recorded ownership. Treat those known titles as
+        // existing, rather than unexpectedly importing them after an upgrade.
+        seen_asins.extend(
+            ownership
+                .purchased_asins
+                .as_ref()
+                .unwrap_or(&ownership.asins)
+                .iter()
+                .filter(|asin| !current_asins.contains(*asin))
+                .cloned(),
+        );
+    }
     state
         .libation_refreshes
         .mutate(|store| {

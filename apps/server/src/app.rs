@@ -61,6 +61,10 @@ pub(crate) struct AppState {
     pub(crate) libation_refreshes: Arc<LibationRefreshes>,
     pub(crate) libation_accounts: Arc<LibationAccounts>,
     pub(crate) libation_login_sessions: Arc<Mutex<HashMap<String, PendingLibationLogin>>>,
+    /// Last probed account rows, served while Libation is writing its profile.
+    pub(crate) libation_status_accounts: Arc<RwLock<Vec<LibationAccount>>>,
+    /// Makes account removal and accepted download/request registration atomic.
+    pub(crate) libation_account_registration_lock: Arc<Mutex<()>>,
     /// Library scans read and replace one shared identity snapshot. Serialize
     /// them so overlapping imports, downloads, and manual rescans cannot
     /// publish stale state over a newer scan.

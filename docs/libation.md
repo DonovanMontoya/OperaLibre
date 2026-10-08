@@ -49,7 +49,8 @@ accounts added in OperaLibre; downloaded books and listening progress are kept.
 ### Automatically import future purchases
 
 An administrator with direct-download permission can turn on **Automatically add
-new purchases** for each account. OperaLibre remembers the catalog at that point,
+new purchases** for each account. Refresh purchases first so the starting catalog
+is up to date. OperaLibre remembers the catalog at that point,
 then adds new purchases after a successful automatic or manual refresh. Existing
 purchases and Audible Plus titles remain manual. Turn the option off to stop
 future automatic imports; downloads already queued continue.
