@@ -45,7 +45,7 @@ import { DeviceImportNotice } from "./DeviceImportNotice";
 import { ContinueReading } from "./ContinueReading";
 import { isPendingJob, jobDetailLines, jobStateLabel, jobSummary, jobTitle } from "./jobLabels";
 import { formatElapsed, formatMinutes } from "./formatting";
-import { LibroCatalog } from "./LibroCatalog";
+import { LibroCatalog, StoreHeading } from "./LibroCatalog";
 import { getDeviceBooks, mergeDeviceAndServerBooks } from "./localLibrary";
 import { hasUserConfiguredServer, SERVER_SETUP_GUIDE_URL } from "./api";
 import { CONNECT_PROMPT_DISMISSED_KEY, writeStoredValue } from "./appStorage";
@@ -53,7 +53,7 @@ import { LibationError } from "./AudibleManagement";
 import { isLibationAdding } from "./libationState";
 import { LibationCoverArt } from "./CoverArt";
 import type { AuthUser, Book } from "./types";
-import type { NativeTab } from "./nativeTabs";
+import type { NativeTab, StoreSettingsTarget } from "./nativeTabs";
 import type { Dispatch, ReactNode, RefObject, SetStateAction, TouchEvent } from "react";
 import type { ServerCapabilities } from "./serverCapabilities";
 
@@ -85,7 +85,7 @@ export function LibraryPane({
   offlineDownloads,
   onConnectServer,
   openBookDetails,
-  openNativeTab,
+  openStoreSettings,
   pausePlayback,
   playbackBook,
   purchases,
@@ -134,7 +134,7 @@ export function LibraryPane({
   offlineDownloads: ReturnType<typeof useOfflineDownloads>;
   onConnectServer: () => void;
   openBookDetails: (bookId: string) => void;
-  openNativeTab: (tab: NativeTab) => void;
+  openStoreSettings: (target: StoreSettingsTarget) => void;
   pausePlayback: (audio: HTMLAudioElement | null | undefined) => void;
   playbackBook: Book | null;
   purchases: ReturnType<typeof usePurchases>;
@@ -241,6 +241,8 @@ export function LibraryPane({
     setUploadError,
     setUploadModalOpen
   } = uploads;
+  // Known only once the status has loaded, so the prompt does not flash first.
+  const audibleNeedsAccount = native && !!libationStatus && allAudibleAccounts.length === 0;
 
   return (
     <aside className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource !== "local" ? "purchase-browsing" : ""}`} {...shelfPull.handlers}>
@@ -715,7 +717,7 @@ export function LibraryPane({
           </summary>
           <div className="purchase-console-body">
             {libationMessage ? <p role="status">{libationMessage}</p> : null}
-            {native && brokenLibationAccounts.length > 0 ? <button type="button" className="purchase-settings-link" onClick={() => openNativeTab("settings")}>
+            {native && brokenLibationAccounts.length > 0 ? <button type="button" className="purchase-settings-link" onClick={() => openStoreSettings("audible")}>
               <AlertCircle size={14} /> {brokenLibationAccounts.length} Audible account{brokenLibationAccounts.length === 1 ? " needs" : "s need"} attention <ChevronRight size={14} />
             </button> : null}
             {displayedLibationJobs.map((job) => {
@@ -768,7 +770,7 @@ export function LibraryPane({
       <DeviceImportNotice notice={downloadStatus} busy={deviceImport !== null} onRetry={importFromDevice} />
 
       {librarySource === "libro" || librarySource === "all" ? (
-        <LibroCatalog key={`${currentUser.id}:${libroOnDevice ? "device" : "server"}`} mode={native ? "catalog" : "full"} polling={!native || nativeTab === "shelf"} onOpenSettings={native ? () => openNativeTab("settings") : undefined} onAccountsChanged={setLibroAccounts} filterEmail={librarySource === "all" ? (purchaseAccountFilter.startsWith("libro:") ? purchaseAccountFilter.slice(6) : null) : undefined} hidden={librarySource === "all" && purchaseAccountFilter.startsWith("audible:")} device={libroOnDevice} refreshKey={libroRefreshKey} searchQuery={searchQuery} sortMode={sortMode} reversed={sortReversed} viewMode={purchaseViewMode} onBooksChanged={libroOnDevice ? () => setBooks(current => mergeDeviceAndServerBooks(current.filter(book => book.source !== "device"), getDeviceBooks())) : applyAdminLibraryChange} onOpenBook={(id) => { showYourLibrary(); openBookDetails(id); }} />
+        <LibroCatalog key={`${currentUser.id}:${libroOnDevice ? "device" : "server"}`} mode={native ? "catalog" : "full"} polling={!native || nativeTab === "shelf"} onOpenSettings={native ? () => openStoreSettings("libro") : undefined} onAccountsChanged={setLibroAccounts} filterEmail={librarySource === "all" ? (purchaseAccountFilter.startsWith("libro:") ? purchaseAccountFilter.slice(6) : null) : undefined} hidden={librarySource === "all" && purchaseAccountFilter.startsWith("audible:")} device={libroOnDevice} refreshKey={libroRefreshKey} searchQuery={searchQuery} sortMode={sortMode} reversed={sortReversed} viewMode={purchaseViewMode} onBooksChanged={libroOnDevice ? () => setBooks(current => mergeDeviceAndServerBooks(current.filter(book => book.source !== "device"), getDeviceBooks())) : applyAdminLibraryChange} onOpenBook={(id) => { showYourLibrary(); openBookDetails(id); }} />
       ) : null}
 
       {librarySource === "local" ? (
@@ -876,12 +878,19 @@ export function LibraryPane({
         </>
       ) : showAudiblePurchases ? (
         <>
-          {librarySource === "all" ? <h2 className="purchase-provider-heading">Audible</h2> : null}
+          {audibleNeedsAccount ? <section className="libro-catalog" aria-label="Audible library">
+            <header className="libro-catalog-head"><StoreHeading store="Audible" connected={false} onOpenSettings={() => openStoreSettings("audible")} /></header>
+          </section> : <>
+            {librarySource === "all" ? <h2 className="purchase-provider-heading">Audible</h2> : null}
+            {native ? <button type="button" className="purchase-settings-link" onClick={() => openStoreSettings("audible")}>
+              Audible accounts &amp; settings <ChevronRight size={14} />
+            </button> : null}
+          </>}
           {libationLoading || (libationStatus?.enabled && !libationBooksLoaded) ? (
             <div className="empty-state">Loading Audible library…</div>
           ) : null}
           {libationError ? <LibationError detail={libationError} /> : null}
-          {!libationLoading && !libationError && libationBooksLoaded && libationStatus?.enabled && visibleLibationBooks.length === 0 ? (
+          {!audibleNeedsAccount && !libationLoading && !libationError && libationBooksLoaded && libationStatus?.enabled && visibleLibationBooks.length === 0 ? (
             <div className="empty-state">No Libation books loaded yet.</div>
           ) : null}
 

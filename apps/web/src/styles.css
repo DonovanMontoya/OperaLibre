@@ -12317,6 +12317,8 @@ html.native-app .admin-shell:not(.admin-overlay) {
   list-style: none;
 }
 .store-settings-group > summary::-webkit-details-marker { display: none; }
+/* Settings scrolls under the status bar; a heading scrolled to must clear it. */
+.store-settings-group > summary { scroll-margin-top: calc(var(--status-h, 0px) + 12px); }
 .store-settings-group > summary > span { display: grid; gap: 2px; min-width: 0; }
 .store-settings-group > summary strong { color: var(--ink); font: 500 1rem/1.2 "Fraunces", serif; }
 .store-settings-group > summary small { color: var(--ink-faded); font: 0.7rem/1.35 "JetBrains Mono", monospace; }
@@ -16094,8 +16096,9 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 .audible-connection-copy strong { display: block; font-size: .8rem; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
 .audible-connection-copy small { display: block; margin-top: 3px; color: var(--audible-muted); font-size: .72rem; line-height: 1.4; }
 .purchase-console .audible-job { margin: 0; padding: 0; border: 0; background: transparent; }
-.purchase-settings-link,
-.libro-settings-link {
+/* Every way from Get books into Settings looks the same, whichever store it
+   belongs to. The doubled class outranks the Libro.fm catalog's button rule. */
+.purchase-settings-link.purchase-settings-link {
   display: inline-flex;
   align-items: center;
   justify-content: space-between;
@@ -16106,7 +16109,11 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
   border-radius: 9px;
   background: rgba(217, 181, 116, 0.07);
   color: var(--gold-soft);
+  font: 600 0.8rem/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: normal;
+  text-transform: none;
 }
+.purchase-settings-link.purchase-settings-link:hover:not(:disabled) { background: rgba(217, 181, 116, 0.14); color: var(--gold-soft); }
 .purchase-provider-tag { display: inline-block; padding: 2px 5px; border: 1px solid currentColor; border-radius: 4px; font: 500 0.65rem/1.3 -apple-system, BlinkMacSystemFont, sans-serif; white-space: nowrap; }
 .purchase-control-label {
   display: block;
