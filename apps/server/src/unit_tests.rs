@@ -623,7 +623,7 @@ fn legacy_permissions_promote_the_first_admin_to_owner() {
 }
 
 #[test]
-fn interrupted_libation_approvals_return_to_pending() {
+fn interrupted_libation_approvals_preserve_the_decision() {
     let mut store: super::LibationRequestStore = serde_json::from_value(serde_json::json!({
         "requests": [
             {
@@ -655,9 +655,9 @@ fn interrupted_libation_approvals_return_to_pending() {
     .unwrap();
 
     assert!(super::recover_interrupted_libation_requests(&mut store));
-    assert_eq!(store.requests[0].status, "pending");
-    assert!(store.requests[0].decided_at.is_none());
-    assert!(store.requests[0].decided_by.is_none());
+    assert_eq!(store.requests[0].status, "approved");
+    assert_eq!(store.requests[0].decided_at.as_deref(), Some("2"));
+    assert_eq!(store.requests[0].decided_by.as_deref(), Some("owner"));
     assert!(store.requests[0].job_id.is_none());
     assert_eq!(store.requests[1].status, "completed");
     assert!(!super::recover_interrupted_libation_requests(&mut store));
@@ -1799,7 +1799,10 @@ exit 0
         covers_dir: data_dir.join("covers"),
         database: database.clone(),
         database_path: data_dir.join("operalibre.db"),
-        library: super::Arc::new(super::RwLock::new(super::LibraryState::default())),
+        library: super::Arc::new(super::RwLock::new(super::LibraryState {
+            catalogue_ready: true,
+            ..super::LibraryState::default()
+        })),
         metadata_overrides: super::Arc::new(super::MetadataOverrides::new(
             database.clone(),
             super::StoreShape::Document(super::METADATA_OVERRIDES_DOCUMENT),
@@ -1851,6 +1854,8 @@ exit 0
         libation_login_sessions: super::Arc::new(super::Mutex::new(
             std::collections::HashMap::new(),
         )),
+        libation_status_accounts: super::Arc::new(super::RwLock::new(Vec::new())),
+        libation_account_registration_lock: super::Arc::new(super::Mutex::new(())),
         rescan_lock: super::Arc::new(super::Mutex::new(())),
         libation_job_lock: super::Arc::new(super::Mutex::new(())),
         libation_refresh_reservation_lock: super::Arc::new(super::Mutex::new(())),
@@ -5852,11 +5857,13 @@ async fn an_expired_libation_sign_in_releases_the_job_lock() {
     state.libation_login_sessions.lock().await.insert(
         "session-1".to_string(),
         super::PendingLibationLogin {
+            login_url: "https://www.amazon.com/ap/signin".to_string(),
             profile_id: "profile-1".to_string(),
+            created_account: false,
             expires_at: super::unix_now_seconds().saturating_sub(1),
             response_sender,
             completion,
-            _job_guard: job_guard,
+            _job_guard: super::Arc::new(job_guard),
         },
     );
     assert!(
@@ -5912,11 +5919,13 @@ async fn an_expired_libation_sign_in_does_not_block_account_deletion() {
     state.libation_login_sessions.lock().await.insert(
         "expired-session".to_string(),
         super::PendingLibationLogin {
+            login_url: "https://www.amazon.com/ap/signin".to_string(),
             profile_id: "profile-1".to_string(),
+            created_account: false,
             expires_at: super::unix_now_seconds().saturating_sub(1),
             response_sender,
             completion,
-            _job_guard: job_guard,
+            _job_guard: super::Arc::new(job_guard),
         },
     );
 
@@ -6109,6 +6118,7 @@ async fn shared_title_restores_an_owner_from_another_marketplace() {
                 super::LegacyLibationOwnership {
                     account_id: "marge@example.com".to_string(),
                     locale: "us".to_string(),
+                    purchased_asins: None,
                     asins: vec!["B000SHAR00".to_string()],
                 },
             );
@@ -8129,6 +8139,7 @@ async fn shared_audible_download_falls_back_without_finishing_the_job_early() {
                     super::LegacyLibationOwnership {
                         account_id: "dad@example.com".to_string(),
                         locale: "us".to_string(),
+                        purchased_asins: None,
                         asins: vec!["B000SHAR00".to_string()],
                     },
                 );
@@ -8237,6 +8248,7 @@ async fn persisted_audible_ownership_requires_revalidation_for_reader_grants() {
                             super::LegacyLibationOwnership {
                                 account_id: "marge@example.com".to_string(),
                                 locale: "us".to_string(),
+                                purchased_asins: None,
                                 asins: vec![asin.to_string()],
                             },
                         );
@@ -8381,4 +8393,1278 @@ async fn libation_download_budget_failure_is_reported_without_publishing() {
     assert!(job.error.unwrap().contains("max_upload_gib"));
     assert!(state.library.read().await.books.is_empty());
     assert_eq!(std::fs::read_dir(&state.library_root).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+fn libation_browser_fixture(root: &std::path::Path) -> super::AppState {
+    let (state, _) = fake_libation_state(root);
+    let cli = state.libation_config.cli_path.as_ref().unwrap();
+    let source = std::fs::read_to_string(cli).unwrap();
+    let login = format!(
+        r#"
+if [ "$command" = "--help" ]; then
+  printf 'login-external list-accounts scan export liberate\n'
+  exit 0
+fi
+if [ "$command" = "login-external" ]; then
+  printf 'Open https://www.amazon.com/ap/signin?fixture=true\n'
+  IFS= read -r response
+  printf 'fixture@example.test\tPersonal\tus\tyes\tyes\n' > '{}'
+  exit 0
+fi
+"#,
+        root.join("libation-accounts.tsv").display()
+    );
+    std::fs::write(
+        cli,
+        source.replace(
+            "command=\"$1\"\nshift\n",
+            &format!("command=\"$1\"\nshift\n{login}"),
+        ),
+    )
+    .unwrap();
+    state
+}
+
+#[cfg(unix)]
+fn browser_login_request(profile_id: Option<String>) -> super::StartLibationLoginRequest {
+    super::StartLibationLoginRequest {
+        profile_id,
+        label: "Personal".to_string(),
+        account_id: "fixture@example.test".to_string(),
+        locale: "us".to_string(),
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_browser_sign_in_preserves_pending_state_and_rejects_invalid_completion() {
+    let root = tempfile::tempdir().unwrap();
+    let state = libation_browser_fixture(root.path());
+    let started = super::start_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Json(browser_login_request(None)),
+    )
+    .await
+    .unwrap()
+    .0;
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        super::libation_status(super::State(state.clone()), super::AdminUser(admin_user())),
+    )
+    .await
+    .expect("status must remain available during sign-in")
+    .unwrap()
+    .0;
+    assert_eq!(status.pending_login.unwrap().session_id, started.session_id);
+    assert_eq!(status.accounts[0].connection_state, "signing_in");
+    assert!(state.libation_job_lock.try_lock().is_err());
+    let invalid = super::complete_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Path(started.session_id.clone()),
+        super::Json(super::CompleteLibationLoginRequest {
+            response_url: "https://amazon.com.attacker.test/".to_string(),
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(invalid.status, super::StatusCode::BAD_REQUEST);
+    assert_eq!(state.libation_login_sessions.lock().await.len(), 1);
+    let connected = super::complete_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Path(started.session_id),
+        super::Json(super::CompleteLibationLoginRequest {
+            response_url: "https://www.amazon.com/ap/maplanding?code=secret-fixture".to_string(),
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert!(
+        connected
+            .accounts
+            .iter()
+            .any(|account| account.id == started.profile_id && account.authenticated)
+    );
+    assert!(connected.pending_login.is_none());
+    let job_id = super::active_libation_sync_job(&state)
+        .await
+        .unwrap_or_else(|| {
+            state
+                .jobs
+                .try_read()
+                .unwrap()
+                .values()
+                .find(|job| job.kind == "libation-sync")
+                .unwrap()
+                .id
+                .clone()
+        });
+    assert_eq!(
+        wait_for_finished_job(&state, &job_id).await.status,
+        "completed"
+    );
+    assert!(state.libation_job_lock.try_lock().is_ok());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_cancel_stops_the_login_before_releasing_the_job_lock() {
+    let root = tempfile::tempdir().unwrap();
+    let state = libation_browser_fixture(root.path());
+    let started = super::start_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Json(browser_login_request(None)),
+    )
+    .await
+    .unwrap()
+    .0;
+    super::cancel_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Path(started.session_id),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while state.libation_job_lock.try_lock().is_err() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelled CLI must stop and release the lock");
+    assert!(state.libation_login_sessions.lock().await.is_empty());
+    assert!(state.libation_accounts.read().await.accounts.is_empty());
+    assert!(
+        !state
+            .libation_accounts_root
+            .join(&started.profile_id)
+            .exists()
+    );
+    assert!(!root.path().join("libation-accounts.tsv").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancelling_a_reconnect_keeps_the_existing_account() {
+    let root = tempfile::tempdir().unwrap();
+    let state = libation_browser_fixture(root.path());
+    state
+        .libation_accounts
+        .mutate(|store| {
+            store.accounts.push(super::ManagedLibationAccount {
+                id: "profile-1".to_string(),
+                label: "Personal".to_string(),
+                account_id: "fixture@example.test".to_string(),
+                locale: "us".to_string(),
+                added_by: "admin".to_string(),
+                added_at: super::now_unix_string(),
+                connection_state: "connected".to_string(),
+                authenticated: true,
+                last_successful_auth: Some(super::now_unix_string()),
+                last_successful_refresh: None,
+                last_error: None,
+            });
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let started = super::start_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Json(browser_login_request(Some("profile-1".to_string()))),
+    )
+    .await
+    .unwrap()
+    .0;
+    super::cancel_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Path(started.session_id),
+    )
+    .await
+    .unwrap();
+    let accounts = state.libation_accounts.read().await;
+    assert_eq!(accounts.accounts.len(), 1);
+    assert_eq!(accounts.accounts[0].connection_state, "needs_sign_in");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_reconnect_keeps_existing_accounts_in_the_shared_profile() {
+    let root = tempfile::tempdir().unwrap();
+    let state = libation_browser_fixture(root.path());
+    std::fs::write(
+        root.path().join("libation-accounts.tsv"),
+        "fixture@example.test\tPersonal\tus\tyes\tno\n",
+    )
+    .unwrap();
+    let status = super::read_libation_status(&state).await;
+    let id = status.accounts[0].id.clone();
+    let started = super::start_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Json(browser_login_request(Some(id.clone()))),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(started.profile_id, id);
+    assert!(state.libation_accounts.read().await.accounts.is_empty());
+    let connected = super::complete_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Path(started.session_id),
+        super::Json(super::CompleteLibationLoginRequest {
+            response_url: "https://www.amazon.com/ap/maplanding?code=fixture".to_string(),
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert!(
+        connected
+            .accounts
+            .iter()
+            .any(|account| account.id == id && account.authenticated && !account.managed)
+    );
+    assert!(state.libation_accounts.read().await.accounts.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_auto_import_only_adds_future_purchases_and_respects_revoked_permission() {
+    let root = tempfile::tempdir().unwrap();
+    let state = libation_browser_fixture(root.path());
+    state
+        .users
+        .mutate(|store| {
+            store.users = vec![stored_user("admin", true, true)];
+            Ok(())
+        })
+        .await
+        .unwrap();
+    std::fs::write(
+        root.path().join("libation-accounts.tsv"),
+        "fixture@example.test\tPersonal\tus\tyes\tyes\n",
+    )
+    .unwrap();
+    let export = |asins: &[(&str, bool)]| {
+        serde_json::Value::Array(asins.iter().map(|(asin, plus)| serde_json::json!({ "Account": "fixture@example.test", "Locale": "us", "Audible Product Id": asin, "Title": asin, "Is Audible Plus?": plus })).collect()).to_string()
+    };
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        export(&[("B000OLD001", false)]),
+    )
+    .unwrap();
+    let id = super::read_libation_status(&state).await.accounts[0]
+        .id
+        .clone();
+    let _ = super::set_libation_auto_import(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Path(id.clone()),
+        super::Json(super::LibationAutoImportRequest { enabled: true }),
+    )
+    .await
+    .unwrap();
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        export(&[
+            ("B000OLD001", false),
+            ("B000NEW001", false),
+            ("B000PLUS01", true),
+        ]),
+    )
+    .unwrap();
+    let (job_id, _) = super::create_queued_job(&state, "libation-sync", None).await;
+    super::spawn_libation_sync_job(state.clone(), job_id.clone());
+    assert_eq!(
+        wait_for_finished_job(&state, &job_id).await.status,
+        "completed"
+    );
+    let downloads = state
+        .jobs
+        .read()
+        .await
+        .values()
+        .filter(|job| job.kind == "libation-liberate")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(downloads.len(), 1);
+    assert!(
+        downloads[0]
+            .target_id
+            .as_ref()
+            .unwrap()
+            .ends_with(":B000NEW001")
+    );
+    assert_eq!(
+        wait_for_finished_job(&state, &downloads[0].id).await.status,
+        "completed"
+    );
+    assert!(super::find_book_id_by_asin(&state.library.read().await.books, "B000OLD001").is_none());
+    assert!(super::find_book_id_by_asin(&state.library.read().await.books, "B000PLUS01").is_none());
+    // A Plus title becoming a purchase is new acquisition, even though the
+    // ASIN was already in the borrowed catalog.
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        export(&[
+            ("B000OLD001", false),
+            ("B000NEW001", false),
+            ("B000PLUS01", false),
+        ]),
+    )
+    .unwrap();
+    let (job_id, _) = super::create_queued_job(&state, "libation-sync", None).await;
+    super::spawn_libation_sync_job(state.clone(), job_id.clone());
+    assert_eq!(
+        wait_for_finished_job(&state, &job_id).await.status,
+        "completed"
+    );
+    let purchased_plus = state
+        .jobs
+        .read()
+        .await
+        .values()
+        .find(|job| {
+            job.kind == "libation-liberate"
+                && job
+                    .target_id
+                    .as_ref()
+                    .is_some_and(|target| target.ends_with(":B000PLUS01"))
+        })
+        .unwrap()
+        .id
+        .clone();
+    assert_eq!(
+        wait_for_finished_job(&state, &purchased_plus).await.status,
+        "completed"
+    );
+    state
+        .users
+        .mutate(|store| {
+            store.users[0].libation_access = super::LibationAccess::Approval;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        export(&[("B000NEW002", false)]),
+    )
+    .unwrap();
+    let (job_id, _) = super::create_queued_job(&state, "libation-sync", None).await;
+    super::spawn_libation_sync_job(state.clone(), job_id.clone());
+    assert_eq!(
+        wait_for_finished_job(&state, &job_id).await.status,
+        "completed"
+    );
+    assert_eq!(
+        state
+            .jobs
+            .read()
+            .await
+            .values()
+            .filter(|job| job.kind == "libation-liberate")
+            .count(),
+        2
+    );
+    state
+        .users
+        .mutate(|store| {
+            store.users[0].libation_access = super::LibationAccess::Direct;
+            store.users[0].is_admin = false;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        export(&[("B000NEW003", false)]),
+    )
+    .unwrap();
+    let (job_id, _) = super::create_queued_job(&state, "libation-sync", None).await;
+    super::spawn_libation_sync_job(state.clone(), job_id.clone());
+    assert_eq!(
+        wait_for_finished_job(&state, &job_id).await.status,
+        "completed"
+    );
+    assert_eq!(
+        state
+            .jobs
+            .read()
+            .await
+            .values()
+            .filter(|job| job.kind == "libation-liberate")
+            .count(),
+        2
+    );
+    state
+        .users
+        .mutate(|store| {
+            store.users[0].is_admin = true;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let _ = super::set_libation_auto_import(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Path(id),
+        super::Json(super::LibationAutoImportRequest { enabled: false }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        state
+            .libation_refreshes
+            .read()
+            .await
+            .auto_imports
+            .is_empty()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_restart_recovers_approved_and_direct_downloads_with_restricted_access() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    state
+        .users
+        .mutate(|store| {
+            let mut reader = stored_user("reader", false, false);
+            reader.allowed_book_ids = Some(Vec::new());
+            store.users = vec![stored_user("owner", true, true), reader];
+            Ok(())
+        })
+        .await
+        .unwrap();
+    std::fs::write(root.path().join("libation-export.json"), r#"[{"Audible Product Id":"B000RECOV1","Title":"Recovered"},{"Audible Product Id":"B000RECOV2","Title":"Direct"}]"#).unwrap();
+    state
+        .libation_requests
+        .mutate(|store| {
+            store.requests.push(super::LibationDownloadRequest {
+                id: "saved-request".to_string(),
+                user_id: "reader".to_string(),
+                username: "reader".to_string(),
+                asin: "B000RECOV1".to_string(),
+                profile_id: Some("legacy".to_string()),
+                profile_name: None,
+                catalog_id: None,
+                title: "Recovered".to_string(),
+                status: "approved".to_string(),
+                requested_at: "1".to_string(),
+                decided_at: Some("2".to_string()),
+                decided_by: Some("owner".to_string()),
+                job_id: Some("old-job".to_string()),
+            });
+            Ok(())
+        })
+        .await
+        .unwrap();
+    state
+        .libation_refreshes
+        .mutate(|store| {
+            store
+                .pending_downloads
+                .push(super::PendingLibationDownload {
+                    id: "saved-direct".to_string(),
+                    profile_id: Some("legacy".to_string()),
+                    asin: "B000RECOV2".to_string(),
+                    grant_to_user: None,
+                });
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let snapshot = super::load_cached_snapshot(&state.database).await.unwrap();
+    let (restarted, _) = fake_libation_state(root.path());
+    restarted.users.adopt_restored(snapshot.users).await;
+    restarted
+        .libation_refreshes
+        .adopt_restored(snapshot.libation_refreshes)
+        .await;
+    let mut requests = snapshot.libation_requests;
+    assert!(super::recover_interrupted_libation_requests(&mut requests));
+    restarted.libation_requests.adopt_restored(requests).await;
+    super::rescan_library(&restarted).await.unwrap();
+    super::libation_recovery::recover(restarted.clone());
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let request = restarted.libation_requests.read().await.requests[0].clone();
+            if request.status == "completed"
+                && restarted
+                    .libation_refreshes
+                    .read()
+                    .await
+                    .pending_downloads
+                    .is_empty()
+            {
+                break;
+            }
+            assert_ne!(
+                request.status, "pending",
+                "restart must not require a second approval"
+            );
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let request = restarted.libation_requests.read().await.requests[0].clone();
+    assert_eq!(request.decided_by.as_deref(), Some("owner"));
+    assert_eq!(request.decided_at.as_deref(), Some("2"));
+    let library = restarted.library.read().await;
+    let recovered = super::find_book_id_by_asin(&library.books, "B000RECOV1").unwrap();
+    let direct = super::find_book_id_by_asin(&library.books, "B000RECOV2").unwrap();
+    let access = restarted.users.read().await.users[1]
+        .allowed_book_ids
+        .clone()
+        .unwrap();
+    assert!(access.contains(&recovered));
+    assert!(!access.contains(&direct));
+    assert_eq!(library.books.len(), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn libation_staging_cleanup_preserves_published_books_and_symlinks() {
+    let root = tempfile::tempdir().unwrap();
+    let staging = root.path().join(".operalibre-libation-interrupted");
+    std::fs::create_dir(&staging).unwrap();
+    std::fs::write(staging.join("unfinished.wav"), b"partial").unwrap();
+    let published = root.path().join("Audible [B000RECOV1]");
+    std::fs::create_dir(&published).unwrap();
+    std::os::unix::fs::symlink(&published, root.path().join(".operalibre-libation-link")).unwrap();
+    assert_eq!(
+        super::libation_download::sweep_staging(root.path()).unwrap(),
+        1
+    );
+    assert!(published.is_dir());
+    assert!(
+        root.path()
+            .join(".operalibre-libation-link")
+            .symlink_metadata()
+            .is_ok()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_status_preserves_legacy_accounts_without_probing_during_sign_in() {
+    let root = tempfile::tempdir().unwrap();
+    let state = libation_browser_fixture(root.path());
+    std::fs::write(
+        root.path().join("libation-accounts.tsv"),
+        "fixture@example.test\tPersonal\tus\tyes\tno\nother@example.test\tFamily\tus\tyes\tyes\n",
+    )
+    .unwrap();
+    let initial =
+        super::libation_status(super::State(state.clone()), super::AdminUser(admin_user()))
+            .await
+            .unwrap()
+            .0;
+    let id = initial.accounts[0].id.clone();
+    let started = super::start_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Json(browser_login_request(Some(id.clone()))),
+    )
+    .await
+    .unwrap()
+    .0;
+    let cli = state.libation_config.cli_path.as_ref().unwrap();
+    let source = std::fs::read_to_string(cli).unwrap();
+    let probe_log = root.path().join("unexpected-probes.log");
+    std::fs::write(
+        cli,
+        source.replace(
+            "if [ \"$command\" = \"list-accounts\" ]; then",
+            &format!(
+                "if [ \"$command\" = \"list-accounts\" ]; then\n  printf 'probe\\n' >> '{}'",
+                probe_log.display()
+            ),
+        ),
+    )
+    .unwrap();
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        super::libation_status(super::State(state.clone()), super::AdminUser(admin_user())),
+    )
+    .await
+    .expect("pending sign-in must not block status")
+    .unwrap()
+    .0;
+    assert_eq!(status.pending_login.unwrap().session_id, started.session_id);
+    assert_eq!(status.accounts.len(), 2);
+    assert_eq!(
+        status
+            .accounts
+            .iter()
+            .find(|account| account.id == id)
+            .unwrap()
+            .connection_state,
+        "signing_in"
+    );
+    assert!(
+        !probe_log.exists(),
+        "status must not start another CLI while sign-in writes its profile"
+    );
+    super::cancel_libation_account_login(
+        super::State(state),
+        super::AdminUser(admin_user()),
+        super::Path(started.session_id),
+    )
+    .await
+    .unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_auto_import_uses_each_shared_accounts_purchase_status() {
+    for selected in [0, 1] {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+        state
+            .users
+            .mutate(|store| {
+                store.users = vec![stored_user("admin", true, true)];
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let accounts =
+            "marge@example.com\tMarge\tus\tyes\tyes\ndad@example.com\tDad\tus\tyes\tyes\n";
+        std::fs::write(root.path().join("libation-accounts.tsv"), accounts).unwrap();
+        let parsed = super::parse_libation_accounts(accounts);
+        let account_id = &parsed[selected].account_id;
+        let id = parsed[selected].id.clone();
+        let exports = root.path().join("account-exports");
+        std::fs::create_dir(&exports).unwrap();
+        let cli = state.libation_config.cli_path.as_ref().unwrap();
+        let source = std::fs::read_to_string(cli).unwrap();
+        let hook = format!(
+            "  if [ -f '{}/'$1.json ]; then\n    cp '{}/'$1.json '{}'\n    exit 0\n  fi\n",
+            exports.display(),
+            exports.display(),
+            root.path().join("libation-export.json").display()
+        );
+        let shared_condition = format!(
+            "  if [ -f '{}' ]",
+            root.path().join("libation-shared-asin").display()
+        );
+        std::fs::write(
+            cli,
+            source.replace(&shared_condition, &(hook + &shared_condition)),
+        )
+        .unwrap();
+        let write_export = |account: &str, titles: &[(&str, bool)]| {
+            let records = titles
+                .iter()
+                .map(|(asin, plus)| {
+                    serde_json::json!({
+                        "Account": account, "Locale": "us", "Audible Product Id": asin,
+                        "Title": asin, "Is Audible Plus?": plus,
+                    "Content Type": if *asin == "B000OTHER1" { "Podcast" } else { "Product" },
+                    })
+                })
+                .collect::<Vec<_>>();
+            std::fs::write(
+                exports.join(format!("{account}.json")),
+                serde_json::to_vec(&records).unwrap(),
+            )
+            .unwrap();
+        };
+        for account in &parsed {
+            write_export(
+                &account.account_id,
+                &[
+                    ("B000OLD001", false),
+                    ("B000PLUS01", account.account_id == *account_id),
+                ],
+            );
+        }
+        let (sync, _) = super::create_queued_job(&state, "libation-sync", None).await;
+        super::spawn_libation_sync_job(state.clone(), sync.clone());
+        assert_eq!(
+            wait_for_finished_job(&state, &sync).await.status,
+            "completed"
+        );
+        let _ = super::set_libation_auto_import(
+            super::State(state.clone()),
+            super::AdminUser(admin_user()),
+            super::Path(id.clone()),
+            super::Json(super::LibationAutoImportRequest { enabled: true }),
+        )
+        .await
+        .unwrap();
+        let baseline = state.libation_refreshes.read().await.auto_imports[&id]
+            .seen_asins
+            .clone();
+        assert!(baseline.contains("B000OLD001"));
+        assert!(
+            !baseline.contains("B000PLUS01"),
+            "another account's purchase must not baseline a Plus loan"
+        );
+        for account in &parsed {
+            let selected_account = account.account_id == *account_id;
+            write_export(
+                &account.account_id,
+                &[
+                    ("B000OLD001", false),
+                    ("B000PLUS01", !selected_account),
+                    ("B000NEW001", !selected_account),
+                    ("B000BORR01", selected_account),
+                    ("B000OTHER1", false),
+                ],
+            );
+        }
+        let (sync, _) = super::create_queued_job(&state, "libation-sync", None).await;
+        super::spawn_libation_sync_job(state.clone(), sync.clone());
+        assert_eq!(
+            wait_for_finished_job(&state, &sync).await.status,
+            "completed"
+        );
+        let downloads = state
+            .jobs
+            .read()
+            .await
+            .values()
+            .filter(|job| job.kind == "libation-liberate")
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            downloads.len(),
+            2,
+            "only new selected-account purchases should be acquired"
+        );
+        for download in downloads {
+            assert_eq!(
+                wait_for_finished_job(&state, &download.id).await.status,
+                "completed"
+            );
+        }
+        let library = state.library.read().await;
+        assert!(super::find_book_id_by_asin(&library.books, "B000NEW001").is_some());
+        assert!(super::find_book_id_by_asin(&library.books, "B000PLUS01").is_some());
+        assert!(super::find_book_id_by_asin(&library.books, "B000OLD001").is_none());
+        assert!(super::find_book_id_by_asin(&library.books, "B000BORR01").is_none());
+        assert!(super::find_book_id_by_asin(&library.books, "B000OTHER1").is_none());
+        drop(library);
+        // A failed selected-account scan must not start new work from the other
+        // account's successful scan or the selected account's saved snapshot.
+        std::fs::write(root.path().join("libation-broken-account"), account_id).unwrap();
+        write_export(account_id, &[("B000NEW002", false)]);
+        let (sync, _) = super::create_queued_job(&state, "libation-sync", None).await;
+        super::spawn_libation_sync_job(state.clone(), sync.clone());
+        assert_eq!(wait_for_finished_job(&state, &sync).await.status, "failed");
+        assert_eq!(
+            state
+                .jobs
+                .read()
+                .await
+                .values()
+                .filter(|job| job.kind == "libation-liberate")
+                .count(),
+            2
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_auto_import_baselines_shared_purchases_from_older_ownership_snapshots() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let accounts = "marge@example.com\tMarge\tus\tyes\tyes\ndad@example.com\tDad\tus\tyes\tyes\n";
+    std::fs::write(root.path().join("libation-accounts.tsv"), accounts).unwrap();
+    let id = super::parse_libation_accounts(accounts)[0].id.clone();
+    let ownership: super::LegacyLibationOwnership = serde_json::from_str(
+        r#"{"accountId":"marge@example.com","locale":"us","asins":["B000OLD001","B000PLUS01"]}"#,
+    )
+    .unwrap();
+    state
+        .libation_refreshes
+        .mutate(|store| {
+            store.legacy_ownership.insert(id.clone(), ownership);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    std::fs::write(root.path().join("libation-export.json"),
+        r#"[{"Account":"dad@example.com","Locale":"us","Audible Product Id":"B000OLD001","Title":"Old shared purchase"},{"Account":"marge@example.com","Locale":"us","Audible Product Id":"B000PLUS01","Title":"Known Plus loan","Is Audible Plus?":true}]"#).unwrap();
+    let _ = super::set_libation_auto_import(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Path(id.clone()),
+        super::Json(super::LibationAutoImportRequest { enabled: true }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        state.libation_refreshes.read().await.auto_imports[&id]
+            .seen_asins
+            .contains("B000OLD001")
+    );
+    assert!(
+        !state.libation_refreshes.read().await.auto_imports[&id]
+            .seen_asins
+            .contains("B000PLUS01")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_bulk_download_persists_intent_before_starting_and_retries_save_failures() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    std::fs::write(
+        root.path().join("libation-accounts.tsv"),
+        "fixture@example.test\tPersonal\tus\tyes\tyes\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        r#"[{"Account":"fixture@example.test","Locale":"us","Audible Product Id":"B000BULK01","Title":"Bulk purchase"}]"#,
+    )
+    .unwrap();
+    state
+        .database
+        .call(|connection| connection.execute_batch("PRAGMA query_only=ON"))
+        .await
+        .unwrap();
+    assert!(
+        super::start_all_libation_downloads(state.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        state
+            .jobs
+            .read()
+            .await
+            .values()
+            .all(|job| !super::is_active_job(job)),
+        "a failed intent write must not leave an unstarted job that blocks retries"
+    );
+    state
+        .database
+        .call(|connection| connection.execute_batch("PRAGMA query_only=OFF"))
+        .await
+        .unwrap();
+    let guard = state.libation_job_lock.lock().await;
+    let created = super::start_all_libation_downloads(state.clone())
+        .await
+        .unwrap()
+        .0;
+    let snapshot = super::load_cached_snapshot(&state.database).await.unwrap();
+    assert!(snapshot.libation_refreshes.bulk_download_pending);
+    assert_eq!(
+        snapshot.libation_refreshes.bulk_download_job_id.as_deref(),
+        Some(created.job_id.as_str())
+    );
+    drop(guard);
+    assert_eq!(
+        wait_for_finished_job(&state, &created.job_id).await.status,
+        "completed"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if !state.libation_refreshes.read().await.bulk_download_pending {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("completed bulk work must clear persisted intent");
+    assert!(
+        state
+            .libation_refreshes
+            .read()
+            .await
+            .bulk_download_job_id
+            .is_none()
+    );
+    assert!(super::find_book_id_by_asin(&state.library.read().await.books, "B000BULK01").is_some());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_account_removal_cannot_accept_a_download_for_a_deleted_profile() {
+    use std::future::Future;
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let profile_id = "managed-account".to_string();
+    state
+        .libation_accounts
+        .mutate(|store| {
+            store.accounts.push(super::ManagedLibationAccount {
+                id: profile_id.clone(),
+                label: "Personal".to_string(),
+                account_id: "fixture@example.test".to_string(),
+                locale: "us".to_string(),
+                added_by: "admin".to_string(),
+                added_at: super::now_unix_string(),
+                connection_state: "connected".to_string(),
+                authenticated: true,
+                last_successful_auth: None,
+                last_successful_refresh: None,
+                last_error: None,
+            });
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let profile_dir = state.libation_accounts_root.join(&profile_id);
+    super::initialize_managed_libation_profile(&profile_dir, &state.library_root)
+        .await
+        .unwrap();
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        r#"[{"Audible Product Id":"B000RACE01","Title":"Concurrent download"}]"#,
+    )
+    .unwrap();
+    let jobs_guard = state.jobs.write().await;
+    let mut deleting = Box::pin(super::delete_libation_account(
+        super::State(state.clone()),
+        super::OwnerUser,
+        super::Path(profile_id.clone()),
+    ));
+    // Advance removal past its pending-intent check, into the blocked job read.
+    assert!(
+        deleting
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+            .is_pending()
+    );
+    let starting_state = state.clone();
+    let starting = tokio::spawn(async move {
+        super::start_libation_download(
+            &starting_state,
+            Some(profile_id),
+            "B000RACE01".to_string(),
+            None,
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if !state
+                .libation_refreshes
+                .read()
+                .await
+                .pending_downloads
+                .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("download intent must be registered while removal waits on the job table");
+    drop(jobs_guard);
+    assert_eq!(deleting.await.unwrap(), super::StatusCode::NO_CONTENT);
+    assert!(
+        starting.await.unwrap().is_err(),
+        "a removed profile must not be captured by an accepted download"
+    );
+    assert!(state.libation_accounts.read().await.accounts.is_empty());
+    assert!(
+        state
+            .libation_refreshes
+            .read()
+            .await
+            .pending_downloads
+            .is_empty()
+    );
+    assert!(
+        state
+            .jobs
+            .read()
+            .await
+            .values()
+            .all(|job| !super::is_active_job(job))
+    );
+    assert!(!profile_dir.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_startup_imports_wait_for_the_catalogue_and_reuse_manually_named_books() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, log) = fake_libation_state(root.path());
+    state.library.write().await.catalogue_ready = false;
+    std::fs::write(
+        root.path().join("libation-accounts.tsv"),
+        "fixture@example.test\tPersonal\tus\tyes\tyes\n",
+    )
+    .unwrap();
+    std::fs::write(root.path().join("libation-export.json"),
+        r#"[{"Account":"fixture@example.test","Locale":"us","Audible Product Id":"B000LOCAL1","Title":"Already present"}]"#).unwrap();
+    let book = state.library_root.join("Already present [B000LOCAL1]");
+    std::fs::create_dir(&book).unwrap();
+    std::fs::copy(
+        root.path().join("template.wav"),
+        book.join("Already present [B000LOCAL1].wav"),
+    )
+    .unwrap();
+    let direct = super::start_libation_download(&state, None, "B000LOCAL1".to_string(), None)
+        .await
+        .unwrap()
+        .0;
+    let bulk = super::start_all_libation_downloads(state.clone())
+        .await
+        .unwrap()
+        .0;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while state.shutdown.receiver_count() < 4 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("both workers and completion observers must reach their waits");
+    for job in [&direct.job_id, &bulk.job_id] {
+        assert_eq!(state.jobs.read().await[job].status, "queued");
+    }
+    assert!(
+        state.libation_job_lock.try_lock().is_ok(),
+        "startup waits must not park the CLI lock"
+    );
+    assert!(
+        !std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("start B000LOCAL1")
+    );
+    super::rescan_library(&state).await.unwrap();
+    assert!(super::find_book_id_by_asin(&state.library.read().await.books, "B000LOCAL1").is_some());
+    for job in [&direct.job_id, &bulk.job_id] {
+        assert_eq!(wait_for_finished_job(&state, job).await.status, "completed");
+    }
+    assert_eq!(state.library.read().await.books.len(), 1);
+    assert_eq!(std::fs::read_dir(&state.library_root).unwrap().count(), 1);
+    assert!(
+        !std::fs::read_to_string(log)
+            .unwrap()
+            .contains("start B000LOCAL1"),
+        "catalogue reuse must prevent an external download into a second folder"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_shutdown_preserves_a_download_queued_behind_the_startup_catalogue() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    state.library.write().await.catalogue_ready = false;
+    let created = super::start_libation_download(&state, None, "B000QUEUE1".to_string(), None)
+        .await
+        .unwrap()
+        .0;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while state.shutdown.receiver_count() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("worker and durable-intent observer must subscribe before shutdown");
+    state.shutdown.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while state.shutdown.receiver_count() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("startup and completion waits must stop at shutdown");
+    let _ = wait_for_finished_job(&state, &created.job_id).await;
+    let snapshot = super::load_cached_snapshot(&state.database).await.unwrap();
+    assert_eq!(
+        snapshot.libation_refreshes.pending_downloads.len(),
+        1,
+        "shutdown must leave queued work available for restart recovery"
+    );
+    assert_eq!(
+        snapshot.libation_refreshes.pending_downloads[0].asin,
+        "B000QUEUE1"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_shutdown_preserves_intent_when_the_observer_starts_after_the_signal() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    state.library.write().await.catalogue_ready = false;
+    let _main_shutdown = state.shutdown.subscribe();
+    let registration_guard = state.libation_account_registration_lock.lock().await;
+    let starting_state = state.clone();
+    let starting = tokio::spawn(async move {
+        super::start_libation_download(&starting_state, None, "B000LATE01".to_string(), None).await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while state
+            .libation_refreshes
+            .read()
+            .await
+            .pending_downloads
+            .is_empty()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("dispatch must save intent before account registration");
+    assert!(
+        state.jobs.read().await.is_empty(),
+        "the worker and observer have not been spawned yet"
+    );
+    state.shutdown.send(()).unwrap();
+    drop(registration_guard);
+    let created = starting.await.unwrap().unwrap().0;
+    let job = wait_for_finished_job(&state, &created.job_id).await;
+    assert_eq!(
+        job.status, "failed",
+        "the worker must honor a signal received before it started"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while state.shutdown.receiver_count() > 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the late completion observer must consume its buffered shutdown signal");
+    let snapshot = super::load_cached_snapshot(&state.database).await.unwrap();
+    assert_eq!(snapshot.libation_refreshes.pending_downloads.len(), 1);
+    assert_eq!(
+        snapshot.libation_refreshes.pending_downloads[0].asin,
+        "B000LATE01"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_shutdown_during_a_scan_does_not_start_automatic_imports() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    state
+        .users
+        .mutate(|store| {
+            store.users = vec![stored_user("admin", true, true)];
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let accounts = "fixture@example.test\tPersonal\tus\tyes\tyes\n";
+    std::fs::write(root.path().join("libation-accounts.tsv"), accounts).unwrap();
+    std::fs::write(root.path().join("libation-export.json"),
+        r#"[{"Account":"fixture@example.test","Locale":"us","Audible Product Id":"B000NEW001","Title":"New purchase"}]"#).unwrap();
+    let id = super::parse_libation_accounts(accounts)[0].id.clone();
+    state
+        .libation_refreshes
+        .mutate(|store| {
+            store.legacy_ownership.insert(
+                id.clone(),
+                super::LegacyLibationOwnership {
+                    account_id: "fixture@example.test".to_string(),
+                    locale: "us".to_string(),
+                    asins: Vec::new(),
+                    purchased_asins: Some(Vec::new()),
+                },
+            );
+            store.auto_imports.insert(
+                id.clone(),
+                super::LibationAutoImport {
+                    enabled_by: "admin".to_string(),
+                    seen_asins: std::collections::HashSet::new(),
+                },
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    // The account scan may finish, but recording its ownership cannot finish
+    // until this read is released. Deliver shutdown before acquisition starts.
+    let refresh_guard = state.libation_refreshes.read().await;
+    let (job_id, _) = super::create_queued_job(&state, "libation-sync", None).await;
+    super::spawn_libation_sync_job(state.clone(), job_id.clone());
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !root.path().join("libation-scans.log").exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the account scan must start before shutdown");
+    state.shutdown.send(()).unwrap();
+    drop(refresh_guard);
+    assert_eq!(
+        wait_for_finished_job(&state, &job_id).await.status,
+        "failed"
+    );
+    assert!(
+        state
+            .jobs
+            .read()
+            .await
+            .values()
+            .all(|job| job.kind != "libation-liberate")
+    );
+    let snapshot = super::load_cached_snapshot(&state.database).await.unwrap();
+    assert!(snapshot.libation_refreshes.pending_downloads.is_empty());
+    assert!(
+        snapshot.libation_refreshes.auto_imports[&id]
+            .seen_asins
+            .is_empty()
+    );
+    assert!(snapshot.libation_refreshes.last_successful_scan.is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_refresh_scheduler_honors_shutdown_before_its_task_starts() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let _main_shutdown = state.shutdown.subscribe();
+    super::schedule_automatic_libation_refresh(state.clone());
+    state.shutdown.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while state.shutdown.receiver_count() > 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the scheduler must stop on its buffered shutdown event");
+    assert!(state.jobs.read().await.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_catalogue_wait_honors_shutdown_while_readiness_is_blocked() {
+    use std::future::Future;
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let mut library = state.library.write().await;
+    let mut waiting = Box::pin(super::libation_recovery::wait_for_library(
+        &state,
+        state.shutdown.subscribe(),
+    ));
+    assert!(
+        waiting
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+            .is_pending()
+    );
+    state.shutdown.send(()).unwrap();
+    library.catalogue_ready = true;
+    drop(library);
+    assert!(
+        !waiting.await,
+        "readiness must not override buffered shutdown"
+    );
 }

@@ -75,3 +75,7 @@ The current feed provides a separate acquisition per track. Client handling of m
 ## OperaLibre read-along clients
 
 Read-along map metadata includes an optional `mappingRevision`, and book sync summaries include `outdated`. Older clients may ignore both; existing map URLs and timings remain usable. Queue recovery and nightly remapping run on the OperaLibre server and do not require native-client changes.
+
+## OperaLibre Audible imports
+
+Libation status includes optional setup and automatic-import information. Existing catalog and download endpoints remain compatible. After a server restart, reload the job list or approval requests to obtain recovered job IDs.

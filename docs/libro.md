@@ -5,7 +5,7 @@ nav_order: 9
 
 # Libro.fm import
 
-Open **Get books** on the shelf, then choose **Libro.fm** from the purchase-source dropdown. In the browser, connect your account there with your email and password. In the native apps, connect under **Settings → Book stores → Libro.fm** and choose **OperaLibre server** as the destination. Return to Get books to browse purchases and choose **Import** on a book. Administrators can also use **Administration → Imports**. No additional downloader application is required.
+Open **Get books** on the shelf, then choose **Libro.fm**. In the browser, choose **Connect** and sign in with your email and password. In the native apps, connect under **Settings → Book stores → Libro.fm** and choose **OperaLibre server** as the destination. Return to Get books to browse purchases and choose **Import** on a book. Administrators can also use **Administration → Imports**. No additional downloader application is required.
 
 OperaLibre loads all library pages, offers search and sorting, and queues selected
 books as background jobs. It downloads an M4B when available; otherwise it
@@ -140,11 +140,11 @@ personal home directories may be inaccessible. See
 
 ### Browse stores and connect more accounts
 
-In **Get books**, choose **All accounts** from the purchase-source dropdown to browse Audible and Libro.fm purchases
+In **Get books**, choose **All accounts** to browse Audible and Libro.fm purchases
 on the same screen. Search applies to both store sections. You can still select
 an individual store and filter purchases by account.
 
-In a browser, expand **Libro.fm accounts** in Get books. In the native apps, open **Settings → Book stores → Libro.fm → Manage connected accounts**. Choose **Add Libro.fm account** to connect another account. Existing connections
+In a browser, choose **Manage** beside Libro.fm in Get books. In the native apps, open **Settings → Book stores → Libro.fm**. Choose **Add Libro.fm account** to connect another account. Existing connections
 and cached purchases are preserved, including connections saved by older versions.
 Use the same account controls to reconnect or disconnect a specific account;
 **Refresh all accounts** updates every connected library. Purchases show their
@@ -160,7 +160,7 @@ Libro.fm accounts, grouped and labeled by store. Choosing an account shows only
 that account's purchases; **All accounts** restores both stores. The individual
 store views keep their own account filters.
 
-Use the account controls to save an optional nickname (up to 80 characters).
+Choose **Rename** in account settings to save an optional nickname (up to 80 characters).
 Nicknames appear in filters and purchase labels; email addresses remain available
 in account settings. Clearing a nickname restores the email label. Server
 nicknames are saved for your OperaLibre user, while device nicknames stay with the
