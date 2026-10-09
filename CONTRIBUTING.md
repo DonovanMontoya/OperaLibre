@@ -18,7 +18,7 @@ improvements, and features are all welcome.
 You need Node.js 22.12+, Rust, and a folder with a few audiobook files.
 
 ```bash
-git clone https://github.com/DonovanMontoya/OperaLibre.git   # or: jj git clone ...
+git clone https://github.com/DonovanMontoya/OperaLibre.git
 cd OperaLibre
 npm ci
 cp server.config.example server.config
@@ -49,9 +49,6 @@ Open <http://localhost:5173> and create the first administrator account. See the
    New `server.config` options must have safe defaults so existing installs keep
    working.
 5. Use conventional commit messages: `fix: keep sleep timer across track changes`.
-
-Either Git or [Jujutsu](https://jujutsu-vcs.github.io/) works; the maintainer
-uses `jj` colocated with Git.
 
 ### Playback progress
 

@@ -5,13 +5,11 @@ import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, exis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const jjRevision = 'a'.repeat(40), gitRevision = 'b'.repeat(40);
+const gitRevision = 'b'.repeat(40);
 for (const scenario of [
   { name: 'Git-only CI checkout', git: `printf '${gitRevision}'`, expected: gitRevision },
-  { name: 'failed jj command', jj: `printf '${jjRevision}'; exit 1`, git: `printf '${gitRevision}'`, expected: gitRevision },
-  { name: 'Jujutsu working copy', jj: `printf '${jjRevision}'`, git: 'exit 1', expected: jjRevision },
-  { name: 'neither VCS available' },
-  { name: 'invalid revision output', jj: "printf 'invalid'", git: "printf 'invalid'" },
+  { name: 'git unavailable' },
+  { name: 'invalid revision output', git: "printf 'invalid'" },
 ]) {
   test(scenario.name, () => {
     const root = mkdtempSync(join(tmpdir(), 'performance-runner-'));
@@ -22,7 +20,7 @@ for (const scenario of [
       copyFileSync(new URL('./run.mjs', import.meta.url), join(root, 'script/performance/run.mjs'));
       writeFileSync(join(root, 'node_modules/@playwright/test/package.json'), '{"version":"test"}');
       // Keep the real runner and filesystem behavior; replace only external tools.
-      for (const [name, body] of Object.entries({ cargo: 'exit 0', jj: scenario.jj, git: scenario.git })) {
+      for (const [name, body] of Object.entries({ cargo: 'exit 0', git: scenario.git })) {
         if (body) writeFileSync(join(root, 'bin', name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
       }
       const result = spawnSync(process.execPath, [join(root, 'script/performance/run.mjs'), 'server', '--label', 'test'], {
@@ -38,7 +36,7 @@ for (const scenario of [
         assert.ok(metadata.completedAt);
       } else {
         assert.notEqual(result.status, 0);
-        assert.match(result.stderr, /Cannot record source revision: jj: .*; git:/);
+        assert.match(result.stderr, /Cannot record source revision: git:/);
         assert.equal(existsSync(report), false);
       }
     } finally {
