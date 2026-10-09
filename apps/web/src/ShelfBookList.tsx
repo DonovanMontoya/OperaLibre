@@ -1,4 +1,4 @@
-import { BookHeadphones, BookOpen, Check, Cloud, Images, Search, Smartphone, Timer, Users } from "lucide-react";
+import { BookHeadphones, BookOpen, Check, Cloud, Images, Search, Smartphone, Timer, TriangleAlert, Users } from "lucide-react";
 import { hasExtras } from "./readalong";
 import { memo, useState } from "react";
 import { compactProgressLabel } from "./bookProgress";
@@ -9,8 +9,7 @@ import { summarizeSharedProgress } from "./sharedProgress";
 import { bookSortGroupCaption, type SortMode } from "./shelfSort";
 import { bookProgressLabel, bookSubtitle, durationFromTracks, formatDurationLabel } from "./formatting";
 import { CoverArt } from "./CoverArt";
-import { OfflineBookReadiness } from "./OfflineBookReadiness";
-import { offlineReadinessSummary, type OfflineReadiness } from "./offlineReadiness";
+import type { OfflineReadiness } from "./offlineReadiness";
 
 /**
  * One column of the filter panel: a heading and a cloud of toggleable chips.
@@ -161,13 +160,16 @@ export const ShelfBookList = memo(function ShelfBookList({
           || !!book.deviceBookId
           || downloadedBookIds.has(book.id);
         const availableOnServer = !demoMode && !localMode && book.source !== "device";
-        const availabilityLabel = downloadedBookIds.has(book.id) && book.source !== "device"
-          ? offlineReadinessSummary(offlineReadiness[book.id])
-          : availableOnDevice
+        const hasMissingOfflineFiles = downloadedBookIds.has(book.id) && book.source !== "device" && !book.deviceBookId && !demoMode && !localMode
+          && !!offlineReadiness[book.id]?.missingFiles.length;
+        const availabilityLabel = availableOnDevice
           ? availableOnServer
             ? "Available on the server and this device"
             : "Available on this device"
           : "Available from the server";
+        const availabilityTitle = hasMissingOfflineFiles
+          ? `${availabilityLabel}. Some offline files are missing. Open book details to retry.`
+          : availabilityLabel;
         const unavailableOffline = isOffline && !availableOnDevice;
         const shared = isCompactView ? null : summarizeSharedProgress(book.sharedProgress);
         // Compact abbreviates the chip and drops it entirely for a book
@@ -182,7 +184,7 @@ export const ShelfBookList = memo(function ShelfBookList({
         return (
             <button
               key={book.id}
-              className={`book-row ${book.id === selectedBookId ? "active" : ""} ${book.id === playbackBookId ? "playing" : ""} ${book.progress?.status === "inProgress" ? "in-progress" : ""} ${unavailableOffline ? "offline-unavailable" : ""}`}
+              className={`book-row ${book.id === selectedBookId ? "active" : ""} ${book.id === playbackBookId ? "playing" : ""} ${book.progress?.status === "inProgress" ? "in-progress" : ""} ${unavailableOffline ? "offline-unavailable" : ""} ${hasMissingOfflineFiles ? "has-offline-warning" : ""}`}
               onClick={() => onSelectBook(book)}
             >
               {native || viewMode === "grid" || book.coverArtUrl ? (
@@ -195,11 +197,12 @@ export const ShelfBookList = memo(function ShelfBookList({
                   availableOnServer && availableOnDevice ? "server-and-device" : ""
                 }`}
                 role="img"
-                aria-label={availabilityLabel}
-                title={availabilityLabel}
+                aria-label={availabilityTitle}
+                title={availabilityTitle}
               >
                 {availableOnServer ? <Cloud className="server-availability-icon" size={13} strokeWidth={1.8} /> : null}
                 {availableOnDevice ? <Smartphone className="device-availability-icon" size={13} strokeWidth={1.8} /> : null}
+                {hasMissingOfflineFiles ? <TriangleAlert className="offline-warning-icon" size={13} strokeWidth={1.8} aria-hidden="true" /> : null}
               </span>
               {/* Compact drops the badge row — runtime, shared readers,
                   series position — and keeps title, byline and progress.
@@ -211,9 +214,6 @@ export const ShelfBookList = memo(function ShelfBookList({
               <span className="book-text">
                 <strong>{book.title}</strong>
                 <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
-                {downloadedBookIds.has(book.id) && book.source !== "device" && !demoMode ? (
-                  <OfflineBookReadiness readiness={offlineReadiness[book.id]} />
-                ) : null}
                 {!isCompactView && sortMode === "series" && book.metadata.seriesPosition ? (
                   <span className="book-sort-context">Book {book.metadata.seriesPosition} in series</span>
                 ) : null}

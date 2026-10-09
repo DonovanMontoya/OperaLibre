@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import { test } from "node:test";
 import { library } from "./performance/fixtures.ts";
-import type { Book, Progress } from "../src/types.ts";
+import type { Book, Progress, SyncMap } from "../src/types.ts";
 import type { BackgroundDownloadFile } from "../src/backgroundDownloads.ts";
 
 const state = {
   native: false,
+  scope: "server-a",
   files: new Map<string, string>(),
+  directories: new Set<string>(),
+  mkdirError: null as Error | null,
+  mkdirRace: false,
+  listingFails: false,
   stores: { data: new Map<string, unknown>(), media: new Map<string, unknown>() },
   jobs: new Map<string, { state: string; fraction: number; files: BackgroundDownloadFile[] }>(),
   attempts: [] as BackgroundDownloadFile[][],
@@ -39,15 +44,22 @@ Reflect.set(globalThis, "indexedDB", { open() {
 const mocks: Record<string, string> = {
   "@capacitor/core": `export const Capacitor = { isNativePlatform: () => ${fixture}.native, convertFileSrc: value => value };`,
   "@capacitor/filesystem": `export const Directory = { Data: "DATA" }; export const Filesystem = {
-    stat: async ({path}) => { const file = ${fixture}.files.get(path); if (file !== undefined) return {size: atob(file).length};
-      if ([...${fixture}.files.keys()].some(key => key.startsWith(path + '/'))) return {size: 1}; throw Error('missing'); },
-    getUri: async ({path}) => ({uri: 'file://' + path}), mkdir: async () => {},
+    stat: async ({path}) => { const file = ${fixture}.files.get(path); if (file !== undefined) return {type: 'file', size: atob(file).length};
+      if (${fixture}.directories.has(path) || [...${fixture}.files.keys()].some(key => key.startsWith(path + '/'))) return {type: 'directory', size: 1}; throw Error('missing'); },
+    getUri: async ({path}) => ({uri: 'file://' + path}),
+    mkdir: async ({path}) => {
+      if (${fixture}.mkdirError) throw ${fixture}.mkdirError;
+      if (${fixture}.directories.has(path) || ${fixture}.files.has(path) || [...${fixture}.files.keys()].some(key => key.startsWith(path + '/'))) throw Error('Directory already exists, cannot be overwritten.');
+      ${fixture}.directories.add(path);
+      if (${fixture}.mkdirRace) throw Error('Directory already exists, cannot be overwritten.');
+    },
+    readdir: async ({path}) => { if (${fixture}.listingFails) throw Error('Temporary directory listing failure'); return {files: [...${fixture}.files.keys()].filter(key => key.startsWith(path + '/')).map((key, i) => ({name: key.slice(path.length + 1), mtime: i}))}; },
     readFile: async ({path}) => { if (!${fixture}.files.has(path)) throw Error('missing'); return {data: ${fixture}.files.get(path)}; },
     writeFile: async ({path, data}) => { ${fixture}.files.set(path, data); },
     deleteFile: async ({path}) => { ${fixture}.files.delete(path.startsWith("file://") ? path.slice(7) : path); },
     rmdir: async ({path}) => { for (const key of ${fixture}.files.keys()) if (key.startsWith(path + '/')) ${fixture}.files.delete(key); }
   };`,
-  "./api": `export const getServerStorageKey = () => 'server-a'; export const getServerUrl = () => '';`,
+  "./api": `export const getServerStorageKey = () => ${fixture}.scope; export const getServerUrl = () => '';`,
   "./backgroundDownloads": `
     export const getBackgroundBookDownloadStatus = async id => { const job = ${fixture}.jobs.get(id); if (!job) throw Error('missing job'); return job; };
     export const cancelBackgroundBookDownload = async id => {
@@ -87,8 +99,9 @@ const book: Book = { ...library(1)[0], readingFile: epub,
 const progress = { bookId: book.id, trackId: book.tracks[0].id, positionSeconds: 42, bookPositionSeconds: 42, updatedAt: "2026-10-07T00:00:00Z" } as Progress;
 
 function reset(native: boolean) {
-  state.native = native; state.files.clear(); state.stores.data.clear(); state.stores.media.clear();
+  state.scope = "server-a"; state.native = native; state.files.clear(); state.stores.data.clear(); state.stores.media.clear();
   state.attempts.length = 0; state.jobs.clear(); state.hold = false; state.fail = true;
+  state.directories.clear(); state.mkdirError = null; state.mkdirRace = false; state.listingFails = false;
 }
 
 test("web partial downloads and retries survive offline reopening with listening progress intact", async (t) => {
@@ -160,4 +173,193 @@ test("native missing-file jobs exclude audio, preserve progress, and reopen usin
   assert.equal(await reopened.isBookDownloaded(book), false);
   assert.equal(state.jobs.size, 0, "removal must stop persisted jobs before they can recreate files");
   assert.deepEqual(await reopened.getCachedProgress("reader", book.id), progress);
+});
+
+const sentenceMap: SyncMap = { version: 1, precision: "sentence", fragments: [
+  { startSeconds: 0, endSeconds: 1, href: "chapter.xhtml", text: "Hello" }
+] };
+const chapterMap: SyncMap = { ...sentenceMap, precision: "chapter", fragments: [
+  { ...sentenceMap.fragments[0], text: "Hello!" }
+] };
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+for (const native of [false, true]) {
+  test(`${native ? "native" : "web"} readiness observes same-size sync replacements and removals`, async (t) => {
+    reset(native);
+    state.fail = false;
+    t.mock.method(globalThis, "fetch", async (url: string) => new Response(url.startsWith("file://")
+      ? atob(state.files.get(url.slice(7))!) : url === "/sync" ? JSON.stringify(sentenceMap) : url));
+    await offline.downloadBookForOffline(book, url => url, () => {});
+    await offline.saveOfflineSyncMap(book, sentenceMap);
+    assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "available");
+    assert.equal(JSON.stringify(sentenceMap).length, JSON.stringify(chapterMap).length);
+    // Another WebView/tab has its own module state but shares durable storage.
+    const otherView = await import(`../src/offline.ts?replacement-${native}` as string);
+    await otherView.saveOfflineSyncMap(book, chapterMap);
+    assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "unsupported");
+    if (native) state.files.delete(`offline-media/server-a/${book.id}/sync.json`);
+    else state.stores.media.delete(`server-a:${book.id}:sync`);
+    assert.deepEqual((await offline.getBookOfflineReadiness(book)).missingFiles, ["sync"]);
+  });
+
+  test(`${native ? "native" : "web"} readiness retries a transient stored-map read failure`, async (t) => {
+    reset(native);
+    state.fail = false;
+    t.mock.method(globalThis, "fetch", async (url: string) => new Response(url.startsWith("file://")
+      ? atob(state.files.get(url.slice(7))!) : url === "/sync" ? JSON.stringify(sentenceMap) : url));
+    await offline.downloadBookForOffline(book, url => url, () => {});
+    await offline.saveOfflineSyncMap(book, sentenceMap);
+    if (native) {
+      const fetchFile = globalThis.fetch;
+      let fail = true;
+      t.mock.method(globalThis, "fetch", async (...args: Parameters<typeof fetch>) => {
+        if (fail && String(args[0]).endsWith("/sync.json")) {
+          fail = false;
+          throw new TypeError("Temporary local file read failure");
+        }
+        return fetchFile(...args);
+      });
+    } else {
+      const readBlob = Blob.prototype.text;
+      let fail = true;
+      t.mock.method(Blob.prototype, "text", async function(this: Blob) {
+        if (fail && this.type === "application/json") {
+          fail = false;
+          throw new Error("Temporary stored blob read failure");
+        }
+        return readBlob.call(this);
+      });
+    }
+    assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "missing");
+    const recovered = await offline.getBookOfflineReadiness(book);
+    assert.equal(recovered.sentenceSync, "available");
+    assert.deepEqual(recovered.missingFiles, []);
+  });
+}
+
+test("a concurrent same-size sync save is visible after an older readiness read completes", async (t) => {
+  reset(false);
+  t.mock.method(globalThis, "fetch", async (url: string) =>
+    new Response(url === "/sync" ? JSON.stringify(sentenceMap) : url));
+  await offline.downloadBookForOffline(book, url => url, () => {});
+  await offline.saveOfflineSyncMap(book, sentenceMap);
+  const reading = deferred();
+  const release = deferred();
+  const readBlob = Blob.prototype.text;
+  let held = false;
+  t.mock.method(Blob.prototype, "text", async function(this: Blob) {
+    const text = await readBlob.call(this);
+    if (!held && this.type === "application/json") {
+      held = true;
+      reading.resolve();
+      await release.promise;
+    }
+    return text;
+  });
+  const oldRead = offline.getBookOfflineReadiness(book);
+  await reading.promise;
+  await offline.saveOfflineSyncMap(book, chapterMap);
+  release.resolve();
+  await oldRead;
+  assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "unsupported");
+});
+
+test("switching servers during readiness cannot contaminate the original server's next inspection", async (t) => {
+  reset(false);
+  t.mock.method(globalThis, "fetch", async (url: string) =>
+    new Response(url === "/sync" ? JSON.stringify(sentenceMap) : url));
+  await offline.downloadBookForOffline(book, url => url, () => {});
+  state.scope = "server-b";
+  await offline.downloadBookForOffline(book, url => url, () => {});
+  await offline.saveOfflineSyncMap(book, chapterMap);
+  state.scope = "server-a";
+  const readRecord = state.stores.media.get.bind(state.stores.media);
+  let switched = false;
+  t.mock.method(state.stores.media, "get", (key: string) => {
+    const record = readRecord(key);
+    if (!switched && key === `server-a:${book.id}:sync`) {
+      switched = true;
+      state.scope = "server-b";
+    }
+    return record;
+  });
+  await offline.getBookOfflineReadiness(book);
+  state.scope = "server-a";
+  assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "available");
+  state.scope = "server-b";
+  assert.equal((await offline.getBookOfflineReadiness(book)).sentenceSync, "unsupported");
+});
+
+test("native retry reuses an existing download directory without touching audio", async () => {
+  reset(true);
+  await offline.downloadBookForOffline(book, url => url, () => {});
+  const audio = book.tracks.map(track => state.files.get(`offline-media/server-a/${book.id}/track-${track.id}.wav`));
+  state.fail = false;
+  await offline.downloadBookForOffline(book, url => url, () => {}, undefined, true);
+  assert.equal(state.attempts.length, 2);
+  assert.ok(state.attempts[1].every(file => !file.required));
+  assert.equal((await offline.getBookOfflineReadiness(book)).ebook, "available");
+  assert.deepEqual(book.tracks.map(track => state.files.get(`offline-media/server-a/${book.id}/track-${track.id}.wav`)), audio);
+});
+
+for (const native of [false, true]) {
+  test(`${native ? "native" : "web"} existing offline artwork satisfies readiness after a cover revision changes`, async (t) => {
+    reset(native);
+    const illustrated = { ...library(1)[0], coverArtUrl: '/cover?v=old', coverArtContentType: 'image/jpeg' };
+    state.fail = false;
+    t.mock.method(globalThis, "fetch", async (url: string) => new Response(url));
+    await offline.downloadBookForOffline(illustrated, url => url, () => {});
+    const revised = { ...illustrated, coverArtUrl: '/cover?v=new', coverArtContentType: 'image/png' };
+    const before = native ? new Map(state.files) : new Map(state.stores.media);
+    assert.deepEqual((await offline.getBookOfflineReadiness(revised)).missingFiles, []);
+    assert.deepEqual(native ? state.files : state.stores.media, before, "readiness does not rewrite downloaded files");
+    if (native) state.files.set(`offline-media/server-a/${illustrated.id}/cover-new.png`, "");
+    else state.stores.media.set(`server-a:${illustrated.id}:cover:new`, {key: `server-a:${illustrated.id}:cover:new`, blob: new Blob([])});
+    assert.deepEqual((await offline.getBookOfflineReadiness(revised)).missingFiles, [], "empty newer artwork must not hide a usable offline fallback");
+    if (native) state.files.delete(`offline-media/server-a/${illustrated.id}/cover-old.jpg`);
+    else {
+      state.stores.media.delete(`server-a:${illustrated.id}:cover:old`);
+      state.stores.media.delete(`server-a:${illustrated.id}:cover`);
+    }
+    assert.deepEqual((await offline.getBookOfflineReadiness(revised)).missingFiles, ["cover:new"]);
+  });
+}
+
+test("native catalogue writes can update an existing directory and tolerate a creation race", async () => {
+  reset(true);
+  state.mkdirRace = true;
+  await offline.cacheLibrary("reader", [book]);
+  state.mkdirRace = false;
+  const updated = { ...book, title: "Updated title" };
+  await offline.cacheLibrary("reader", [updated]);
+  const saved = state.files.get("offline-media/server-a/library-reader.json");
+  assert.ok(saved, "both native snapshots must be written, not only IndexedDB");
+  assert.equal(JSON.parse(atob(saved)).books[0].title, updated.title);
+});
+
+test("native migration preserves legacy audio when directory creation is denied", async () => {
+  reset(true);
+  const legacy = { ...book, id: "mkdir-denied" };
+  const audioPath = `offline-media/${legacy.id}/track-${legacy.tracks[0].id}.wav`;
+  state.files.set(audioPath, btoa("legacy audio"));
+  state.mkdirError = new Error("Permission denied");
+  await assert.rejects(offline.downloadBookForOffline(legacy, url => url, () => {}), /Permission denied/);
+  assert.equal(state.files.get(audioPath), btoa("legacy audio"));
+  assert.deepEqual(state.attempts, []);
+});
+
+test("native artwork remains ready when directory enumeration fails but an older cover is readable", async () => {
+  reset(true);
+  state.fail = false;
+  const original = { ...library(1)[0], coverArtUrl: '/cover', coverArtContentType: 'image/jpeg' };
+  await offline.downloadBookForOffline(original, url => url, () => {});
+  const revised = { ...original, coverArtUrl: '/cover?v=new', coverArtContentType: 'image/png' };
+  state.listingFails = true;
+  assert.deepEqual((await offline.getBookOfflineReadiness(revised)).missingFiles, []);
+  assert.equal(await offline.getOfflineCoverUrl(revised, true), `file://offline-media/server-a/${original.id}/cover.jpg`);
 });
