@@ -215,7 +215,7 @@ for (const platform of ['ios', 'android'] as const) {
     await openBook(page, 1);
     await expect(storage).toHaveText('On device');
     await expect(storage).toHaveAccessibleName(`Remove ${books[1].title} from this device`);
-    await expect(page.locator('.offline-readiness-panel')).toContainText('Ebook: missing');
+    await expect(page.getByRole('region', { name: 'Offline files', exact: true })).toContainText('Ebook: missing');
     expect((await slots(page)).storage).toEqual(baseline.storage);
     page.once('dialog', dialog => dialog.dismiss());
     await storage.click();
