@@ -44,7 +44,8 @@ export async function inspectOfflineReadiness(
     : !mapPresent ? "missing" : ebookState !== "available" ? "needs-ebook" : "available";
   const missingFiles = companions.filter((file) => !stored.get(file.id)).map((file) => `companion:${file.id}`);
   if (book.coverArtUrl && !(await exists(coverKind))) missingFiles.push(coverKind);
-  if (book.syncFile && !mapPresent && (!map || (map.precision ?? "sentence") === "sentence")) missingFiles.push("sync");
+  if (book.syncFile && ebookState !== "not-present" && ebookState !== "unsupported"
+    && !mapPresent && (!map || (map.precision ?? "sentence") === "sentence")) missingFiles.push("sync");
   return { audio, ebook: ebookState, sentenceSync, missingFiles };
 }
 
@@ -60,4 +61,12 @@ export function offlineReadinessSummary(readiness?: OfflineReadiness) {
 
 export function offlineDownloadMessage(title: string, readiness: OfflineReadiness) {
   return `${title} — ${offlineReadinessSummary(readiness)}${readiness.missingFiles.length ? ". Retry missing files when connected." : ""}`;
+}
+
+export function offlineMissingFileLabels(book: Book, readiness?: OfflineReadiness): string[] {
+  return (readiness?.missingFiles ?? []).map((kind) => {
+    if (kind === "cover" || kind.startsWith("cover:")) return "cover art";
+    if (kind === "sync") return "follow-along timing";
+    return offlineCompanions(book).find((file) => `companion:${file.id}` === kind)?.fileName ?? "companion file";
+  });
 }
