@@ -36,6 +36,22 @@ export function useWideSpreadWindow(): boolean {
   return wide;
 }
 
+// A browser window as narrow as a phone, where book details stack in one column.
+const PHONE_WIDTH_QUERY = "(max-width: 620px)";
+export function usePhoneWidthWindow(): boolean {
+  const [phone, setPhone] = useState(
+    () => typeof window !== "undefined" && !!window.matchMedia?.(PHONE_WIDTH_QUERY).matches
+  );
+  useEffect(() => {
+    const query = window.matchMedia(PHONE_WIDTH_QUERY);
+    const update = () => setPhone(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return phone;
+}
+
 export function readShortLandscape(): boolean {
   return typeof window !== "undefined" && !!window.matchMedia?.(SHORT_LANDSCAPE_QUERY).matches;
 }

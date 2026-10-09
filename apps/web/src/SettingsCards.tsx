@@ -366,7 +366,7 @@ export function ServerDownloadSettings({
 }) {
   return (
     <section className="settings-card">
-      <span className="section-label"><Download size={13} /> Server downloads</span>
+      <span className="section-label"><Download size={13} /> On device</span>
       {demoMode ? (
         <>
           <p className="settings-hint">The Alice demo audio, ebook, and sentence timing map are included on this device.</p>
@@ -374,6 +374,7 @@ export function ServerDownloadSettings({
         </>
       ) : (
         <>
+          <p className="settings-hint">Copies downloaded from your server for offline listening on this device. Removing a copy keeps the book on your server.</p>
           {deviceDownloadQueue.length > 0 ? (
             <div className="settings-downloads" aria-label="Download queue">
               {deviceDownloadQueue.map((activity, index) => {
@@ -424,10 +425,10 @@ export function ServerDownloadSettings({
                       className="download-btn"
                       disabled={deviceDownloadQueue.some((activity) => activity.bookId === book.id)}
                       onClick={() => void removeOfflineDownload(book)}
-                      aria-label={`Remove downloaded copy of ${book.title}`}
+                      aria-label={`Remove ${book.title} from this device`}
                     >
                       <Trash2 size={13} />
-                      <span>Remove</span>
+                      <span>Remove from device</span>
                     </button>
                   </div>
                 ))}
