@@ -7,7 +7,7 @@ import { markNativePlatform } from '../src/native';
 import '../src/styles.css';
 
 Capacitor.isNativePlatform = () => true;
-Capacitor.getPlatform = () => 'ios';
+Capacitor.getPlatform = () => new URLSearchParams(location.search).get('platform') === 'android' ? 'android' : 'ios';
 Capacitor.isPluginAvailable = () => false;
 // A spec that seeds its own server connection keeps it.
 if (!localStorage.getItem('operalibre.serverUrl')) {
