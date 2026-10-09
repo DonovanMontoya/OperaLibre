@@ -593,7 +593,7 @@ export function LibraryPane({
                       downloadedOnly: !shelfFilters.downloadedOnly
                     })}
                   >
-                    <span className="facet-chip-label">Downloaded on Device</span>
+                    <span className="facet-chip-label">On device</span>
                     <em>{shelfFacets.downloadedCount}</em>
                   </button>
                   {readalongEnabled || shelfFilters.reading !== "all" ? SHELF_READING_OPTIONS.map((option) => (
@@ -939,7 +939,7 @@ export function LibraryPane({
                     <button
                       type="button"
                       className="local-marker"
-                      aria-label={`Open ${book.title} from your library`}
+                      aria-label={`Open ${book.title} from your server library`}
                       onClick={() => {
                         if (!book.localBookId) {
                           return;
@@ -950,7 +950,7 @@ export function LibraryPane({
                       }}
                     >
                       <CircleCheck size={14} />
-                      <span>In library</span>
+                      <span>On server</span>
                     </button>
                   ) : isAwaitingApproval ? (
                     <span className="audible-download-status queued" role="status" aria-label={`Requested ${book.title}`}>

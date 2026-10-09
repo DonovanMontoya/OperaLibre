@@ -12,11 +12,13 @@ import {
   ArrowUp,
   Bookmark,
   BookOpen,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleCheck,
   Download,
+  Ellipsis,
   FolderOpen,
   Gauge,
   Headphones,
@@ -32,6 +34,7 @@ import {
   ScrollText,
   SkipBack,
   SkipForward,
+  Square,
   Timer,
   Users,
   Volume2,
@@ -55,7 +58,9 @@ import type { NativePlayerSheet } from "./PlayerSheets";
 import type { DeviceDownloadActivity } from "./SettingsCards";
 import { OfflineBookReadiness } from "./OfflineBookReadiness";
 import type { Dispatch, ReactNode, RefObject, SetStateAction, TouchEvent, UIEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ServerCapabilities } from "./serverCapabilities";
+import { usePhoneWidthWindow } from "./useOrientation";
 
 // Beyond this the segments are too thin to read or tap, and their fixed
 // borders/gaps overflow a phone screen; fall back to one continuous bar.
@@ -279,6 +284,261 @@ export function PlayerPane({
     setEbookUploadError,
     setEbookUploadFile
   } = uploads;
+
+  const phoneWidth = usePhoneWidthWindow();
+  const compactActions = native || phoneWidth;
+  const [bookActionsOpen, setBookActionsOpen] = useState(false);
+  const [bookActionsAbove, setBookActionsAbove] = useState(false);
+  const bookActionsRef = useRef<HTMLDivElement>(null);
+  const bookActionsId = useId();
+  useEffect(() => setBookActionsOpen(false), [selectedBook?.id, compactActions]);
+  useLayoutEffect(() => {
+    if (!bookActionsOpen) return;
+    const placeMenu = () => {
+      const rail = bookActionsRef.current?.querySelector<HTMLElement>(".book-action-rail");
+      const menu = bookActionsRef.current?.querySelector<HTMLElement>(".book-action-menu");
+      if (!rail || !menu) return;
+      const { top, bottom } = rail.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - bottom;
+      setBookActionsAbove(menu.offsetHeight + 8 > spaceBelow && top > spaceBelow);
+    };
+    placeMenu();
+    window.addEventListener("resize", placeMenu);
+    return () => window.removeEventListener("resize", placeMenu);
+  }, [bookActionsOpen]);
+  useEffect(() => {
+    if (!bookActionsOpen) return;
+    const closeOutside = (event: Event) => {
+      if (event.target instanceof Node && !bookActionsRef.current?.contains(event.target)) {
+        setBookActionsOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setBookActionsOpen(false);
+        bookActionsRef.current?.querySelector<HTMLButtonElement>(".book-action-more")?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("focusin", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("focusin", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [bookActionsOpen]);
+
+  // Phones and the native apps set these actions as a rail of round buttons
+  // with fixed places; a wide browser window keeps them as labelled chips.
+  const chip = compactActions ? "book-action" : "download-btn";
+  const menuItem = compactActions ? "book-action-item" : "download-btn";
+  const actionIcon = compactActions ? 20 : 13;
+  const actionFace = (icon: ReactNode, label: string, chipLabel = label) => compactActions ? (
+    <>
+      <span className="book-action-dot">{icon}</span>
+      <span className="book-action-label">{label}</span>
+    </>
+  ) : (
+    <>
+      {icon}
+      <span>{chipLabel}</span>
+    </>
+  );
+  let readAction: ReactNode = null;
+  let storageAction: ReactNode = null;
+  let completionAction: ReactNode = null;
+  let resetAction: ReactNode = null;
+  let libraryActions: ReactNode = null;
+  if (selectedBook) {
+    const downloaded = downloadedBookIds.has(selectedBook.id);
+    const finished = selectedBook.progress?.status === "finished";
+    const completionPending = completionPendingBookId === selectedBook.id;
+    const canEdit = capabilities.metadataEditing && selectedBook.source !== "device";
+    const canAddEpub = (capabilities.uploads || (native && selectedBook.source === "device"))
+      && selectedBook.readingFile?.extension !== "epub";
+
+    readAction = readalongAvailable ? (
+      <button
+        className={`${chip} book-action-read ${readalongOpen ? "active" : ""}`}
+        type="button"
+        onClick={() => {
+          haptic("light");
+          if (readalongOpen) closeReadalong();
+          else openReadalong(selectedBook);
+        }}
+        aria-pressed={readalongOpen}
+        aria-label={`${readalongOpen ? "Close" : "Open"} ${selectedBook.readingFile ? "read along" : "extras"} for ${selectedBook.title}`}
+        title={`${readalongOpen ? "Close" : "Open"} ${selectedBook.readingFile ? "ebook reader" : "extras"}`}
+      >
+        {selectedBook.readingFile
+          ? actionFace(<BookOpen size={actionIcon} />, "Read along")
+          : actionFace(<Images size={actionIcon} />, "Extras")}
+      </button>
+    ) : compactActions ? (
+      <span className="book-action book-action-read is-unavailable">
+        {actionFace(<BookOpen size={actionIcon} />, readalongEnabled ? "No ebook" : "Reader off")}
+      </span>
+    ) : null;
+
+    storageAction = selectedBook.deviceBookId ? (
+      <span className={`${chip} book-action-storage active device-status`} aria-label="Imported from this device" title="Imported from this device">
+        {actionFace(<FolderOpen size={actionIcon} />, "On device")}
+      </span>
+    ) : demoMode ? (
+      <span className={`${chip} book-action-storage active device-status`} aria-label="Included with the on-device demo" title="Included with the on-device demo">
+        {actionFace(compactActions ? <Check size={actionIcon} /> : <CircleCheck size={actionIcon} />, "On device")}
+      </span>
+    ) : (Capacitor.isNativePlatform() || downloaded || selectedDownload) && (capabilities.downloads || downloaded || selectedDownload) ? (
+      <button
+        className={`${chip} book-action-storage ${downloaded ? "active" : ""} ${selectedDownload ? "downloading" : ""}`}
+        type="button"
+        onClick={() => {
+          haptic("light");
+          void (selectedDownload
+            ? cancelOfflineDownload(selectedBook)
+            : downloaded
+              ? removeOfflineDownload(selectedBook)
+              : downloadForOffline(selectedBook));
+        }}
+        aria-label={
+          selectedDownload
+            ? `Cancel device download of ${selectedBook.title}`
+            : downloaded
+              ? `Remove ${selectedBook.title} from this device`
+              : `Download ${selectedBook.title} to this device for offline playback`
+        }
+        title={selectedDownload
+          ? "Cancel device download"
+          : downloaded
+            ? "Remove from device; keep the server copy"
+            : "Download to this device for offline listening"}
+      >
+        {selectedDownload ? actionFace(
+          compactActions ? (
+            <>
+              {/* The ring runs round the button itself; the square is what a tap does. */}
+              {selectedDownload.fraction !== null ? (
+                <svg className="book-action-progress" viewBox="0 0 56 56" aria-hidden="true">
+                  <circle cx="28" cy="28" r="27" pathLength={100}
+                    strokeDasharray={`${Math.max(2, Math.min(100, selectedDownload.fraction * 100))} 100`} />
+                </svg>
+              ) : null}
+              <Square size={14} fill="currentColor" />
+            </>
+          ) : <DownloadRing fraction={selectedDownload.fraction} />,
+          selectedDownload.fraction === null ? "Waiting" : `${Math.round(selectedDownload.fraction * 100)}%`,
+          "Cancel download"
+        ) : downloaded
+          ? actionFace(compactActions ? <Check size={actionIcon} /> : <CircleCheck size={actionIcon} />, "On device")
+          : actionFace(<Download size={actionIcon} />, "Download", "Download to device")}
+      </button>
+    ) : capabilities.bookArchive ? (
+      <a
+        className={`${chip} book-action-storage`}
+        href={bookDownloadUrl(selectedBook.id)}
+        download
+        aria-label={`Download ${selectedBook.title} as zip`}
+        title="Download book as ZIP"
+      >
+        {actionFace(<Download size={actionIcon} />, "Download", "Download ZIP")}
+      </a>
+    ) : !native && capabilities.downloads ? (
+      <details className="track-downloads book-action-storage" onToggle={event => {
+        if (event.currentTarget.open) setBookActionsOpen(false);
+      }}>
+        <summary className={chip} title="Download individual tracks">
+          {actionFace(<Download size={actionIcon} />, "Download", "Download tracks")}
+        </summary>
+        <ul>
+          {selectedBook.tracks.map((track) => (
+            <li key={track.id}>
+              <a href={mediaUrl(track.downloadUrl ?? track.streamUrl)}
+                target="_blank" rel="noreferrer" download>{track.title}</a>
+            </li>
+          ))}
+        </ul>
+      </details>
+    ) : compactActions ? (
+      <span className="book-action book-action-storage is-unavailable" title="Downloads are not available for this book">
+        {actionFace(<Download size={actionIcon} />, "Stream only")}
+      </span>
+    ) : null;
+
+    completionAction = (
+      <button
+        className={`${chip} book-action-completion ${finished ? "active" : ""}`}
+        type="button"
+        onClick={() => {
+          haptic("light");
+          void changeBookCompletion(selectedBook, !finished);
+        }}
+        disabled={completionPending}
+        aria-pressed={finished}
+        aria-label={finished ? `Mark ${selectedBook.title} unfinished` : `Mark ${selectedBook.title} finished`}
+        title={finished ? "Mark unfinished" : "Mark finished"}
+      >
+        {actionFace(
+          completionPending
+            ? <LoaderCircle size={actionIcon} className="spin-icon" />
+            : compactActions && finished ? <Check size={actionIcon} /> : <CircleCheck size={actionIcon} />,
+          "Finished",
+          finished ? "Mark unfinished" : "Mark finished"
+        )}
+      </button>
+    );
+
+    resetAction = selectedBook.progress && selectedBook.progress.status !== "notStarted" ? (
+      <button
+        className={`${menuItem} book-action-reset`}
+        type="button"
+        onClick={() => markBookUnplayed(selectedBook)}
+        disabled={completionPending}
+        aria-label={`Mark ${selectedBook.title} as unplayed and reset listening progress`}
+        title="Mark unplayed and reset listening progress"
+      >
+        {completionPending ? <LoaderCircle size={actionIcon} className="spin-icon" /> : <RotateCcw size={actionIcon} />}
+        <span>Mark unplayed</span>
+      </button>
+    ) : null;
+
+    libraryActions = canEdit || canAddEpub ? (
+      <>
+        {canEdit ? (
+          <button
+            className={`${menuItem} book-action-edit`}
+            type="button"
+            onClick={() => {
+              haptic("light");
+              openMetadataEditor(selectedBook);
+            }}
+            aria-label={`Edit info for ${selectedBook.title}`}
+            title="Edit book info"
+          >
+            <Pencil size={actionIcon} />
+            <span>Edit info</span>
+          </button>
+        ) : null}
+        {canAddEpub ? (
+          <button
+            className={`${menuItem} book-action-epub`}
+            type="button"
+            onClick={() => {
+              haptic("light");
+              setEbookUploadBook(selectedBook);
+              setEbookUploadFile(null);
+              setEbookUploadError(null);
+            }}
+            aria-label={`Add matching EPUB for ${selectedBook.title}`}
+            title="Add a matching EPUB"
+          >
+            <BookOpen size={actionIcon} />
+            <span>Add EPUB</span>
+          </button>
+        ) : null}
+      </>
+    ) : null;
+  }
 
   const bookPageMasthead = (
     <>
@@ -596,184 +856,48 @@ export function PlayerPane({
                 <span className="eyebrow">
                   <Bookmark size={13} /> {isViewingPlayingBook ? "Now Reading" : "Book Details"}
                 </span>
-                <div className="heading-actions">
-                  {capabilities.metadataEditing && selectedBook.source !== "device" ? (
-                    <button
-                      className="download-btn"
-                      type="button"
-                      onClick={() => {
-                        haptic("light");
-                        openMetadataEditor(selectedBook);
-                      }}
-                      aria-label={`Edit info for ${selectedBook.title}`}
-                      title="Edit book info"
-                    >
-                      <Pencil size={13} />
-                      <span>Edit Info</span>
-                    </button>
-                  ) : null}
-                  {(capabilities.uploads || (native && selectedBook.source === "device")) && selectedBook.readingFile?.extension !== "epub" ? (
-                    <button
-                      className="download-btn"
-                      type="button"
-                      onClick={() => {
-                        haptic("light");
-                        setEbookUploadBook(selectedBook);
-                        setEbookUploadFile(null);
-                        setEbookUploadError(null);
-                      }}
-                      aria-label={`Add matching EPUB for ${selectedBook.title}`}
-                      title="Add a matching EPUB"
-                    >
-                      <BookOpen size={13} />
-                      <span>Add EPUB</span>
-                    </button>
-                  ) : null}
-                  <button
-                    className={`download-btn ${
-                      selectedBook.progress?.status === "finished" ? "active" : ""
-                    }`}
-                    type="button"
-                    onClick={() => {
-                      haptic("light");
-                      void changeBookCompletion(
-                        selectedBook,
-                        selectedBook.progress?.status !== "finished"
-                      );
-                    }}
-                    disabled={completionPendingBookId === selectedBook.id}
-                    aria-pressed={selectedBook.progress?.status === "finished"}
-                    aria-label={
-                      selectedBook.progress?.status === "finished"
-                        ? `Mark ${selectedBook.title} unfinished`
-                        : `Mark ${selectedBook.title} finished`
-                    }
-                    title={selectedBook.progress?.status === "finished" ? "Mark unfinished" : "Mark finished"}
-                  >
-                    {completionPendingBookId === selectedBook.id ? (
-                      <LoaderCircle size={13} className="spin-icon" />
-                    ) : (
-                      <CircleCheck size={13} />
-                    )}
-                    <span>
-                      {selectedBook.progress?.status === "finished"
-                        ? "Mark Unfinished"
-                        : "Mark Finished"}
-                    </span>
-                  </button>
-                  {selectedBook.progress && selectedBook.progress.status !== "notStarted" ? (
-                    <button
-                      className="download-btn"
-                      type="button"
-                      onClick={() => markBookUnplayed(selectedBook)}
-                      disabled={completionPendingBookId === selectedBook.id}
-                      aria-label={`Mark ${selectedBook.title} as unplayed and reset listening progress`}
-                      title="Mark unplayed and reset listening progress"
-                    >
-                      {completionPendingBookId === selectedBook.id ? (
-                        <LoaderCircle size={13} className="spin-icon" />
-                      ) : (
-                        <RotateCcw size={13} />
-                      )}
-                      <span>Mark Unplayed</span>
-                    </button>
-                  ) : null}
-                  {readalongAvailable ? (
-                    <button
-                      className={`download-btn ${readalongOpen ? "active" : ""}`}
-                      type="button"
-                      onClick={() => {
-                        haptic("light");
-                        if (readalongOpen) closeReadalong();
-                        else openReadalong(selectedBook);
-                      }}
-                      aria-pressed={readalongOpen}
-                      aria-label={`${readalongOpen ? "Close" : "Open"} ${selectedBook.readingFile ? "read along" : "extras"} for ${selectedBook.title}`}
-                      title={`${readalongOpen ? "Close" : "Open"} ${selectedBook.readingFile ? "ebook reader" : "extras"}`}
-                    >
-                      {selectedBook.readingFile ? <BookOpen size={13} /> : <Images size={13} />}
-                      <span>{selectedBook.readingFile ? "Read Along" : "Extras"}</span>
-                    </button>
-                  ) : null}
-                  {selectedBook.deviceBookId ? (
-                    <span className="download-btn active device-status" aria-label="Imported from this device" title="Imported from this device">
-                      <FolderOpen size={13} />
-                      <span>On device</span>
-                    </span>
-                  ) : demoMode ? (
-                    <span className="download-btn active device-status" aria-label="Included with the on-device demo" title="Included with the on-device demo">
-                      <CircleCheck size={13} />
-                      <span>On device</span>
-                    </span>
-                  ) : (Capacitor.isNativePlatform() || downloadedBookIds.has(selectedBook.id) || selectedDownload) && (capabilities.downloads || downloadedBookIds.has(selectedBook.id) || selectedDownload) ? (
-                    <button
-                      className={`download-btn ${downloadedBookIds.has(selectedBook.id) ? "active" : ""} ${
-                        selectedDownload ? "downloading" : ""
-                      }`}
-                      type="button"
-                      onClick={() => {
-                        haptic("light");
-                        void (selectedDownload
-                          ? cancelOfflineDownload(selectedBook)
-                          : downloadedBookIds.has(selectedBook.id)
-                            ? removeOfflineDownload(selectedBook)
-                            : downloadForOffline(selectedBook));
-                      }}
-                      aria-label={
-                        selectedDownload
-                          ? `Cancel download of ${selectedBook.title}`
-                          : downloadedBookIds.has(selectedBook.id)
-                            ? `Remove downloaded copy of ${selectedBook.title}`
-                          : `Download ${selectedBook.title} for offline playback`
-                      }
-                      title={selectedDownload
-                        ? "Cancel download"
-                        : downloadedBookIds.has(selectedBook.id)
-                          ? "Remove downloaded copy"
-                          : "Download for offline listening"}
-                    >
-                      {selectedDownload ? (
-                        <DownloadRing fraction={selectedDownload.fraction} />
-                      ) : (
-                        <Download size={13} />
-                      )}
-                      <span>
-                        {selectedDownload
-                          ? "Cancel"
-                          : downloadedBookIds.has(selectedBook.id)
-                            ? "Audio downloaded"
-                            : "Download"}
-                      </span>
-                    </button>
-                  ) : capabilities.bookArchive ? (
-                    <a
-                      className="download-btn"
-                      href={bookDownloadUrl(selectedBook.id)}
-                      download
-                      aria-label={`Download ${selectedBook.title} as zip`}
-                      title="Download book as ZIP"
-                    >
-                      <Download size={13} />
-                      <span>Download</span>
-                    </a>
-                  ) : !native && capabilities.downloads ? (
-                    <details className="track-downloads">
-                      <summary className="download-btn" title="Download individual tracks"><Download size={13} /> Download tracks</summary>
-                      <ul>
-                        {selectedBook.tracks.map((track) => (
-                          <li key={track.id}>
-                            <a href={mediaUrl(track.downloadUrl ?? track.streamUrl)}
-                              target="_blank" rel="noreferrer" download>{track.title}</a>
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  ) : null}
+                <div className={`heading-actions book-detail-actions ${compactActions ? "is-compact" : ""}`} ref={bookActionsRef}>
+                  {compactActions ? (
+                    <div className="book-action-bar">
+                      <div className="book-action-rail">
+                        {readAction}
+                        {storageAction}
+                        {completionAction}
+                        {/* More keeps its place even when this book and account leave it nothing to hold. */}
+                        <button className="book-action book-action-more" type="button"
+                          disabled={!resetAction && !libraryActions}
+                          aria-label="More book actions" aria-expanded={bookActionsOpen} aria-controls={bookActionsId}
+                          onClick={() => {
+                            bookActionsRef.current?.querySelector<HTMLDetailsElement>(".track-downloads")?.removeAttribute("open");
+                            setBookActionsOpen(open => !open);
+                          }}>
+                          <span className="book-action-dot"><Ellipsis size={actionIcon} /></span>
+                          <span className="book-action-label">More</span>
+                        </button>
+                      </div>
+                      <div id={bookActionsId} role="group" aria-label="Book actions"
+                        className={`book-action-menu ${bookActionsOpen ? "is-open" : ""} ${bookActionsAbove ? "opens-up" : ""}`}
+                        onClick={event => {
+                          if (event.target instanceof Element && event.target.closest("button")) setBookActionsOpen(false);
+                        }}>
+                        {resetAction}
+                        {libraryActions}
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      {libraryActions}
+                      {completionAction}
+                      {resetAction}
+                      {readAction}
+                      {storageAction}
+                    </>
+                  )}
                   {selectedBook.source !== "device" && !demoMode && downloadedBookIds.has(selectedBook.id) ? (
                     <span className="offline-readiness-panel">
                       <OfflineBookReadiness readiness={readiness[selectedBook.id]} />
                       {capabilities.downloads && !!readiness[selectedBook.id]?.missingFiles.length ? (
-                        <button type="button" className="download-btn" disabled={!!selectedDownload || !online}
+                        <button type="button" className={compactActions ? "book-action-retry" : "download-btn"} disabled={!!selectedDownload || !online}
                           onClick={() => void retryMissingFiles(selectedBook)}>
                           Retry missing files
                         </button>

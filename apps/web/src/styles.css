@@ -18883,37 +18883,37 @@ html:not(.native-app) .library-pane.purchase-browsing {
   & .purchase-account-filter select { min-height: 40px; padding: 7px 12px; font-size: 0.95rem; }
 }
 
-/* iPhone book details: keep the cover with the bibliographic header, then
+/* Phone book details: keep the cover with the bibliographic header, then
    give listening and library actions the full page width. */
 @media (max-width: 620px) {
-  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open > .player-pane {
+  html.native-app .native-shell.tab-shelf.library-book-open > .player-pane {
     padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 24px);
   }
 
-  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading {
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading {
     grid-template-columns: minmax(100px, 35%) minmax(0, 1fr);
     align-items: start;
     gap: 8px 16px;
   }
 
-  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading .meta {
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading .meta {
     display: contents;
   }
 
-  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading .large-cover {
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading .large-cover {
     grid-column: 1;
     grid-row: 1 / 5;
     align-self: start;
   }
 
-  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading .eyebrow {
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading .eyebrow {
     grid-column: 2;
     grid-row: 1;
     font-size: 0.58rem;
     letter-spacing: 0.14em;
   }
 
-  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading h2 {
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading h2 {
     grid-column: 2;
     grid-row: 2;
     margin: 0;
@@ -18921,7 +18921,7 @@ html:not(.native-app) .library-pane.purchase-browsing {
     line-height: 1.08;
   }
 
-  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading .book-credits {
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading .book-credits {
     grid-column: 2;
     grid-row: 3;
     margin: 0;
@@ -18930,20 +18930,20 @@ html:not(.native-app) .library-pane.purchase-browsing {
     text-align: left;
   }
 
-  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading .book-runtime {
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading .book-runtime {
     grid-column: 2;
     grid-row: 4;
     margin: 0;
   }
 
-  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading .book-quick-start {
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading .book-quick-start {
     grid-column: 1 / -1;
     grid-row: 5;
     width: 100%;
     margin-top: 12px;
   }
 
-  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading .heading-actions {
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading-actions {
     grid-column: 1 / -1;
     grid-row: 6;
     display: grid;
@@ -18952,15 +18952,12 @@ html:not(.native-app) .library-pane.purchase-browsing {
     margin-top: 8px;
   }
 
-  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .heading-actions .download-btn {
+  html.native-app .native-shell.tab-shelf.library-book-open .heading-actions .download-btn {
     min-height: 44px;
     font-size: 0.62rem;
     white-space: nowrap;
   }
 
-  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .heading-actions > :last-child:nth-child(odd) {
-    grid-column: 1 / -1;
-  }
 }
 
 /* Compact phone title pages keep the cover and navigation from consuming
@@ -19046,9 +19043,6 @@ html:not(.native-app) .library-pane.purchase-browsing {
     font-size: 0.58rem;
     letter-spacing: 0.08em;
     padding-inline: 8px;
-  }
-  html:not(.native-app) .book-heading .heading-actions > :last-child:nth-child(odd) {
-    grid-column: 1 / -1;
   }
   html:not(.native-app) .book-heading :is(.book-colophon, .book-subjects) {
     grid-column: 1 / -1;
@@ -19212,8 +19206,6 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf.library-book-open .book-heading .heading-actions .download-btn { min-height: 44px; font-size: 0.62rem; white-space: nowrap; }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf.library-book-open .book-heading .heading-actions > :last-child:nth-child(odd),
-  html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf.library-book-open .book-heading .heading-actions .download-status { grid-column: 1 / -1; }
 
 .admin-sync-job-controls { display: flex; align-items: center; gap: 4px; margin-left: auto; }
@@ -19223,3 +19215,322 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 .admin-sync-monitor .admin-sync-icon-button:focus-visible { outline: 2px solid var(--sync-live); outline-offset: 2px; }
 
 .admin-sync-monitor .admin-sync-icon-button svg { flex-shrink: 0; }
+
+/* Book details on phones and in the native apps: reading, the device copy,
+   Finished and More hold fixed places in a rail of round buttons beneath the
+   play bar, whatever the book offers. A missing ebook or a finished download
+   changes the button's face and caption, never its position. Wide browser
+   windows keep the labelled chips. */
+.book-detail-actions.is-compact > * {
+  grid-column: 1 / -1;
+  flex: 0 0 100%;
+}
+
+/* The second selector only outranks the shelf page's chip-row width. */
+html .book-heading .heading-actions.is-compact,
+html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading-actions.is-compact {
+  width: 100%;
+}
+
+.book-detail-actions.is-compact > .book-action-bar {
+  position: relative;
+  flex-basis: auto;
+  width: 100%;
+  max-width: 420px;
+  container-type: inline-size;
+}
+
+.book-action-rail {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding-top: 4px;
+}
+
+.book-action-rail > * {
+  min-width: 0;
+}
+
+.book-action {
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 7px;
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  list-style: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.book-action::-webkit-details-marker {
+  display: none;
+}
+
+.book-action-dot {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  box-sizing: border-box;
+  border: 1px solid rgba(var(--ink-rgb), 0.16);
+  border-radius: 50%;
+  background: var(--m-card-light, rgba(var(--lift-rgb), 0.5));
+  transition: background-color 0.15s ease;
+}
+
+.book-action-label {
+  max-width: 100%;
+  /* One fixed line, so the percentage's smaller face cannot resize the button. */
+  font: 400 1rem/18px "Instrument Serif", serif;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+:is(button, a, summary).book-action:active > .book-action-dot {
+  background-color: rgba(var(--ink-rgb), 0.1);
+}
+
+.book-action:focus-visible {
+  outline: none;
+}
+
+.book-action:focus-visible > .book-action-dot {
+  outline: 2px solid var(--oxblood);
+  outline-offset: 2px;
+}
+
+.book-action-item:focus-visible {
+  outline: 2px solid var(--oxblood);
+  outline-offset: -3px;
+}
+
+/* Held states are drawn in outline so they never compete with the play bar. */
+.book-action.active > .book-action-dot,
+.book-action-more[aria-expanded="true"] > .book-action-dot {
+  border: 1.5px solid var(--oxblood);
+  color: var(--oxblood);
+}
+
+.book-action.active > .book-action-dot > svg {
+  stroke-width: 2.25;
+}
+
+.book-action:is(.device-status, .is-unavailable, :disabled) {
+  cursor: default;
+}
+
+.book-action:is(.is-unavailable, .book-action-more:disabled) {
+  color: var(--ink-faded);
+}
+
+.book-action:is(.is-unavailable, .book-action-more:disabled) > .book-action-dot {
+  border-style: dashed;
+  background: transparent;
+}
+
+.book-action:is(.is-unavailable, .book-action-more:disabled) > .book-action-dot > svg {
+  opacity: 0.6;
+}
+
+.book-action.downloading > .book-action-dot {
+  border-color: rgba(var(--ink-rgb), 0.1);
+  color: var(--oxblood);
+}
+
+.book-action.downloading > .book-action-label {
+  font: 500 0.66rem/18px "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.book-action-progress {
+  position: absolute;
+  inset: -2px;
+  width: calc(100% + 4px);
+  height: calc(100% + 4px);
+  transform: rotate(-90deg);
+}
+
+.book-action-progress circle {
+  fill: none;
+  stroke: var(--oxblood);
+  stroke-width: 2;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.25s ease;
+}
+
+/* The narrowest phones and columns: trade breathing room for whole words. */
+@container (max-width: 319px) {
+  .book-action-dot {
+    width: 48px;
+    height: 48px;
+  }
+
+  .book-action-label {
+    font-size: 0.94rem;
+  }
+}
+
+@container (max-width: 279px) {
+  .book-action-dot {
+    width: 46px;
+    height: 46px;
+  }
+
+  .book-action-label {
+    font-size: 0.86rem;
+  }
+}
+
+.book-action-menu,
+.book-action-bar .track-downloads > ul {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: min(248px, 100%);
+  max-width: none;
+  margin: 0;
+  padding: 6px;
+  box-sizing: border-box;
+  list-style: none;
+  border: 1px solid rgba(var(--ink-rgb), 0.14);
+  border-radius: 16px;
+  background: rgb(var(--sheet-rgb));
+  box-shadow: 0 22px 40px -22px rgba(26, 20, 16, 0.6);
+  text-align: left;
+}
+
+.book-action-menu {
+  display: none;
+  transform-origin: top right;
+}
+
+.book-action-menu.is-open {
+  display: grid;
+  animation: book-action-menu-in 0.14s ease-out;
+}
+
+.book-action-menu.opens-up {
+  top: auto;
+  bottom: calc(100% + 8px);
+  transform-origin: bottom right;
+}
+
+@keyframes book-action-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .book-action-menu.is-open {
+    animation: none;
+  }
+
+  .book-action-dot,
+  .book-action-progress circle {
+    transition: none;
+  }
+}
+
+.book-action-item,
+.book-action-bar .track-downloads li > a {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 48px;
+  margin: 0;
+  padding: 6px 12px;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ink);
+  font: 400 1.08rem/1.15 "Instrument Serif", serif;
+  letter-spacing: 0;
+  text-align: left;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.book-action-item > svg {
+  width: 18px;
+  height: 18px;
+  color: var(--ink-faded);
+}
+
+.book-action-item:disabled {
+  opacity: 0.55;
+}
+
+:is(.book-action-item, .book-action-bar .track-downloads li > a):active {
+  background-color: rgba(var(--ink-rgb), 0.06);
+}
+
+@media (hover: hover) {
+  :is(button, a, summary).book-action:not(:disabled):hover > .book-action-dot {
+    background-color: rgba(var(--ink-rgb), 0.07);
+  }
+
+  :is(.book-action-item, .book-action-bar .track-downloads li > a):hover {
+    background-color: rgba(var(--ink-rgb), 0.05);
+  }
+}
+
+.book-action-bar .track-downloads {
+  position: static;
+}
+
+.book-action-bar .track-downloads li {
+  margin: 0;
+}
+
+.book-action-bar .track-downloads li > a {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.book-detail-actions.is-compact .offline-readiness-panel {
+  justify-content: center;
+  gap: 6px 12px;
+}
+
+.book-detail-actions.is-compact .offline-readiness {
+  justify-content: center;
+  color: var(--ink-faded);
+  font: 500 0.58rem/1.5 "JetBrains Mono", monospace;
+  letter-spacing: 0.02em;
+}
+
+.book-action-retry {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--oxblood);
+  font: 500 0.58rem/1.2 "JetBrains Mono", monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.book-action-retry:disabled {
+  color: var(--ink-faded);
+  opacity: 0.7;
+}
+
+.book-detail-actions.is-compact .download-status {
+  margin-top: 6px;
+  text-align: center;
+}

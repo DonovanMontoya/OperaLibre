@@ -279,7 +279,7 @@ export function useShelf({
       chips.push({
         id: "availability:downloaded",
         caption: "Availability",
-        label: "Downloaded on Device",
+        label: "On device",
         clear: () => setShelfFilters((filters) => ({ ...filters, downloadedOnly: false }))
       });
     }
