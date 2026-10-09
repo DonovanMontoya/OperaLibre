@@ -35,12 +35,13 @@ final class CarArtworkTests: XCTestCase {
         return url
     }
     @MainActor
-    private func waitUntil(_ description: String, _ ready: @escaping () -> Bool) {
+    private func waitUntil(_ description: String, _ ready: @escaping () -> Bool) async {
         let check = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in ready() }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [check], timeout: 5), .completed, description)
+        check.expectationDescription = description
+        await fulfillment(of: [check], timeout: 5)
     }
     @MainActor
-    func testReplacementAndRemovalPersistWithoutRevivingCachedArtwork() throws {
+    func testReplacementAndRemovalPersistWithoutRevivingCachedArtwork() async throws {
         let store = CarLibraryStore()
         let first = try image(.red)
         let second = try image(.blue)
@@ -48,7 +49,8 @@ final class CarArtworkTests: XCTestCase {
         let cached = expectation(description: "initial cover cached")
         store.onArtworkChange = { cached.fulfill() }
         store.save(initial)
-        wait(for: [cached], timeout: 5)
+        // Artwork callbacks use the main queue, so waiting must yield the main actor.
+        await fulfillment(of: [cached], timeout: 5)
         let red = store.artwork(for: initial.books[0]).pngData()
         XCTAssertEqual(store.artwork(for: initial.books[0]).size.width, 20)
 
@@ -56,19 +58,19 @@ final class CarArtworkTests: XCTestCase {
         let refreshed = expectation(description: "replacement redraws the car list")
         store.onArtworkChange = { refreshed.fulfill() }
         store.save(replaced)
-        wait(for: [refreshed], timeout: 5)
+        await fulfillment(of: [refreshed], timeout: 5)
         XCTAssertNotEqual(store.artwork(for: replaced.books[0]).pngData(), red)
 
         for source in [nil, ""] as [String?] {
             let removed = snapshot(source)
             store.save(removed)
             XCTAssertEqual(store.artwork(for: removed.books[0]).size.width, 108, "removal immediately displays the placeholder")
-            waitUntil("removed image and source mapping are evicted") {
+            await waitUntil("removed image and source mapping are evicted") {
                 let sources = UserDefaults.standard.dictionary(forKey: self.sourcesKey) ?? [:]
                 let images = (try? FileManager.default.contentsOfDirectory(atPath: self.directory.appendingPathComponent("artwork").path)) ?? []
                 return sources["cover-book"] == nil && images.isEmpty
             }
-            waitUntil("removed artwork survives a fresh store") {
+            await waitUntil("removed artwork survives a fresh store") {
                 let reopened = CarLibraryStore()
                 guard let book = reopened.snapshot().books.first, book.artworkUrl == source else { return false }
                 return reopened.artwork(for: book).size.width == 108
@@ -78,7 +80,7 @@ final class CarArtworkTests: XCTestCase {
     }
 
     @MainActor
-    func testRemovalDuringAnArtworkReadCannotRepopulateItsCache() throws {
+    func testRemovalDuringAnArtworkReadCannotRepopulateItsCache() async throws {
         let store = CarLibraryStore()
         let source = try image(.green)
         let started = expectation(description: "read started")
@@ -90,11 +92,11 @@ final class CarArtworkTests: XCTestCase {
         }
         defer { ArtworkFixture.beforeRead = nil; release.signal() }
         store.save(snapshot(source.absoluteString))
-        wait(for: [started], timeout: 5)
+        await fulfillment(of: [started], timeout: 5)
         let removed = snapshot(nil)
         store.save(removed)
         release.signal()
-        waitUntil("late read is removed from disk") {
+        await waitUntil("late read is removed from disk") {
             let sources = UserDefaults.standard.dictionary(forKey: self.sourcesKey) ?? [:]
             let images = (try? FileManager.default.contentsOfDirectory(atPath: self.directory.appendingPathComponent("artwork").path)) ?? []
             return sources["cover-book"] == nil && images.isEmpty
@@ -107,7 +109,7 @@ final class CarArtworkTests: XCTestCase {
         ArtworkFixture.beforeRead = nil
         store.onArtworkChange = { drained.fulfill() }
         store.save(missing)
-        wait(for: [drained], timeout: 5)
+        await fulfillment(of: [drained], timeout: 5)
         XCTAssertNil(UserDefaults.standard.dictionary(forKey: sourcesKey)?["cover-book"])
         XCTAssertEqual(store.artwork(for: missing.books[0]).size.width, 108, "the late old image cannot remain in memory")
         store.clear()
