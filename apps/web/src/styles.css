@@ -1799,6 +1799,18 @@ html:not(.native-app) .web-shell > .player-pane {
   background: rgba(30, 52, 42, 0.94);
 }
 
+.book-row.has-offline-warning {
+  --offline-warning-space: 16px;
+}
+
+.book-row.has-offline-warning .book-availability {
+  pointer-events: auto;
+}
+
+.book-availability .offline-warning-icon {
+  color: #f2c46d;
+}
+
 .book-availability .device-availability-icon {
   color: #d4e6d4;
 }
@@ -1808,11 +1820,11 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .book-list.is-list .book-text {
-  padding-right: 42px;
+  padding-right: calc(42px + var(--offline-warning-space, 0px));
 }
 
 .book-list.is-list .book-availability.server-and-device + .book-text {
-  padding-right: 60px;
+  padding-right: calc(60px + var(--offline-warning-space, 0px));
 }
 
 .book-list.is-grid .book-availability {
@@ -1863,11 +1875,11 @@ html:not(.native-app) .web-shell > .player-pane {
   grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 2px 8px;
   align-items: center;
-  padding-right: 38px;
+  padding-right: calc(38px + var(--offline-warning-space, 0px));
 }
 
 .book-list.is-compact .book-availability.server-and-device + .book-text {
-  padding-right: 54px;
+  padding-right: calc(54px + var(--offline-warning-space, 0px));
 }
 
 .book-list.is-compact .book-text strong {
@@ -2265,7 +2277,8 @@ img.large-cover {
   transform: translateY(-1px);
 }
 
-.heading-actions .download-btn:disabled {
+.heading-actions .download-btn:disabled,
+.book-offline-files .download-btn:disabled {
   opacity: 0.58;
   cursor: wait;
   transform: none;
@@ -10690,11 +10703,11 @@ html.native-app .book-list.is-compact .cover-mark {
 }
 
 html.native-app .book-list.is-compact .book-text {
-  padding-right: 40px;
+  padding-right: calc(40px + var(--offline-warning-space, 0px));
 }
 
 html.native-app .book-list.is-compact .book-availability.server-and-device + .book-text {
-  padding-right: 56px;
+  padding-right: calc(56px + var(--offline-warning-space, 0px));
 }
 
 html.native-app .book-list.is-compact .book-text strong {
@@ -12729,13 +12742,24 @@ html.native-app.platform-ios.dark-mode .timeline input[type="range"]::-webkit-sl
   gap: 8px;
 }
 
-.offline-readiness-panel {
-  grid-column: 1 / -1;
+.book-offline-files {
   display: flex;
-  flex-basis: 100%;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+  margin-bottom: 22px;
+  padding: 14px 16px;
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
+  border-left: 2px solid var(--gold);
+}
+
+.book-offline-files .download-status {
+  flex-basis: 100%;
+}
+
+.book-download-status {
+  display: block;
+  margin-bottom: 22px;
 }
 
 .offline-readiness {

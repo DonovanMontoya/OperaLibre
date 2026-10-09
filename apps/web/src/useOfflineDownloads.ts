@@ -95,18 +95,24 @@ export function useOfflineDownloads({
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const states: Record<string, OfflineReadiness> = {};
-      // Undownloaded books need only an audio check. Scan one book at a time
-      // so a large shelf cannot flood IndexedDB or the native file bridge.
+      // Scan one book at a time so a large shelf cannot flood IndexedDB or
+      // the native file bridge. Audio alone decides whether a book plays
+      // offline, so publish it before inspecting companions and sync maps.
+      const downloaded: Book[] = [];
       for (const book of booksRef.current) {
         if (cancelled) return;
-        if (!(await isBookDownloaded(book).catch(() => false))) continue;
-        const state = await getBookOfflineReadiness(book).catch(() => null);
+        if (await isBookDownloaded(book).catch(() => false)) downloaded.push(book);
+      }
+      if (cancelled) return;
+      setDownloadedBookIds(new Set(downloaded.map((book) => book.id)));
+      const states: Record<string, OfflineReadiness> = {};
+      for (const book of downloaded) {
+        if (cancelled) return;
+        const state = await getBookOfflineReadiness(book, true).catch(() => null);
         if (state) states[book.id] = state;
       }
       if (cancelled) return;
       setReadiness(states);
-      setDownloadedBookIds(new Set(Object.entries(states).filter(([, state]) => state.audio).map(([id]) => id)));
     })();
     return () => { cancelled = true; };
   }, [scanKey, booksRef, setDownloadedBookIds]);

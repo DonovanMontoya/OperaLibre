@@ -103,12 +103,13 @@ async function removeRecordsWithPrefix(storeName: string, prefix: string): Promi
   });
 }
 
-async function readMedia(bookId: string, kind: string) {
-  const scoped = await read<StoredMedia>("media", mediaKey(bookId, kind));
+async function readMedia(bookId: string, kind: string, scope = getServerStorageKey()) {
+  const key = `${scope}:${bookId}:${kind}`;
+  const scoped = await read<StoredMedia>("media", key);
   if (scoped) return scoped;
   const legacy = await read<StoredMedia>("media", `${bookId}:${kind}`);
   if (legacy) {
-    await write("media", { ...legacy, key: mediaKey(bookId, kind) });
+    await write("media", { ...legacy, key });
     await removeRecord("media", `${bookId}:${kind}`);
   }
   return legacy;
@@ -208,11 +209,7 @@ async function moveLegacyBookDirectory(book: Book) {
   if (await fileExists(destination)) return;
   const legacy = legacyBookDirectory(book.id);
   if (!(await fileExists(legacy))) return;
-  await Filesystem.mkdir({
-    path: `${MEDIA_ROOT}/${sanitizeSegment(getServerStorageKey())}`,
-    directory: MEDIA_DIRECTORY,
-    recursive: true
-  });
+  await ensureMediaDirectory(destination.slice(0, destination.lastIndexOf("/")));
   await Filesystem.rename({
     from: legacy,
     to: destination,
@@ -229,6 +226,27 @@ async function moveLegacyBookDirectory(book: Book) {
       directory: MEDIA_DIRECTORY,
       toDirectory: MEDIA_DIRECTORY
     });
+  }
+}
+
+/** Capacitor's native mkdir rejects existing directories, including recursive calls. */
+async function ensureMediaDirectory(path: string) {
+  const isDirectory = async () =>
+    (await Filesystem.stat({ path, directory: MEDIA_DIRECTORY }).catch(() => null))?.type === "directory";
+  if (await isDirectory()) return;
+  try {
+    await Filesystem.mkdir({ path, directory: MEDIA_DIRECTORY, recursive: true });
+  } catch (error) {
+    if (!(await isDirectory())) throw error;
+  }
+}
+
+async function nonemptyNativeFile(path: string) {
+  try {
+    const info = await Filesystem.stat({ path, directory: MEDIA_DIRECTORY });
+    return info.type === "file" && info.size > 0;
+  } catch {
+    return false;
   }
 }
 
@@ -348,11 +366,7 @@ async function writeNativeLibrary(userId: string, snapshot: LibrarySnapshot) {
   // in-flight write into the next server's native catalogue.
   const directory = `${MEDIA_ROOT}/${sanitizeSegment(getServerStorageKey())}`;
   const path = nativeLibraryPath(userId);
-  await Filesystem.mkdir({
-    path: directory,
-    directory: MEDIA_DIRECTORY,
-    recursive: true
-  });
+  await ensureMediaDirectory(directory);
   const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
   await Filesystem.writeFile({
     path,
@@ -470,6 +484,11 @@ export async function isBookDownloaded(book: Book) {
 }
 
 async function offlineFileExists(book: Book, kind: string) {
+  if (kind === coverMediaKind(book)) {
+    return Capacitor.isNativePlatform()
+      ? !!(await nativeCoverPath(book, true))
+      : !!(await webCoverRecord(book, true));
+  }
   if (!Capacitor.isNativePlatform()) {
     return (await readMedia(book.id, kind))?.blob.size ? true : false;
   }
@@ -490,9 +509,9 @@ async function offlineFileExists(book: Book, kind: string) {
   }
 }
 
-export async function getBookOfflineReadiness(book: Book) {
-  const audio = await isBookDownloaded(book);
-  return inspectOfflineReadiness(book, audio,
+/** Pass `audio` when the caller has just checked it, to skip a second pass over every track. */
+export async function getBookOfflineReadiness(book: Book, audio?: boolean) {
+  return inspectOfflineReadiness(book, audio ?? await isBookDownloaded(book),
     (kind) => offlineFileExists(book, kind), () => getOfflineSyncMap(book), coverMediaKind(book));
 }
 
@@ -564,7 +583,7 @@ export async function downloadBookForOffline(
         if (typeof result.data !== "string") throw new Error("Could not reopen the missing-file retry.");
         files = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(result.data), (value) => value.charCodeAt(0))));
       } else if (files.length) {
-        await Filesystem.mkdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY, recursive: true });
+        await ensureMediaDirectory(bookDirectory(book.id));
         await Filesystem.writeFile({ path, directory: MEDIA_DIRECTORY,
           data: toBase64(new TextEncoder().encode(JSON.stringify(files)).buffer as ArrayBuffer) });
         // iOS counts existing destinations as completed. Empty optional files
@@ -636,38 +655,49 @@ export async function getOfflineTrackUrl(book: Book, track: Track): Promise<stri
   return record ? URL.createObjectURL(record.blob) : null;
 }
 
+async function nativeCoverPath(book: Book, allowLegacy: boolean): Promise<string | null> {
+  const directory = bookDirectory(book.id);
+  const currentPath = coverFilePath(book);
+  await migrateLegacyBookDirectory(book);
+  if (book.localCoverPath && !coverRevision(book) && await nonemptyNativeFile(book.localCoverPath)) return book.localCoverPath;
+  if (await nonemptyNativeFile(currentPath)) return currentPath;
+  if (!allowLegacy) return null;
+  const files = await Filesystem.readdir({ path: directory, directory: MEDIA_DIRECTORY }).catch(() => null);
+  const covers = (files?.files ?? [])
+    .filter((file) => /^cover(?:-[A-Za-z0-9_-]{1,128})?\.(jpg|png|webp|gif)$/.test(file.name))
+    .sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
+  for (const file of covers) {
+    const path = `${directory}/${file.name}`;
+    if (await nonemptyNativeFile(path)) return path;
+  }
+  if (book.localCoverPath && await nonemptyNativeFile(book.localCoverPath)) return book.localCoverPath;
+  // A failed directory listing must not hide a readable older download.
+  for (const extension of ["jpg", "png", "webp", "gif"]) {
+    const path = `${directory}/cover.${extension}`;
+    if (await nonemptyNativeFile(path)) return path;
+  }
+  return null;
+}
+
+async function webCoverRecord(book: Book, allowLegacy: boolean) {
+  const scope = getServerStorageKey();
+  const current = await readMedia(book.id, coverMediaKind(book), scope);
+  if (current?.blob.size) return current;
+  if (allowLegacy && coverRevision(book)) {
+    const legacy = await readMedia(book.id, "cover", scope);
+    if (legacy?.blob.size) return legacy;
+  }
+  return null;
+}
+
 export async function getOfflineCoverUrl(book: Book, allowLegacy = navigator.onLine === false): Promise<string | null> {
   // Restoring a book that has no embedded art must not resurrect a cached override.
   if (!book.coverArtUrl && book.hasCoverOverride !== undefined && book.source !== "device") return null;
   if (Capacitor.isNativePlatform()) {
-    // A server's versioned cover supersedes the tags of a matched device copy.
-    if (book.localCoverPath && !coverRevision(book)) return nativeFileUrl(book.localCoverPath);
-    await migrateLegacyBookDirectory(book);
-    const current = await nativeFileUrl(coverFilePath(book));
-    if (current || !allowLegacy || !coverRevision(book)) return current;
-    // Replacing server artwork must not strand an earlier downloaded revision
-    // when the listener goes offline before downloading again.
-    const files = await Filesystem.readdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY }).catch(() => null);
-    const covers = (files?.files ?? [])
-      .filter((file) => /^cover(?:-[A-Za-z0-9_-]{1,128})?\.(jpg|png|webp|gif)$/.test(file.name))
-      .sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
-    for (const file of covers) {
-      const fallback = await nativeFileUrl(`${bookDirectory(book.id)}/${file.name}`);
-      if (fallback) return fallback;
-    }
-    if (book.localCoverPath) {
-      const local = await nativeFileUrl(book.localCoverPath);
-      if (local) return local;
-    }
-    // Older downloads predate URL revisions; retain their art as an offline fallback.
-    for (const extension of ["jpg", "png", "webp", "gif"]) {
-      const legacy = await nativeFileUrl(`${bookDirectory(book.id)}/cover.${extension}`);
-      if (legacy) return legacy;
-    }
-    return null;
+    const path = await nativeCoverPath(book, allowLegacy);
+    return path ? nativeFileUrl(path) : null;
   }
-  const record = await readMedia(book.id, coverMediaKind(book))
-    ?? (allowLegacy && coverRevision(book) ? await readMedia(book.id, "cover") : null);
+  const record = await webCoverRecord(book, allowLegacy);
   return record ? URL.createObjectURL(record.blob) : null;
 }
 
@@ -752,7 +782,7 @@ export async function loadCompanionBytes(
       const response = await fetch(cached, { signal });
       return response.ok ? response.arrayBuffer() : null;
     }, async (data) => {
-      await Filesystem.mkdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY, recursive: true }).catch(() => undefined);
+      await ensureMediaDirectory(bookDirectory(book.id)).catch(() => undefined);
       await Filesystem.writeFile({ path, directory: MEDIA_DIRECTORY, data: toBase64(data) });
     }, signal, true);
   }
@@ -769,8 +799,9 @@ export async function loadCompanionBytes(
 export async function getOfflineSyncMap(book: Book): Promise<SyncMap | null> {
   try {
     if (Capacitor.isNativePlatform()) {
+      const path = syncMapFilePath(book);
       await migrateLegacyBookDirectory(book);
-      const url = await nativeFileUrl(syncMapFilePath(book));
+      const url = await nativeFileUrl(path);
       return url ? ((await (await fetch(url)).json()) as SyncMap) : null;
     }
     const record = await readMedia(book.id, SYNC_MAP_KIND);
@@ -799,11 +830,7 @@ export async function saveOfflineSyncMap(book: Book, map: SyncMap, signal?: Abor
     if (!isCurrent() || !(await isBookDownloaded(book)) || !isCurrent()) return;
     const json = JSON.stringify(map);
     if (Capacitor.isNativePlatform()) {
-      await Filesystem.mkdir({
-        path: directory,
-        directory: MEDIA_DIRECTORY,
-        recursive: true
-      }).catch(() => undefined);
+      await ensureMediaDirectory(directory);
       if (!isCurrent()) return;
       await Filesystem.writeFile({
         path,

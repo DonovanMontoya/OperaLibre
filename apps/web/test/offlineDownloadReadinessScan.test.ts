@@ -39,9 +39,10 @@ test("catalogue readiness skips optional files without audio and scans books seq
   const books = library(120);
   const firstAudioChecked = deferred();
   const continueScan = deferred();
-  const completed = deferred();
+  const published = deferred();
+  const releaseDetails = deferred();
   const audioChecks: string[] = [];
-  const detailedChecks: string[] = [];
+  const detailedChecks: Array<[string, boolean | undefined]> = [];
   const state = { audio: true, ebook: "missing", sentenceSync: "missing", missingFiles: ["sync"] };
   let downloaded: Set<string> | undefined;
   const harness = fixture({
@@ -51,20 +52,34 @@ test("catalogue readiness skips optional files without audio and scans books seq
         firstAudioChecked.resolve();
         await continueScan.promise;
       }
-      return book.id === books[119].id;
+      return book.id === books[118].id || book.id === books[119].id;
     },
-    getBookOfflineReadiness: async (book: {id: string}) => { detailedChecks.push(book.id); return state; }
-  }, { books, booksRef: {current: books}, setDownloadedBookIds: (ids: Set<string>) => { downloaded = ids; completed.resolve(); } });
+    getBookOfflineReadiness: async (book: {id: string}, audio?: boolean) => {
+      detailedChecks.push([book.id, audio]);
+      await releaseDetails.promise;
+      if (book.id === books[118].id) throw new Error("unreadable companion directory");
+      return state;
+    }
+  }, { books, booksRef: {current: books}, setDownloadedBookIds: (ids: Set<string>) => { downloaded = ids; published.resolve(); } });
   harness.render();
   harness.effects[1]();
   await firstAudioChecked.promise;
   assert.deepEqual(audioChecks, [books[0].id], "the next book must wait for the current audio check");
   continueScan.resolve();
-  await completed.promise;
+  await published.promise;
   assert.equal(audioChecks.length, 120);
-  assert.deepEqual(detailedChecks, [books[119].id], "undownloaded books must not scan companions or sync maps");
-  assert.deepEqual(downloaded, new Set([books[119].id]));
+  assert.deepEqual(downloaded, new Set([books[118].id, books[119].id]),
+    "downloaded books must be playable offline before their companions and sync maps are inspected");
+  assert.deepEqual(harness.states[0], {}, "details are still pending");
+  releaseDetails.resolve();
+  while (detailedChecks.length < 2 || !Object.keys(harness.states[0] as object).length) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.deepEqual(detailedChecks, [[books[118].id, true], [books[119].id, true]],
+    "undownloaded books must not scan companions or sync maps, and audio is not checked twice");
   assert.deepEqual(harness.states[0], {[books[119].id]: state});
+  assert.deepEqual(downloaded, new Set([books[118].id, books[119].id]),
+    "a failed detail check must not hide a book whose audio is on the device");
 });
 
 test("offline download controls react to reconnection and remove subscriptions on unmount", (t) => {
