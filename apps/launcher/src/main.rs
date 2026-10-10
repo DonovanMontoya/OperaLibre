@@ -1052,12 +1052,12 @@ fn open_browser(port: u16) -> Result<(), String> {
 fn show_message(message: &str) {
     #[cfg(target_os = "windows")]
     {
-        let escaped = message.replace('\'', "''");
-        let script = format!(
-            "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('{escaped}', 'OperaLibre')"
-        );
+        // The message carries install paths and OS errors; pass it as data so
+        // no quoting rule (PowerShell also treats curly quotes as quotes) applies.
+        let script = "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show($env:OPERALIBRE_MESSAGE, 'OperaLibre')";
         let _ = Command::new("powershell.exe")
-            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
+            .env("OPERALIBRE_MESSAGE", message)
             .creation_flags(CREATE_NO_WINDOW)
             .spawn();
     }

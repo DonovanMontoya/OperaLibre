@@ -87,6 +87,8 @@ export function AudibleManagement({ currentUser, native, purchases }: Management
   }
 
   const pending = libationStatus?.pendingLogin;
+  // Another administrator's sign-in is not shown as pending here, but it still holds Libation.
+  const signingIn = !!pending || !!libationStatus?.accounts.some(account => account.connectionState === "signing_in");
   const enabled = !!libationStatus?.enabled;
   const hasAccounts = !!libationStatus?.accounts.length;
   const checksReady = !!setup?.checks.length && setup.checks.every(check => check.ready);
@@ -95,7 +97,7 @@ export function AudibleManagement({ currentUser, native, purchases }: Management
   </div>;
   const setupResultMessage = setupResult === "ready" ? "Setup ready." : setupResult === "attention" ? "Setup needs attention. See server setup below." : setupResult === "failed" ? "Setup check failed." : "";
   const setupButton = <><button type="button" className="quiet-button" title={setupResultMessage || undefined} aria-busy={checking} disabled={checking} onClick={() => void checkSetup(true)}>{checking ? <LoaderCircle size={13} className="spin-icon" /> : setupResult ? setupResult === "ready" ? <Check size={13} className="audible-setup-result success" aria-hidden="true" /> : <X size={13} className="audible-setup-result failure" aria-hidden="true" /> : <RefreshCcw size={13} />} Check setup</button><span className="sr-only" role="status">{setupResultMessage}</span></>;
-  const refreshButton = <button type="button" className="download-btn audible-refresh-action" title={isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"} aria-label={isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"} onClick={() => void startLibationSync()} aria-busy={isRefreshingAudible} disabled={!enabled || libationLoading || libationRefreshPending || !!refreshLibationJob || !!pending}>
+  const refreshButton = <button type="button" className="download-btn audible-refresh-action" title={isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"} aria-label={isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"} onClick={() => void startLibationSync()} aria-busy={isRefreshingAudible} disabled={!enabled || libationLoading || libationRefreshPending || !!refreshLibationJob || signingIn}>
     {isRefreshingAudible ? <LoaderCircle size={13} className="spin-icon" /> : <RefreshCcw size={13} />}<span>{isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"}</span>
   </button>;
   const feedback = <>
@@ -107,7 +109,8 @@ export function AudibleManagement({ currentUser, native, purchases }: Management
       <div className="audible-section-head"><strong>{hasAccounts ? "Audible accounts" : "Connect your account"}</strong>{setupButton}</div>
       <p className="audible-intro">{hasAccounts ? "Manage your connections and add purchases to this server." : enabled ? "Sign in through Amazon to browse your purchases and add books to this server." : "Install Libation on this server to connect Audible. Use the OperaLibre installer's --libation option, then restart."}</p>
       {connectActions}
-      {!pending && setup && !setup.canSignIn ? <p className="settings-hint">{setup.busy ? "Finish the current Libation operation, then check setup again to sign in." : "Check the server setup below to enable browser sign-in. Accounts connected in Libation remain available."}</p> : null}
+      {!pending && signingIn ? <p className="settings-hint">Another administrator is signing in to Audible. Try again when they finish.</p> : null}
+      {!signingIn && setup && !setup.canSignIn ? <p className="settings-hint">{setup.busy ? "Finish the current Libation operation, then check setup again to sign in." : "Check the server setup below to enable browser sign-in. Accounts connected in Libation remain available."}</p> : null}
     </div> : null}
     {libationStatus?.accounts.length ? <div className="account-list audible-accounts">
       {libationStatus.accounts.map(account => <article key={account.id} className={account.authenticated ? "ok" : "warn"}>
@@ -119,13 +122,13 @@ export function AudibleManagement({ currentUser, native, purchases }: Management
             <small>Last refreshed: {lastChecked(account.lastSuccessfulRefresh ?? libationStatus.lastSuccessfulRefresh)}</small>
             {account.lastError ? <LibationError detail={account.lastError} /> : null}
             <div className="account-list-actions">
-              {account.id !== "legacy" ? <button type="button" disabled={!setup?.canSignIn || !!busy || !!pending} onClick={() => setLogin({ account })}>Reconnect</button> : null}
-              {account.managed ? <button type="button" disabled={!!busy || !!pending} onClick={() => { setEditing(editing === account.id ? null : account.id); setLabel(account.name ?? ""); }}>Rename</button> : <a href={SETUP_DOCS} target="_blank" rel="noreferrer">Managed in Libation <ExternalLink size={12} /></a>}
-              {account.managed && currentUser.isOwner ? <button type="button" disabled={!!busy || !!pending} onClick={() => setRemoving(account.id)} className="danger">Disconnect</button> : null}
+              {account.id !== "legacy" ? <button type="button" disabled={!setup?.canSignIn || !!busy || signingIn} onClick={() => setLogin({ account })}>Reconnect</button> : null}
+              {account.managed ? <button type="button" disabled={!!busy || signingIn} onClick={() => { setEditing(editing === account.id ? null : account.id); setLabel(account.name ?? ""); }}>Rename</button> : <a href={SETUP_DOCS} target="_blank" rel="noreferrer">Managed in Libation <ExternalLink size={12} /></a>}
+              {account.managed && currentUser.isOwner ? <button type="button" disabled={!!busy || signingIn} onClick={() => setRemoving(account.id)} className="danger">Disconnect</button> : null}
             </div>
             {editing === account.id ? <form className="audible-account-edit" onSubmit={event => { event.preventDefault(); void changeAccount(account.id, () => updateLibationAccount(account.id, label.trim()), "Account renamed.", true); }}><label>Account label<input value={label} maxLength={80} onChange={event => setLabel(event.currentTarget.value)} required /></label><button type="submit" className="quiet-button" disabled={!!busy || !label.trim()}>Save</button><button type="button" className="quiet-button" onClick={() => setEditing(null)}>Cancel</button></form> : null}
             {removing === account.id ? <div className="audible-disconnect"><p>Disconnect {account.name}? Downloaded books and listening progress stay in your library.</p><button type="button" className="quiet-button" disabled={!!busy} onClick={() => void changeAccount(account.id, () => removeLibationAccount(account.id), "Account disconnected.", true)}>Disconnect account</button><button type="button" className="quiet-button" onClick={() => setRemoving(null)}>Keep connected</button></div> : null}
-            {currentUser.libationAccess === "direct" && account.id !== "legacy" ? <label className="audible-auto-import"><input type="checkbox" checked={libationStatus.autoImportAccountIds?.includes(account.id) ?? false} disabled={!!busy || !!pending || (!account.authenticated && !libationStatus.autoImportAccountIds?.includes(account.id))} onChange={event => { const value = event.currentTarget.checked; void changeAccount(account.id, () => setLibationAutoImport(account.id, value), value ? "Future purchases will be imported after a refresh." : "Automatic imports turned off."); }} /><span><strong>Automatically add new purchases</strong><small>Future purchases go to the server after a refresh. Existing purchases and Audible Plus titles stay manual. Reader access rules still apply.</small></span></label> : null}
+            {currentUser.libationAccess === "direct" && account.id !== "legacy" ? <label className="audible-auto-import"><input type="checkbox" checked={libationStatus.autoImportAccountIds?.includes(account.id) ?? false} disabled={!!busy || signingIn || (!account.authenticated && !libationStatus.autoImportAccountIds?.includes(account.id))} onChange={event => { const value = event.currentTarget.checked; void changeAccount(account.id, () => setLibationAutoImport(account.id, value), value ? "Future purchases will be imported after a refresh." : "Automatic imports turned off."); }} /><span><strong>Automatically add new purchases</strong><small>Future purchases go to the server after a refresh. Existing purchases and Audible Plus titles stay manual. Reader access rules still apply.</small></span></label> : null}
           </> : null}
         </div>
       </article>)}
@@ -133,7 +136,7 @@ export function AudibleManagement({ currentUser, native, purchases }: Management
     {feedback}
     {hasAccounts || !currentUser.isAdmin ? <div className="audible-import-controls"><div className="store-settings-actions">
       {refreshButton}
-      {currentUser.isAdmin && currentUser.libationAccess === "direct" ? <button type="button" className="download-btn" onClick={() => void startAllLiberation()} aria-busy={libationAllPending || !!downloadAllLibationJob} disabled={!enabled || libationLoading || libationAllPending || !!downloadAllLibationJob || !!pending}>
+      {currentUser.isAdmin && currentUser.libationAccess === "direct" ? <button type="button" className="download-btn" onClick={() => void startAllLiberation()} aria-busy={libationAllPending || !!downloadAllLibationJob} disabled={!enabled || libationLoading || libationAllPending || !!downloadAllLibationJob || signingIn}>
         {libationAllPending || downloadAllLibationJob ? <LoaderCircle size={13} className="spin-icon" /> : <Download size={13} />}<span>{libationAllPending || downloadAllLibationJob ? "Adding purchases" : "Add all purchases to server"}</span>
       </button> : null}
     </div>

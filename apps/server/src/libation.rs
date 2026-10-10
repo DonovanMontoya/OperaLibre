@@ -134,6 +134,10 @@ pub(crate) fn default_libation_connection_state() -> String {
 
 pub(crate) struct PendingLibationLogin {
     pub(crate) profile_id: String,
+    /// Only this user, or an owner, may see, finish, or cancel the sign-in.
+    /// Otherwise another administrator could finish it with their own Amazon
+    /// response and attach their Audible account to this profile.
+    pub(crate) started_by: String,
     /// The sign-in created this account, so cancelling it leaves nothing behind.
     pub(crate) created_account: bool,
     pub(crate) login_url: String,
@@ -386,7 +390,15 @@ pub(crate) async fn start_libation_account_login(
             "Account label must be between 1 and {MAX_LIBATION_ACCOUNT_LABEL_CHARS} characters."
         )));
     }
-    if account_id.is_empty() || account_id.chars().count() > MAX_LIBATION_ACCOUNT_ID_CHARS {
+    // The id is passed to the Libation CLI as its own argument, so a leading
+    // dash or embedded whitespace could be parsed as another option.
+    if account_id.is_empty()
+        || account_id.chars().count() > MAX_LIBATION_ACCOUNT_ID_CHARS
+        || account_id.starts_with('-')
+        || account_id
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+    {
         return Err(ApiError::bad_request(
             "Enter a valid Audible account email or login id.",
         ));
@@ -571,6 +583,7 @@ pub(crate) async fn start_libation_account_login(
         session_id.clone(),
         PendingLibationLogin {
             profile_id: profile_id.clone(),
+            started_by: auth.id.clone(),
             created_account,
             login_url: login_url.clone(),
             expires_at,
@@ -594,28 +607,51 @@ pub(crate) async fn start_libation_account_login(
 
 pub(crate) async fn complete_libation_account_login(
     State(state): State<AppState>,
-    _: AdminUser,
+    AdminUser(auth): AdminUser,
     Path(session_id): Path<String>,
     Json(payload): Json<CompleteLibationLoginRequest>,
 ) -> Result<Json<LibationStatus>, ApiError> {
     let response_url = validate_libation_response_url(&payload.response_url)?;
-    let pending = state
-        .libation_login_sessions
-        .lock()
-        .await
-        .remove(&session_id)
+    let pending = take_own_libation_login(&state, &auth, &session_id)
+        .await?
         .ok_or(ApiError::not_found(
             "Audible sign-in session not found or expired.",
         ))?;
     // Closing the client request must not release the CLI lock while login is
     // still writing credentials. The bounded completion task owns the session.
-    tokio::spawn(finish_libation_account_login(state, pending, response_url))
-        .await
-        .map_err(|error| ApiError::internal(error.to_string()))?
+    tokio::spawn(finish_libation_account_login(
+        state,
+        auth,
+        pending,
+        response_url,
+    ))
+    .await
+    .map_err(|error| ApiError::internal(error.to_string()))?
+}
+
+/// Removes a pending sign-in, refusing anyone but its starter or an owner.
+async fn take_own_libation_login(
+    state: &AppState,
+    auth: &AuthUser,
+    session_id: &str,
+) -> Result<Option<PendingLibationLogin>, ApiError> {
+    let mut sessions = state.libation_login_sessions.lock().await;
+    match sessions.get(session_id) {
+        None => Ok(None),
+        Some(pending) if !can_manage_libation_login(auth, pending) => Err(ApiError::forbidden(
+            "Only the administrator who started this Audible sign-in, or an owner, can finish or cancel it.",
+        )),
+        Some(_) => Ok(sessions.remove(session_id)),
+    }
+}
+
+fn can_manage_libation_login(auth: &AuthUser, pending: &PendingLibationLogin) -> bool {
+    auth.is_owner || pending.started_by == auth.id
 }
 
 async fn finish_libation_account_login(
     state: AppState,
+    auth: AuthUser,
     pending: PendingLibationLogin,
     response_url: String,
 ) -> Result<Json<LibationStatus>, ApiError> {
@@ -674,19 +710,15 @@ async fn finish_libation_account_login(
     if created {
         spawn_libation_sync_job(state.clone(), job_id);
     }
-    Ok(Json(read_libation_status(&state).await))
+    Ok(Json(read_libation_status(&state, &auth).await))
 }
 
 pub(crate) async fn cancel_libation_account_login(
     State(state): State<AppState>,
-    _: AdminUser,
+    AdminUser(auth): AdminUser,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let pending = state
-        .libation_login_sessions
-        .lock()
-        .await
-        .remove(&session_id);
+    let pending = take_own_libation_login(&state, &auth, &session_id).await?;
     if let Some(pending) = pending {
         let PendingLibationLogin {
             profile_id,
@@ -733,7 +765,7 @@ async fn discard_unconnected_libation_account(
 
 pub(crate) async fn update_libation_account(
     State(state): State<AppState>,
-    _: AdminUser,
+    AdminUser(auth): AdminUser,
     Path(profile_id): Path<String>,
     Json(payload): Json<UpdateLibationAccountRequest>,
 ) -> Result<Json<LibationStatus>, ApiError> {
@@ -756,7 +788,7 @@ pub(crate) async fn update_libation_account(
         })
         .await?;
     invalidate_libation_export_cache().await;
-    Ok(Json(read_libation_status(&state).await))
+    Ok(Json(read_libation_status(&state, &auth).await))
 }
 
 pub(crate) async fn delete_libation_account(
@@ -835,8 +867,10 @@ pub(crate) async fn delete_libation_account(
             Ok(())
         })
         .await?;
-    let profile_dir = state.libation_accounts_root.join(&profile_id);
-    if profile_dir.starts_with(&state.libation_accounts_root) {
+    // `starts_with` alone would accept `..` components; only a plain token is
+    // guaranteed to name a folder inside the accounts directory.
+    if is_plain_file_token(&profile_id) {
+        let profile_dir = state.libation_accounts_root.join(&profile_id);
         match fs::remove_dir_all(&profile_dir).await {
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -1114,9 +1148,9 @@ pub(crate) async fn initialize_managed_libation_profile(
 
 pub(crate) async fn libation_status(
     State(state): State<AppState>,
-    _: AdminUser,
+    AdminUser(auth): AdminUser,
 ) -> Result<Json<LibationStatus>, ApiError> {
-    Ok(Json(read_libation_status(&state).await))
+    Ok(Json(read_libation_status(&state, &auth).await))
 }
 
 pub(crate) async fn get_libation_access(
@@ -3671,21 +3705,28 @@ pub(crate) fn find_libation_cli_on_path() -> Option<PathBuf> {
     None
 }
 
-pub(crate) async fn read_libation_status(state: &AppState) -> LibationStatus {
+pub(crate) async fn read_libation_status(state: &AppState, viewer: &AuthUser) -> LibationStatus {
     prune_expired_libation_login_sessions(state).await;
     let config = state.libation_config.clone();
-    let pending_login = state
-        .libation_login_sessions
-        .lock()
-        .await
-        .iter()
-        .next()
-        .map(|(id, pending)| LibationLoginStarted {
-            session_id: id.clone(),
-            profile_id: pending.profile_id.clone(),
-            login_url: pending.login_url.clone(),
-            expires_at: pending.expires_at,
-        });
+    // All administrators see the signing-in account, but only its starter and
+    // owners receive the session details needed to continue or cancel it.
+    let (pending_profile_id, pending_login) = {
+        let sessions = state.libation_login_sessions.lock().await;
+        let pending_profile_id = sessions
+            .values()
+            .next()
+            .map(|pending| pending.profile_id.clone());
+        let pending_login = sessions
+            .iter()
+            .find(|(_, pending)| can_manage_libation_login(viewer, pending))
+            .map(|(id, pending)| LibationLoginStarted {
+                session_id: id.clone(),
+                profile_id: pending.profile_id.clone(),
+                login_url: pending.login_url.clone(),
+                expires_at: pending.expires_at,
+            });
+        (pending_profile_id, pending_login)
+    };
     let refreshes = state.libation_refreshes.read().await;
     let last_successful_refresh = refreshes.last_successful_scan;
     let auto_import_account_ids = refreshes.auto_imports.keys().cloned().collect::<Vec<_>>();
@@ -3736,9 +3777,9 @@ pub(crate) async fn read_libation_status(state: &AppState) -> LibationStatus {
                 .filter(|account| !account.managed)
                 .cloned(),
         );
-        if let Some(pending) = &pending_login {
+        if let Some(profile_id) = &pending_profile_id {
             for account in &mut accounts {
-                if account.id == pending.profile_id {
+                if account.id == *profile_id {
                     account.authenticated = false;
                     account.connection_state = "signing_in".to_string();
                     account.last_error = None;

@@ -22,7 +22,7 @@ Sessions are persisted, so restarting the server does not sign anyone out. Each 
 ## Roles
 
 - **Owner** — has full administrator access and can promote or demote owners and administrators. Owners always have direct Libation downloads and request-approval permission.
-- **Administrator** — can add and remove readers, reset reader passwords, upload books, and run library operations. An owner separately chooses whether each administrator downloads directly or requests each title, and whether they can approve requests.
+- **Administrator** — can add and remove readers, reset reader passwords (except for readers an owner allowed to download from Audible directly), upload books, and run library operations. An owner separately chooses whether each administrator downloads directly or requests each title, and whether they can approve requests.
 - **Reader** — can browse, stream, and update their own progress and password.
 
 The first account created is always an owner. When upgrading an existing server, the oldest existing administrator becomes the initial owner; existing administrators retain direct-download and approval permissions.

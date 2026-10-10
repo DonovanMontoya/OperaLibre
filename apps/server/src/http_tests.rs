@@ -2706,6 +2706,42 @@ async fn listening_now_counts_people_not_books() {
     );
 }
 
+/// A stray track beside nested book folders makes the parent folder a book of
+/// its own. Deleting that book must not remove the books nested inside it.
+#[tokio::test]
+async fn deleting_a_folder_book_never_removes_books_nested_inside_it() {
+    let server = TestServer::start(0).await;
+    let token = server.setup_owner().await;
+    let author = server.library_root.join("Author");
+    std::fs::create_dir_all(author.join("Book One")).unwrap();
+    std::fs::write(author.join("intro.wav"), fixture_wav()).unwrap();
+    std::fs::write(author.join("Book One").join("01.wav"), fixture_wav()).unwrap();
+    rescan_library(&server.state).await.unwrap();
+
+    let parent = {
+        let library = server.state.library.read().await;
+        assert_eq!(library.book_paths.len(), 2);
+        library
+            .book_paths
+            .iter()
+            .find(|(_, path)| path.ends_with("Author"))
+            .map(|(id, _)| id.clone())
+            .unwrap()
+    };
+
+    let response = server
+        .send_json(
+            "DELETE",
+            &format!("/api/books/{parent}/download"),
+            &token,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::CONFLICT);
+    assert!(author.join("Book One").join("01.wav").exists());
+    assert!(author.join("intro.wav").exists());
+}
+
 /// The request timeout must not sit in front of a book download: the archive
 /// is built before the response begins, and a large book takes minutes.
 #[tokio::test]
@@ -3358,6 +3394,39 @@ async fn a_backup_archives_recording_receipts_but_restoration_ends_the_live_line
         .json();
     assert_eq!(current["positionSeconds"], saved.json()["positionSeconds"]);
     assert!(current["recording"].is_null());
+}
+
+/// Account ids become folder names under the Libation accounts directory, so a
+/// crafted backup must not be able to aim them outside it.
+#[tokio::test]
+async fn backup_restore_rejects_audible_account_ids_that_escape_their_folder() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let mut backup = server.get("/api/admin/backup", &owner).await.json();
+    backup["data"]["documents"]["libation-accounts"] = serde_json::json!({
+        "accounts": [{
+            "id": "../../library", "label": "Personal", "accountId": "me@example.test",
+            "locale": "us", "addedBy": "owner", "addedAt": "0"
+        }]
+    });
+
+    let restored = server
+        .send_json("POST", "/api/admin/backup", &owner, backup)
+        .await;
+    assert!(
+        restored.status.is_client_error() || restored.status.is_server_error(),
+        "{}",
+        restored.text()
+    );
+    assert!(
+        server
+            .state
+            .libation_accounts
+            .read()
+            .await
+            .accounts
+            .is_empty()
+    );
 }
 
 #[cfg(unix)]
@@ -4277,6 +4346,64 @@ async fn only_an_owner_can_create_a_reader_with_direct_libation_access() {
         .await;
     assert_eq!(granted.status, StatusCode::OK, "{}", granted.text());
     assert_eq!(granted.json()["libationAccess"], "direct");
+}
+
+/// A password reset is a way to sign in as the account, so an administrator
+/// must not reach direct Libation access by resetting a reader who holds it.
+#[tokio::test]
+async fn only_an_owner_can_reset_the_password_of_a_direct_access_reader() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let create = |username: &str, extra: serde_json::Value| {
+        let mut body = serde_json::json!({
+            "username": username,
+            "password": format!("{username}-password-1234"),
+        });
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        body
+    };
+    for (username, extra) in [
+        ("deputy", serde_json::json!({"isAdmin": true})),
+        ("trusted", serde_json::json!({"libationAccess": "direct"})),
+        ("requester", serde_json::json!({})),
+    ] {
+        let created = server
+            .send_json("POST", "/api/users", &owner, create(username, extra))
+            .await;
+        assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    }
+    let users = server.get("/api/users", &owner).await.json();
+    let id_of = |name: &str| {
+        users
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|user| user["username"] == name)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let admin = server.add_reader_login("deputy").await;
+    let reset = |id: String| format!("/api/users/{id}/password");
+    let body = serde_json::json!({"newPassword": "taken-over-password-1234"});
+
+    let refused = server
+        .send_json("POST", &reset(id_of("trusted")), &admin, body.clone())
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text());
+
+    let allowed = server
+        .send_json("POST", &reset(id_of("requester")), &admin, body.clone())
+        .await;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.text());
+
+    let by_owner = server
+        .send_json("POST", &reset(id_of("trusted")), &owner, body)
+        .await;
+    assert_eq!(by_owner.status, StatusCode::OK, "{}", by_owner.text());
 }
 
 /// Administrators download directly by default. A demotion to reader gives
@@ -6998,6 +7125,7 @@ async fn libation_status_route_exposes_pending_sign_in_without_waiting_for_the_c
         "pending-sign-in".to_string(),
         PendingLibationLogin {
             profile_id: "test-profile".to_string(),
+            started_by: "admin".to_string(),
             created_account: false,
             login_url: "https://www.amazon.com/ap/signin?session=test".to_string(),
             expires_at: unix_now_seconds().saturating_add(60),

@@ -1431,6 +1431,19 @@ pub(crate) async fn delete_user(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// Resetting a password lets the resetter sign in as that account. Direct
+/// Libation access is an owner grant, so taking over an account that holds it
+/// would let an administrator held to approval download without it.
+fn password_reset_needs_owner(user: &User) -> bool {
+    user.is_admin || user.is_owner || user.libation_access == LibationAccess::Direct
+}
+
+fn owner_only_password_reset() -> ApiError {
+    ApiError::forbidden(
+        "Only an owner can reset the password of an administrator, an owner, or an account with direct Libation access.",
+    )
+}
+
 pub(crate) async fn change_password(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -1460,14 +1473,12 @@ pub(crate) async fn change_password(
         (
             user.id.clone(),
             user.password_hash.clone(),
-            user.is_admin || user.is_owner,
+            password_reset_needs_owner(user),
         )
     };
 
     if !changing_self && target_is_privileged && !auth.is_owner {
-        return Err(ApiError::forbidden(
-            "Only an owner can reset an administrator or owner's password.",
-        ));
+        return Err(owner_only_password_reset());
     }
 
     if changing_self {
@@ -1486,10 +1497,8 @@ pub(crate) async fn change_password(
                 .iter_mut()
                 .find(|user| user.id == user_id)
                 .ok_or(ApiError::not_found("User not found."))?;
-            if !changing_self && (user.is_admin || user.is_owner) && !auth.is_owner {
-                return Err(ApiError::forbidden(
-                    "Only an owner can reset an administrator or owner's password.",
-                ));
+            if !changing_self && password_reset_needs_owner(user) && !auth.is_owner {
+                return Err(owner_only_password_reset());
             }
             // The password was verified before the Argon2 work. Do not let a
             // self-service request overwrite a reset that landed meanwhile.
