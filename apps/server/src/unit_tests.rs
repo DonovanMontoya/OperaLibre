@@ -9064,7 +9064,7 @@ async fn libation_status_preserves_legacy_accounts_without_probing_during_sign_i
     let state = libation_browser_fixture(root.path());
     std::fs::write(
         root.path().join("libation-accounts.tsv"),
-        "fixture@example.test\tPersonal\tus\tyes\tno\nother@example.test\tFamily\tus\tyes\tyes\n",
+        "fixture@example.test\tPersonal\tus\tyes\tyes\nother@example.test\tFamily\tus\tyes\tyes\n",
     )
     .unwrap();
     let initial =
@@ -9114,6 +9114,27 @@ async fn libation_status_preserves_legacy_accounts_without_probing_during_sign_i
             .connection_state,
         "signing_in"
     );
+    let other_admin = super::AuthUser {
+        id: "other-admin".to_string(),
+        username: "other-admin".to_string(),
+        ..admin_user()
+    };
+    let status = super::read_libation_status(&state, &other_admin).await;
+    assert!(status.pending_login.is_none());
+    let reconnecting = status
+        .accounts
+        .iter()
+        .find(|account| account.id == id)
+        .unwrap();
+    assert_eq!(reconnecting.connection_state, "signing_in");
+    assert!(!reconnecting.authenticated);
+    let other_account = status
+        .accounts
+        .iter()
+        .find(|account| account.id != id)
+        .unwrap();
+    assert_eq!(other_account.connection_state, "connected");
+    assert!(other_account.authenticated);
     assert!(
         !probe_log.exists(),
         "status must not start another CLI while sign-in writes its profile"

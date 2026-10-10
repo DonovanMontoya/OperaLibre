@@ -3708,19 +3708,25 @@ pub(crate) fn find_libation_cli_on_path() -> Option<PathBuf> {
 pub(crate) async fn read_libation_status(state: &AppState, viewer: &AuthUser) -> LibationStatus {
     prune_expired_libation_login_sessions(state).await;
     let config = state.libation_config.clone();
-    // Other administrators still see the account as signing in.
-    let pending_login = state
-        .libation_login_sessions
-        .lock()
-        .await
-        .iter()
-        .find(|(_, pending)| can_manage_libation_login(viewer, pending))
-        .map(|(id, pending)| LibationLoginStarted {
-            session_id: id.clone(),
-            profile_id: pending.profile_id.clone(),
-            login_url: pending.login_url.clone(),
-            expires_at: pending.expires_at,
-        });
+    // All administrators see the signing-in account, but only its starter and
+    // owners receive the session details needed to continue or cancel it.
+    let (pending_profile_id, pending_login) = {
+        let sessions = state.libation_login_sessions.lock().await;
+        let pending_profile_id = sessions
+            .values()
+            .next()
+            .map(|pending| pending.profile_id.clone());
+        let pending_login = sessions
+            .iter()
+            .find(|(_, pending)| can_manage_libation_login(viewer, pending))
+            .map(|(id, pending)| LibationLoginStarted {
+                session_id: id.clone(),
+                profile_id: pending.profile_id.clone(),
+                login_url: pending.login_url.clone(),
+                expires_at: pending.expires_at,
+            });
+        (pending_profile_id, pending_login)
+    };
     let refreshes = state.libation_refreshes.read().await;
     let last_successful_refresh = refreshes.last_successful_scan;
     let auto_import_account_ids = refreshes.auto_imports.keys().cloned().collect::<Vec<_>>();
@@ -3771,9 +3777,9 @@ pub(crate) async fn read_libation_status(state: &AppState, viewer: &AuthUser) ->
                 .filter(|account| !account.managed)
                 .cloned(),
         );
-        if let Some(pending) = &pending_login {
+        if let Some(profile_id) = &pending_profile_id {
             for account in &mut accounts {
-                if account.id == pending.profile_id {
+                if account.id == *profile_id {
                     account.authenticated = false;
                     account.connection_state = "signing_in".to_string();
                     account.last_error = None;
