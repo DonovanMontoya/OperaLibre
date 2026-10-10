@@ -876,14 +876,27 @@ pub(crate) async fn delete_downloaded_book(
 ) -> Result<Json<Vec<Book>>, ApiError> {
     let _upload_guard = state.upload_lock.lock().await;
 
-    let book_path = state
-        .library
-        .read()
-        .await
-        .book_paths
-        .get(&book_id)
-        .cloned()
-        .ok_or(ApiError::not_found("Book not found"))?;
+    let (book_path, contains_other_books) = {
+        let library = state.library.read().await;
+        let book_path = library
+            .book_paths
+            .get(&book_id)
+            .cloned()
+            .ok_or(ApiError::not_found("Book not found"))?;
+        // A folder book is grouped from the audio directly inside it, so a
+        // stray track beside nested book folders makes the parent a book too.
+        // Removing that folder would take every nested book with it.
+        let contains_other_books = library
+            .book_paths
+            .iter()
+            .any(|(id, path)| id != &book_id && path != &book_path && path.starts_with(&book_path));
+        (book_path, contains_other_books)
+    };
+    if contains_other_books {
+        return Err(ApiError::conflict(
+            "This book's folder also holds other books. Move them out before deleting it.",
+        ));
+    }
 
     let library_root = fs::canonicalize(&state.library_root).await?;
     let canonical_book_path = fs::canonicalize(&book_path).await?;

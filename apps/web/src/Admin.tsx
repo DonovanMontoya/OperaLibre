@@ -1080,7 +1080,7 @@ export function AdminPanel({
                         <div className="admin-avatar">{user.username.slice(0, 1).toUpperCase()}</div>
                         <div><strong>{user.username}</strong><span>{user.isOwner ? "Owner" : user.isAdmin ? "Administrator" : allBooks ? "Reader · all books" : `Reader · ${user.allowedBookIds?.length ?? 0} of ${books.length} books`}{user.id === currentUser.id ? " · you" : ""}</span></div>
                         <div className="admin-row-actions">
-                          {user.id !== currentUser.id ? <button type="button" disabled={busyKey !== null || !canManageTarget} onClick={() => void handleResetPassword(user)}><KeyRound size={13} /> Reset</button> : null}
+                          {user.id !== currentUser.id ? <button type="button" disabled={busyKey !== null || !canManageTarget || (!currentUser.isOwner && user.libationAccess === "direct")} onClick={() => void handleResetPassword(user)}><KeyRound size={13} /> Reset</button> : null}
                           <button type="button" className="danger" disabled={user.id === currentUser.id || busyKey !== null || !canManageTarget} onClick={() => void handleDelete(user)}><Trash2 size={13} /> Delete</button>
                         </div>
                       </div>

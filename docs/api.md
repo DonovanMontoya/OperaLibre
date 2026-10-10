@@ -74,7 +74,7 @@ Frontend installation is available when the server directly serves a versioned w
 | `GET` | `/api/users` | List accounts and their role/Libation permissions. |
 | `POST` | `/api/users` | Create an account. Creating an admin or owner requires an owner. |
 | `DELETE` | `/api/users/{user_id}` | Delete an account. Admin/owner targets require an owner; the final owner is protected. |
-| `POST` | `/api/users/{user_id}/password` | Reset a password. Any user may change their own; admin/owner targets require an owner. |
+| `POST` | `/api/users/{user_id}/password` | Reset a password. Any user may change their own; admin/owner targets, and readers with direct Libation access, require an owner. |
 | `PUT` | `/api/users/{user_id}/book-access` | Set a reader's allowed book IDs. Send `{ "allowedBookIds": null }` for the full library or an array for a restricted shelf. |
 | `PUT` | `/api/users/{user_id}/role` | Set owner/admin/reader status. Owner only. |
 | `PUT` | `/api/users/{user_id}/libation-access` | Set direct or approval-required Libation access. Admin targets require an owner. |
@@ -309,8 +309,8 @@ semantics. Job kind is `libro-import` and uses the standard jobs endpoints.
 | `GET` | `/api/libation/setup` | Installation, browser sign-in capability, settings readability, storage checks, and busy state. Admin only. |
 | `PUT` | `/api/libation/accounts/{profile_id}/auto-import` | Enable or disable future automatic imports with `{ "enabled": true }`. Admin with direct-download access only. |
 | `POST` | `/api/libation/accounts/login/start` | Start an external-browser Audible sign-in for a new account or reconnect a managed or existing shared-profile account. Admin only. |
-| `POST` | `/api/libation/accounts/login/{session_id}/complete` | Submit the final Amazon/Audible response URL and finish sign-in. Admin only. |
-| `DELETE` | `/api/libation/accounts/login/{session_id}` | Cancel a pending account sign-in. Admin only. |
+| `POST` | `/api/libation/accounts/login/{session_id}/complete` | Submit the final Amazon/Audible response URL and finish sign-in. Only the administrator who started it, or an owner. |
+| `DELETE` | `/api/libation/accounts/login/{session_id}` | Cancel a pending account sign-in. Only the administrator who started it, or an owner. |
 | `PUT` | `/api/libation/accounts/{profile_id}` | Rename a managed Audible account. Admin only. |
 | `DELETE` | `/api/libation/accounts/{profile_id}` | Remove a managed account and its isolated Libation profile. Owner only. |
 | `GET` | `/api/libation/books` | Audible library known to Libation. |
@@ -330,7 +330,7 @@ Libation status, setup checks, account changes, download-all, and the job listin
 
 Libation download jobs enforce `max_upload_gib` per title, including temporary files, and monitor `min_download_free_gib` on the library volume. Budget failures set the job to `failed` and discard staged files. Accepted single-title and bulk download intent persists across server restarts. Approved requests retain their decision; retrying a failed approved request reuses that approval. Recovered jobs receive new job IDs, so clients should reload requests and jobs after a restart. The same checks apply to approved requests and each title in download-all. Existing local titles are reused.
 
-`autoImportAccountIds` and `lastSuccessfulRefresh` are additional status fields. `pendingLogin`, when present, has the same `sessionId`, `profileId`, `loginUrl`, and `expiresAt` fields returned by sign-in start. Automatic imports baseline the account catalog when enabled, exclude Audible Plus titles, and run after a successful account refresh. They never grant additional reader access. Existing clients can ignore these added fields.
+`autoImportAccountIds` and `lastSuccessfulRefresh` are additional status fields. `pendingLogin`, when present, has the same `sessionId`, `profileId`, `loginUrl`, and `expiresAt` fields returned by sign-in start. It appears only for the administrator who started the sign-in and for owners; other administrators see the account's `connectionState` as `signing_in`. Automatic imports baseline the account catalog when enabled, exclude Audible Plus titles, and run after a successful account refresh. They never grant additional reader access. Existing clients can ignore these added fields.
 
 ## OPDS
 

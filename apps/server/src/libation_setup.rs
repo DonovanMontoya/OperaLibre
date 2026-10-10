@@ -145,7 +145,7 @@ pub(crate) async fn set_libation_auto_import(
                 Ok(())
             })
             .await?;
-        return Ok(Json(read_libation_status(&state).await));
+        return Ok(Json(read_libation_status(&state, &auth).await));
     }
     let _guard = state.libation_job_lock.try_lock().map_err(|_| ApiError::conflict("Libation is busy. Try enabling automatic imports after the current operation finishes."))?;
     let profile = find_libation_profile(&state, &profile_id)
@@ -194,12 +194,12 @@ pub(crate) async fn set_libation_auto_import(
                 .auto_imports
                 .entry(profile_id)
                 .or_insert(LibationAutoImport {
-                    enabled_by: auth.id,
+                    enabled_by: auth.id.clone(),
                     seen_asins,
                 });
             Ok(())
         })
         .await?;
     drop(_guard);
-    Ok(Json(read_libation_status(&state).await))
+    Ok(Json(read_libation_status(&state, &auth).await))
 }

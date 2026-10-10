@@ -526,6 +526,15 @@ fn restore_database(
     if !snapshot.users.users.iter().any(|user| user.is_owner) {
         anyhow::bail!("the restored data has no owner account");
     }
+    // Account ids name folders under the Libation accounts directory.
+    if snapshot
+        .libation_accounts
+        .accounts
+        .iter()
+        .any(|account| !is_plain_file_token(&account.id))
+    {
+        anyhow::bail!("the backup contains an invalid Audible account id");
+    }
     let foreign_key_failure: Option<String> = transaction
         .query_row("PRAGMA foreign_key_check", [], |row| row.get(0))
         .optional()?;

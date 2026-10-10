@@ -5859,6 +5859,7 @@ async fn an_expired_libation_sign_in_releases_the_job_lock() {
         super::PendingLibationLogin {
             login_url: "https://www.amazon.com/ap/signin".to_string(),
             profile_id: "profile-1".to_string(),
+            started_by: "admin".to_string(),
             created_account: false,
             expires_at: super::unix_now_seconds().saturating_sub(1),
             response_sender,
@@ -5921,6 +5922,7 @@ async fn an_expired_libation_sign_in_does_not_block_account_deletion() {
         super::PendingLibationLogin {
             login_url: "https://www.amazon.com/ap/signin".to_string(),
             profile_id: "profile-1".to_string(),
+            started_by: "admin".to_string(),
             created_account: false,
             expires_at: super::unix_now_seconds().saturating_sub(1),
             response_sender,
@@ -8438,6 +8440,104 @@ fn browser_login_request(profile_id: Option<String>) -> super::StartLibationLogi
 
 #[cfg(unix)]
 #[tokio::test]
+async fn libation_browser_sign_in_belongs_to_its_starter_and_owners() {
+    let root = tempfile::tempdir().unwrap();
+    let state = libation_browser_fixture(root.path());
+    let started = super::start_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Json(browser_login_request(None)),
+    )
+    .await
+    .unwrap()
+    .0;
+    let other_admin = super::AuthUser {
+        id: "other-admin".to_string(),
+        username: "other-admin".to_string(),
+        ..admin_user()
+    };
+    let owner = super::AuthUser {
+        id: "owner".to_string(),
+        username: "owner".to_string(),
+        is_owner: true,
+        ..admin_user()
+    };
+
+    let seen_by_other = super::read_libation_status(&state, &other_admin).await;
+    assert!(seen_by_other.pending_login.is_none());
+    assert_eq!(seen_by_other.accounts[0].connection_state, "signing_in");
+    let completed = super::complete_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(other_admin.clone()),
+        super::Path(started.session_id.clone()),
+        super::Json(super::CompleteLibationLoginRequest {
+            response_url: "https://www.amazon.com/ap/maplanding?openid.oa2.authorization_code=x"
+                .to_string(),
+        }),
+    )
+    .await;
+    assert_eq!(
+        completed.err().unwrap().status,
+        axum::http::StatusCode::FORBIDDEN
+    );
+    let cancelled = super::cancel_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(other_admin),
+        super::Path(started.session_id.clone()),
+    )
+    .await;
+    assert_eq!(
+        cancelled.err().unwrap().status,
+        axum::http::StatusCode::FORBIDDEN
+    );
+
+    // Refusals leave the sign-in in place for its starter, and an owner can
+    // still clear one an administrator abandoned.
+    let seen_by_starter = super::read_libation_status(&state, &admin_user()).await;
+    assert_eq!(
+        seen_by_starter.pending_login.unwrap().session_id,
+        started.session_id
+    );
+    let seen_by_owner = super::read_libation_status(&state, &owner).await;
+    assert!(seen_by_owner.pending_login.is_some());
+    super::cancel_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(owner),
+        super::Path(started.session_id),
+    )
+    .await
+    .unwrap();
+    assert!(state.libation_login_sessions.lock().await.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_browser_sign_in_rejects_account_ids_shaped_like_options() {
+    let root = tempfile::tempdir().unwrap();
+    let state = libation_browser_fixture(root.path());
+    for account_id in [
+        "--libationFiles",
+        "-x",
+        "me@example.test --locale",
+        "me\u{0}@x",
+    ] {
+        let mut request = browser_login_request(None);
+        request.account_id = account_id.to_string();
+        let error = super::start_libation_account_login(
+            super::State(state.clone()),
+            super::AdminUser(admin_user()),
+            super::Json(request),
+        )
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("{account_id:?} must be rejected"));
+        assert_eq!(error.status, axum::http::StatusCode::BAD_REQUEST);
+    }
+    assert!(state.libation_login_sessions.lock().await.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn libation_browser_sign_in_preserves_pending_state_and_rejects_invalid_completion() {
     let root = tempfile::tempdir().unwrap();
     let state = libation_browser_fixture(root.path());
@@ -8603,7 +8703,7 @@ async fn libation_reconnect_keeps_existing_accounts_in_the_shared_profile() {
         "fixture@example.test\tPersonal\tus\tyes\tno\n",
     )
     .unwrap();
-    let status = super::read_libation_status(&state).await;
+    let status = super::read_libation_status(&state, &admin_user()).await;
     let id = status.accounts[0].id.clone();
     let started = super::start_libation_account_login(
         super::State(state.clone()),
@@ -8661,7 +8761,9 @@ async fn libation_auto_import_only_adds_future_purchases_and_respects_revoked_pe
         export(&[("B000OLD001", false)]),
     )
     .unwrap();
-    let id = super::read_libation_status(&state).await.accounts[0]
+    let id = super::read_libation_status(&state, &admin_user())
+        .await
+        .accounts[0]
         .id
         .clone();
     let _ = super::set_libation_auto_import(
