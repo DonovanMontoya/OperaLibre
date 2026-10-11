@@ -3429,11 +3429,16 @@ pub(crate) fn parse_libation_sidecar(contents: &str) -> Option<LibationSidecarMe
         .then_some(result)
 }
 
-pub(crate) fn normalized_json_key(key: &str) -> String {
-    key.chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_ascii_lowercase()
+/// Whether two JSON keys name the same field once case and punctuation are
+/// ignored (`AuthorNames`, `author_names`). Compared byte by byte because a
+/// sidecar walk runs it for every key against every name, on every rescan.
+pub(crate) fn json_keys_match(key: &str, name: &str) -> bool {
+    fn folded(text: &str) -> impl Iterator<Item = u8> + '_ {
+        text.bytes()
+            .filter(u8::is_ascii_alphanumeric)
+            .map(|byte| byte.to_ascii_lowercase())
+    }
+    folded(key).eq(folded(name))
 }
 
 pub(crate) fn sidecar_values<'a>(
@@ -3444,10 +3449,7 @@ pub(crate) fn sidecar_values<'a>(
     match value {
         serde_json::Value::Object(object) => {
             for (key, nested) in object {
-                if names
-                    .iter()
-                    .any(|name| normalized_json_key(key) == normalized_json_key(name))
-                {
+                if names.iter().any(|name| json_keys_match(key, name)) {
                     output.push(nested);
                 }
                 sidecar_values(nested, names, output);
@@ -3470,7 +3472,7 @@ pub(crate) fn sidecar_string(value: &serde_json::Value, names: &[&str]) -> Optio
         && let Some(value) = object.iter().find_map(|(key, value)| {
             names
                 .iter()
-                .any(|name| normalized_json_key(key) == normalized_json_key(name))
+                .any(|name| json_keys_match(key, name))
                 .then_some(value)
         })
         && let Some(value) = value
@@ -3692,17 +3694,7 @@ pub(crate) async fn find_libation_profile(
 }
 
 pub(crate) fn find_libation_cli_on_path() -> Option<PathBuf> {
-    let path_var = env::var_os("PATH")?;
-    let candidates = ["libationcli", "LibationCli", "libationcli.exe"];
-    for dir in env::split_paths(&path_var) {
-        for candidate in candidates {
-            let path = dir.join(candidate);
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-    }
-    None
+    find_on_path(&["libationcli", "LibationCli", "libationcli.exe"])
 }
 
 pub(crate) async fn read_libation_status(state: &AppState, viewer: &AuthUser) -> LibationStatus {

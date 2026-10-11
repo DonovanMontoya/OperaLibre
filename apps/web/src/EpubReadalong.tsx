@@ -49,7 +49,6 @@ import {
   watchAppPrefersDark,
   writeReaderThemeChoice
 } from "./readerTheme";
-import { readerDebugLog, shortCfi } from "./readerDebug";
 import {
   READER_FONT_SCALE_MAX,
   READER_FONT_SCALE_MIN,
@@ -523,8 +522,6 @@ export function EpubReadalong({
   const fullscreenRef = useRef(fullscreen);
   fullscreenRef.current = fullscreen;
   const [chromeHidden, setChromeHidden] = useState(false);
-  const chromeHiddenRef = useRef(chromeHidden);
-  chromeHiddenRef.current = chromeHidden;
   const [sheet, setSheet] = useState<"contents" | "appearance" | null>(null);
   const sheetRef = useRef(sheet);
   sheetRef.current = sheet;
@@ -582,7 +579,6 @@ export function EpubReadalong({
   }, []);
 
   const resumeFollowing = useCallback(() => {
-    readerDebugLog(`follow on at ${shortCfi(locationRef.current?.start?.cfi)}`);
     highlightedFragmentRef.current = -1;
     lastKeepRef.current = null;
     // A chapter jump that was pulled back or never landed must be retried:
@@ -595,7 +591,6 @@ export function EpubReadalong({
   },[setFollow]);
 
   const tapFragment = useCallback((fragment: SyncFragment) => {
-    readerDebugLog(`tap seek ${Math.round(fragment.startSeconds)}s ${fragment.href}`);
     onSeekToRef.current?.(fragment.startSeconds);
     highlightedFragmentRef.current = -1;
     lastKeepRef.current = null;
@@ -619,7 +614,6 @@ export function EpubReadalong({
     // The listener is driving now; where they stop is the remembered place.
     handNavigatedRef.current = true;
     restoringUntilRef.current = 0;
-    readerDebugLog("hand");
     void action();
   },[setFollow]);
 
@@ -806,7 +800,6 @@ export function EpubReadalong({
         handleOverlayTap(clientX - stage.left, clientX, clientY);
         return;
       }
-      readerDebugLog(`gesture ignored dx=${Math.round(deltaX)} dy=${Math.round(deltaY)} ${Math.round(duration)}ms`);
     },
     [handleOverlayTap, turnPage]
   );
@@ -824,9 +817,6 @@ export function EpubReadalong({
     [moveOverlayGesture]
   );
   const handleOverlayPointerCancel = useCallback(() => {
-    if (overlaySwipeRef.current) {
-      readerDebugLog("gesture cancelled");
-    }
     overlaySwipeRef.current = null;
     overlayDragRef.current?.drag.release(false);
     overlayDragRef.current = null;
@@ -982,9 +972,6 @@ export function EpubReadalong({
       if (update.arrived) {
         restoringUntilRef.current = 0;
       }
-      readerDebugLog(
-        `reloc ${restoring ? "restoring" : "settled"} p${nextLocation.start?.displayed?.page}/${nextLocation.start?.displayed?.total} start=${shortCfi(nextLocation.start?.cfi)} anchor=${shortCfi(anchorCfiRef.current)}->${shortCfi(update.anchor)}${update.arrived ? " arrived" : ""}`
-      );
       if (update.anchor && update.anchor !== anchorCfiRef.current) {
         anchorCfiRef.current = update.anchor;
         writeStoredValue(locationStorageKey, update.anchor);
@@ -1099,7 +1086,6 @@ export function EpubReadalong({
         return;
       }
       if (gesture === null) {
-        readerDebugLog(`gesture ignored dx=${Math.round(deltaX)} dy=${Math.round(deltaY)} ${Math.round(duration)}ms`);
         return;
       }
       turnPage(gesture);
@@ -1166,7 +1152,6 @@ export function EpubReadalong({
       if (!displayRequested || cancelled || !rendition || reported) {
         return;
       }
-      readerDebugLog(`resize before first location anchor=${shortCfi(anchorCfiRef.current)}`);
       if (anchorCfiRef.current) {
         beginRestore();
       }
@@ -1311,7 +1296,6 @@ export function EpubReadalong({
         // Reopen where the listener left off; when narration is being
         // followed the marker moves the page again as soon as it is known.
         const savedLocation = readStoredValue(locationStorageKey);
-        readerDebugLog(`stored=${shortCfi(savedLocation)} last=${shortCfi(lastLocationRef.current?.start?.cfi)}`);
         let startAt = anchorCfiRef.current ?? savedLocation;
         const originalLocation = startAt;
         const openingChoice = openingChoiceRef.current;
@@ -1334,7 +1318,6 @@ export function EpubReadalong({
         }
         anchorCfiRef.current = startAt;
         debugLog(`display:${startAt}`);
-        readerDebugLog(`open saved=${shortCfi(startAt)}`);
         if (startAt) {
           beginRestore();
         }
@@ -1349,7 +1332,6 @@ export function EpubReadalong({
             throw error;
           }
           console.warn("EPUB remembered place could not be opened", error);
-          readerDebugLog(`open failed ${String(error).slice(0, 60)}`);
           anchorCfiRef.current = originalLocation;
           setCatchUpNotice("");
           beginRestore();
@@ -1388,7 +1370,6 @@ export function EpubReadalong({
             if (anchorOnPage(anchor, { start: page.start.cfi, end: page.end.cfi }, compare)) {
               continue;
             }
-            readerDebugLog(`settle back to ${shortCfi(anchor)} from ${shortCfi(page.start.cfi)}`);
             beginRestore();
             try {
               await rendition.display(anchor);
@@ -1426,9 +1407,6 @@ export function EpubReadalong({
         // to itself it would turn to the old page's first words instead,
         // which lands a little earlier with every pass.
         debugLog(`resize:${Math.floor(bounds.width)}x${Math.floor(bounds.height)}:anchor=${anchorCfiRef.current}`);
-        readerDebugLog(
-          `resize ${Math.floor(bounds.width)}x${Math.floor(bounds.height)} anchor=${shortCfi(anchorCfiRef.current)}`
-        );
         if (anchorCfiRef.current) {
           beginRestore();
         }
@@ -1458,7 +1436,6 @@ export function EpubReadalong({
       pendingChapterHrefRef.current = null;
       pendingFollowTargetRef.current = null;
       debugLog("cleanup");
-      readerDebugLog(`close anchor=${shortCfi(anchorCfiRef.current)}`);
       abortController.abort();
       if (readyTimeout !== null) {
         window.clearTimeout(readyTimeout);
@@ -1551,7 +1528,6 @@ export function EpubReadalong({
     }
     appliedFontScaleRef.current = fontScale;
     rendition.themes.fontSize(`${fontScale}%`);
-    readerDebugLog(`fontScale ${fontScale} anchor=${shortCfi(anchorCfiRef.current)}`);
     if (anchorCfiRef.current) {
       beginRestore();
     }
@@ -1608,7 +1584,6 @@ export function EpubReadalong({
     pendingChapterHrefRef.current = href;
     restoringUntilRef.current = 0;
     setActiveHref(href);
-    readerDebugLog(`chapterJump ${href}`);
     void renditionRef.current?.display(href);
   }, [follow, followRequest, isReady, syncFragments, syncTarget, toc]);
 
@@ -1721,7 +1696,6 @@ export function EpubReadalong({
       if (autoNavHrefRef.current !== fragment.href && followRef.current) {
         autoNavHrefRef.current = fragment.href;
         highlightedFragmentRef.current = -1;
-        readerDebugLog(`follow chapter ${fragment.href} at ${Math.round(positionSeconds)}s from ${shortCfi(location.start?.cfi)}`);
         followTakesPage({ href: fragment.href });
         void rendition.display(fragment.href);
       }
@@ -1763,7 +1737,6 @@ export function EpubReadalong({
             return;
           }
           lastKeepRef.current = { cfi, from, layout: relayoutTick };
-          readerDebugLog(`follow page ${shortCfi(cfi)} from ${shortCfi(from)}`);
           followTakesPage({ cfi });
           void rendition.display(cfi);
         }

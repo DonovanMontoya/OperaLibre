@@ -410,3 +410,52 @@ test("an ordinary catalog refresh does not invalidate a successful connection ch
   await expect(check).toHaveAttribute("title", "Setup ready.");
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
+
+const approvedRequest = {
+  id: "fixture-request", userId: "owner", username: "Owner", asin: "fixture",
+  profileId: "family", profileName: "Family", catalogId: "family:fixture", title: "Family Purchase",
+  status: "approved", requestedAt: "1700000000", decidedAt: "1700000001", decidedBy: "approver", jobId: "fixture-download"
+};
+
+test("an approved request refreshes on its timer without a catalog fetch restarting the poll", async ({ page }) => {
+  await page.clock.install();
+  let requests = 0;
+  await page.route("**/api/libation/requests", async route => {
+    requests += 1;
+    await route.fulfill({ json: [approvedRequest] });
+  });
+  await page.goto(`${url}test/audible-management.html?connected&reader&catalog`);
+  await expect(page.getByRole("region", { name: "Cached Audible purchases" })).toContainText("Family Purchase");
+  await page.evaluate(() => (window as unknown as { refreshAudibleCatalog: () => Promise<void> }).refreshAudibleCatalog());
+  expect(requests).toBe(1);
+  await page.clock.fastForward(5000);
+  await expect.poll(() => requests).toBe(2);
+  await page.evaluate(() => (window as unknown as { refreshAudibleCatalog: () => Promise<void> }).refreshAudibleCatalog());
+  expect(requests).toBe(2);
+});
+
+test("a slow request poll avoids overlapping fetches and retries after a failure", async ({ page }) => {
+  await page.clock.install();
+  let requests = 0;
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/libation/requests", async route => {
+    requests += 1;
+    if (requests === 1) {
+      await held;
+      await route.fulfill({ status: 503, json: { message: "Requests temporarily unavailable." } });
+    } else {
+      await route.fulfill({ json: [] });
+    }
+  });
+  await page.goto(`${url}test/audible-management.html?connected&reader&catalog`);
+  await expect.poll(() => requests).toBe(1);
+  await page.clock.fastForward(5000);
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  expect(requests).toBe(1);
+  const failed = page.waitForResponse(response => response.url().endsWith("/api/libation/requests") && response.status() === 503);
+  release();
+  await (await failed).finished();
+  await page.clock.fastForward(60_000);
+  await expect.poll(() => requests).toBe(2);
+});

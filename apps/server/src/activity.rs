@@ -60,10 +60,11 @@ pub(crate) async fn finish_feed(
         .finish_seen
         .get(&auth.id)
         .and_then(|id| history.completions.iter().position(|event| &event.id == id));
-    let mut entries: Vec<_> = history
+    let entries: Vec<_> = history
         .completions
         .iter()
         .enumerate()
+        .rev()
         .filter_map(|(index, event)| {
             let username = announcers.get(&event.user_id)?;
             if !can_access_book(&auth, &event.book_id) {
@@ -79,9 +80,8 @@ pub(crate) async fn finish_feed(
                 unseen: seen_index.is_none_or(|seen| index > seen),
             })
         })
+        .take(FINISH_FEED_PAGE)
         .collect();
-    entries.reverse();
-    entries.truncate(FINISH_FEED_PAGE);
     let unseen_count = entries.iter().filter(|entry| entry.unseen).count();
     let latest_id = entries.first().map(|entry| entry.id.clone());
     Ok(Json(FinishFeedResponse {
@@ -252,8 +252,10 @@ pub(crate) async fn profile_stats(
 ) -> Result<Json<ProfileStats>, ApiError> {
     let tz_offset_minutes = sanitized_tz_offset_minutes(query.tz_offset_minutes);
     let today = ymd_to_days(&today_ymd(tz_offset_minutes)).unwrap_or(0);
-    let library = state.library.read().await;
+    // Read progress first: holding the library lock across this query would
+    // queue a rescan's publish, and every listing behind it, on the database.
     let progress_map = state.progress.list_for_user(&auth.id).await?;
+    let library = state.library.read().await;
     let user_progress: Vec<(&String, &Progress)> = progress_map.iter().collect();
 
     // Headline numbers.
@@ -327,7 +329,8 @@ pub(crate) async fn profile_stats(
 
     // Activity-based numbers.
     let activity = state.activity.read().await;
-    let user_activity = activity.by_user.get(&auth.id).cloned().unwrap_or_default();
+    let no_activity = BTreeMap::new();
+    let user_activity = activity.by_user.get(&auth.id).unwrap_or(&no_activity);
 
     // Only ground actually covered while playing, summed from the per-day log.
     // Every second here came from a forward position move that the server could
@@ -358,8 +361,8 @@ pub(crate) async fn profile_stats(
         0.0
     };
 
-    let (current_streak_days, longest_streak_days) = compute_streaks(&user_activity, today);
-    let streak_calendar = build_streak_calendar(&user_activity, 8, today);
+    let (current_streak_days, longest_streak_days) = compute_streaks(user_activity, today);
+    let streak_calendar = build_streak_calendar(user_activity, 8, today);
 
     let favorite_narrator = narrator_hours
         .into_iter()

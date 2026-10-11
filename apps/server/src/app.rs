@@ -359,10 +359,8 @@ pub(crate) fn build_router(
     // account stuck in `signing_in`.
     //
     // Installing an update downloads the release asset -- allowed ten minutes
-    // on its own -- before extracting and installing it. `UpdateManager` sets
-    // its `installing` flag before that work and clears it afterwards, so a
-    // timeout that dropped the future mid-install would leave the flag set and
-    // every later install refused as already in progress until a restart.
+    // on its own -- before extracting and installing it, so the request
+    // timeout would abandon an install that is still making progress.
     let long_running_routes = Router::new()
         .route(
             "/api/admin/backup",
@@ -728,7 +726,7 @@ pub(crate) async fn remove_readalong_sync_addon(
     _: OwnerUser,
 ) -> Result<Json<updates::SyncAddonStatus>, ApiError> {
     let has_active_sync = state.jobs.read().await.values().any(|job| {
-        job.kind == "sync-generate" && matches!(job.status.as_str(), "queued" | "running")
+        job.kind == SYNC_GENERATE_JOB_KIND && matches!(job.status.as_str(), "queued" | "running")
     });
     if has_active_sync {
         return Err(ApiError::conflict(
@@ -822,7 +820,7 @@ pub(crate) async fn metrics(
 
     Ok(Json(ServerMetrics {
         version: updates::current_version(),
-        deployment_mode: format!("{:?}", state.deployment_mode).to_lowercase(),
+        deployment_mode: state.deployment_mode.as_str().to_string(),
         books,
         tracks,
         users: state.users.read().await.users.len(),

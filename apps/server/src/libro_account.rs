@@ -96,10 +96,7 @@ pub(crate) struct Login {
 
 pub(crate) fn account_path(state: &AppState, user_id: &str) -> PathBuf {
     // User IDs are not filesystem paths, even for imported account databases.
-    let key: String = Sha256::digest(user_id.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let key = hex_digest(Sha256::digest(user_id.as_bytes()));
     state
         .database_path
         .with_file_name("libro-accounts")

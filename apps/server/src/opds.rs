@@ -86,7 +86,7 @@ pub(crate) async fn opds_books(
     Extension(session): Extension<CurrentSession>,
 ) -> Result<Response, ApiError> {
     ensure_startup_scan_finished(&state).await?;
-    let books = books_with_progress(&state, &auth).await?;
+    let books = visible_books(&state, &auth).await;
     let updated = rfc3339_utc(unix_now_seconds());
     let media_token = session.media_token.clone();
     let mut body = format!(

@@ -553,17 +553,16 @@ pub(crate) async fn list_books(
     // nothing new. A cheaper tag derived from a library counter would answer
     // 304 to some requests whose content had in fact changed.
     let body = serde_json::to_vec(&books)?;
-    let mut tag_input = Vec::with_capacity(body.len() + 32);
-    tag_input.extend_from_slice(&body);
+    let mut hasher = Sha1::new();
+    hasher.update(&body);
     match &next_cursor {
         Some(cursor) => {
-            tag_input.extend_from_slice(b"\nnext:");
-            tag_input.extend_from_slice(cursor.as_bytes());
+            hasher.update(b"\nnext:");
+            hasher.update(cursor.as_bytes());
         }
-        None => tag_input.extend_from_slice(b"\nend"),
+        None => hasher.update(b"\nend"),
     }
-    let etag = bytes_etag(&tag_input);
-    drop(tag_input);
+    let etag = format!("\"{}\"", hex_digest(hasher.finalize()));
     if if_none_match_matches(&headers, &etag) {
         return Ok(Response::builder()
             .status(StatusCode::NOT_MODIFIED)
@@ -1050,10 +1049,7 @@ pub(crate) fn remember_identity_path(paths: &mut Vec<IdentityPath>, path: Identi
 /// path-derived mint reproduces the ID of whatever previously occupied that
 /// location, and the new book inherits its progress and access grants.
 pub(crate) fn mint_identity_id() -> String {
-    use rand::RngExt;
-    let mut bytes = [0_u8; 16];
-    rand::rng().fill(&mut bytes);
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    hex_digest(rand::random::<[u8; 16]>())
 }
 
 pub(crate) fn file_identity_fingerprint(path: &FsPath) -> anyhow::Result<String> {
@@ -1740,11 +1736,6 @@ impl ScanVerdict {
     }
 }
 
-/// Decide whether a completed walk is trustworthy enough to rewrite identities.
-///
-/// A traversal error is never trusted. A scan that lost most of the library is
-/// withheld the first time and accepted once repeated, so a real deletion is
-/// not permanently mistaken for a mount failure.
 /// Identify a scan by the set of book locations it found, order-independently.
 pub(crate) fn scan_signature(aliases: &[String]) -> String {
     let mut sorted = aliases.to_vec();
@@ -1757,6 +1748,11 @@ pub(crate) fn scan_signature(aliases: &[String]) -> String {
     hex_digest(hasher.finalize())
 }
 
+/// Decide whether a completed walk is trustworthy enough to rewrite identities.
+///
+/// A traversal error is never trusted. A scan that lost most of the library is
+/// withheld the first time and accepted once repeated, so a real deletion is
+/// not permanently mistaken for a mount failure.
 pub(crate) fn assess_scan(
     identities: &LibraryIdentityStore,
     root_id: &str,
@@ -2355,8 +2351,9 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
     let covers_dir = state.covers_dir.clone();
     let cover_root = state.library_root.clone();
     let cover_paths = book_paths.clone();
+    let published_covers = state.library.read().await.embedded_cover_art.clone();
     let (cover_art, embedded_cover_art, stale_covers) = tokio::task::spawn_blocking(move || {
-        let (embedded, stale) = write_scanned_cover_cache(&covers_dir, extracted_covers)?;
+        let (embedded, stale) = write_covers(&covers_dir, extracted_covers, &published_covers)?;
         let mut covers = embedded.clone();
         for (id, metadata) in &metadata_overrides.books {
             if let Some(name) = &metadata.cover_file_name
@@ -2687,9 +2684,6 @@ pub(crate) fn find_sync_file(
     None
 }
 
-/// ASCII-case-insensitive `.sync.json` check that never slices the name at a
-/// non-character boundary (file names can contain characters whose byte
-/// length changes under Unicode lowercasing).
 /// Regular files directly inside each directory a scan looks beside, listed
 /// once per scan. Books at the library root all share one directory, and
 /// listing it again for every one of them made a flat library quadratic.
@@ -2713,6 +2707,9 @@ impl DirectoryFiles {
     }
 }
 
+/// ASCII-case-insensitive `.sync.json` check that never slices the name at a
+/// non-character boundary (file names can contain characters whose byte
+/// length changes under Unicode lowercasing).
 pub(crate) fn has_sync_sidecar_suffix(name: &str) -> bool {
     name.len() > SYNC_SIDECAR_SUFFIX.len()
         && name.is_char_boundary(name.len() - SYNC_SIDECAR_SUFFIX.len())
@@ -3431,27 +3428,6 @@ pub(crate) fn unique_metadata_fields(fields: Vec<MetadataField>) -> Vec<Metadata
     output
 }
 
-/// Write freshly extracted cover art to the cache directory and return what
-/// the serving route needs, without the bytes, plus the paths of stale files.
-///
-/// Files are named by book id and rewritten only when their content actually
-/// changed: a length mismatch skips the rewrite outright, and matching art is
-/// confirmed by reading the existing file back. A rewrite goes to a temporary
-/// file that is renamed into place — the currently published library still
-/// points readers at this path until the new snapshot lands, so an in-place
-/// write would stream truncated bytes under the old length and etag.
-///
-/// Stale files — covers for books that have left the library — are reported
-/// rather than removed, for the same reason: the caller deletes them only
-/// after the new snapshot is published.
-#[cfg(test)]
-pub(crate) fn write_cover_cache(
-    covers_dir: &FsPath,
-    extracted: Vec<(String, EmbeddedImage)>,
-) -> anyhow::Result<(HashMap<String, CachedCover>, Vec<PathBuf>)> {
-    write_covers(covers_dir, extracted)
-}
-
 /// What the scan keeps of a book's cover: enough to tell whether the cache
 /// already holds it, and where to read the bytes from when it does not.
 pub(crate) struct ScannedCover {
@@ -3473,16 +3449,6 @@ impl ScannedCover {
     }
 }
 
-/// [`write_cover_cache`] for covers the scan summarised rather than kept. A
-/// cover the cache already holds costs nothing further; one it does not is
-/// read back from its track here, one book at a time.
-pub(crate) fn write_scanned_cover_cache(
-    covers_dir: &FsPath,
-    extracted: Vec<(String, ScannedCover)>,
-) -> anyhow::Result<(HashMap<String, CachedCover>, Vec<PathBuf>)> {
-    write_covers(covers_dir, extracted)
-}
-
 /// A cover the cache can be brought up to date from: its digest, for the
 /// comparison, and the bytes, for the rewrite.
 pub(crate) trait CoverSource {
@@ -3493,6 +3459,7 @@ pub(crate) trait CoverSource {
     fn into_image(self) -> Option<EmbeddedImage>;
 }
 
+#[cfg(test)]
 impl CoverSource for EmbeddedImage {
     fn mime_type(&self) -> &str {
         &self.mime_type
@@ -3532,9 +3499,28 @@ impl CoverSource for ScannedCover {
     }
 }
 
-fn write_covers<T: CoverSource + Send>(
+/// Write freshly extracted cover art to the cache directory and return what
+/// the serving route needs, without the bytes, plus the paths of stale files.
+///
+/// Files are named by book id and rewritten only when their content actually
+/// changed. `published` is the cache the live library already serves: a cover
+/// it lists with the same digest and length, at a file of that length, is
+/// current without being read. Anything else is confirmed by reading the file
+/// back, as on the first scan after startup. Only this function writes the
+/// directory, and the rescan lock keeps two scans from racing on it.
+///
+/// A rewrite goes to a temporary file that is renamed into place — the
+/// currently published library still points readers at this path until the
+/// new snapshot lands, so an in-place write would stream truncated bytes under
+/// the old length and etag.
+///
+/// Stale files — covers for books that have left the library — are reported
+/// rather than removed, for the same reason: the caller deletes them only
+/// after the new snapshot is published.
+pub(crate) fn write_covers<T: CoverSource + Send>(
     covers_dir: &FsPath,
     extracted: Vec<(String, T)>,
+    published: &HashMap<String, CachedCover>,
 ) -> anyhow::Result<(HashMap<String, CachedCover>, Vec<PathBuf>)> {
     use rayon::prelude::*;
 
@@ -3550,12 +3536,16 @@ fn write_covers<T: CoverSource + Send>(
             let file_name = format!("{}.cover", sanitize_filename(&book_id));
             let path = covers_dir.join(&file_name);
 
+            let known = published.get(&book_id).is_some_and(|cover| {
+                cover.path == path && cover.etag == input.etag() && cover.len == input.len()
+            });
             let unchanged = std::fs::metadata(&path)
                 .ok()
                 .is_some_and(|metadata| metadata.len() == input.len())
-                && std::fs::read(&path)
-                    .ok()
-                    .is_some_and(|existing| bytes_etag(&existing) == input.etag());
+                && (known
+                    || std::fs::read(&path)
+                        .ok()
+                        .is_some_and(|existing| bytes_etag(&existing) == input.etag()));
             let (mime_type, etag, len) = if unchanged {
                 (
                     input.mime_type().to_string(),

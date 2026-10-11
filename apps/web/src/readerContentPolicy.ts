@@ -16,21 +16,29 @@ export function readerContentPolicy(streamedFrom?: string): string {
  */
 export function restrictEpubContent(book: Book, streamedFrom?: string) {
   const policy = `<meta http-equiv="Content-Security-Policy" content="${readerContentPolicy(streamedFrom)}">`;
-  // A content policy does not govern connection hints such as preconnect, so
-  // the links a chapter declares are dropped unless they are stylesheets, and
-  // a stylesheet link keeps no other relationship.
-  book.spine.hooks.content.register((document: Document) => {
-    document.querySelectorAll("link").forEach((link) => {
-      const rel = (link.getAttribute("rel") ?? "").toLowerCase().split(/\s+/)
-        .filter((token) => token === "stylesheet" || token === "alternate");
-      if (rel.includes("stylesheet")) link.setAttribute("rel", rel.join(" "));
-      else link.remove();
-    });
-  });
-  // Ahead of the markup rather than inside its <head>: the HTML parser then
-  // puts the policy in force before any element the book supplies, however
-  // the chapter is formed.
+  // Filter the HTML the iframe will interpret, after resource substitution.
+  // XML comments and CDATA can become active elements during HTML parsing.
   book.spine.hooks.serialize.register((_output: string, section: Section) => {
-    section.output = policy + section.output;
+    const document = new DOMParser().parseFromString(section.output, "text/html");
+    document.querySelectorAll("*").forEach((element) => {
+      const name = element.localName.toLowerCase();
+      if (name === "iframe" || name === "frame") {
+        // Chromium preconnects before CSP blocks navigation. Keep the nodes
+        // for reading CFIs, but neutralize their navigation.
+        Array.from(element.attributes).forEach((attribute) => {
+          if (/^(src|srcdoc)$/i.test(attribute.name)) element.removeAttributeNode(attribute);
+        });
+      } else if (name === "link") {
+        // CSP does not govern connection hints. Keep only stylesheet links.
+        const attributes = Array.from(element.attributes).filter((attribute) => attribute.name.toLowerCase() === "rel");
+        const rel = attributes.flatMap((attribute) => attribute.value.toLowerCase().split(/\s+/))
+          .filter((token) => token === "stylesheet" || token === "alternate");
+        if (rel.includes("stylesheet")) {
+          attributes.forEach((attribute) => element.removeAttributeNode(attribute));
+          element.setAttribute("rel", rel.join(" "));
+        } else element.remove();
+      }
+    });
+    section.output = policy + document.documentElement.outerHTML;
   });
 }

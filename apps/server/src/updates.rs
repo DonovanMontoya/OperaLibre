@@ -1157,8 +1157,8 @@ fn exe_name(base: &str) -> String {
     }
 }
 
-/// The digest, size, and origin checks every release asset must pass before a
-/// byte of it is downloaded.
+/// The configured web frontend folder, once it is known to hold a build this
+/// server can replace in place.
 fn managed_frontend_dir(web_dist_dir: Option<&Path>) -> anyhow::Result<PathBuf> {
     let web_dist_dir =
         web_dist_dir.ok_or_else(|| anyhow!("This server does not serve the web frontend."))?;

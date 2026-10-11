@@ -15,7 +15,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use rand::RngExt;
+use crate::util::{find_on_path, random_hex_id};
 
 /// Extensions that use the ISO base media container — the only ones where a
 /// faststart layout means anything. MP3/FLAC/OGG stream from byte zero.
@@ -163,19 +163,6 @@ pub fn discover_tools(ffmpeg: Option<PathBuf>, ffprobe: Option<PathBuf>) -> Opti
         .or_else(|| sibling_tool(&ffmpeg, "ffprobe"))
         .or_else(|| find_on_path(&["ffprobe", "ffprobe.exe"]));
     Some(Tools { ffmpeg, ffprobe })
-}
-
-fn find_on_path(candidates: &[&str]) -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        for candidate in candidates {
-            let path = dir.join(candidate);
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-    }
-    None
 }
 
 /// ffprobe normally ships beside ffmpeg, including in the static builds people
@@ -339,7 +326,7 @@ pub fn convert_in_place(
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or("mp4");
-    let token = work_token();
+    let token = random_hex_id();
     let temp_path = parent.join(format!("{TEMP_PREFIX}{token}.{extension}"));
     let backup_path = parent.join(format!("{TEMP_PREFIX}backup-{token}"));
 
@@ -509,12 +496,6 @@ fn command_message(output: &std::process::Output) -> String {
     } else {
         text.lines().last().unwrap_or(text).to_string()
     }
-}
-
-fn work_token() -> String {
-    let mut bytes = [0_u8; 8];
-    rand::rng().fill(&mut bytes);
-    format!("{:016x}", u64::from_le_bytes(bytes))
 }
 
 /// Removes temporary and backup files a previous run left behind after a
