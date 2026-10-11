@@ -1,7 +1,6 @@
-"""Exercise installer sign-in with a fake CLI and a real controlling terminal."""
+"""Exercise the installer's Audible import setup with a real controlling terminal."""
 
 import errno
-import json
 import os
 from pathlib import Path
 import pty
@@ -9,7 +8,6 @@ import re
 import select
 import signal
 import subprocess
-import sys
 import tempfile
 import time
 import unittest
@@ -31,50 +29,34 @@ SECTION = INSTALLER.split("# --- Optional Audible import (Libation)")[1]
 SECTION = SECTION[SECTION.index("\n"):].split("\nPORT=$(configured_port)")[0]
 
 
-class InstallerLoginTests(unittest.TestCase):
+class InstallerLibationTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix="operalibre-login-test-")
+        self.tmp = tempfile.TemporaryDirectory(prefix="operalibre-libation-test-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
-        # Exercise both execution and printed shell commands with special paths.
+        # Paths with shell and sed metacharacters must survive into the config.
         self.install = self.root / "Reader's $books `library`"
         self.install.mkdir()
         self.cli = self.install / "Libation CLI"
-        self.record = self.root / "calls.jsonl"
+        self.cli.write_text("#!/bin/sh\n")
+        self.cli.chmod(0o755)
         self.dependency_record = self.root / "dependency-calls"
         self.icu_marker = self.root / "icu-installed"
-        self.cli.write_text(f"#!{sys.executable}\n" + '''
-import json, os, sys
-from pathlib import Path
-with open(os.environ["CALL_RECORD"], "a") as record:
-    record.write(json.dumps({"args": sys.argv[1:], "tty": [os.isatty(i) for i in range(3)],
-        "cwd": os.getcwd(), "invariant": os.getenv("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT")}) + "\\n")
-assert all(os.isatty(i) for i in range(3)), "CLI requires a terminal"
-settings = Path(sys.argv[sys.argv.index("--libationFiles") + 1])
-assert (settings / "Settings.json").is_file()
-assert (settings / "AccountsSettings.json").is_file()
-print("Paste URL: ", end="", flush=True)
-sys.exit(0 if input() == "ok" else 1)
-''')
-        self.cli.chmod(0o755)
         self.config = self.install / "server.config"
         self.config.write_text("libation_files_dir = custom settings\n")
+        self.settings = self.install / "custom settings"
         self.env = {**os.environ, "OPERALIBRE_DIR": str(self.install),
-                    "OPERALIBRE_LIBATION_PATH": "", "CALL_RECORD": str(self.record),
-                    "TEST_CLI": str(self.cli),
+                    "OPERALIBRE_LIBATION_PATH": "", "TEST_CLI": str(self.cli),
                     "DEPENDENCY_RECORD": str(self.dependency_record),
                     "ICU_MARKER": str(self.icu_marker)}
-        # Never discover or download a real Libation or read real accounts.
+        # Never discover or download a real Libation.
         section = SECTION.replace(function("find_libation"),
                                   'find_libation() { printf "%s" "$TEST_CLI"; }')
         section = section.replace(function("install_libation"),
                                   'install_libation() { LIBATION_PATH=$TEST_CLI; }')
         self.script = self.root / "fixture.sh"
         self.script.write_text(PRELUDE + HELPERS + "\nos=macos\n" + section +
-                               '\nsay "INSTALLATION_CONTINUES:$LIBATION_LOGIN_COMPLETE"\n')
-
-    def calls(self):
-        return [json.loads(line) for line in self.record.read_text().splitlines()] if self.record.exists() else []
+                               '\nsay "INSTALLATION_CONTINUES:$LIBATION_READY"\n')
 
     def run_setup(self, responses=(), args=(), terminal=True):
         # The shell reads its script on stdin, just as in curl | sh. Interactive
@@ -127,11 +109,6 @@ sys.exit(0 if input() == "ok" else 1)
             os.close(fd)
         return output.decode()
 
-    def login_answers(self, url="ok"):
-        return [("during setup? [Y/n]:", ""),
-                ("Audible email (press Return to skip sign-in) []:", "reader@example.com"),
-                ("Audible country code [us]:", "uk"), ("Paste URL:", url)]
-
     def use_linux_without_icu(self, install_succeeds=True):
         apt_get = self.root / "apt-get"
         apt_get.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$DEPENDENCY_RECORD\"\n" +
@@ -150,64 +127,32 @@ sys.exit(0 if input() == "ok" else 1)
             'libation_icu_available() { [ -f "$ICU_MARKER" ]; }')
         self.script.write_text(script)
 
-    def test_interactive_install_accepts_import_and_logs_in(self):
-        self.env["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1"
+    def assert_configured(self):
+        self.assertIn(f"libation_cli_path = {self.cli}", self.config.read_text())
+
+    def test_interactive_install_sets_up_import_without_sign_in(self):
+        # Any further question would wait on the terminal and time the run out.
         output = self.run_setup([
-            ("Set up the Audible import now? [y/N]:", "y"), ("Use it? [Y/n]:", ""),
-            *self.login_answers()])
+            ("Set up the Audible import now? [y/N]:", "y"), ("Use it? [Y/n]:", "")])
         self.assertIn("INSTALLATION_CONTINUES:1", output)
-        self.assertEqual(self.calls(), [{"args": ["login-external", "--account",
-            "reader@example.com", "--locale", "uk", "--libationFiles",
-            str(self.install / "custom settings")], "tty": [True, True, True],
-            "cwd": str(self.install), "invariant": None}])
+        self.assert_configured()
+        for name in ("Settings.json", "AccountsSettings.json"):
+            self.assertEqual((self.settings / name).read_text(), "{}")
 
-    def test_download_then_login(self):
+    def test_download_when_found_libation_is_declined(self):
         output = self.run_setup([("Use it? [Y/n]:", "n"),
-            ("Download Libation from its official GitHub release? [Y/n]:", ""),
-            *self.login_answers()], ["--libation"])
+            ("Download Libation from its official GitHub release? [Y/n]:", "")],
+            ["--libation"])
         self.assertIn("INSTALLATION_CONTINUES:1", output)
-        self.assertEqual(len(self.calls()), 1)
+        self.assert_configured()
 
-    def test_decline_login_prints_safe_command(self):
-        output = self.run_setup([("during setup? [Y/n]:", "n")],
-                                ["--libation-path", str(self.cli)])
-        self.assertFalse(self.calls())
-        self.assertIn("INSTALLATION_CONTINUES:0", output)
-        command = next(line.strip() for line in output.splitlines()
-                       if "login-external --account 'YOUR_EMAIL'" in line)
-        # Execute the emitted command with a capturing shim to verify shell
-        # quoting, including $, backticks and apostrophes in configured paths.
-        self.cli.write_text('#!/bin/sh\nprintf "%s\\n" "$0" "$@"\n')
-        result = subprocess.check_output(["sh", "-c", command], text=True)
-        self.assertEqual(result.splitlines(), [str(self.cli), "login-external", "--account",
-            "YOUR_EMAIL", "--locale", "us", "--libationFiles", str(self.install / "custom settings")])
-
-    def test_blank_email_skips(self):
-        output = self.run_setup(self.login_answers()[:1] +
-            [("Audible email (press Return to skip sign-in) []:", "")],
-            ["--libation-path", str(self.cli)])
-        self.assertFalse(self.calls())
-        self.assertIn("INSTALLATION_CONTINUES:0", output)
-
-    def test_cancelled_cli_can_continue_or_retry(self):
-        for retry in (False, True):
-            with self.subTest(retry=retry):
-                self.record.unlink(missing_ok=True)
-                responses = self.login_answers("") + [("Try signing in again? [y/N]:", "y" if retry else "n")]
-                if retry:
-                    responses += self.login_answers()[1:]
-                output = self.run_setup(responses, ["--libation-path", str(self.cli)])
-                self.assertIn(f"INSTALLATION_CONTINUES:{int(retry)}", output)
-                self.assertEqual(len(self.calls()), 2 if retry else 1)
-
-    def test_unattended_install_never_logs_in(self):
+    def test_unattended_install_sets_up_import(self):
         for terminal, options in ((True, ["--yes"]), (False, [])):
             with self.subTest(terminal=terminal):
+                self.config.write_text("libation_files_dir = custom settings\n")
                 output = self.run_setup(args=["--libation-path", str(self.cli), *options], terminal=terminal)
-                self.assertNotIn("during setup?", output)
-                self.assertIn("YOUR_EMAIL", output)
-                self.assertIn("INSTALLATION_CONTINUES:0", output)
-                self.assertFalse(self.calls())
+                self.assertIn("INSTALLATION_CONTINUES:1", output)
+                self.assert_configured()
 
     def test_yes_installs_linux_icu_and_completes_libation_setup(self):
         self.use_linux_without_icu()
@@ -217,9 +162,8 @@ sys.exit(0 if input() == "ok" else 1)
         self.assertIn("ICU is installed. Continuing Libation setup.", output)
         self.assertEqual(self.dependency_record.read_text().splitlines(),
                          ["update", "install -y --no-install-recommends libicu74"])
-        self.assertIn(f"libation_cli_path = {self.cli}", self.config.read_text())
-        self.assertIn("YOUR_EMAIL", output)
-        self.assertFalse(self.calls())
+        self.assertIn("INSTALLATION_CONTINUES:1", output)
+        self.assert_configured()
 
     def test_declining_linux_icu_leaves_import_disabled(self):
         self.use_linux_without_icu()
@@ -229,7 +173,7 @@ sys.exit(0 if input() == "ok" else 1)
         self.assertIn("apt-get update && apt-get install -y libicu-dev", output)
         self.assertFalse(self.dependency_record.exists())
         self.assertNotIn("libation_cli_path", self.config.read_text())
-        self.assertNotIn("during setup?", output)
+        self.assertIn("INSTALLATION_CONTINUES:0", output)
 
     def test_failed_linux_icu_install_leaves_import_disabled(self):
         self.use_linux_without_icu(install_succeeds=False)
@@ -237,7 +181,7 @@ sys.exit(0 if input() == "ok" else 1)
             args=["--libation-path", str(self.cli), "--yes"], terminal=False)
         self.assertIn("ICU could not be installed.", output)
         self.assertNotIn("libation_cli_path", self.config.read_text())
-        self.assertFalse(self.calls())
+        self.assertIn("INSTALLATION_CONTINUES:0", output)
 
     def test_unattended_upgrade_does_not_install_linux_icu(self):
         self.config.write_text(self.config.read_text() +
@@ -246,47 +190,62 @@ sys.exit(0 if input() == "ok" else 1)
         output = self.run_setup(terminal=False)
         self.assertIn("apt-get update && apt-get install -y libicu-dev", output)
         self.assertFalse(self.dependency_record.exists())
-        self.assertIn(f"libation_cli_path = {self.cli}", self.config.read_text())
+        self.assert_configured()
+        self.assertIn("INSTALLATION_CONTINUES:0", output)
 
-    def test_skip_import_never_offers_login(self):
+    def test_skipped_import_stays_off(self):
+        original = self.config.read_text()
         for args, responses in ((["--no-libation"], []), ([], [("Set up the Audible import now? [y/N]:", "n")])):
             with self.subTest(args=args):
                 output = self.run_setup(responses, args)
-                self.assertNotIn("during setup?", output)
-                self.assertFalse(self.calls())
+                self.assertIn("INSTALLATION_CONTINUES:0", output)
+                self.assertEqual(self.config.read_text(), original)
+                self.assertFalse(self.settings.exists())
 
-    def test_existing_config_only_prompts_when_explicitly_requested(self):
+    def test_existing_setup_is_kept_without_questions(self):
         original = self.config.read_text() + f"libation_cli_path = {self.cli}\n"
         self.config.write_text(original)
-        settings = self.install / "custom settings"
-        settings.mkdir()
+        self.settings.mkdir()
         for name in ("Settings.json", "AccountsSettings.json"):
-            (settings / name).write_text('{"preserve":"fixture"}')
-        output = self.run_setup()
-        self.assertNotIn("during setup?", output)
-        self.assertFalse(self.calls())
-        output = self.run_setup(self.login_answers(), ["--libation"])
-        self.assertIn("INSTALLATION_CONTINUES:1", output)
-        self.assertEqual(self.config.read_text(), original)
-        for name in ("Settings.json", "AccountsSettings.json"):
-            self.assertEqual((settings / name).read_text(), '{"preserve":"fixture"}')
+            (self.settings / name).write_text('{"preserve":"fixture"}')
+        for args in ([], ["--libation"]):
+            with self.subTest(args=args):
+                output = self.run_setup(args=args)
+                self.assertIn("INSTALLATION_CONTINUES:1", output)
+                self.assertEqual(self.config.read_text(), original)
+                for name in ("Settings.json", "AccountsSettings.json"):
+                    self.assertEqual((self.settings / name).read_text(), '{"preserve":"fixture"}')
 
-    def test_settings_failure_skips_login_and_continues(self):
-        (self.install / "custom settings").write_text("not a directory")
-        output = self.run_setup(args=["--libation-path", str(self.cli)])
-        self.assertIn("Could not set up Libation's settings folder", output)
-        self.assertIn("INSTALLATION_CONTINUES:0", output)
-        self.assertNotIn("during setup?", output)
-        self.assertFalse(self.calls())
+    def test_settings_failure_continues(self):
+        self.settings.write_text("not a directory")
+        original = self.config.read_text()
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                self.config.write_text(original +
+                                       (f"libation_cli_path = {self.cli}\n" if existing else ""))
+                args = [] if existing else ["--libation-path", str(self.cli)]
+                output = self.run_setup(args=args)
+                self.assertIn("Could not set up Libation's settings folder", output)
+                self.assertIn("INSTALLATION_CONTINUES:0", output)
+
+    def test_upgrade_backfills_missing_settings_without_questions(self):
+        self.config.write_text(self.config.read_text() +
+                               f"libation_cli_path = {self.cli}\n")
+        output = self.run_setup()
+        self.assertIn("INSTALLATION_CONTINUES:1", output)
+        self.assert_configured()
+        self.assertEqual(self.settings.stat().st_mode & 0o777, 0o700)
+        for name in ("Settings.json", "AccountsSettings.json"):
+            self.assertEqual((self.settings / name).read_text(), "{}")
+            self.assertEqual((self.settings / name).stat().st_mode & 0o777, 0o600)
 
     def test_partial_settings_are_preserved_and_missing_accounts_are_private(self):
-        settings = self.install / "custom settings"
-        settings.mkdir()
-        (settings / "Settings.json").write_text('{"preserve":"fixture"}')
-        output = self.run_setup(self.login_answers(), ["--libation-path", str(self.cli)])
+        self.settings.mkdir()
+        (self.settings / "Settings.json").write_text('{"preserve":"fixture"}')
+        output = self.run_setup(args=["--libation-path", str(self.cli)])
         self.assertIn("INSTALLATION_CONTINUES:1", output)
-        self.assertEqual((settings / "Settings.json").read_text(), '{"preserve":"fixture"}')
-        self.assertEqual((settings / "AccountsSettings.json").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.settings / "Settings.json").read_text(), '{"preserve":"fixture"}')
+        self.assertEqual((self.settings / "AccountsSettings.json").stat().st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":

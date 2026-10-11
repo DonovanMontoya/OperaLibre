@@ -110,7 +110,7 @@ jobs:
           node --test script/release_signing.test.mjs
           node --test script/resolve_release.test.mjs
           node --test script/publish_release.test.mjs
-          python3 script/test_installer_login.py
+          python3 script/test_installer_libation.py
 
       - name: Install dependencies
         run: npm ci
