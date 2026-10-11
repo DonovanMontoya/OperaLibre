@@ -36,6 +36,7 @@ interface CarPlayBridgePlugin {
    */
   setLibrary(options: { snapshot: string }): Promise<void>;
   clearLibrary(): Promise<void>;
+  stopPlayback(options: { bookId: string }): Promise<{ connected: boolean; carOwnedBookId?: string; sessions: string }>;
   getState(): Promise<{ connected: boolean; carOwnedBookId?: string; sessions: string }>;
   acknowledgeSessions(options: {
     sessions: Array<{ bookId: string; updatedAt: number }>;
@@ -111,6 +112,16 @@ export async function getCarPlayState(): Promise<CarPlayState> {
     return { connected: false, carOwnedBookId: null, sessions: [] };
   }
   const state = await CarPlayBridge.getState();
+  return {
+    connected: !!state.connected,
+    carOwnedBookId: state.carOwnedBookId ?? null,
+    sessions: parseCarSessions(state.sessions)
+  };
+}
+
+/** Native ownership is authoritative, even before the web layer receives its events. */
+export async function stopCarPlayback(bookId: string): Promise<CarPlayState> {
+  const state = await CarPlayBridge.stopPlayback({ bookId });
   return {
     connected: !!state.connected,
     carOwnedBookId: state.carOwnedBookId ?? null,
