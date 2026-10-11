@@ -444,11 +444,6 @@ pub(crate) async fn restore_queue(state: &AppState) -> Result<(), ApiError> {
 pub(crate) async fn resume_queue(state: &AppState) {
     if *state.update_manager.sync_update_pause.borrow() != 0
         || !state.library.read().await.catalogue_ready
-        || state
-            .update_manager
-            .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
-            .await
-            .is_none()
     {
         return;
     }
@@ -460,6 +455,17 @@ pub(crate) async fn resume_queue(state: &AppState) {
         .filter(|job| job.resume_pending)
         .cloned()
         .collect();
+    // The schedule calls this every tick; read the runtime from disk only when
+    // there is something to resume.
+    if pending.is_empty()
+        || state
+            .update_manager
+            .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+            .await
+            .is_none()
+    {
+        return;
+    }
     pending.sort_by_key(sync_queue_order);
     for job in pending {
         let Some(book_id) = job.target_id else {
@@ -599,9 +605,7 @@ pub(crate) async fn enqueue_sync_batch(
             continue;
         }
         let job_id = loop {
-            let mut bytes = [0u8; 8];
-            rand::rng().fill(&mut bytes);
-            let id = format!("{:016x}", u64::from_le_bytes(bytes));
+            let id = random_hex_id();
             if !jobs.contains_key(&id) {
                 break id;
             }
@@ -2460,17 +2464,7 @@ impl AlignmentConfig {
 }
 
 pub(crate) fn find_alignment_cli_on_path() -> Option<PathBuf> {
-    let path_var = env::var_os("PATH")?;
-    let candidates = ["echogarden", "echogarden.cmd", "echogarden.exe"];
-    for dir in env::split_paths(&path_var) {
-        for candidate in candidates {
-            let path = dir.join(candidate);
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-    }
-    None
+    find_on_path(&["echogarden", "echogarden.cmd", "echogarden.exe"])
 }
 
 #[cfg(test)]
@@ -2538,7 +2532,8 @@ mod tests {
 case "$2" in
   *second.wav)
     if [ ! -f "$0.release" ]; then
-      printf '%s' "$$" > "$0.started"
+      printf '%s' "$$" > "$0.started.tmp"
+      mv "$0.started.tmp" "$0.started"
       exec sleep 60
     fi;;
 esac

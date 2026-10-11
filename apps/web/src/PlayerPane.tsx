@@ -108,7 +108,6 @@ export function PlayerPane({
   nativePlayerView,
   nativeTab,
   nextChapter,
-  nowPlayingBook,
   offlineDownloads,
   openNativePlayerSheet,
   openPlaybackView,
@@ -195,7 +194,6 @@ export function PlayerPane({
   nativePlayerView: "now" | "details" | "chapters";
   nativeTab: NativeTab;
   nextChapter: () => void;
-  nowPlayingBook: Book | null;
   offlineDownloads: ReturnType<typeof useOfflineDownloads>;
   openNativePlayerSheet: (sheet: Exclude<NativePlayerSheet, null>) => void;
   openPlaybackView: (view: "now" | "details" | "chapters") => void;
@@ -603,14 +601,14 @@ export function PlayerPane({
           until playback starts. */}
       {selectedBook && (currentTrack || nativePlayerView !== "now") ? (
         <>
-          {isViewingPlayingBook && nativePlayerView === "now" && nowPlayingBook && currentTrack ? (
+          {isViewingPlayingBook && nativePlayerView === "now" && playbackBook && currentTrack ? (
             <section className="native-now-playing" aria-label="Now playing">
               {/* The halves group the stack for a foldable phone, which sets
                   them either side of its fold. Everywhere else they take no
                   box and their children lay out in the card's grid. */}
               <div className="native-now-half native-now-lead">
                 <div className="native-now-artwork">
-                  <CoverArt book={nowPlayingBook} size="large" />
+                  <CoverArt book={playbackBook} size="large" />
                 </div>
 
                 <div className="native-now-copy">
@@ -618,8 +616,8 @@ export function PlayerPane({
                     {activeChapter ? `Chapter ${activeChapter.chapterNumber}` : "Now playing"}
                   </span>
                   <h2>{activeChapter?.title ?? currentTrack.title}</h2>
-                  <p>{nowPlayingBook.title}</p>
-                  <span>{nowPlayingBook.author ?? currentTrack.metadata.album ?? "Audiobook"}</span>
+                  <p>{playbackBook.title}</p>
+                  <span>{playbackBook.author ?? currentTrack.metadata.album ?? "Audiobook"}</span>
                 </div>
               </div>
 
@@ -771,12 +769,12 @@ export function PlayerPane({
                     </header>
                     <p>
                       {playbackDescription
-                        ?? `${nowPlayingBook.title}${nowPlayingBook.author ? ` by ${nowPlayingBook.author}` : ""}${nowPlayingBook.narrator ? `, narrated by ${nowPlayingBook.narrator}` : ""}.`}
+                        ?? `${playbackBook.title}${playbackBook.author ? ` by ${playbackBook.author}` : ""}${playbackBook.narrator ? `, narrated by ${playbackBook.narrator}` : ""}.`}
                     </p>
                     <div className="web-now-tags" aria-label="Book metadata">
-                      {nowPlayingBook.publishedDate ? <span>{nowPlayingBook.publishedDate}</span> : null}
-                      {nowPlayingBook.metadata.publisher ? <span>{nowPlayingBook.metadata.publisher}</span> : null}
-                      {nowPlayingBook.genres.slice(0, 3).map((genre) => <span key={genre}>{genre}</span>)}
+                      {playbackBook.publishedDate ? <span>{playbackBook.publishedDate}</span> : null}
+                      {playbackBook.metadata.publisher ? <span>{playbackBook.metadata.publisher}</span> : null}
+                      {playbackBook.genres.slice(0, 3).map((genre) => <span key={genre}>{genre}</span>)}
                     </div>
                   </section>
 

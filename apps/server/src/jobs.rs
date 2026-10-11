@@ -126,8 +126,7 @@ pub(crate) async fn get_job(
 }
 
 /// A job that starts running at once, with no deduplication. Production
-/// paths all queue and deduplicate now; the faststart tests still create
-/// jobs directly.
+/// paths all queue and deduplicate; tests create jobs directly.
 #[cfg(test)]
 pub(crate) async fn create_job(state: &AppState, kind: &str) -> String {
     create_job_with_state(state, kind, None, "running", false)
@@ -150,9 +149,7 @@ pub(crate) async fn create_job_with_state(
     status: &str,
     deduplicate_pending: bool,
 ) -> (String, bool) {
-    let mut bytes = [0u8; 8];
-    rand::rng().fill(&mut bytes);
-    let id = format!("{:016x}", u64::from_le_bytes(bytes));
+    let id = random_hex_id();
     let mut jobs = state.jobs.write().await;
 
     if deduplicate_pending

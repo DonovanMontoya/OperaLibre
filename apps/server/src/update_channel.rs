@@ -4,10 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::update_manifest::Manifest;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UpdateChannel {
-    #[default]
     Stable,
     Nightly,
 }

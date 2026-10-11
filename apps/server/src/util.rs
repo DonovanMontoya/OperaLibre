@@ -89,6 +89,25 @@ pub(crate) fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
         })
 }
 
+/// The first of `candidates` found in a `PATH` directory, searched in order.
+pub(crate) fn find_on_path(candidates: &[&str]) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        for candidate in candidates {
+            let path = dir.join(candidate);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+/// A random 16-character hex identifier for jobs and scratch work.
+pub(crate) fn random_hex_id() -> String {
+    format!("{:016x}", rand::random::<u64>())
+}
+
 pub(crate) fn progress_key(user_id: &str, book_id: &str) -> String {
     format!("user:{user_id}:book:{book_id}")
 }

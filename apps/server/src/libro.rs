@@ -336,11 +336,7 @@ fn signature(files: &[PathBuf]) -> anyhow::Result<String> {
                 .to_le_bytes(),
         );
     }
-    Ok(hash
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+    Ok(hex_digest(hash.finalize()))
 }
 
 fn discover(folder: &FsPath) -> anyhow::Result<Vec<Candidate>> {

@@ -1665,21 +1665,6 @@ fn transcript_words(text: &str, start_utf16: u64, max_len_utf16: u64) -> Vec<Tra
     words
 }
 
-/// UTF-16 offset just past the last sentence-final token that ends at or
-/// before `target_utf16`, falling back to the last whole token, then to
-/// `target_utf16` itself. Used to exercise transcript boundary handling.
-#[cfg(test)]
-pub fn sentence_end_before(text: &str, start_utf16: u64, target_utf16: u64) -> u64 {
-    let words = transcript_words(text, start_utf16, target_utf16.saturating_sub(start_utf16));
-    words
-        .iter()
-        .rev()
-        .find(|word| word.sentence_final)
-        .or(words.last())
-        .map(|word| word.end_utf16)
-        .unwrap_or(target_utf16)
-}
-
 /// Retry bounded recognition when it repeats itself or skips a large stretch
 /// of otherwise anchored text. A forced aligner cannot repair that evidence.
 pub fn recognition_needs_retry(recognized: &[RecognizedWord], text: &str) -> bool {
@@ -5082,20 +5067,6 @@ The dog barked loudly at the cat. Go away said the cat.",
         assert_eq!(
             anchor.end.unwrap().text_end_utf16,
             WINDOW_TEXT.encode_utf16().count() as u64
-        );
-    }
-
-    #[test]
-    fn sentence_end_before_prefers_terminal_punctuation() {
-        let target = utf16_end_of("barked ");
-        assert_eq!(
-            sentence_end_before(WINDOW_TEXT, 0, target),
-            utf16_end_of("dog.")
-        );
-        // No sentence end inside the range: the last whole word wins.
-        assert_eq!(
-            sentence_end_before(WINDOW_TEXT, 0, "The cat sat on".len() as u64),
-            "The cat sat".len() as u64
         );
     }
 

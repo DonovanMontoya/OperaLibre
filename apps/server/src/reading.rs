@@ -162,22 +162,31 @@ pub(crate) async fn reading_log_sessions(
     Query(query): Query<ReadingLogQuery>,
 ) -> Json<Vec<ReadingSession>> {
     let work_ids = state.works.read().await.book_to_work();
-    let history = state.reading_history.read().await;
-    let sessions = compact_sessions(history.sessions.clone())
-        .into_iter()
-        .map(|mut session| {
-            overlay_work_id(&work_ids, &session.book_id, &mut session.work_id);
-            session
-        })
-        .collect::<Vec<_>>();
-    Json(history_rows(
-        &sessions,
+    // Session ids are minted per sitting, so every revision of one belongs to
+    // the same reader and filtering before compaction keeps the same rows.
+    let own = compact_sessions(
+        state
+            .reading_history
+            .read()
+            .await
+            .sessions
+            .iter()
+            .filter(|session| session.user_id == auth.id)
+            .cloned()
+            .collect(),
+    );
+    let mut sessions = history_rows(
+        &own,
         &auth.id,
         &query,
         |row| row.user_id.as_str(),
         |row| row.started_on.as_str(),
         |row| row.ended_at_ms,
-    ))
+    );
+    for session in &mut sessions {
+        overlay_work_id(&work_ids, &session.book_id, &mut session.work_id);
+    }
+    Json(sessions)
 }
 
 pub(crate) async fn reading_log_completions(
@@ -186,24 +195,18 @@ pub(crate) async fn reading_log_completions(
     Query(query): Query<ReadingLogQuery>,
 ) -> Json<Vec<CompletionEvent>> {
     let work_ids = state.works.read().await.book_to_work();
-    let history = state.reading_history.read().await;
-    let completions = history
-        .completions
-        .iter()
-        .cloned()
-        .map(|mut completion| {
-            overlay_work_id(&work_ids, &completion.book_id, &mut completion.work_id);
-            completion
-        })
-        .collect::<Vec<_>>();
-    Json(history_rows(
-        &completions,
+    let mut completions = history_rows(
+        &state.reading_history.read().await.completions,
         &auth.id,
         &query,
         |row| row.user_id.as_str(),
         |row| row.finished_on.as_str(),
         |row| row.finished_at_ms,
-    ))
+    );
+    for completion in &mut completions {
+        overlay_work_id(&work_ids, &completion.book_id, &mut completion.work_id);
+    }
+    Json(completions)
 }
 
 /// Read paths resolve a row's work through the live works store rather than

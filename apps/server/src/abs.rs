@@ -244,11 +244,6 @@ pub(crate) struct AbsProgressUpdate {
     /// Audiobookshelf timestamps checkpoints in epoch milliseconds. Keeping
     /// it lets the native stale-write defense reject a delayed request.
     last_update: Option<u64>,
-    /// Clients send the book's duration back with every checkpoint. The server
-    /// already knows it from the scan and does not take the client's word for
-    /// it, but the field is accepted so the payload still deserialises.
-    #[serde(default, rename = "duration")]
-    _duration: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -665,42 +660,67 @@ pub(crate) async fn abs_library_items(
         return Err(ApiError::not_found("Library not found."));
     }
     ensure_startup_scan_finished(&state).await?;
-    let mut visible = books_with_progress(&state, &auth).await?;
-    if let Some(filter) = query.filter.as_deref() {
-        let (group, encoded) = filter
-            .split_once('.')
-            .ok_or_else(|| ApiError::bad_request("Invalid Audiobookshelf filter."))?;
-        let value = general_purpose::STANDARD
-            .decode(encoded)
-            .ok()
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .ok_or_else(|| ApiError::bad_request("Invalid Audiobookshelf filter."))?;
-        visible.retain(|book| match group {
+    let filter = query
+        .filter
+        .as_deref()
+        .map(|filter| {
+            let (group, encoded) = filter
+                .split_once('.')
+                .ok_or_else(|| ApiError::bad_request("Invalid Audiobookshelf filter."))?;
+            let value = general_purpose::STANDARD
+                .decode(encoded)
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .ok_or_else(|| ApiError::bad_request("Invalid Audiobookshelf filter."))?;
+            Ok::<_, ApiError>((group, value))
+        })
+        .transpose()?;
+    let matches = |book: &Book| {
+        let Some((group, value)) = &filter else {
+            return true;
+        };
+        match *group {
             "authors" => book
                 .author
                 .as_deref()
-                .is_some_and(|name| author_matches(name, &value)),
+                .is_some_and(|name| author_matches(name, value)),
             "series" => book.metadata.series.as_deref() == Some(value.as_str()),
             "narrators" => book.narrator.as_deref() == Some(value.as_str()),
-            "genres" => book.genres.iter().any(|genre| genre == &value),
-            "tags" => book.tags.iter().any(|tag| tag.name == value),
+            "genres" => book.genres.iter().any(|genre| genre == value),
+            "tags" => book.tags.iter().any(|tag| &tag.name == value),
             _ => false,
-        });
-    }
-    let total = visible.len();
-    let limit = query
-        .limit
-        .filter(|limit| *limit > 0)
-        .unwrap_or(total.max(1));
+        }
+    };
     let page = query.page.unwrap_or(0);
+    // Count and page under the library lock, then copy and enrich only the
+    // page, as the native listing does.
+    let (total, limit, selected) = {
+        let library = state.library.read().await;
+        let visible: Vec<&Book> = library
+            .books
+            .iter()
+            .filter(|book| can_access_book(&auth, &book.id) && matches(book))
+            .collect();
+        let total = visible.len();
+        let limit = query
+            .limit
+            .filter(|limit| *limit > 0)
+            .unwrap_or(total.max(1));
+        let selected: Vec<Book> = visible
+            .into_iter()
+            .skip(page.saturating_mul(limit))
+            .take(limit)
+            .cloned()
+            .collect();
+        (total, limit, selected)
+    };
     let media_token = session.media_token.clone();
-    let results = visible
-        .into_iter()
-        .skip(page.saturating_mul(limit))
-        .take(limit)
+    let results = enrich_books_with_progress(&state, &auth, selected)
+        .await?
+        .iter()
         // The listing carries no audio files: a client fetches the item or
         // opens a playback session when it actually wants to play something.
-        .map(|book| library_item(&book, &media_token, false))
+        .map(|book| library_item(book, &media_token, false))
         .collect();
     Ok(Json(AbsLibraryItemsResponse {
         results,
@@ -720,18 +740,24 @@ pub(crate) async fn abs_filter_data(
         return Err(ApiError::not_found("Library not found."));
     }
     ensure_startup_scan_finished(&state).await?;
-    let books = books_with_progress(&state, &auth).await?;
     let mut authors = BTreeSet::new();
     let mut series = BTreeSet::new();
     let mut narrators = BTreeSet::new();
     let mut genres = BTreeSet::new();
     let mut tags = BTreeSet::new();
-    for book in books {
-        authors.extend(book.author);
-        series.extend(book.metadata.series);
-        narrators.extend(book.narrator);
-        genres.extend(book.genres);
-        tags.extend(book.tags.into_iter().map(|tag| tag.name));
+    {
+        let library = state.library.read().await;
+        for book in library
+            .books
+            .iter()
+            .filter(|book| can_access_book(&auth, &book.id))
+        {
+            authors.extend(book.author.clone());
+            series.extend(book.metadata.series.clone());
+            narrators.extend(book.narrator.clone());
+            genres.extend(book.genres.iter().cloned());
+            tags.extend(book.tags.iter().map(|tag| tag.name.clone()));
+        }
     }
     Ok(Json(AbsFilterData {
         authors: authors
@@ -793,27 +819,36 @@ pub(crate) async fn abs_search(
     let media_token = session.media_token.clone();
     let limit = query.limit.unwrap_or(500);
     ensure_startup_scan_finished(&state).await?;
-    let books = books_with_progress(&state, &auth).await?;
-    let book = books
-        .into_iter()
-        .filter(|book| {
-            book.title.to_lowercase().contains(&needle)
-                || book
-                    .author
-                    .as_deref()
-                    .is_some_and(|author| author.to_lowercase().contains(&needle))
-                || book
-                    .narrator
-                    .as_deref()
-                    .is_some_and(|narrator| narrator.to_lowercase().contains(&needle))
-                || book
-                    .tags
-                    .iter()
-                    .any(|tag| tag.name.to_lowercase().contains(&needle))
-        })
-        .take(limit)
+    let selected: Vec<Book> = {
+        let library = state.library.read().await;
+        library
+            .books
+            .iter()
+            .filter(|book| can_access_book(&auth, &book.id))
+            .filter(|book| {
+                book.title.to_lowercase().contains(&needle)
+                    || book
+                        .author
+                        .as_deref()
+                        .is_some_and(|author| author.to_lowercase().contains(&needle))
+                    || book
+                        .narrator
+                        .as_deref()
+                        .is_some_and(|narrator| narrator.to_lowercase().contains(&needle))
+                    || book
+                        .tags
+                        .iter()
+                        .any(|tag| tag.name.to_lowercase().contains(&needle))
+            })
+            .take(limit)
+            .cloned()
+            .collect()
+    };
+    let book = enrich_books_with_progress(&state, &auth, selected)
+        .await?
+        .iter()
         .map(|book| AbsSearchResult {
-            library_item: library_item(&book, &media_token, false),
+            library_item: library_item(book, &media_token, false),
         })
         .collect();
     Ok(Json(AbsSearchResponse { book }))
@@ -847,18 +882,16 @@ pub(crate) async fn abs_author(
 ) -> Result<Json<AbsAuthorResponse>, ApiError> {
     let media_token = session.media_token.clone();
     ensure_startup_scan_finished(&state).await?;
-    let books = books_with_progress(&state, &auth).await?;
-    let books: Vec<_> = books
-        .into_iter()
-        .filter(|book| {
-            book.author
-                .as_deref()
-                .is_some_and(|name| author_matches(name, &author_id))
-        })
-        .collect();
+    let books = visible_books_where(&state, &auth, |book| {
+        book.author
+            .as_deref()
+            .is_some_and(|name| author_matches(name, &author_id))
+    })
+    .await;
     if books.is_empty() {
         return Err(ApiError::not_found("Author not found."));
     }
+    let books = enrich_books_with_progress(&state, &auth, books).await?;
     Ok(Json(AbsAuthorResponse {
         id: self::author_id(books[0].author.as_deref().unwrap()),
         name: books[0].author.clone().unwrap(),

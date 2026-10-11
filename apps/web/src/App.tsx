@@ -177,10 +177,6 @@ import { useAudioSource } from "./useAudioSource";
 // How long a Play still waiting on the stream shows as loading.
 const PLAY_PENDING_LIMIT_MS = 45_000;
 
-/** Which pages of the iPad Shelf spread are showing. */
-
-
-
 type AuthState =
   | { phase: "loading" }
   | { phase: "server"; returnToLocal?: boolean }
@@ -843,7 +839,6 @@ function MainApp({
     [books, playbackBookId]
   );
   const playbackDescription = playbackBook ? displayBookDescription(playbackBook) : null;
-  const nowPlayingBook = playbackBook;
   const unplayedConfirmationBook = unplayedConfirmationBookId
     ? books.find((book) => book.id === unplayedConfirmationBookId) ?? null
     : null;
@@ -1445,7 +1440,6 @@ function MainApp({
   const {
     brokenLibationAccounts,
     canBrowseLibation,
-    libationBooksRef,
     libroAccounts,
     libroOnDevice,
     loadLibationBooks,
@@ -1525,9 +1519,7 @@ function MainApp({
     // Stable ids prevent progress saves from repeatedly reattaching the queue.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookIdsKey]);
-  const {
-    
-  } = useAudioSource({
+  useAudioSource({
     activeTrackIndex,
     audioRef,
     chapterSegments,
@@ -1568,10 +1560,7 @@ function MainApp({
   useEffect(() => {
     writeStoredBookId(currentUser.id, "playbackBookId", playbackBookId);
   }, [currentUser.id, playbackBookId]);
-  libationBooksRef.current = libationBooks;
-  const {
-    
-  } = usePlaybackRestore({
+  usePlaybackRestore({
     acknowledgedServerPositionRef,
     currentUser,
     libraryProgressReplaysRef,
@@ -1601,9 +1590,7 @@ function MainApp({
     updateBookProgress
   });
 
-  const {
-    
-  } = useAudioElement({
+  useAudioElement({
     activeTrackIndex,
     applyPlaybackVolume,
     audioRef,
@@ -1674,9 +1661,7 @@ function MainApp({
     // land now; a no-op whenever nothing is owed.
     gainSyncRef.current?.retry();
   }
-  const {
-    
-  } = useNowPlaying({
+  useNowPlaying({
     activeChapter,
     activeTrackIndex,
     chapterSegments,
@@ -1691,10 +1676,7 @@ function MainApp({
   });
 
 
-  const {
-    activeChapterId,
-    mediaSessionHandlersRef
-  } = useMediaSession({
+  const { activeChapterId } = useMediaSession({
     activeChapter,
     audioRef,
     chapterDuration,
@@ -1712,17 +1694,6 @@ function MainApp({
     speed,
     startPlayback
   });
-
-  mediaSessionHandlersRef.current = {
-    startPlayback,
-    pausePlayback,
-    seekBy,
-    seekTo,
-    seekBookPosition,
-    restartOrPreviousChapter,
-    nextChapter,
-    activeChapter
-  };
 
   useEffect(() => {
     if (!chaptersOpen || !isViewingPlayingBook || activeChapterId === null) return;
@@ -2190,7 +2161,6 @@ function MainApp({
         nativePlayerView={nativePlayerView}
         nativeTab={nativeTab}
         nextChapter={nextChapter}
-        nowPlayingBook={nowPlayingBook}
         offlineDownloads={offlineDownloads}
         openNativePlayerSheet={openNativePlayerSheet}
         openPlaybackView={openPlaybackView}

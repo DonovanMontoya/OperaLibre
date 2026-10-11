@@ -8,7 +8,6 @@ import { trackOffsetSeconds } from "./formatting";
 import { mediaUrl } from "./api";
 import type { ChapterSegment } from "./chapters";
 
-
 /**
  * Resolves where the current track plays from (a downloaded file, the native
  * player queue or the stream) and starts a waiting autoplay once it lands.
@@ -164,8 +163,4 @@ export function useAudioSource({
     wantsAutoplayRef.current = false;
     window.setTimeout(() => startPlaybackRef.current(audioRef.current), 0);
   }, [audioRef, nativeAudioQueueReady, startPlaybackRef, streamUrl, wantsAutoplayRef]);
-
-  return {
-    
-  };
 }

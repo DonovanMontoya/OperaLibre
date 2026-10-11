@@ -4641,12 +4641,13 @@ fn extracted_cover_art_is_reused_and_tidied_up() {
         etag: super::bytes_etag(bytes),
     };
 
-    let first = super::write_cover_cache(
+    let first = super::write_covers(
         &covers,
         vec![
             ("book-one".to_string(), image(b"first cover bytes")),
             ("book-two".to_string(), image(b"second cover bytes")),
         ],
+        &std::collections::HashMap::new(),
     )
     .unwrap()
     .0;
@@ -4659,12 +4660,13 @@ fn extracted_cover_art_is_reused_and_tidied_up() {
 
     // A rescan finding the same art for one book, new art for the other, and
     // no art at all for a book that has been removed.
-    let (second, stale) = super::write_cover_cache(
+    let (second, stale) = super::write_covers(
         &covers,
         vec![
             ("book-one".to_string(), image(b"first cover bytes")),
             ("book-three".to_string(), image(b"third cover bytes")),
         ],
+        &first,
     )
     .unwrap();
 
@@ -4672,6 +4674,19 @@ fn extracted_cover_art_is_reused_and_tidied_up() {
         std::fs::metadata(&one.path).unwrap().modified().unwrap(),
         written_at,
         "unchanged cover art was rewritten"
+    );
+    // After a restart nothing is published yet, so the file is read back to
+    // confirm it, and still left alone.
+    super::write_covers(
+        &covers,
+        vec![("book-one".to_string(), image(b"first cover bytes"))],
+        &std::collections::HashMap::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::metadata(&one.path).unwrap().modified().unwrap(),
+        written_at,
+        "unchanged cover art was rewritten after a restart"
     );
     assert_eq!(
         std::fs::read(&second["book-three"].path).unwrap(),
@@ -4701,13 +4716,18 @@ fn replacing_cover_art_replaces_the_file_and_its_etag() {
         etag: super::bytes_etag(bytes),
     };
 
-    let before = super::write_cover_cache(&covers, vec![("book".to_string(), image(b"old art"))])
-        .unwrap()
-        .0["book"]
-        .clone();
-    let after = super::write_cover_cache(
+    let published = super::write_covers(
+        &covers,
+        vec![("book".to_string(), image(b"old art"))],
+        &std::collections::HashMap::new(),
+    )
+    .unwrap()
+    .0;
+    let before = published["book"].clone();
+    let after = super::write_covers(
         &covers,
         vec![("book".to_string(), image(b"replacement art"))],
+        &published,
     )
     .unwrap()
     .0["book"]

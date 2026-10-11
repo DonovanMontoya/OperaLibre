@@ -406,8 +406,4 @@ export function usePlaybackRestore({
     // the previous track/position around track boundaries.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser.id, playbackBookKey]);
-
-  return {
-    
-  };
 }

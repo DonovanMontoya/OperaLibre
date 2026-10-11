@@ -684,19 +684,35 @@ pub(crate) fn enrich_progress(book: &Book, progress: &Progress) -> Progress {
     enriched
 }
 
-pub(crate) async fn books_with_progress(
+/// Every book the reader may see, in library order, without progress. For
+/// listings that only describe the catalogue.
+pub(crate) async fn visible_books(state: &AppState, auth: &AuthUser) -> Vec<Book> {
+    visible_books_where(state, auth, |_| true).await
+}
+
+/// The visible books `keep` accepts, copied under the library lock so a
+/// filtered listing clones only what it returns.
+pub(crate) async fn visible_books_where(
     state: &AppState,
     auth: &AuthUser,
-) -> Result<Vec<Book>, ApiError> {
-    let books = state
+    keep: impl Fn(&Book) -> bool,
+) -> Vec<Book> {
+    state
         .library
         .read()
         .await
         .books
         .iter()
-        .filter(|book| can_access_book(auth, &book.id))
+        .filter(|book| can_access_book(auth, &book.id) && keep(book))
         .cloned()
-        .collect();
+        .collect()
+}
+
+pub(crate) async fn books_with_progress(
+    state: &AppState,
+    auth: &AuthUser,
+) -> Result<Vec<Book>, ApiError> {
+    let books = visible_books(state, auth).await;
     enrich_books_with_progress(state, auth, books).await
 }
 

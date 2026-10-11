@@ -536,7 +536,7 @@ impl ProgressStore {
     }
 
     /// Store one listener's position outright, ignoring the rules that guard
-    /// automatic checkpoints. Used by tests and by the import.
+    /// automatic checkpoints. Tests use this to set up a known position.
     #[cfg(test)]
     pub(crate) async fn set(
         &self,
