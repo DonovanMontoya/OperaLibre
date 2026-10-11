@@ -41,7 +41,7 @@ async function setup(page: Page, platform: 'ios' | 'android' | 'web', admin = tr
     await route.fulfill({ json: body });
   });
   if (platform !== 'web') {
-    // Model native file availability and job transitions, without a device bridge.
+    // Model native file availability, download jobs, and an idle CarPlay player.
     await page.addInitScript(() => {
       const state = window as typeof window & {
         detailsAudioSaved: boolean;
@@ -52,10 +52,15 @@ async function setup(page: Page, platform: 'ios' | 'android' | 'web', admin = tr
       state.detailsJobs = {};
       state.Capacitor = {
         PluginHeaders: [
+          { name: 'CarPlayBridge', methods: ['getState', 'stopPlayback', 'setLibrary', 'acknowledgeSessions'].map(name => ({ name, rtype: 'promise' })) },
           { name: 'Filesystem', methods: ['stat', 'getUri', 'readFile', 'mkdir', 'readdir', 'rmdir', 'deleteFile'].map(name => ({ name, rtype: 'promise' })) },
           { name: 'BackgroundDownloads', methods: ['enqueueBook', 'getStatus', 'cancelBook'].map(name => ({ name, rtype: 'promise' })) }
         ],
         nativePromise: async (plugin: string, method: string, options: { path: string; jobId: string }) => {
+          if (plugin === 'CarPlayBridge') {
+            if (method === 'getState' || method === 'stopPlayback') return { connected: false, sessions: '[]' };
+            return;
+          }
           if (plugin === 'BackgroundDownloads') {
             if (method === 'enqueueBook') state.detailsJobs[options.jobId] = { state: 'running', fraction: 0.25 };
             else if (method === 'cancelBook') state.detailsJobs[options.jobId] = { state: 'failed', fraction: 0, error: 'Cancelled' };
