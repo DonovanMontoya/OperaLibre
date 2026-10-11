@@ -7,6 +7,7 @@ import {
   releaseCarPlaybackOwnership,
   setCarPlaybackOwner,
   supportsCarPlay,
+  stopCarPlayback,
   syncCarLibrary
 } from "./carPlay";
 import { BOOK_GAIN_DEFAULT } from "./bookVolume";
@@ -210,7 +211,7 @@ export function useCarPlay({
    * the server's staleness and suspect-reset rules all apply exactly as they do
    * to playback on the phone.
    */
-  async function saveCarPlaybackSessions(sessions: CarPlaybackSession[]) {
+  function queueCarPlaybackSessions(sessions: CarPlaybackSession[]) {
     const handled: CarPlaybackSession[] = [];
     for (const session of sessions) {
       const book = booksRef.current.find((candidate) => candidate.id === session.bookId);
@@ -254,11 +255,30 @@ export function useCarPlay({
         intentionalRegression: newIntentionalSeek
       });
     }
+    return handled;
+  }
+
+  async function flushCarPlaybackSessions(handled: CarPlaybackSession[]) {
     if (queuedProgressSaves.current.size > 0) await flushProgressSaveQueue();
     // Acknowledged even when the server write failed: the position is in the
     // local checkpoint and the offline cache by now, and the usual retry owns
     // it from here. Holding the session instead would replay it forever.
     await acknowledgeCarSessions(handled).catch(() => undefined);
+  }
+
+  async function saveCarPlaybackSessions(sessions: CarPlaybackSession[]) {
+    await flushCarPlaybackSessions(queueCarPlaybackSessions(sessions));
+  }
+
+  async function stopCarPlaybackForRemoval(bookId: string) {
+    if (!supportsCarPlay()) return;
+    const state = await stopCarPlayback(bookId);
+    setCarPlaybackOwner(state.carOwnedBookId);
+    setCarPlaybackBookId(state.carOwnedBookId);
+    // Bank the final checkpoint before deletion, without waiting for an offline
+    // server. Native sessions remain durable until the normal sync acknowledges them.
+    const handled = queueCarPlaybackSessions(state.sessions);
+    void flushCarPlaybackSessions(handled).catch(() => undefined);
   }
 
   /**
@@ -278,6 +298,7 @@ export function useCarPlay({
     carPlaybackBook,
     carPlaybackBookId,
     setCarPlaybackBookId,
-    takeOverFromCar
+    takeOverFromCar,
+    stopCarPlaybackForRemoval
   };
 }

@@ -199,7 +199,7 @@ for (const mode of ["paused", "playing", "pending seek", "untouched", "other boo
         removeBookDownload: async (book: { id: string }) => { removed.push(book.id); await deletion; },
         getBookOfflineReadiness: async () => ({ audio: false }) }
     })({ ...f.options, ...sync, booksRef: { current: [f.book] }, capabilities: { downloads: true },
-      setDownloadStatus: () => {}, setDownloadedBookIds: () => {} });
+      setDownloadStatus: () => {}, setDownloadedBookIds: () => {}, stopCarPlaybackForRemoval: async () => {} });
     const removing = downloads.removeOfflineDownload(mode === "other book" ? { ...f.book, id: "other" } : f.book);
     const clears = mode !== "other book" && mode !== "cancelled";
     assert.equal(activeBook, clears ? null : "book", "close playback before deleting its source");
@@ -220,6 +220,64 @@ for (const mode of ["paused", "playing", "pending seek", "untouched", "other boo
     assert.equal(activeBook, "new-book");
     assert.equal(track, "new-track");
     assert.deepEqual(removed, mode === "cancelled" ? [] : [mode === "other book" ? "other" : "book"]);
+  });
+}
+
+for (const scenario of ["target", "other book", "stop failure"] as const) {
+  test(`CarPlay download removal waits for native stop and preserves its final checkpoint: ${scenario}`, async () => {
+    const f = fixture();
+    f.write(f.local);
+    Object.assign(window, { confirm: () => true });
+    const react = { ...f.dependencies.react, useMemo: (fn: () => unknown) => fn(),
+      useState: (value: unknown) => [value, () => {}] };
+    let finishStop!: () => void;
+    const stopped = new Promise<void>(resolve => { finishStop = resolve; });
+    let owner: string | null = scenario === "other book" ? "other" : "book";
+    const session = { bookId: "book", trackId: "track", positionSeconds: 1800, bookPositionSeconds: 1800,
+      durationSeconds: 7200, finished: false, intentionalRegression: false,
+      updatedAt: Date.parse("2026-09-30T12:05:00Z") };
+    let finishSync!: () => void;
+    const syncing = new Promise<void>(resolve => { finishSync = resolve; });
+    let syncFinished = false;
+    const car = loadHook("useCarPlay", {
+      ...f.dependencies, react,
+      "./carLibrary.ts": carLibrary, "./bookVolume": { BOOK_GAIN_DEFAULT: 1 },
+      "./carPlay": { supportsCarPlay: () => true, setCarPlaybackOwner: (id: string | null) => { owner = id; },
+        stopCarPlayback: async (id: string) => {
+          assert.equal(id, "book");
+          await stopped;
+          if (scenario === "stop failure") throw new Error("native stop failed");
+          if (owner === id) owner = null;
+          return { carOwnedBookId: owner, sessions: scenario === "target" ? [session] : [] };
+        }, acknowledgeCarSessions: async () => {} }
+    })({ ...f.options, booksRef: { current: [f.book] }, downloadedBookIds: new Set(), bookGains: {},
+      flushProgressSaveQueue: async () => { await syncing; syncFinished = true; } });
+    let removed = false;
+    let notice = "";
+    const downloads = loadHook("useOfflineDownloads", {
+      ...f.dependencies, react, "./offlineReadiness": {},
+      "./formatting": { errorMessage: (error: Error) => error.message },
+      "./offline": { ...f.dependencies["./offline"],
+        removeBookDownload: async () => {
+          assert.equal(owner, scenario === "other book" ? "other" : null);
+          assert.equal(f.checkpoint().positionSeconds, scenario === "target" ? 1800 : 1060);
+          assert.equal(syncFinished, false, "offline server sync must not hold deletion");
+          removed = true;
+        }, getBookOfflineReadiness: async () => ({ audio: false }) }
+    })({ ...f.options, playbackBook: null, booksRef: { current: [f.book] }, capabilities: { downloads: true },
+      stopCarPlaybackForRemoval: car.stopCarPlaybackForRemoval,
+      clearPlaybackSession: () => { assert.fail("React has no playback session"); },
+      setDownloadStatus: (value: { message: string }) => { notice = value.message; },
+      setDownloadedBookIds: () => {} });
+    const removing = downloads.removeOfflineDownload(f.book);
+    assert.equal(removed, false, "deletion must await native teardown");
+    assert.equal(owner, scenario === "other book" ? "other" : "book");
+    finishStop();
+    await removing;
+    assert.equal(removed, scenario !== "stop failure");
+    assert.equal(notice, scenario === "stop failure" ? "native stop failed" : "Download removed");
+    finishSync();
+    await syncing;
   });
 }
 

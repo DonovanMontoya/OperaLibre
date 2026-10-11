@@ -541,19 +541,25 @@ public final class AudiobookPlayer {
 
     func stop(releaseSession: Bool) {
         DispatchQueue.main.async { [weak self] in
-            self?.generation += 1
-            // stop() must disarm the sleep timer so it cannot keep counting
-            // into a session that did not arm it (logout, failover, reload).
-            // stop() also runs between track reattachments, so the JS attach
-            // path re-arms the timer with the seconds React still holds;
-            // load() leaves the timer alone for the same reason.
-            self?.sleepTimerRemaining = 0
-            self?.sleepTimerLastTick = nil
-            self?.sleepTimerFinishedWhileInactive = false
-            self?.tearDownPlayer()
-            if releaseSession {
-                self?.deactivateAudioSession()
-            }
+            self?.stopOnMainThread(releaseSession: releaseSession)
+        }
+    }
+
+    /// Stops and checkpoints before returning, so callers can safely remove media.
+    func stopOnMainThread(releaseSession: Bool) {
+        precondition(Thread.isMainThread)
+        generation += 1
+        // stop() must disarm the sleep timer so it cannot keep counting
+        // into a session that did not arm it (logout, failover, reload).
+        // stop() also runs between track reattachments, so the JS attach
+        // path re-arms the timer with the seconds React still holds;
+        // load() leaves the timer alone for the same reason.
+        sleepTimerRemaining = 0
+        sleepTimerLastTick = nil
+        sleepTimerFinishedWhileInactive = false
+        tearDownPlayer()
+        if releaseSession {
+            deactivateAudioSession()
         }
     }
 

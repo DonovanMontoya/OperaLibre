@@ -243,6 +243,17 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         redrawCarLists()
     }
 
+    func stopPlayback(forBookId bookId: String) {
+        guard carOwnedBookId == bookId else { return }
+        // Retain ownership through the final checkpoint and stop synchronously:
+        // the bridge's reply permits the web layer to delete these media files.
+        engine.stopOnMainThread(releaseSession: true)
+        recordSession(force: true)
+        carOwnedBookId = nil
+        notifyWeb("carPlaybackEnded", data: ["bookId": bookId])
+        redrawCarLists()
+    }
+
     func togglePlayPause() {
         if engine.status.isPlaying {
             engine.pause()

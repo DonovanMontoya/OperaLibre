@@ -18,6 +18,7 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "setLibrary", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clearLibrary", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "stopPlayback", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "acknowledgeSessions", returnType: CAPPluginReturnPromise)
     ]
@@ -67,6 +68,29 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                 result["carOwnedBookId"] = carOwnedBookId
             }
             call.resolve(result)
+        }
+    }
+
+    @objc public func stopPlayback(_ call: CAPPluginCall) {
+        guard let bookId = call.getString("bookId"), !bookId.isEmpty else {
+            call.reject("The book to stop was not specified.")
+            return
+        }
+        DispatchQueue.main.async {
+            self.coordinator.stopPlayback(forBookId: bookId)
+            let sessions = self.coordinator.pendingSessions()
+            do {
+                let encoded = try JSONEncoder().encode(sessions)
+                var result = JSObject()
+                result["connected"] = self.coordinator.isConnected
+                result["sessions"] = String(data: encoded, encoding: .utf8) ?? "[]"
+                if let owner = self.coordinator.carOwnedBookId {
+                    result["carOwnedBookId"] = owner
+                }
+                call.resolve(result)
+            } catch {
+                call.reject("The final car playback position could not be read.")
+            }
         }
     }
 

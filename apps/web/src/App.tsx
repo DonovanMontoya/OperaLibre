@@ -1025,7 +1025,8 @@ function MainApp({
     carEventHandlersRef,
     carPlaybackBookId,
     setCarPlaybackBookId,
-    takeOverFromCar
+    takeOverFromCar,
+    stopCarPlaybackForRemoval
   } = carPlay;
 
   booksRef.current = books;
@@ -1718,6 +1719,7 @@ function MainApp({
   }, [foregroundProgressActionsRef]);
 
   const offlineDownloads = useOfflineDownloads({
+    stopCarPlaybackForRemoval,
     downloadStatus,
     audioRef,
     books,

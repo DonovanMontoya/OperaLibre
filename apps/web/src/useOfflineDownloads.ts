@@ -23,6 +23,7 @@ export function useOfflineDownloads({
   pausePlayback,
   persistProgress,
   playbackBook,
+  stopCarPlaybackForRemoval,
   setActiveDownloads,
   setBooks,
   setDeviceImport,
@@ -44,6 +45,7 @@ export function useOfflineDownloads({
   pausePlayback: (audio: HTMLAudioElement | null | undefined) => void;
   persistProgress: () => Promise<void>;
   playbackBook: Book | null;
+  stopCarPlaybackForRemoval: (bookId: string) => Promise<void>;
   setActiveDownloads: Dispatch<SetStateAction<Record<string, DeviceDownloadActivity>>>;
   setBooks: Dispatch<SetStateAction<Book[]>>;
   setDeviceImport: Dispatch<SetStateAction<{ completed: number; total: number; } | null>>;
@@ -248,6 +250,12 @@ export function useOfflineDownloads({
       // a remote stream that may be unavailable while listening offline.
       void persistProgress();
       clearPlaybackSession();
+    }
+    try {
+      await stopCarPlaybackForRemoval(book.id);
+    } catch (error) {
+      setDownloadStatus({ bookId: book.id, message: errorMessage(error, "Could not stop playback to remove the download") });
+      return;
     }
     await removeBookDownload(book);
     await refreshReadiness(book).catch(() => undefined);
