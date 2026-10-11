@@ -1,4 +1,4 @@
-import type { AuthUser, Book, Track } from "./types";
+import type { AuthUser, Book } from "./types";
 import { cacheLibrary, cancelBookOfflineDownload, downloadBookForOffline, getBookOfflineReadiness, isBookDownloaded, removeBookDownload } from "./offline";
 import { getServerStorageKey, mediaUrl } from "./api";
 import { offlineDownloadMessage, type OfflineReadiness } from "./offlineReadiness";
@@ -10,7 +10,6 @@ import type { DeviceNotice } from "./ConfirmDialogs";
 import type { DeviceDownloadActivity } from "./SettingsCards";
 import type { LibrarySource } from "./shelfSort";
 import type { NativeTab } from "./nativeTabs";
-import type { PendingSeek } from "./playbackTypes";
 
 export function useOfflineDownloads({
   audioRef,
@@ -18,16 +17,11 @@ export function useOfflineDownloads({
   booksRef,
   capabilities,
   clearPlaybackSession,
-  currentTrack,
   currentUser,
   downloadStatus,
   loadBooks,
-  nativeAudio,
-  nativePlaybackPlayingRef,
   pausePlayback,
-  pendingSeekRef,
   persistProgress,
-  playWhenTrackLoads,
   playbackBook,
   setActiveDownloads,
   setBooks,
@@ -36,8 +30,6 @@ export function useOfflineDownloads({
   setDownloadedBookIds,
   setLibrarySource,
   setNativeTab,
-  setOfflineSource,
-  setPendingSeek,
   setPlaybackBookId,
   setSelectedBookId
 }: {
@@ -46,16 +38,11 @@ export function useOfflineDownloads({
   booksRef: RefObject<Book[]>;
   capabilities: ServerCapabilities;
   clearPlaybackSession: () => void;
-  currentTrack: Track | null;
   currentUser: AuthUser;
   downloadStatus: DeviceNotice | null;
   loadBooks: () => Promise<void>;
-  nativeAudio: boolean;
-  nativePlaybackPlayingRef: RefObject<boolean>;
   pausePlayback: (audio: HTMLAudioElement | null | undefined) => void;
-  pendingSeekRef: RefObject<PendingSeek | null>;
   persistProgress: () => Promise<void>;
-  playWhenTrackLoads: RefObject<boolean>;
   playbackBook: Book | null;
   setActiveDownloads: Dispatch<SetStateAction<Record<string, DeviceDownloadActivity>>>;
   setBooks: Dispatch<SetStateAction<Book[]>>;
@@ -64,8 +51,6 @@ export function useOfflineDownloads({
   setDownloadedBookIds: Dispatch<SetStateAction<Set<string>>>;
   setLibrarySource: Dispatch<SetStateAction<LibrarySource>>;
   setNativeTab: Dispatch<SetStateAction<NativeTab>>;
-  setOfflineSource: Dispatch<SetStateAction<{ trackId: string; url: string | null; } | null>>;
-  setPendingSeek: (value: PendingSeek | null) => void;
   setPlaybackBookId: Dispatch<SetStateAction<string | null>>;
   setSelectedBookId: Dispatch<SetStateAction<string | null>>;
 }) {
@@ -258,26 +243,11 @@ export function useOfflineDownloads({
 
   async function removeOfflineDownload(book: Book) {
     if (!window.confirm(`Remove the downloaded copy of ${book.title} from this device? Your listening progress will be kept.`)) return;
-    const removingActiveSource = playbackBook?.id === book.id && !!currentTrack && !!audioRef.current;
-    const resumeTrack = removingActiveSource ? currentTrack : null;
-    // A seek still queued for this track is the real position; the element
-    // reads 0 until its metadata loads, and staging that would replace it.
-    const resumePosition = removingActiveSource
-      ? Math.max(
-          0,
-          pendingSeekRef.current?.trackId === currentTrack!.id
-            ? pendingSeekRef.current.positionSeconds
-            : audioRef.current!.currentTime
-        )
-      : 0;
-    const resumePlayback = removingActiveSource
-      ? nativeAudio ? nativePlaybackPlayingRef.current : !audioRef.current!.paused
-      : false;
-    if (removingActiveSource && resumeTrack) {
-      persistProgress();
-      pausePlayback(audioRef.current);
-      setPendingSeek({ trackId: resumeTrack.id, positionSeconds: resumePosition });
-      playWhenTrackLoads.current = resumePlayback;
+    if (playbackBook?.id === book.id) {
+      // Checkpoint before teardown; removing the local source must not start
+      // a remote stream that may be unavailable while listening offline.
+      void persistProgress();
+      clearPlaybackSession();
     }
     await removeBookDownload(book);
     await refreshReadiness(book).catch(() => undefined);
@@ -286,9 +256,6 @@ export function useOfflineDownloads({
       next.delete(book.id);
       return next;
     });
-    if (removingActiveSource && resumeTrack) {
-      setOfflineSource({ trackId: resumeTrack.id, url: null });
-    }
     setDownloadStatus({ bookId: book.id, message: "Download removed" });
   }
 

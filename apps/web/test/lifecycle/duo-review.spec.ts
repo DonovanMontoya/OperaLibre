@@ -64,6 +64,51 @@ async function serveFixtureAudio(page: Page) {
   });
 }
 
+test('removing the selected offline download closes playback without a format error', async ({ page }) => {
+  const books = library(2);
+  const book = books[0];
+  book.tracks.forEach(track => { track.streamUrl = `/fixture-${track.index}.wav`; });
+  await openShell(page, false, false, true, books);
+  await serveFixtureAudio(page);
+  await page.route(`**/api/books/${book.id}/progress`, route => route.fulfill({ json: {
+    bookId: book.id, trackId: book.tracks[0].id, positionSeconds: 60,
+    bookPositionSeconds: 60, durationSeconds: 240, updatedAt: '2026-09-30T12:00:00Z'
+  } }));
+  await page.evaluate(async book => {
+    // @ts-expect-error Browser-only Vite import, resolved by the fixture server.
+    const offline = await import('/src/offline.ts');
+    await offline.downloadBookForOffline(book, (path: string) => path, () => {});
+  }, book);
+  await page.reload();
+  await page.getByRole('button', { name: `Continue reading ${book.title}` }).click();
+  const audio = page.locator('audio');
+  await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBe(60);
+  await page.locator('.native-now-utility').getByRole('button', { name: 'Details', exact: true }).click();
+  await page.getByRole('button', { name: 'Full book page', exact: true }).click();
+  // Keep the shell available while the media server disappears.
+  let remoteAudioRequests = 0;
+  await page.route('**/fixture-*.wav*', route => {
+    remoteAudioRequests++;
+    return route.abort('connectionrefused');
+  });
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: `Remove ${book.title} from this device`, exact: true }).click();
+  await expect(page.getByText('Nothing playing', { exact: true })).toBeVisible();
+  await expect(audio).not.toHaveAttribute('src', /.+/);
+  await expect.poll(() => page.evaluate(async book => {
+    // @ts-expect-error Browser-only Vite import, resolved by the fixture server.
+    const offline = await import('/src/offline.ts');
+    return offline.isBookDownloaded(book);
+  }, book)).toBe(false);
+  await page.locator('.book-row').filter({ hasText: book.title }).click();
+  await expect(page.getByText('Download removed', { exact: true })).toBeVisible();
+  await expect(page.getByText('This audio format is not supported on this device.', { exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText('Nothing playing', { exact: true })).toBeVisible();
+  await expect(audio).not.toHaveAttribute('src', /.+/);
+  expect(remoteAudioRequests).toBe(0);
+});
+
 test('Duo paused playback survives folding, rotation, and window resizing without saving progress', async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 951, height: 669 });
