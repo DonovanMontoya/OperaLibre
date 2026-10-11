@@ -42,7 +42,7 @@ export function useMediaSession({
   // they held closures from an earlier render: "previous" saw a chapter
   // elapsed of 0 and never restarted the chapter, and "play" engaged the
   // gain chain with a stale gain.
-  const mediaSessionHandlersRef = useRef({
+  const mediaSessionHandlers = {
     startPlayback,
     pausePlayback,
     seekBy,
@@ -51,7 +51,9 @@ export function useMediaSession({
     restartOrPreviousChapter,
     nextChapter,
     activeChapter
-  });
+  };
+  const mediaSessionHandlersRef = useRef(mediaSessionHandlers);
+  mediaSessionHandlersRef.current = mediaSessionHandlers;
 
   useEffect(() => {
     if (nativeAudio || !("mediaSession" in navigator)) return;
@@ -103,7 +105,6 @@ export function useMediaSession({
   }, [activeChapterId, chapterDuration, chapterElapsed, currentTrackKey, nativeAudio, position, sliderMax, speed]);
 
   return {
-    activeChapterId,
-    mediaSessionHandlersRef
+    activeChapterId
   };
 }

@@ -8,7 +8,7 @@
 //! did they listen today" and threw away everything else — which book, what
 //! hour, how long the sitting was.
 //!
-//! This module keeps two append-only logs instead.
+//! This module keeps two logs instead.
 //!
 //! * [`ReadingSession`] rows record one continuous stretch of listening. They
 //!   are coalesced in memory from the client's two-second checkpoints and
@@ -19,9 +19,10 @@
 //!   completion stays legible after the audio is deleted, re-downloaded in a
 //!   different encoding, or replaced by another edition entirely.
 //!
-//! Both logs are append-only rows in the SQLite reading-history store.
-//! Appending never rewrites history, so a crash can lose at most the tail of
-//! an open session, never a past one.
+//! Both logs live in the SQLite reading-history store. Completions are only
+//! appended; a flush replaces the earlier revision of the session it belongs
+//! to and leaves every other row alone, so a crash can lose at most the tail
+//! of an open session, never a past one.
 
 use std::collections::HashMap;
 
@@ -34,11 +35,11 @@ pub const SESSION_GAP_SECONDS: u64 = 10 * 60;
 
 /// How soon an open session is first written through to disk.
 ///
-/// Every flush appends a superseded revision, so a fixed interval makes write
-/// volume grow with the length of the sitting: an hourly flush cadence over a
-/// three-hour book is a hundred and eighty rows to store and then compact away.
-/// The interval instead backs off from here to [`SESSION_FLUSH_MAX_SECONDS`],
-/// which turns that same sitting into a handful of rows.
+/// Every flush writes the session to disk, so a fixed interval makes write
+/// volume grow with the length of the sitting: a once-a-minute cadence over a
+/// three-hour book is a hundred and eighty writes. The interval instead backs
+/// off from here to [`SESSION_FLUSH_MAX_SECONDS`], which turns that same
+/// sitting into a handful.
 pub const SESSION_FLUSH_SECONDS: u64 = 60;
 
 /// The ceiling the flush interval backs off to.
@@ -56,9 +57,10 @@ pub const MIN_SESSION_SECONDS: f64 = 5.0;
 
 /// One continuous stretch of listening by one reader in one book.
 ///
-/// Rows are revisions: an open session is flushed repeatedly under the same
-/// `id`, and the copy with the highest `ended_at_ms` wins. [`compact_sessions`]
-/// drops the superseded ones.
+/// An open session is flushed repeatedly under the same `id`, and each flush
+/// replaces the previous revision. Histories written before that kept every
+/// revision; [`compact_sessions`] keeps the one with the highest
+/// `ended_at_ms`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadingSession {
@@ -394,9 +396,9 @@ impl OpenSessions {
 
 /// Collapses session revisions to one row each, keeping the latest.
 ///
-/// Flushing an open session repeatedly under the same id is what makes a crash
-/// cheap; this is where that cost is paid back. Order is preserved by first
-/// appearance so a compacted log still reads chronologically.
+/// Flushes now replace their earlier revision, but histories written before
+/// that still hold every one. Order is preserved by first appearance so a
+/// compacted log still reads chronologically.
 pub fn compact_sessions(rows: Vec<ReadingSession>) -> Vec<ReadingSession> {
     let mut order: Vec<String> = Vec::new();
     let mut latest: HashMap<String, ReadingSession> = HashMap::new();

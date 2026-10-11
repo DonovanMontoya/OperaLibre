@@ -6,7 +6,6 @@ import { updateNativeAudioNowPlaying } from "./nativeAudio";
 import type { Book, Track } from "./types";
 import type { ChapterSegment } from "./chapters";
 
-
 /**
  * Publishes the playing book, chapter and artwork to the lock screen and
  * Control Center.
@@ -105,6 +104,8 @@ export function useNowPlaying({
           ]
         : undefined
     });
+    // Keyed on the fields shown, not on playbackBook: a progress save
+    // replaces the book every few seconds without changing them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeChapter?.id,
@@ -112,10 +113,8 @@ export function useNowPlaying({
     currentTrackKey,
     mediaArtworkUrl,
     nativeAudio,
-    playbackBookKey
+    playbackBookKey,
+    playbackBook?.title,
+    playbackBook?.author
   ]);
-
-  return {
-    
-  };
 }

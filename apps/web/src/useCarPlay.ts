@@ -180,7 +180,6 @@ export function useCarPlay({
     // Keyed on the library rather than on nothing: a session for a book the app
     // had not loaded yet is left pending, and this re-runs — and saves it — once
     // that book is on the shelf.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookIdsKey, currentUser.id]);
 
   /**

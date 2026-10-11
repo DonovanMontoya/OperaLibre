@@ -15,7 +15,6 @@ import type { AuthUser, Book, Track } from "./types";
 import type { PendingSeek } from "./playbackTypes";
 import type { PlaybackGainChain } from "./playbackGain";
 
-
 /**
  * Keeps the audio element (or the native player behind it) attached to the
  * current track: its source, speed, volume and gain, a pending seek, and
@@ -311,8 +310,4 @@ export function useAudioElement({
   }, [volume, playbackGain, nativeAudio, currentTrackKey]);
 
   playbackGainRef.current = playbackGain;
-
-  return {
-    
-  };
 }

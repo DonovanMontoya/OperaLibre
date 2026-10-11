@@ -331,6 +331,10 @@ export function usePurchases({
     }
   }, [libationBooksLoaded, libationLoading, libationStatus?.enabled, librarySource, loadLibationBooks]);
 
+  // Effects read the current catalog without restarting after a fetch.
+  const libationBooksRef = useRef(libationBooks);
+  libationBooksRef.current = libationBooks;
+
   useEffect(() => {
     if (
       (librarySource !== "audible" && librarySource !== "all") ||
@@ -339,33 +343,44 @@ export function usePurchases({
       return;
     }
     let cancelled = false;
+    let requestInFlight = false;
+    const catalogIdFor = (request: LibationDownloadRequest) =>
+      request.catalogId ??
+      (request.profileId
+        ? `${request.profileId}:${request.asin}`
+        : libationBooksRef.current.find((book) => book.asin === request.asin)?.catalogId ?? `legacy:${request.asin}`);
     const refreshRequests = () => {
+      if (requestInFlight) return;
+      requestInFlight = true;
       void listLibationRequests()
         .then((requests) => {
           if (cancelled) return;
           const ownRequests = requests.filter((request) => request.userId === currentUser.id);
           const prior = libationDownloadRequestsRef.current;
+          const completedIds = new Set(prior.filter((request) => request.status === "completed").map((request) => request.id));
           const newlyCompletedAsins = libationRequestsLoadedRef.current
             ? ownRequests
                 .filter(
                   (request) =>
                     request.status === "completed" &&
-                    prior.find((item) => item.id === request.id)?.status !== "completed"
+                    !completedIds.has(request.id)
                 )
-                .map((request) => request.catalogId ?? (request.profileId ? `${request.profileId}:${request.asin}` : libationBooks.find((book) => book.asin === request.asin)?.catalogId ?? `legacy:${request.asin}`))
+                .map(catalogIdFor)
             : [];
           libationDownloadRequestsRef.current = ownRequests;
           libationRequestsLoadedRef.current = true;
           setLibationDownloadRequests(ownRequests);
           const approvedAsins = ownRequests
             .filter((request) => request.status === "approved" && request.jobId)
-            .map((request) => request.catalogId ?? (request.profileId ? `${request.profileId}:${request.asin}` : libationBooks.find((book) => book.asin === request.asin)?.catalogId ?? `legacy:${request.asin}`));
+            .map(catalogIdFor);
           const activeAsins = [...approvedAsins, ...newlyCompletedAsins];
-          if (activeAsins.length > 0) {
-            setLibationFinalizingAsins((current) => new Set([...current, ...activeAsins]));
-          }
+          // Keep the download confirmation running when no new titles arrive.
+          setLibationFinalizingAsins((current) =>
+            activeAsins.every((asin) => current.has(asin)) ? current : new Set([...current, ...activeAsins])
+          );
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => { requestInFlight = false; });
     };
     // Poll quickly only while a request is still moving (awaiting a decision
     // or approved and downloading); otherwise a slow check still notices a
@@ -390,13 +405,12 @@ export function usePurchases({
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [currentUser.id, currentUser.libationAccess, libationBooks, librarySource]);
+  }, [currentUser.id, currentUser.libationAccess, librarySource]);
 
   // Keyed on whether anything is pending, not on the job list itself: each
   // poll replaces the list, which would otherwise rebuild the timer on every
   // tick. The callback reads jobs and books through refs so it stays current.
   const libationJobsPending = libationJobs.some(isPendingJob);
-  const libationBooksRef = useRef(libationBooks);
   useEffect(() => {
     if (!libationJobsPending) {
       return;
@@ -714,7 +728,6 @@ export function usePurchases({
     libationAllPending,
     libationBooks,
     libationBooksLoaded,
-    libationBooksRef,
     libationDownloadRequests,
     libationError: libationError ?? libationStatusError,
     libationFinalizationFailures,

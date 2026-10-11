@@ -65,6 +65,25 @@ async function expectResume(page: Page, saved: number) {
   await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
 }
 
+test('editing the playing book updates lock-screen metadata without changing its position', async ({ page, server }) => {
+  await setup(page, server);
+  await play(page);
+  const saved = await seekAndPause(page);
+  await expect.poll(() => page.evaluate(() => navigator.mediaSession.metadata?.album)).toBe('First Book');
+  await page.getByRole('button', { name: 'View details', exact: true }).click();
+  await page.getByRole('button', { name: 'Full book page', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit info for First Book', exact: true }).click();
+  await page.getByLabel('Title', { exact: true }).fill('Updated title');
+  await page.getByLabel('Author', { exact: true }).fill('Updated author');
+  await page.getByRole('button', { name: 'Save Info', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Edit Book Info' })).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => ({
+    album: navigator.mediaSession.metadata?.album,
+    artist: navigator.mediaSession.metadata?.artist
+  }))).toEqual({ album: 'Updated title', artist: 'Updated author' });
+  await expectResume(page, saved);
+});
+
 test('listening after a server save with a lost response keeps its newer position', async ({ page, server }) => {
   const book = await setup(page, server);
   const settled = trackProgressWrites(page);

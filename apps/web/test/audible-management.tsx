@@ -51,6 +51,7 @@ const loadBooks = async () => undefined;
 const actualFetch = window.fetch;
 window.fetch = async (input, init) => {
   const path = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href).pathname;
+  if (path === "/api/libation/requests") return actualFetch(input, init);
   if (path === "/api/jobs") {
     calls.push({ path, method: "GET", body: null });
     const snapshot = JSON.stringify(jobs);

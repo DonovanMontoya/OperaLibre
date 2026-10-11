@@ -254,7 +254,7 @@ pub(crate) async fn schedule(
     }
     let _guard = state.sync_schedule_lock.lock().await;
     if state.jobs.read().await.values().any(|job| {
-        job.kind == "sync-generate"
+        job.kind == SYNC_GENERATE_JOB_KIND
             && job.target_id.as_ref() == Some(&book_id)
             && matches!(job.status.as_str(), "queued" | "running" | "paused")
     }) {
@@ -285,7 +285,7 @@ pub(crate) async fn cancel(
     let _guard = state.sync_schedule_lock.lock().await;
     let mut entries = load(&state).await?;
     let active = state.jobs.read().await.values().any(|job| {
-        job.kind == "sync-generate"
+        job.kind == SYNC_GENERATE_JOB_KIND
             && job.target_id.as_ref() == Some(&book_id)
             && (is_active_job(job) || job.status == "paused")
     });
@@ -337,13 +337,22 @@ async fn run_sweep(state: &AppState, limit: usize) -> SweepRun {
     let (mut targets, _) = sweep_targets(state).await;
     // A persistently failing book must not consume every night's small batch.
     // Titles never attempted go first, then the least recently attempted.
-    {
+    // The batch enqueue re-checks the queue, so a book that becomes busy after
+    // this snapshot is counted as raced rather than queued twice.
+    let busy: HashSet<String> = {
         let jobs = state.jobs.read().await;
         let mut attempts = HashMap::<&str, u64>::new();
-        for job in jobs.values().filter(|job| job.kind == "sync-generate") {
+        let mut busy = HashSet::new();
+        for job in jobs
+            .values()
+            .filter(|job| job.kind == SYNC_GENERATE_JOB_KIND)
+        {
             if let Some(book_id) = job.target_id.as_deref() {
                 let latest = attempts.entry(book_id).or_default();
                 *latest = (*latest).max(job_started_timestamp(job));
+                if matches!(job.status.as_str(), "queued" | "running" | "paused") {
+                    busy.insert(book_id.to_string());
+                }
             }
         }
         targets.sort_by(|a, b| {
@@ -354,7 +363,8 @@ async fn run_sweep(state: &AppState, limit: usize) -> SweepRun {
                 .cmp(&attempts.get(b.as_str()).copied().unwrap_or(0))
                 .then_with(|| a.cmp(b))
         });
-    }
+        busy
+    };
     let mut selected = Vec::new();
     let mut skipped = 0;
     let scheduled: HashSet<String> = match load(state).await {
@@ -380,16 +390,7 @@ async fn run_sweep(state: &AppState, limit: usize) -> SweepRun {
         if selected.len() >= limit {
             break;
         }
-        if scheduled.contains(&book_id) {
-            skipped += 1;
-            continue;
-        }
-        let busy = state.jobs.read().await.values().any(|job| {
-            job.kind == "sync-generate"
-                && job.target_id.as_ref() == Some(&book_id)
-                && matches!(job.status.as_str(), "queued" | "running" | "paused")
-        });
-        if busy {
+        if scheduled.contains(&book_id) || busy.contains(&book_id) {
             skipped += 1;
             continue;
         }
@@ -584,7 +585,7 @@ pub(crate) async fn tick(state: &AppState) -> Result<(), ApiError> {
                 .await
                 .values()
                 .filter(|job| {
-                    job.kind == "sync-generate"
+                    job.kind == SYNC_GENERATE_JOB_KIND
                         && job.target_id.as_ref() == Some(&entries[index].book_id)
                         && job_started_timestamp(job) >= entries[index].run_at
                 })
