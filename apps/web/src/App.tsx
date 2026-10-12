@@ -521,6 +521,7 @@ function MainApp({
   const shellRef = useRef<HTMLElement | null>(null);
   const miniPlayerRef = useRef<HTMLElement | null>(null);
   const playerPaneRef = useRef<HTMLElement | null>(null);
+  const libraryPaneRef = useRef<HTMLElement | null>(null);
   const bookDetailsSwipeStartRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const saveStartedAt = useRef(0);
   const playWhenTrackLoads = useRef(false);
@@ -1786,6 +1787,7 @@ function MainApp({
     chaptersOpen,
     gamesEnabled,
     isViewingPlayingBook,
+    libraryPaneRef,
     librarySource,
     native,
     nativePlayerView,
@@ -2117,6 +2119,7 @@ function MainApp({
         isOperaLibre={isOperaLibre}
         lastPurchaseSource={lastPurchaseSource}
         libraryOpen={libraryOpen}
+        libraryPaneRef={libraryPaneRef}
         librarySource={librarySource}
         localMode={localMode}
         native={native}

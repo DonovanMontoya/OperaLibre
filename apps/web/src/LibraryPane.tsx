@@ -79,6 +79,7 @@ export function LibraryPane({
   isOperaLibre,
   lastPurchaseSource,
   libraryOpen,
+  libraryPaneRef,
   librarySource,
   localMode,
   native,
@@ -128,6 +129,7 @@ export function LibraryPane({
   isOperaLibre: boolean;
   lastPurchaseSource: RefObject<"audible" | "libro" | "all">;
   libraryOpen: boolean;
+  libraryPaneRef: RefObject<HTMLElement | null>;
   librarySource: LibrarySource;
   localMode: boolean;
   native: boolean;
@@ -249,7 +251,7 @@ export function LibraryPane({
   const audibleNeedsAccount = native && !!libationStatus && allAudibleAccounts.length === 0;
 
   return (
-    <aside className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource !== "local" ? "purchase-browsing" : ""}`} {...shelfPull.handlers}>
+    <aside ref={libraryPaneRef} className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource !== "local" ? "purchase-browsing" : ""}`} {...shelfPull.handlers}>
       {native ? (
         <div
           className={`pull-indicator ${shelfPull.refreshing ? "refreshing" : ""}`}
