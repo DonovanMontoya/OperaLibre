@@ -65,3 +65,24 @@ export function chapterAtBookPosition(
   }
   return match;
 }
+
+/** The longest stretch of book time one playback clock update can cover. */
+const PLAYBACK_STEP_SECONDS = 4;
+
+/**
+ * Whether playback ran from one position into the next chapter.
+ *
+ * Only a step the size of ordinary playback counts. A larger move is the
+ * listener skipping or picking another chapter, and the chapter they land in
+ * is then the one they mean to finish.
+ */
+export function playedPastChapterEnd(
+  segments: ChapterSegment[],
+  previousBookPositionSeconds: number,
+  bookPositionSeconds: number
+): boolean {
+  const step = bookPositionSeconds - previousBookPositionSeconds;
+  if (step < 0 || step > PLAYBACK_STEP_SECONDS) return false;
+  return chapterAtBookPosition(segments, previousBookPositionSeconds)?.id
+    !== chapterAtBookPosition(segments, bookPositionSeconds)?.id;
+}

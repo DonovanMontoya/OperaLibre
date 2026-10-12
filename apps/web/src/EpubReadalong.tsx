@@ -311,6 +311,7 @@ export function EpubReadalong({
     playing: boolean;
     speed: number;
     sleepRemaining: number;
+    sleepAtChapterEnd: boolean;
     onToggle: () => void;
     onSkip: (delta: number) => void;
     /** Open the app's speed, sleep timer, or chapter sheet over the reader. */
@@ -2173,10 +2174,10 @@ export function EpubReadalong({
                   type="button"
                   className="epub-icon-button"
                   onClick={() => playback.onOpen("sleep")}
-                  aria-label={playback.sleepRemaining > 0 ? `Sleep timer, ${Math.ceil(playback.sleepRemaining / 60)} minutes left` : "Sleep timer"}
+                  aria-label={playback.sleepAtChapterEnd ? "Sleep timer, stops at the end of the chapter" : playback.sleepRemaining > 0 ? `Sleep timer, ${Math.ceil(playback.sleepRemaining / 60)} minutes left` : "Sleep timer"}
                 >
                   <Timer size={18} />
-                  {playback.sleepRemaining > 0 ? <small>{Math.ceil(playback.sleepRemaining / 60)}m</small> : null}
+                  {playback.sleepAtChapterEnd ? <small>Ch.</small> : playback.sleepRemaining > 0 ? <small>{Math.ceil(playback.sleepRemaining / 60)}m</small> : null}
                 </button>
                 <button type="button" className="epub-icon-button" onClick={() => playback.onOpen("chapters")} aria-label="Chapters">
                   <ListMusic size={18} />

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildChapterSegments, chapterAtBookPosition } from "../src/chapters.ts";
+import { buildChapterSegments, chapterAtBookPosition, playedPastChapterEnd } from "../src/chapters.ts";
 import type { Chapter } from "../src/types.ts";
 
 const chapters: Chapter[] = [
@@ -83,4 +83,29 @@ test("un-chaptered stretches never resolve to the closing chapter", () => {
     1200
   );
   assert.equal(chapterAtBookPosition(gapped, 500)?.title, "One");
+});
+
+test("playing across a chapter boundary reaches the end of the chapter", () => {
+  const segments = buildChapterSegments(chapters, 360);
+  assert.equal(playedPastChapterEnd(segments, 89.8, 90.05), true);
+  assert.equal(playedPastChapterEnd(segments, 239, 241), true);
+  assert.equal(playedPastChapterEnd(segments, 88, 89.9), false);
+  // The closing chapter has no boundary after it; the book just ends.
+  assert.equal(playedPastChapterEnd(segments, 358, 360), false);
+});
+
+test("skipping or rewinding across a boundary is not the chapter ending", () => {
+  const segments = buildChapterSegments(chapters, 360);
+  assert.equal(playedPastChapterEnd(segments, 80, 110), false);
+  assert.equal(playedPastChapterEnd(segments, 10, 240), false);
+  assert.equal(playedPastChapterEnd(segments, 91, 89), false);
+});
+
+test("the first marker ends the unmarked opening of a book", () => {
+  const segments = buildChapterSegments(
+    chapters.slice(1).map((chapter) => ({ ...chapter })),
+    360
+  );
+  assert.equal(playedPastChapterEnd(segments, 89.5, 90.2), true);
+  assert.equal(playedPastChapterEnd(segments, 10, 11), false);
 });

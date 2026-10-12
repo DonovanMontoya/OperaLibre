@@ -300,9 +300,11 @@ export function ChapterSheet({
 }
 
 export function SleepTimerSheet({
+  canSleepAtChapterEnd,
   closeNativePlayerSheet,
   configureSleepTimer,
   setNativePlayerSheet,
+  sleepAtChapterEnd,
   setSleepCustomDraft,
   setSleepCustomOpen,
   sleepChoices,
@@ -313,9 +315,11 @@ export function SleepTimerSheet({
   sleepRemaining,
   startCustomSleepTimer
 }: {
+  canSleepAtChapterEnd: boolean;
   closeNativePlayerSheet: () => void;
-  configureSleepTimer: (minutes: number) => void;
+  configureSleepTimer: (minutes: number, atChapterEnd?: boolean) => void;
   setNativePlayerSheet: Dispatch<SetStateAction<NativePlayerSheet>>;
+  sleepAtChapterEnd: boolean;
   setSleepCustomDraft: Dispatch<SetStateAction<string>>;
   setSleepCustomOpen: Dispatch<SetStateAction<boolean>>;
   sleepChoices: number[];
@@ -363,6 +367,16 @@ export function SleepTimerSheet({
               )}
             </button>
           ))}
+          {!sleepCustomOpen && canSleepAtChapterEnd ? (
+            <button
+              type="button"
+              className={sleepAtChapterEnd ? "selected" : ""}
+              onClick={() => configureSleepTimer(0, true)}
+            >
+              <span>End of chapter</span>
+              {sleepAtChapterEnd ? <em>Selected</em> : <ChevronRight size={17} />}
+            </button>
+          ) : null}
           <button
             type="button"
             aria-expanded={sleepCustomOpen}
@@ -377,11 +391,11 @@ export function SleepTimerSheet({
           </button>
           {!sleepCustomOpen && <button
             type="button"
-            className={`sleep-off ${sleepRemaining === 0 ? "selected" : ""}`}
+            className={`sleep-off ${sleepRemaining === 0 && !sleepAtChapterEnd ? "selected" : ""}`}
             onClick={() => configureSleepTimer(0)}
           >
             <span>Off</span>
-            {sleepRemaining === 0 ? <em>Selected</em> : <X size={17} />}
+            {sleepRemaining === 0 && !sleepAtChapterEnd ? <em>Selected</em> : <X size={17} />}
           </button>}
         </div>
         {sleepCustomOpen ? (

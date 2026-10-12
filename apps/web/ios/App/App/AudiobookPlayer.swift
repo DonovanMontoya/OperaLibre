@@ -185,6 +185,11 @@ public final class AudiobookPlayer {
     private var sleepTimerRemaining: TimeInterval = 0
     private var sleepTimerLastTick: TimeInterval?
     private var sleepTimerFinishedWhileInactive = false
+    /// Stop at the end of the chapter being played instead of after a countdown.
+    private var sleepAtChapterEnd = false
+    private var sleepChapterLastPosition: Double?
+    /// The longest stretch of an item one playback tick can cover.
+    private static let sleepChapterStepSeconds = 4.0
     private var pendingErrorWhileInactive: String?
     /// Set when an interruption ended without `.shouldResume` while the app
     /// was not active. The retained play intent may only auto-resume within a
@@ -342,11 +347,13 @@ public final class AudiobookPlayer {
         }
     }
 
-    func setSleepTimer(seconds: Double) {
+    func setSleepTimer(seconds: Double, atChapterEnd: Bool = false) {
         let seconds = max(0, seconds)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.sleepTimerRemaining = seconds
+            self.sleepAtChapterEnd = atChapterEnd
+            self.sleepChapterLastPosition = nil
             self.syncSleepTimerWithPlaybackState(self.player?.timeControlStatus ?? .paused)
             self.sleepTimerFinishedWhileInactive = false
         }
@@ -503,6 +510,8 @@ public final class AudiobookPlayer {
             self.nowPlayingArtist = request.artist
             self.nowPlayingAlbum = request.album
             self.nowPlayingChapters = request.chapters.sorted { $0.startSeconds < $1.startSeconds }
+            // Markers arriving mid-chapter are not a boundary being played across.
+            self.sleepChapterLastPosition = nil
             self.suppliedNowPlayingChapter = suppliedChapter
             self.activeNowPlayingChapterIndex = nil
             self.loadArtwork(from: request.artworkSource)
@@ -557,6 +566,8 @@ public final class AudiobookPlayer {
         sleepTimerRemaining = 0
         sleepTimerLastTick = nil
         sleepTimerFinishedWhileInactive = false
+        sleepAtChapterEnd = false
+        sleepChapterLastPosition = nil
         tearDownPlayer()
         if releaseSession {
             deactivateAudioSession()
@@ -778,6 +789,7 @@ public final class AudiobookPlayer {
         ) { [weak self] time in
             guard let self, generation == self.generation else { return }
             self.updateSleepTimer()
+            self.updateChapterSleep()
             if self.initialSeekComplete, let position = self.validSeconds(time) {
                 self.lastKnownPosition = position
             }
@@ -807,6 +819,16 @@ public final class AudiobookPlayer {
                 let endedItem = notification.object as? AVPlayerItem,
                 let endedIndex = self.queuedItems.firstIndex(where: { $0 === endedItem })
             else { return }
+            // A chapter that ends with its file stops here, as the queue
+            // moves on. The book's last file ends the wait without a pause
+            // of its own.
+            if self.sleepAtChapterEnd {
+                if endedIndex < self.queuedItems.count - 1 {
+                    self.finishSleepTimer()
+                } else {
+                    self.sleepAtChapterEnd = false
+                }
+            }
             if endedIndex >= self.queuedItems.count - 1 {
                 let endedDuration = self.finiteSeconds(endedItem.duration)
                 let endedPosition = endedDuration > 0
@@ -876,6 +898,7 @@ public final class AudiobookPlayer {
         }
         pendingPosition = 0
         lastKnownPosition = 0
+        sleepChapterLastPosition = nil
         recoveryTrackId = track.trackId
         recoveryBookOffset = track.bookOffsetSeconds
         lastCheckpointWrite = 0
@@ -1441,12 +1464,43 @@ public final class AudiobookPlayer {
         sleepTimerLastTick = now
         sleepTimerRemaining = max(0, sleepTimerRemaining - max(0, now - lastTick))
         guard sleepTimerRemaining == 0 else { return }
+        finishSleepTimer()
+    }
 
+    /// Only a step the size of ordinary playback counts as reaching the end
+    /// of the chapter. A larger move is the listener skipping or picking
+    /// another chapter, and the one they land in is then the one to finish.
+    private func updateChapterSleep() {
+        guard sleepAtChapterEnd, initialSeekComplete, let player,
+              player.timeControlStatus == .playing else {
+            sleepChapterLastPosition = nil
+            return
+        }
+        let position = finiteSeconds(player.currentTime())
+        let previous = sleepChapterLastPosition
+        sleepChapterLastPosition = position
+        guard let previous, position >= previous,
+              position - previous <= Self.sleepChapterStepSeconds,
+              sleepChapterIndex(at: previous) != sleepChapterIndex(at: position)
+        else { return }
+        finishSleepTimer()
+    }
+
+    /// The last chapter that has started, matching the web player's rule, so
+    /// a gap between markers still belongs to the chapter before it.
+    private func sleepChapterIndex(at position: Double) -> Int? {
+        nowPlayingChapters.lastIndex { position >= $0.startSeconds }
+    }
+
+    private func finishSleepTimer() {
+        sleepTimerRemaining = 0
         sleepTimerLastTick = nil
+        sleepAtChapterEnd = false
+        sleepChapterLastPosition = nil
         shouldAutoplay = false
         // pause() drives the timeControlStatus observation, which republishes
         // Now Playing info — no explicit updateNowPlayingInfo() needed here.
-        player.pause()
+        player?.pause()
         persistCheckpoint(force: true)
         if UIApplication.shared.applicationState == .active {
             emit("sleepTimerEnded", data: [:])

@@ -12,6 +12,7 @@ import { mergeCustomSleepTimer, normalizeSleepTimerMinutes, sleepTimerChoices } 
 import { getNativeAudioSleepTimer, setNativeAudioSleepTimer } from "./nativeAudio";
 import { haptic } from "./native";
 import { errorMessage } from "./formatting";
+import { type ChapterSegment, playedPastChapterEnd } from "./chapters";
 import type { NativePlayerSheet } from "./PlayerSheets";
 
 export function useSleepTimer({
@@ -41,6 +42,12 @@ export function useSleepTimer({
   useEffect(() => {
     sleepRemainingRef.current = sleepRemaining;
   }, [sleepRemaining]);
+  // Stop at the end of the chapter being played instead of after a countdown.
+  const [sleepAtChapterEnd, setSleepAtChapterEnd] = useState(false);
+  const sleepAtChapterEndRef = useRef(false);
+  useEffect(() => {
+    sleepAtChapterEndRef.current = sleepAtChapterEnd;
+  }, [sleepAtChapterEnd]);
 
   const sleepTimerArmed = sleepRemaining > 0;
   useEffect(() => {
@@ -102,20 +109,22 @@ export function useSleepTimer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPlaying, nativeAudio, sleepTimerArmed]);
 
-  function configureSleepTimer(minutes: number) {
+  function configureSleepTimer(minutes: number, atChapterEnd = false) {
     haptic("light");
     sleepDeadlineRef.current = isPlaying && minutes > 0
       ? Date.now() + minutes * 60 * 1000
       : null;
     setSleepMinutes(minutes);
     setSleepRemaining(minutes * 60);
+    setSleepAtChapterEnd(atChapterEnd);
     if (nativeAudio) {
-      void setNativeAudioSleepTimer(minutes * 60).catch((error) => {
+      void setNativeAudioSleepTimer(minutes * 60, atChapterEnd).catch((error) => {
         // Nothing enforces the timer once the WebView is suspended, so
         // showing it armed after a failed native call would be a lie.
         sleepDeadlineRef.current = null;
         setSleepMinutes(0);
         setSleepRemaining(0);
+        setSleepAtChapterEnd(false);
         setPlaybackError(errorMessage(error, "The sleep timer could not be configured."));
       });
     }
@@ -141,9 +150,12 @@ export function useSleepTimer({
   return {
     configureSleepTimer,
     setSleepCustomDraft,
+    setSleepAtChapterEnd,
     setSleepCustomOpen,
     setSleepMinutes,
     setSleepRemaining,
+    sleepAtChapterEnd,
+    sleepAtChapterEndRef,
     sleepChoices,
     sleepCustomDraft,
     sleepCustomMinutes,
@@ -154,4 +166,36 @@ export function useSleepTimer({
     sleepRemainingRef,
     startCustomSleepTimer
   };
+}
+
+/**
+ * The web player's end-of-chapter stop within a track. The native player
+ * watches for the boundary itself, and a chapter that ends with its file is
+ * caught where the next track would otherwise start.
+ */
+export function useChapterEndSleep({
+  armed,
+  audioRef,
+  bookPosition,
+  chapterSegments,
+  pausePlaybackRef,
+  setSleepAtChapterEnd
+}: {
+  armed: boolean;
+  audioRef: RefObject<HTMLAudioElement | null>;
+  bookPosition: number;
+  chapterSegments: ChapterSegment[];
+  pausePlaybackRef: RefObject<(audio: HTMLAudioElement | null | undefined) => void>;
+  setSleepAtChapterEnd: Dispatch<SetStateAction<boolean>>;
+}) {
+  const previousRef = useRef<{ segments: ChapterSegment[]; position: number } | null>(null);
+  useEffect(() => {
+    const previous = previousRef.current;
+    previousRef.current = armed ? { segments: chapterSegments, position: bookPosition } : null;
+    // Positions from another book's chapters say nothing about this one.
+    if (!armed || !previous || previous.segments !== chapterSegments) return;
+    if (!playedPastChapterEnd(chapterSegments, previous.position, bookPosition)) return;
+    setSleepAtChapterEnd(false);
+    pausePlaybackRef.current(audioRef.current);
+  }, [armed, audioRef, bookPosition, chapterSegments, pausePlaybackRef, setSleepAtChapterEnd]);
 }

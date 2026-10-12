@@ -31,7 +31,7 @@ Safari and other WebKit web players currently allow reductions only because rout
 
 ### Set your own sleep timer
 
-**Nightfall**, on the book’s own page and behind the timer button in the phone player, offers the usual 5, 15, 30, 45, and 60 minute stops. Choose **Custom** and type any length from 1 to 600 minutes when none of those matches the chapter you are in the middle of. Durations you type are kept on that device — the three most recent sit alongside the presets — so a length you use often is one tap away the next night. The countdown only runs while the book is playing.
+**Nightfall**, on the book’s own page and behind the timer button in the phone player, offers the usual 5, 15, 30, 45, and 60 minute stops. **End of chapter** stops when the chapter you are listening to finishes, however long that takes; if you skip or pick another chapter, it waits for the end of the one you land in. It appears for books that have chapter markers. Choose **Custom** and type any length from 1 to 600 minutes when none of those matches the chapter you are in the middle of. Durations you type are kept on that device — the three most recent sit alongside the presets — so a length you use often is one tap away the next night. The countdown only runs while the book is playing.
 
 ## Add books to the library
 
