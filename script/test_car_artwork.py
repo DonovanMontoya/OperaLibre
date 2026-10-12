@@ -11,6 +11,8 @@ from pathlib import Path
 import subprocess
 import uuid
 
+from simulator_runtime import select_ios_runtime
+
 ROOT = Path(__file__).resolve().parents[1]
 if len(sys.argv) > 2:
     raise SystemExit(__doc__)
@@ -53,11 +55,15 @@ ref = f'<BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{
 
 owned_simulator = len(sys.argv) == 1
 if owned_simulator:
+    sdk_version = subprocess.check_output(
+        ['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'], text=True
+    ).strip()
     runtimes = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'runtimes', '-j']))['runtimes']
-    runtime = next((r for r in reversed(runtimes) if r.get('isAvailable')
-                    and r['identifier'].startswith('com.apple.CoreSimulator.SimRuntime.iOS-')), None)
-    if runtime is None:
-        raise SystemExit('Install an iOS Simulator runtime in Xcode first.')
+    try:
+        runtime = select_ios_runtime(runtimes, sdk_version)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    print(f'Using iOS Simulator {runtime["version"]} with SDK {sdk_version}', flush=True)
     device_type = next(d['identifier'] for d in runtime['supportedDeviceTypes'] if d['name'].startswith('iPhone'))
     simulator = subprocess.check_output(['xcrun', 'simctl', 'create', 'CoverTests-' + uuid.uuid4().hex[:8],
                                          device_type, runtime['identifier']], text=True).strip()
@@ -71,6 +77,7 @@ try:
         'xcodebuild', '-project', str(PROJECT), '-scheme', 'CarArtwork',
         '-configuration', 'Release', '-destination', 'platform=iOS Simulator,id=' + simulator,
         '-derivedDataPath', str(OUT / 'DerivedData'), '-parallel-testing-enabled', 'NO',
+        '-resultBundlePath', str(OUT / ('CarArtwork-' + uuid.uuid4().hex + '.xcresult')),
         '-test-timeouts-enabled', 'YES', '-maximum-test-execution-time-allowance', '30', 'test'
     ], check=True)
 finally:
