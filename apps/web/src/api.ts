@@ -1283,6 +1283,14 @@ export async function getSyncReport(bookId: string) {
   return request<SyncReport>(`/api/books/${encodeURIComponent(bookId)}/sync/report`);
 }
 
+/** Recognizes a book's narration in `language` from its next sync on; null goes back to the EPUB's label. */
+export async function setSyncLanguage(bookId: string, language: string | null) {
+  return request<{ languageOverride: string | null }>(`/api/books/${encodeURIComponent(bookId)}/sync/language`, {
+    method: "PUT",
+    body: JSON.stringify({ language }),
+  });
+}
+
 export async function getAlignmentStatus() {
   return request<AlignmentStatus>("/api/alignment/status");
 }

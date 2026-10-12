@@ -7263,6 +7263,60 @@ async fn existing_sync_maps_are_graded_in_the_background_for_administrators() {
         StatusCode::FORBIDDEN
     );
 
+    assert!(report["languageOverride"].is_null());
+
+    // An administrator can tell sync which language the narration is in,
+    // see it beside the chapters, and take it back.
+    let language_uri = format!("/api/books/{book_id}/sync/language");
+    let set_language = |user: &str, language: serde_json::Value| {
+        let (server, uri, user) = (&server, language_uri.clone(), user.to_string());
+        async move {
+            server
+                .send_json(
+                    "PUT",
+                    &uri,
+                    &user,
+                    serde_json::json!({ "language": language }),
+                )
+                .await
+        }
+    };
+    assert_eq!(
+        set_language(&reader, "en".into()).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        set_language(&owner, "English!".into()).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    let saved = set_language(&owner, "en-GB".into()).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    assert_eq!(saved.json()["languageOverride"], "en");
+    // Editing the book's details leaves it alone.
+    let edited = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book_id}/metadata"),
+            &owner,
+            serde_json::json!({"title": "Renamed", "genres": []}),
+        )
+        .await;
+    assert_eq!(edited.status, StatusCode::OK, "{}", edited.text());
+    assert_eq!(
+        server.get(&report_uri, &owner).await.json()["languageOverride"],
+        "en"
+    );
+    assert_eq!(
+        sync_report::language_override(&server.state, &book_id)
+            .await
+            .as_deref(),
+        Some("en")
+    );
+    let cleared = set_language(&owner, serde_json::Value::Null).await;
+    assert_eq!(cleared.status, StatusCode::OK);
+    assert!(cleared.json()["languageOverride"].is_null());
+    assert!(server.get(&report_uri, &owner).await.json()["languageOverride"].is_null());
+
     // A replaced map is not described by the old report.
     write_map("200");
     assert_eq!(
@@ -7400,7 +7454,8 @@ async fn chapter_reruns_need_a_current_generated_map_and_survive_restarts() {
         server.state.jobs.read().await[&job_id].chapters,
         [JobChapter {
             index: 1,
-            label: "Chapter 2".into()
+            label: "Chapter 2".into(),
+            cause: None
         }]
     );
     server.state.jobs.write().await.clear();

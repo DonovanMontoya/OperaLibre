@@ -3,6 +3,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { SyncJobMonitor } from "../src/SyncJobMonitor";
+import { renderReaderSyncMessages } from "../src/ReaderPanel";
 import type { Book, JobStatus, SyncChapterReport, SyncReport } from "../src/types";
 import "../src/styles.css";
 
@@ -41,8 +42,14 @@ books[0].syncFile!.outdated = true;
 books[0].syncFile!.quality = { grade: "good", flagged: 0 };
 books[3].syncFile!.quality = { grade: "failed", flagged: 5 };
 books[6].syncFile!.quality = { grade: "good", flagged: 0 };
+books[6].syncFile!.quality = { grade: "poor", flagged: 13 };
 books[9].syncFile!.quality = { grade: "review", flagged: 1 };
 books[10].syncFile!.quality = { grade: "poor", flagged: 1 };
+
+/** Books whose narration an administrator set to another language. */
+const languageOverrides = new Map<string, string | null>([["book-9", "en"]]);
+
+const crashed = "Alignment of `Chapter 9` stopped without writing a result. The alignment runtime may have crashed.";
 
 function report(bookId: string): SyncReport {
   const quality = books.find((entry) => entry.id === bookId)?.syncFile?.quality;
@@ -56,12 +63,29 @@ function report(bookId: string): SyncReport {
   if (quality?.grade === "failed") {
     // One chapter kept an earlier run's sentences, one has none.
     Object.assign(chapters[9], { textCoverage: 0.94, gapSeconds: 12, status: "kept-previous", grade: "failed",
-      error: "Alignment of `Chapter 9` stopped without writing a result. The alignment runtime may have crashed." });
+      error: crashed,
+      diagnosis: { cause: "runtime-crash", evidence: {}, fix: { kind: "auto", action: "retry-other-model", attempted: true } } });
     Object.assign(chapters[12], { textCoverage: 0, gapSeconds: 1500, status: "failed", grade: "failed",
-      error: "Alignment of `Chapter 12` failed with status exit status: 134:" });
+      error: "Alignment of `Chapter 12` failed with status exit status: 1:",
+      errorDetail: "Alignment of `Chapter 12` failed with status exit status: 1:\nTypeError: Cannot read properties of undefined (reading 'length')\n    at alignSegments (Alignment.js:212:31)",
+      diagnosis: { cause: "unknown", evidence: {}, fix: { kind: "none", attempted: false } } });
+    Object.assign(chapters[5], { textCoverage: 0.31, gapSeconds: 960, grade: "poor",
+      diagnosis: { cause: "edition-mismatch", evidence: { recognizedWords: 3712, wordsInText: 0.08, windows: 7, unanchoredWindows: 6, recognitionRetries: 6 },
+        fix: { kind: "none", attempted: false } } });
+    Object.assign(chapters[2], {
+      diagnosis: { cause: "chapter-mismatch", evidence: { matchingChapter: { index: 3, label: "Chapter 3" }, wordsInText: 0.84 },
+        fix: { kind: "auto", action: "match-other-chapter", attempted: true, applied: true } } });
   }
-  if (quality?.grade === "poor" || quality?.grade === "failed") {
-    Object.assign(chapters[7], { textCoverage: 0.62, gapSeconds: 412, grade: "poor" });
+  if (quality?.grade === "poor" && bookId === "book-6") {
+    for (const chapter of chapters.slice(1)) {
+      Object.assign(chapter, { textCoverage: 0.04, gapSeconds: 1380, grade: "poor",
+        diagnosis: { cause: "language-mismatch", evidence: { heardLanguage: "en", labelledLanguage: "nl", wordsInText: 0.01, windows: 7, unanchoredWindows: 7 },
+          fix: { kind: "suggested", action: "resync-language", attempted: false } } });
+    }
+  } else if (quality?.grade === "poor" || quality?.grade === "failed") {
+    Object.assign(chapters[7], { textCoverage: 0.62, gapSeconds: 412, grade: "poor",
+      diagnosis: bookId === "book-10" ? null : { cause: "noisy-audio", evidence: { recognizedWords: 1210, wordsInText: 0.57, windows: 9, unanchoredWindows: 5, recognitionRetries: 7 },
+        fix: { kind: "auto", action: "larger-model", attempted: true } } });
     Object.assign(chapters[11], { textCoverage: 0.91, gapSeconds: 95, grade: "review" });
     Object.assign(chapters[4], { textCoverage: 0.86, gapSeconds: 31, grade: "review" });
   } else if (quality?.grade === "review") {
@@ -71,6 +95,7 @@ function report(bookId: string): SyncReport {
     mapGeneratedAt: "1791504810", mapSize: 4_937_055,
     graded: bookId === "book-10" ? "estimate" : "run",
     grade: quality?.grade ?? null, chapters,
+    languageOverride: languageOverrides.get(bookId) ?? null,
   };
 }
 
@@ -83,22 +108,29 @@ const jobs: JobStatus[] = [
     finishedAt: null, exitCode: null, output: "", error: null },
   { id: "j3", kind: "sync-generate", targetId: "book-3", status: "completed", startedAt: String(now - 200 * 60_000),
     finishedAt: String(now - 120 * 60_000), exitCode: 0, output: "", error: null,
-    failedChapters: [{ index: 9, label: "Chapter 9" }, { index: 12, label: "Chapter 12" }] },
+    failedChapters: [{ index: 9, label: "Chapter 9", cause: "runtime-crash" }, { index: 12, label: "Chapter 12", cause: "unknown" }] },
   { id: "j4", kind: "sync-generate", targetId: "book-4", status: "failed", startedAt: String(now - 400 * 60_000),
     finishedAt: String(now - 380 * 60_000), exitCode: 1, output: "",
-    error: "Recognition model download failed: connection reset by peer" },
+    error: "Recognition model download failed: connection reset by peer", cause: "unknown" },
+  { id: "j8", kind: "sync-generate", targetId: "book-8", status: "failed", startedAt: String(now - 500 * 60_000),
+    finishedAt: String(now - 460 * 60_000), exitCode: 1, output: "",
+    error: "Alignment produced no usable sentence fragments.", cause: "language-mismatch", heardLanguage: "en" },
+  { id: "j9", kind: "sync-generate", targetId: "book-7", status: "failed", startedAt: String(now - 600 * 60_000),
+    finishedAt: String(now - 590 * 60_000), exitCode: 1, output: "",
+    error: "No such file or directory (os error 2)", cause: "runtime-crash" },
 ];
 
 jobs.push(
   { id: "j5", kind: "sync-generate", targetId: "book-5", status: "queued", startedAt: String(now - 4 * 60_000), finishedAt: null, exitCode: null, output: "", error: null },
   { id: "j7", kind: "sync-generate", targetId: "book-9", status: "queued", startedAt: String(now - 2 * 60_000), finishedAt: null, exitCode: null, output: "", error: null,
     chapters: [{ index: 5, label: "Chapter 5" }] },
-  { id: "j6", kind: "sync-generate", targetId: "book-6", status: "paused", startedAt: String(now - 3 * 60_000), finishedAt: null, exitCode: null, output: "", error: null, pauseRequested: true, progress: { fraction: 0.3, step: "Paused" } as JobStatus["progress"] },
+  { id: "j6", kind: "sync-generate", targetId: "book-11", status: "paused", startedAt: String(now - 3 * 60_000), finishedAt: null, exitCode: null, output: "", error: null, pauseRequested: true, progress: { fraction: 0.3, step: "Paused" } as JobStatus["progress"] },
 );
 
 const schedules = [
   { bookId: "book-5", runAt: now + 7 * 3_600_000, status: "scheduled", jobId: null, error: null },
-  { bookId: "book-7", runAt: now + 30 * 3_600_000, status: "scheduled", jobId: null, error: null },
+  { bookId: "book-7", runAt: now - 600 * 60_000, status: "failed", jobId: "j9", error: "Scheduled sync failed. See sync activity, then retry." },
+  { bookId: "book-11", runAt: now + 30 * 3_600_000, status: "scheduled", jobId: null, error: null },
 ];
 
 let jobsEnabled = true;
@@ -157,6 +189,12 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       chapters: chapters?.map((index) => ({ index, label: `Chapter ${index}` })) });
     return json({ jobId: id });
   }
+  const languageFor = url.match(/\/api\/books\/([^/]+)\/sync\/language/);
+  if (languageFor) {
+    const { language } = JSON.parse(String(init?.body));
+    languageOverrides.set(decodeURIComponent(languageFor[1]), language);
+    return json({ languageOverride: language });
+  }
   const reportFor = url.match(/\/api\/books\/([^/]+)\/sync\/report/);
   if (reportFor) return json(report(decodeURIComponent(reportFor[1])));
   if (url.includes("/api/books")) return json(books);
@@ -184,6 +222,16 @@ function Fixture() {
             <SyncJobMonitor books={books} syncEnabled={enabled} onOpenBook={() => {}} />
           </article>
         </div>
+      </section>
+      {/* The reader's own account of the same failed job. */}
+      <section className="admin-card" id="reader-sync-message" style={{ marginTop: 16, padding: 16 }}>
+        {renderReaderSyncMessages({
+          readalong: { activeCompanionIsBook: false, canGenerateSync: false, selectedSyncPrecise: false, syncJobError: null, syncNotice: null } as unknown as Parameters<typeof renderReaderSyncMessages>[0]["readalong"],
+          syncJobForBook: jobs.find((job) => job.id === "j9") ?? null,
+          syncJobRunning: false,
+          syncProgressNote: "",
+          syncProgressPercent: null,
+        })}
       </section>
     </div>
   );

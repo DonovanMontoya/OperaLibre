@@ -114,6 +114,7 @@ The archive includes accounts, permissions, progress, per-book settings, reading
 | `GET` | `/api/books/{book_id}/tracks/{track_id}/stream` | Stream one track in its original format, with HTTP byte-range support for seeking. Accepts the scoped media token. |
 | `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sentence- and word-level sync map. Admin only; requires an enabled add-on or manually configured alignment CLI. With no body the whole book is synced; the optional body `{ "chapters": [index, ...] }` re-runs only those chapters (see [Re-running chapters](#re-running-chapters)). Jobs are durably queued and deduplicated by book; queued and interrupted jobs resume after restart with the same job IDs. Interrupted books resume from the last completed chapter or track; unfinished sections are repeated. Changed inputs, alignment runtime, or server alignment code invalidate saved sections. Paused jobs remain paused across restarts. Returns `{ "jobId": "..." }`. |
 | `GET` | `/api/books/{book_id}/sync/report` | Chapter-by-chapter grades for the served sync map. Admin only. Returns 404 until the current map has been graded. See [Sync grades](#sync-grades). |
+| `PUT` | `/api/books/{book_id}/sync/language` | Set the language sync recognizes this book's narration in, overriding the EPUB's label, with `{ "language": "en" }`; `{ "language": null }` goes back to the EPUB's label. Admin only. Takes effect at the book's next sync. Returns `{ "languageOverride": "en" }`. See [Diagnoses](#diagnoses). |
 | `GET` | `/api/alignment/status` | Whether sync generation is enabled: `{ "enabled": bool, "cliPath": string \| null }`. Admin only. |
 | `GET` | `/api/experimental-features/readalong-sync` | Installed, enabled, version, package availability, size, and management status for the optional generator. Admin only. Add `?refresh=true` to refresh release metadata. |
 | `POST` | `/api/experimental-features/readalong-sync/install` | Download, verify, and install or update the official platform package. Owner only; managed release installations only. |
@@ -236,15 +237,40 @@ Books that can be followed expose a `syncFile` object (`fileName`, `source`, `ur
       "gapSeconds": 412.0,
       "skippedText": 0,
       "status": "aligned",
+      "diagnosis": {
+        "cause": "noisy-audio",
+        "evidence": { "recognizedWords": 1210, "wordsInText": 0.57, "windows": 9, "unanchoredWindows": 5, "recognitionRetries": 7 },
+        "fix": { "kind": "auto", "action": "larger-model", "attempted": true }
+      },
       "grade": "poor"
     }
-  ]
+  ],
+  "languageOverride": null
 }
 ```
 
-`graded` is `run` when the alignment job graded its own result and `estimate` when an existing map was graded without realigning. Chapters are the stretches the book is aligned in, in book order, with book-absolute times. `textCoverage` is the share of the chapter's text (ignoring whitespace) covered by sentences, not counting `skippedText`, the UTF-16 units of edition-only text a run deliberately left unmatched. `gapSeconds` is the audio in the chapter that holds the reader's place without a sentence. A chapter is `good` with at least 95% coverage and no more than 5% of its audio unmatched, `review` with at least 80% and no more than 20%, and `poor` otherwise. A chapter with `status: "empty"` has no text and `grade: null`. A chapter whose last run could not align it has `status: "kept-previous"` when it kept an earlier map's sentences or `"failed"` when it has none (the map holds the reader's place with a recovery gap instead); both are graded `failed`, the worst grade, and carry `error`, the error's first line, and, when the error runs longer, the whole text as `errorDetail`. The book's `grade` is the worst grade among chapters of at least two minutes, or among all chapters when none is that long.
+`graded` is `run` when the alignment job graded its own result and `estimate` when an existing map was graded without realigning. Chapters are the stretches the book is aligned in, in book order, with book-absolute times. `textCoverage` is the share of the chapter's text (ignoring whitespace) covered by sentences, not counting `skippedText`, the UTF-16 units of edition-only text a run deliberately left unmatched. `gapSeconds` is the audio in the chapter that holds the reader's place without a sentence. A chapter is `good` with at least 95% coverage and no more than 5% of its audio unmatched, `review` with at least 80% and no more than 20%, and `poor` otherwise. A chapter with `status: "empty"` has no text and `grade: null`. A chapter whose last run could not align it has `status: "kept-previous"` when it kept an earlier map's sentences or `"failed"` when it has none (the map holds the reader's place with a recovery gap instead); both are graded `failed`, the worst grade, and carry `error`, the error's first line, and, when the error runs longer, the whole text as `errorDetail`. The book's `grade` is the worst grade among chapters of at least two minutes, or among all chapters when none is that long. `languageOverride` is the language set with `PUT /api/books/{book_id}/sync/language`, or null.
 
-A whole-book sync whose chapters partly fail still completes and publishes its map; it fails, leaving the served map untouched, only when its first three chapters or all of its chapters fail. Sync jobs listed by `/api/jobs` add `failedChapters`, `[{ "index": 12, "label": "Chapter 12" }]`, when a completed sync could not align some chapters, and `chapters` in the same shape for a job that re-runs only those chapters. Both are omitted when empty.
+A whole-book sync whose chapters partly fail still completes and publishes its map; it fails, leaving the served map untouched, only when its first three chapters or all of its chapters fail, or when no chapter produced a single sentence. Sync jobs listed by `/api/jobs` add `failedChapters`, `[{ "index": 12, "label": "Chapter 12", "cause": "runtime-crash" }]`, when a completed sync could not align some chapters, and `chapters` in the same shape, without `cause`, for a job that re-runs only those chapters. Both are omitted when empty. A failed sync job adds `cause`, and for `language-mismatch`, `heardLanguage`, the language its narration was heard in.
+
+#### Diagnoses
+
+Chapters graded `poor` or `failed` by a run carry a `diagnosis`, as does any chapter whose timing came from an automatic fix. Estimated reports have none. `cause` is a stable code, also used for a failed job's `cause` and a failed chapter's `cause` in `failedChapters`; clients should treat an unrecognized code like `unknown`:
+
+| `cause` | Meaning | `fix.kind` / `fix.action` |
+| --- | --- | --- |
+| `runtime-crash` | The alignment runtime exited without a result or was killed. | `auto` / `retry-other-model` |
+| `noisy-audio` | Recognition heard little speech, or windows found no clear match in the text. | `auto` / `larger-model` |
+| `chapter-mismatch` | The chapter's opening speech matches another chapter's text clearly better than its own. | `auto` / `match-other-chapter` |
+| `language-mismatch` | A sample of the audio was detected as a language other than the one recognition used. | `suggested` / `resync-language` |
+| `edition-mismatch` | Plenty of clear speech, but few of its three-word runs are in the chapter's text. | `none` |
+| `runtime-missing` | The alignment runtime or ffmpeg could not be started. | `none` |
+| `audio-unreadable` | ffmpeg could not extract the audio. | `none` |
+| `timeout` | A step exceeded its time limit. | `none` |
+| `language-guess` | The aligner guessed an unsupported language for the text. | `none` |
+| `unknown` | Anything else; see `error` and `errorDetail`. | `none` |
+
+`evidence` holds only the measures that informed the diagnosis: `heardLanguage` and `labelledLanguage` (the language recognition used, from the EPUB or `languageOverride`), `matchingChapter` (`{ "index", "label" }`), `recognizedWords`, `wordsInText` (the share, 0 to 1, of recognized three-word runs found in the chapter's text), `windows`, `unanchoredWindows`, and `recognitionRetries`. An `auto` fix runs in the same job, after the first pass over the chapters, at most once per chapter and cause; `attempted` says it ran, and `applied` that the chapter's timing now comes from it, which happens only when it improved the chapter's grade. A `suggested` fix is never applied by the server: for `resync-language`, set the book's language to `evidence.heardLanguage` with `PUT /api/books/{book_id}/sync/language` and sync again.
 
 #### Re-running chapters
 
