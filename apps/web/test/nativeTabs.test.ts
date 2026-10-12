@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { nativeTabItems, fullShelfMustYield, nativeTabSelection, shelfRetapped, spreadTab } from "../src/nativeTabs.ts";
+import * as nativeTabs from "../src/nativeTabs.ts";
+import { loadHook } from "./hookHarness.ts";
+
+const { nativeTabItems, fullShelfMustYield, nativeTabSelection, spreadTab } = nativeTabs;
 
 test("native tabs keep Administration inside Settings and never need More", () => {
   for (const games of [false, true]) {
@@ -46,13 +49,42 @@ test("the full shelf gives way to anything shown on the player page", () => {
   assert.equal(fullShelfMustYield("reading", "now", "player"), false);
 });
 
-test("tapping Shelf scrolls to the top only when its list is already showing", () => {
-  assert.equal(shelfRetapped("shelf", "shelf", false, "split", "now"), true);
-  // The first tap closes an open book; arriving from another tab keeps the place.
-  assert.equal(shelfRetapped("shelf", "shelf", false, "split", "details"), false);
-  assert.equal(shelfRetapped("shelf", "reading", false, "split", "now"), false);
-  assert.equal(shelfRetapped("settings", "shelf", false, "split", "now"), false);
-  // On the iPad spread, Shelf is showing only as the collection alone.
-  assert.equal(shelfRetapped("shelf", "reading", true, "library", "now"), true);
-  assert.equal(shelfRetapped("shelf", "shelf", true, "split", "now"), false);
+test("tapping Shelf scrolls the library pane to the top only when its list is already showing", () => {
+  const cases = [
+    { name: "list showing", tapped: "shelf", tab: "shelf", spread: false, layout: "split", view: "now", scrolls: true },
+    // The first tap closes an open book; arriving from another tab keeps the place.
+    { name: "book open", tapped: "shelf", tab: "shelf", spread: false, layout: "split", view: "details", scrolls: false },
+    { name: "from Reading", tapped: "shelf", tab: "reading", spread: false, layout: "split", view: "now", scrolls: false },
+    { name: "other tab", tapped: "settings", tab: "shelf", spread: false, layout: "split", view: "now", scrolls: false },
+    // On the iPad spread, Shelf is showing only as the collection alone.
+    { name: "spread collection", tapped: "shelf", tab: "reading", spread: true, layout: "library", view: "now", scrolls: true },
+    { name: "spread with player", tapped: "shelf", tab: "shelf", spread: true, layout: "split", view: "now", scrolls: false }
+  ];
+  for (const { name, tapped, tab, spread, layout, view, scrolls } of cases) {
+    const scrolled: unknown[] = [];
+    const libraryPaneRef = { current: { scrollTo: (options: unknown) => scrolled.push(options) } };
+    const { openNativeTab } = loadHook("usePlayerNavigation", {
+      "react-dom": { flushSync: (update: () => void) => update() },
+      "./native": { haptic: () => {} },
+      "./nativeNavigation": { isLeftEdgeBackSwipe: () => false },
+      "./nativeTabs": nativeTabs,
+      "./gamePreferences": { writeGamesEnabled: () => {} }
+    })({
+      changeShelfLayout: (_next: string, _animate: boolean, update?: () => void) => update?.(),
+      gamesEnabled: true,
+      libraryPaneRef,
+      librarySource: "local",
+      native: true,
+      nativePlayerView: view,
+      nativeTab: tab,
+      playerPaneRef: { current: null },
+      setNativePlayerView: () => {},
+      setNativeTab: () => {},
+      setSelectedBookId: () => {},
+      shelfLayout: layout,
+      shelfSpread: spread
+    });
+    openNativeTab(tapped);
+    assert.deepEqual(scrolled, scrolls ? [{ top: 0, behavior: "smooth" }] : [], name);
+  }
 });
