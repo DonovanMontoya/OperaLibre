@@ -156,7 +156,7 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .pane-title {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 16px;
@@ -1341,7 +1341,7 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .library-pane h1 {
-  margin: 14px 0 0;
+  margin: 0;
   font-family: "Fraunces", serif;
   font-weight: 300;
   font-style: italic;
@@ -13572,7 +13572,7 @@ html.native-app .recent-row {
   }
 
   html.native-app .library-pane h1 {
-    margin: 8px 0 0;
+    margin: 0;
     font-size: clamp(1.9rem, 3.4vw, 2.3rem);
   }
 
