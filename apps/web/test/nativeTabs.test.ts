@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { nativeTabItems, fullShelfMustYield, nativeTabSelection, spreadTab } from "../src/nativeTabs.ts";
+import * as nativeTabs from "../src/nativeTabs.ts";
+import { loadHook } from "./hookHarness.ts";
+
+const { nativeTabItems, fullShelfMustYield, nativeTabSelection, spreadTab } = nativeTabs;
 
 test("native tabs keep Administration inside Settings and never need More", () => {
   for (const games of [false, true]) {
@@ -44,4 +47,44 @@ test("the full shelf gives way to anything shown on the player page", () => {
   assert.equal(fullShelfMustYield("shelf", "now", "library"), false);
   assert.equal(fullShelfMustYield("reading", "now", "split"), false);
   assert.equal(fullShelfMustYield("reading", "now", "player"), false);
+});
+
+test("tapping Shelf scrolls the library pane to the top only when its list is already showing", () => {
+  const cases = [
+    { name: "list showing", tapped: "shelf", tab: "shelf", spread: false, layout: "split", view: "now", scrolls: true },
+    // The first tap closes an open book; arriving from another tab keeps the place.
+    { name: "book open", tapped: "shelf", tab: "shelf", spread: false, layout: "split", view: "details", scrolls: false },
+    { name: "from Reading", tapped: "shelf", tab: "reading", spread: false, layout: "split", view: "now", scrolls: false },
+    { name: "other tab", tapped: "settings", tab: "shelf", spread: false, layout: "split", view: "now", scrolls: false },
+    // On the iPad spread, Shelf is showing only as the collection alone.
+    { name: "spread collection", tapped: "shelf", tab: "reading", spread: true, layout: "library", view: "now", scrolls: true },
+    { name: "spread with player", tapped: "shelf", tab: "shelf", spread: true, layout: "split", view: "now", scrolls: false }
+  ];
+  for (const { name, tapped, tab, spread, layout, view, scrolls } of cases) {
+    const scrolled: unknown[] = [];
+    const libraryPaneRef = { current: { scrollTo: (options: unknown) => scrolled.push(options) } };
+    const { openNativeTab } = loadHook("usePlayerNavigation", {
+      "react-dom": { flushSync: (update: () => void) => update() },
+      "./native": { haptic: () => {} },
+      "./nativeNavigation": { isLeftEdgeBackSwipe: () => false },
+      "./nativeTabs": nativeTabs,
+      "./gamePreferences": { writeGamesEnabled: () => {} }
+    })({
+      changeShelfLayout: (_next: string, _animate: boolean, update?: () => void) => update?.(),
+      gamesEnabled: true,
+      libraryPaneRef,
+      librarySource: "local",
+      native: true,
+      nativePlayerView: view,
+      nativeTab: tab,
+      playerPaneRef: { current: null },
+      setNativePlayerView: () => {},
+      setNativeTab: () => {},
+      setSelectedBookId: () => {},
+      shelfLayout: layout,
+      shelfSpread: spread
+    });
+    openNativeTab(tapped);
+    assert.deepEqual(scrolled, scrolls ? [{ top: 0, behavior: "smooth" }] : [], name);
+  }
 });
