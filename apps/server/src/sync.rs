@@ -4137,8 +4137,19 @@ esac
                 completed: 0,
                 total: 1,
             };
+            // Window recovery can find no timing; scope generation rejects that
+            // result, while these tests inspect the gaps it recovered through.
             let result = aligner
-                .align_scope(&scope, &track, &transcript, 0, &progress)
+                .align_windowed(
+                    &scope,
+                    &track,
+                    &transcript,
+                    0,
+                    &ffmpeg,
+                    0.0,
+                    track.duration_seconds.unwrap(),
+                    &progress,
+                )
                 .await
                 .unwrap();
             // Masked edition-only text is reported so it does not lower the grade.
