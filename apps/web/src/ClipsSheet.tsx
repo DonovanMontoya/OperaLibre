@@ -1,5 +1,5 @@
-import { ChevronDown, CornerDownRight, LoaderCircle, Minus, Play, Plus, Scissors, Share2, Square, Trash2, X } from "lucide-react";
-import { type CSSProperties, type KeyboardEvent, type PointerEvent, useId, useRef, useState } from "react";
+import { ChevronLeft, ChevronDown, CornerDownRight, LoaderCircle, Minus, Play, Plus, Scissors, Share2, Square, Trash2, X } from "lucide-react";
+import { type CSSProperties, type KeyboardEvent, type PointerEvent, useEffect, useId, useRef, useState } from "react";
 import { type ChapterSegment, chapterAtBookPosition } from "./chapters";
 import {
   CLIP_LEAD_SECONDS,
@@ -196,7 +196,8 @@ function ClipRow({
   clips,
   continueFrom,
   previewPending,
-  startOpen
+  open,
+  toggleOpen
 }: {
   bookDuration: number;
   bookPosition: number;
@@ -204,11 +205,11 @@ function ClipRow({
   clip: Clip;
   clips: ReturnType<typeof useClips>;
   continueFrom: (clip: Clip) => void;
-  startOpen: boolean;
+  open: boolean;
+  toggleOpen: () => void;
   previewPending: boolean;
 }) {
   const editorId = useId();
-  const [open, setOpen] = useState(startOpen);
   const [range, setRange] = useState<ClipRange>({ startSeconds: clip.startSeconds, endSeconds: clip.endSeconds });
   const [title, setTitle] = useState(clip.title ?? "");
   const [note, setNote] = useState(clip.note ?? "");
@@ -261,7 +262,7 @@ function ClipRow({
           aria-controls={editorId}
           onClick={() => {
             haptic("light");
-            setOpen((current) => !current);
+            toggleOpen();
             setConfirmingRemoval(false);
           }}
         >
@@ -401,7 +402,12 @@ export function ClipsSheet({
   const dialogRef = useModalFocus<HTMLElement>(close);
   // The clip that brought the listener here opens ready to trim. Captured
   // once: the saved notice clears itself while the sheet is still up.
-  const [openClipId] = useState(initialClipId ?? clips.lastSavedId);
+  const [openClipId, setOpenClipId] = useState(initialClipId ?? clips.lastSavedId);
+  const selectedClip = clips.clips.find((clip) => clip.id === openClipId);
+  const shownClips = selectedClip ? [selectedClip] : clips.clips;
+  useEffect(() => {
+    if (dialogRef.current) dialogRef.current.scrollTop = 0;
+  }, [selectedClip?.id, dialogRef]);
   const count = clips.clips.length;
   return (
     <div className="sleep-sheet-layer" role="presentation">
@@ -409,16 +415,17 @@ export function ClipsSheet({
       <section ref={dialogRef} tabIndex={-1} className="sleep-sheet clip-sheet" role="dialog" aria-modal="true" aria-labelledby="clip-sheet-title">
         <div className="sleep-sheet-grabber" aria-hidden="true" />
         <header>
+          {selectedClip ? <button type="button" className="icon-button" aria-label="Back to clips" onClick={() => setOpenClipId(null)}><ChevronLeft size={18} /></button> : null}
           <div>
             <span className="eyebrow"><Scissors size={13} /> Kept passages</span>
-            <h2 id="clip-sheet-title">Saved clips</h2>
+            <h2 id="clip-sheet-title">{selectedClip ? "Edit clip" : "Saved clips"}</h2>
           </div>
           <button type="button" className="icon-button" aria-label="Close" onClick={close}>
             <X size={18} />
           </button>
         </header>
         <p className="sleep-sheet-hint">
-          {count === 0
+          {selectedClip ? book.title : count === 0
             ? `${book.title}. Tap the gold ribbon while listening to save the last ${CLIP_LEAD_SECONDS} seconds and the next ${CLIP_TAIL_SECONDS}.`
             : `${book.title} · ${count} ${count === 1 ? "clip" : "clips"}. Playing one brings you back to your place.`}
         </p>
@@ -442,7 +449,7 @@ export function ClipsSheet({
         ) : null}
         {count > 0 ? (
           <ul className="clip-list">
-            {clips.clips.map((clip) => (
+            {shownClips.map((clip) => (
               <ClipRow
                 key={clip.id}
                 bookDuration={bookDuration}
@@ -452,7 +459,8 @@ export function ClipsSheet({
                 clips={clips}
                 continueFrom={continueFrom}
                 previewPending={previewPending}
-                startOpen={clip.id === openClipId}
+                open={clip.id === openClipId}
+                toggleOpen={() => setOpenClipId((current) => current === clip.id ? null : clip.id)}
               />
             ))}
           </ul>
