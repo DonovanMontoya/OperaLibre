@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  canRerunChapter, chapterFailure, chapterNames, coveragePercent, gradeLabel, gradeTone, groupSyncedBooks, needsAttention,
-  sortChapters, syncJobAttention, syncJobScope,
+  CAUSES, canRerunChapter, causeCopy, chapterNames, chapterProblem, coveragePercent, gradeLabel, gradeTone, groupSyncedBooks,
+  jobProblem, needsAttention, sortChapters, syncJobAttention, syncJobScope,
 } from "../src/syncQuality.ts";
-import type { SyncChapterReport, SyncGrade } from "../src/types.ts";
+import type { SyncCause, SyncChapterReport, SyncDiagnosis, SyncGrade } from "../src/types.ts";
 
 function book(title: string, grade?: SyncGrade, flagged = 0) {
   return {
@@ -69,13 +69,94 @@ test("only graded chapters below good can be re-run", () => {
   );
 });
 
-test("a failed chapter says what readers get and why", () => {
-  assert.equal(chapterFailure(chapter(1, "good", 1)), null);
-  assert.equal(
-    chapterFailure({ status: "kept-previous", error: "Alignment of `Chapter 39` stopped without writing a result." }),
-    "Kept its earlier timing. Alignment of `Chapter 39` stopped without writing a result.",
-  );
-  assert.equal(chapterFailure({ status: "failed", error: null }), "Left unhighlighted.");
+test("every cause a server reports reads in plain words", () => {
+  const causes: SyncCause[] = [
+    "runtime-crash", "noisy-audio", "chapter-mismatch", "language-mismatch", "edition-mismatch",
+    "runtime-missing", "audio-unreadable", "timeout", "language-guess", "unknown",
+  ];
+  assert.deepEqual(Object.keys(CAUSES).sort(), [...causes].sort());
+  for (const cause of causes) {
+    const copy = causeCopy(cause);
+    for (const part of [copy.title, copy.explanation, copy.action]) {
+      assert.ok(part.trim().length > 0, cause);
+      assert.match(part, /[.!]$/, `${cause}: whole sentences`);
+      assert.doesNotMatch(part, /os error|exit status|stderr/i, cause);
+    }
+  }
+  // Absent or newer causes stop "unexpectedly" rather than show raw output.
+  assert.equal(causeCopy(undefined).title, "Sync stopped unexpectedly.");
+  assert.equal(causeCopy("a-cause-from-the-future").title, "Sync stopped unexpectedly.");
+});
+
+test("a failed job leads with what happened and keeps the raw error as detail", () => {
+  assert.equal(jobProblem({ status: "completed", error: null }), null);
+  const missingOutput = jobProblem({ status: "failed", error: "No such file or directory (os error 2)", cause: "runtime-crash" })!;
+  assert.equal(missingOutput.title, "The speech recognizer crashed.");
+  assert.equal(missingOutput.detail, "No such file or directory (os error 2)");
+  // An older server sends no cause; the error never becomes the headline.
+  const older = jobProblem({ status: "failed", error: "No such file or directory (os error 2)" })!;
+  assert.equal(older.title, "Sync stopped unexpectedly.");
+  assert.doesNotMatch(`${older.title} ${older.explanation} ${older.action}`, /os error/);
+  const language = jobProblem({ status: "failed", error: "Alignment produced no usable sentence fragments.", cause: "language-mismatch", heardLanguage: "en" })!;
+  assert.equal(language.resyncLanguage, "en");
+  assert.deepEqual(language.notes, ["It sounds like English."]);
+});
+
+function diagnosed(cause: SyncCause, diagnosis: Partial<SyncDiagnosis> = {}, status = "aligned"): SyncChapterReport {
+  return {
+    ...chapter(4, status === "aligned" ? "poor" : "failed", 0.4), status,
+    diagnosis: { cause, evidence: {}, fix: { kind: "none", attempted: false }, ...diagnosis },
+  };
+}
+
+test("a weak chapter says what was heard, what readers get, and what was tried", () => {
+  assert.equal(chapterProblem(chapter(1, "good", 1)), null);
+  const language = chapterProblem(diagnosed("language-mismatch", {
+    evidence: { heardLanguage: "en", labelledLanguage: "nl" },
+    fix: { kind: "suggested", action: "resync-language", attempted: false },
+  }))!;
+  assert.equal(language.title, "The narration is in a different language.");
+  assert.deepEqual(language.notes, ["Heard English; this book is set to Dutch."]);
+  assert.equal(language.resyncLanguage, "en");
+
+  const crash = chapterProblem({
+    ...diagnosed("runtime-crash", { fix: { kind: "auto", action: "retry-other-model", attempted: true } }, "kept-previous"),
+    error: "Alignment of `Chapter 39` stopped without writing a result. The alignment runtime may have crashed.",
+  })!;
+  assert.deepEqual(crash.notes, ["Earlier timing was kept.", "OperaLibre retried it with a different model, which crashed too."]);
+  assert.match(crash.action, /run it again or leave it/);
+  assert.match(crash.detail!, /stopped without writing a result/);
+
+  const edition = chapterProblem(diagnosed("edition-mismatch", { evidence: { wordsInText: 0.08, recognizedWords: 3000 } }))!;
+  assert.equal(edition.title, "This EPUB may be a different edition.");
+  assert.deepEqual(edition.notes, ["8% of what was heard is in this chapter’s text."]);
+
+  const noisy = chapterProblem(diagnosed("noisy-audio", {
+    evidence: { wordsInText: 0.57, windows: 9, unanchoredWindows: 5 },
+    fix: { kind: "auto", action: "larger-model", attempted: true },
+  }))!;
+  assert.deepEqual(noisy.notes, [
+    "57% of what was heard is in this chapter’s text.",
+    "5 of 9 stretches had no clear match.",
+    "OperaLibre tried a larger speech model, which did no better.",
+  ]);
+
+  // A fix that worked is reported without the advice for the gone problem.
+  const repaired = chapterProblem({
+    ...chapter(2, "good", 1),
+    diagnosis: {
+      cause: "chapter-mismatch", evidence: { matchingChapter: { index: 3, label: "Chapter 3" } },
+      fix: { kind: "auto", action: "match-other-chapter", attempted: true, applied: true },
+    },
+  })!;
+  assert.deepEqual(repaired.notes, ["Fixed: OperaLibre aligned this audio with the text of Chapter 3."]);
+  assert.equal(repaired.action, "");
+
+  // A failed chapter from an older report has no diagnosis.
+  const older = chapterProblem({ status: "failed", error: "No such file or directory (os error 2)" })!;
+  assert.equal(older.title, "Sync stopped unexpectedly.");
+  assert.deepEqual(older.notes, ["It is left unhighlighted."]);
+  assert.equal(older.detail, "No such file or directory (os error 2)");
 });
 
 test("job cards name re-run chapters and the ones a sync could not align", () => {
@@ -95,6 +176,10 @@ test("job cards name re-run chapters and the ones a sync could not align", () =>
   assert.equal(
     syncJobAttention({ status: "completed", failedChapters: named(3, 7) }),
     "Completed · 2 chapters need attention: Chapter 3 and Chapter 7",
+  );
+  assert.equal(
+    syncJobAttention({ status: "completed", failedChapters: [{ index: 9, label: "Chapter 9", cause: "runtime-crash" }, { index: 12, label: "Chapter 12" }] }),
+    "Completed · 2 chapters need attention: Chapter 9 (the speech recognizer crashed) and Chapter 12 (sync stopped unexpectedly)",
   );
   // A failed job reports its own error instead.
   assert.equal(syncJobAttention({ status: "failed", failedChapters: named(3) }), null);

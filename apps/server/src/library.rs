@@ -85,6 +85,10 @@ pub(crate) struct BookMetadataOverride {
     pub(crate) series_position: Option<String>,
     pub(crate) tags: Option<Vec<BookTag>>,
     pub(crate) asin: Option<String>,
+    /// The language follow-along sync recognizes the narration in, when the
+    /// EPUB's label is wrong. Not part of the metadata editor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sync_language: Option<String>,
 }
 
 #[derive(Default)]
@@ -626,6 +630,10 @@ pub(crate) async fn update_book_metadata(
                 .books
                 .get(&book_id)
                 .and_then(|existing| existing.ebook_file_name.clone());
+            metadata_override.sync_language = overrides
+                .books
+                .get(&book_id)
+                .and_then(|existing| existing.sync_language.clone());
             if metadata_override.tags.is_none() {
                 metadata_override.tags = overrides
                     .books
@@ -719,6 +727,7 @@ pub(crate) fn metadata_override_from_update(
             .map(|value| clean_metadata_text(&value)),
         tags: update.tags.map(clean_book_tags),
         asin,
+        sync_language: None,
     })
 }
 

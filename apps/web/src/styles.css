@@ -15920,8 +15920,22 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 .admin-sync-chapter-list > li > .admin-sync-chapter-empty { grid-column: span 3; color: var(--ink-faded); }
 .admin-sync-chapter-list input[type="checkbox"] { margin: 0; accent-color: var(--sync-live); }
 /* The error runs under the label, across the numbers. */
-.admin-sync-chapter-list > li > .admin-sync-chapter-error { grid-column: -5 / -1; justify-self: start; color: var(--sync-fail); font-size: 0.7rem; overflow-wrap: anywhere; }
+.admin-sync-chapter-list > li > .admin-sync-chapter-error { grid-column: -5 / -1; justify-self: start; font-size: 0.7rem; overflow-wrap: anywhere; }
 .admin-sync-chapter-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+/* A fix that worked is news, not a warning. */
+.admin-sync-chapter-list > li > .admin-sync-chapter-fixed { color: var(--ink-faded); }
+.admin-sync-chapter-fixed .sync-problem-title { color: inherit; }
+
+/* A sync problem: what happened in a sentence or two, with the raw error
+   folded away for whoever needs it. */
+.sync-problem { display: grid; gap: 3px; min-width: 0; color: var(--ink-soft); }
+.sync-problem p { margin: 0; }
+.sync-problem-title { font-weight: 600; color: var(--sync-fail, var(--oxblood)); }
+.sync-problem-details summary { width: fit-content; cursor: pointer; font-size: 0.68rem; opacity: 0.8; }
+.sync-problem-details pre { max-height: 10rem; margin: 4px 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 0.66rem/1.45 "JetBrains Mono", monospace; letter-spacing: normal; color: var(--ink-faded); }
+.admin-sync-job-failure > .sync-problem { flex: 1; min-width: 180px; font-size: 0.75rem; }
+.admin-sync-job-failure-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.admin-sync-schedule-problem { margin: 0 0 12px; font-size: 0.72rem; }
 .admin-sync-monitor .admin-sync-job-attention { display: flex; align-items: center; gap: 6px; color: var(--sync-fail); font-size: 0.75rem; }
 .admin-sync-book-list:has(.admin-sync-chapters) { max-height: none; }
 
@@ -15931,6 +15945,9 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
   .admin-sync-book-actions { justify-content: flex-end; max-width: 120px; }
   .admin-sync-search { width: 100%; }
   .admin-sync-search input { width: 100%; }
+  /* Numbers take only their own width, leaving the chapter name room to read. */
+  .admin-sync-chapter-list > li { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+  .admin-sync-chapter-list-pick > li { grid-template-columns: 1rem minmax(0, 1fr) auto auto auto; }
 }
 
 .libro-account-filter { display: grid; gap: 6px; margin: 12px 0; font-size: 0.8rem; }

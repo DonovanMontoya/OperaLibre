@@ -12,6 +12,8 @@ import { FOLLOW_AGGRESSIVENESS_LEAD_SECONDS } from "./readalongPreferences";
 import { formatTime } from "./formatting";
 import { currentAppPrefersDark, readReaderThemeChoice, resolveReaderTheme } from "./readerTheme";
 import type { Book, JobStatus } from "./types";
+import { jobProblem } from "./syncQuality";
+import { SyncProblem } from "./SyncProblem";
 import type { NativePlayerSheet } from "./PlayerSheets";
 import type { ReactNode } from "react";
 
@@ -133,9 +135,7 @@ export function renderReaderSyncMessages({
           <div className="sync-progress-note">{syncProgressNote}</div>
         </div>
       ) : syncJobForBook && syncJobForBook.status === "failed" ? (
-        <div className="readalong-genstatus error">
-          {syncJobForBook.error ?? "Readalong sync generation failed."}
-        </div>
+        <SyncProblem problem={jobProblem(syncJobForBook)!} className="readalong-genstatus error" />
       ) : null}
       {syncJobError ? <div className="readalong-genstatus error">{syncJobError}</div> : null}
       {syncNotice ? <div className="readalong-genstatus notice">{syncNotice}</div> : null}

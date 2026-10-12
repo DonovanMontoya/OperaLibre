@@ -35,6 +35,13 @@ pub(crate) struct JobStatus {
     /// Chapters a completed sync could not align.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) failed_chapters: Vec<JobChapter>,
+    /// Why a failed sync stopped, beside its raw `error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cause: Option<sync_report::Cause>,
+    /// For a `language-mismatch` failure, the language the narration was
+    /// heard in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) heard_language: Option<String>,
 }
 
 /// A chapter as a sync report numbers and names it.
@@ -42,6 +49,9 @@ pub(crate) struct JobStatus {
 pub(crate) struct JobChapter {
     pub(crate) index: usize,
     pub(crate) label: String,
+    /// Why a chapter in `failed_chapters` could not be aligned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cause: Option<sync_report::Cause>,
 }
 
 /// A running job's own account of how far it has got. `step` is one short
@@ -198,6 +208,8 @@ pub(crate) async fn create_job_with_state(
         progress: None,
         chapters: Vec::new(),
         failed_chapters: Vec::new(),
+        cause: None,
+        heard_language: None,
     };
     jobs.insert(id.clone(), job);
     prune_finished_jobs(&mut jobs);
@@ -460,6 +472,13 @@ pub(crate) async fn update_job_finished(
         job.resume_pending = false;
         job.finished_at = Some(unix_now_millis().to_string());
         job.exit_code = exit_code;
+        // A run that diagnosed its own failure has set the cause already.
+        if job.kind == crate::sync::SYNC_GENERATE_JOB_KIND
+            && status == "failed"
+            && job.cause.is_none()
+        {
+            job.cause = error.as_deref().map(sync_report::classify_error);
+        }
         job.error = error;
         job.progress = None;
     }

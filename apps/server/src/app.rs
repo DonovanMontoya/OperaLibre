@@ -313,6 +313,10 @@ pub(crate) fn build_router(
             "/api/books/{book_id}/sync/report",
             get(sync_report::get_sync_report),
         )
+        .route(
+            "/api/books/{book_id}/sync/language",
+            put(sync_report::set_sync_language),
+        )
         .route("/api/alignment/status", get(alignment_status))
         .route("/api/sync-schedules", get(sync_schedule::list))
         .route(
