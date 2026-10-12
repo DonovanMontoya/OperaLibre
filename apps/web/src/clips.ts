@@ -10,6 +10,8 @@ export type Clip = {
   updatedAt: string;
   /** Saved on this device and still waiting to reach the server. */
   pending?: boolean;
+  /** A queued deletion, including a save whose response was lost. */
+  deleted?: boolean;
 };
 
 export type ClipRange = { startSeconds: number; endSeconds: number };
@@ -104,10 +106,11 @@ export function writePendingClips(storage: ClipStorage, key: string, clips: read
  * pending copy, which is a save whose reply was lost.
  */
 export function clipsForBook(saved: readonly Clip[], pending: readonly Clip[], bookId: string): Clip[] {
+  const deleted = new Set(pending.filter((clip) => clip.deleted).map((clip) => clip.id));
   const delivered = new Set(saved.map((clip) => clip.id));
   return [
-    ...saved.filter((clip) => clip.bookId === bookId),
-    ...pending.filter((clip) => clip.bookId === bookId && !delivered.has(clip.id))
+    ...saved.filter((clip) => clip.bookId === bookId && !deleted.has(clip.id)),
+    ...pending.filter((clip) => clip.bookId === bookId && !clip.deleted && !delivered.has(clip.id))
   ].sort((left, right) => left.startSeconds - right.startSeconds || left.createdAt.localeCompare(right.createdAt));
 }
 

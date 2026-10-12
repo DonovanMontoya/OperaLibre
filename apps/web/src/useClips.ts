@@ -107,6 +107,7 @@ export function useClips({
   const bookIdRef = useRef(collectionBookId);
   bookIdRef.current = collectionBookId;
   const flushingRef = useRef(false);
+  const deliveriesRef = useRef(new Map<string, Promise<"saved" | "waiting" | string>>());
 
   function storePending(next: Clip[]) {
     pendingRef.current = next;
@@ -119,16 +120,33 @@ export function useClips({
    * pass: no connection, a restarting server, an expired sign-in, a library
    * that is briefly unmounted.
    */
-  async function deliver(clip: Clip): Promise<"saved" | "waiting" | string> {
+  function deliver(clip: Clip): Promise<"saved" | "waiting" | string> {
+    const queued = pendingRef.current.find((candidate) => candidate.id === clip.id);
+    if (!queued) return Promise.resolve("saved");
+    const existing = deliveriesRef.current.get(clip.id);
+    if (existing) return existing;
+    const delivery = deliverNow(queued).finally(() => deliveriesRef.current.delete(clip.id));
+    deliveriesRef.current.set(clip.id, delivery);
+    return delivery;
+  }
+
+  async function deliverNow(clip: Clip): Promise<"saved" | "waiting" | string> {
     try {
-      let stored = await saveClip(clip);
-      // A repeated save answers with what the first attempt stored, which
-      // predates any trim made while this copy was waiting.
-      const latest = pendingRef.current.find((candidate) => candidate.id === clip.id) ?? clip;
-      if (!sameContent(stored, latest)) stored = await updateClip(latest);
+      let stored: Clip | null = null;
+      if (!clip.deleted) {
+        stored = await saveClip(clip);
+        // A repeated save returns the first copy, which can predate an offline trim.
+        const latest = pendingRef.current.find((candidate) => candidate.id === clip.id) ?? clip;
+        if (!latest.deleted && !sameContent(stored, latest)) stored = await updateClip(latest);
+      }
+      // A removal can arrive while either the save or trim request is in flight.
+      const removed = clip.deleted || pendingRef.current.find((candidate) => candidate.id === clip.id)?.deleted;
+      if (removed) await deleteClip(clip);
       storePending(pendingRef.current.filter((candidate) => candidate.id !== clip.id));
-      if (stored.bookId === bookIdRef.current) {
-        setSaved((current) => [...current.filter((candidate) => candidate.id !== stored.id), stored]);
+      if (removed) setSaved((current) => current.filter((candidate) => candidate.id !== clip.id));
+      else if (stored && stored.bookId === bookIdRef.current) {
+        const delivered = stored;
+        setSaved((current) => [...current.filter((candidate) => candidate.id !== delivered.id), delivered]);
       }
       return "saved";
     } catch (failure) {
@@ -256,7 +274,9 @@ export function useClips({
     if (audition?.clipId === clip.id) stopAudition();
     if (lastSavedId === clip.id) setLastSavedId(null);
     if (pendingRef.current.some((candidate) => candidate.id === clip.id)) {
-      storePending(pendingRef.current.filter((candidate) => candidate.id !== clip.id));
+      storePending(pendingRef.current.map((candidate) => candidate.id === clip.id ? { ...candidate, deleted: true } : candidate));
+      setSaved((current) => current.filter((candidate) => candidate.id !== clip.id));
+      void deliver({ ...clip, deleted: true });
       return;
     }
     try {

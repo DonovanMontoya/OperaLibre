@@ -138,3 +138,12 @@ test("a shared clip gets a file name a message thread can show", () => {
   assert.equal(clipFileName("A/B: C?", { title: "The \"reveal\"", startSeconds: 0 }), "A B C - The reveal.m4a");
   assert.equal(clipFileName("", { title: "...", startSeconds: 0 }), "clip.m4a");
 });
+
+test("queued deletions survive restart and hide any server copy", () => {
+  const storage = memoryStorage();
+  const removed = clip("removed", "book", 10, { pending: true, deleted: true });
+  writePendingClips(storage, "queue", [removed]);
+  const restored = readPendingClips(storage, "queue");
+  assert.equal(restored[0].deleted, true);
+  assert.deepEqual(clipsForBook([clip("removed", "book", 10), clip("kept", "book", 20)], restored, "book").map(entry => entry.id), ["kept"]);
+});

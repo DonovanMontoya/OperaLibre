@@ -255,6 +255,56 @@ test('interrupted preview never checkpoints its temporary position or seek inten
   await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThanOrEqual(90);
 });
 
+test('pending removal retries a lost-response server copy after restart without resurrecting it', async ({ page }) => {
+  const fixture = await setup(page);
+  const book = fixture.books[0];
+  let created: Clip | null = null;
+  let offline = true;
+  let deleteAttempts = 0;
+  await page.route(`**/api/books/${book.id}/clips`, async route => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    created = { ...route.request().postDataJSON(), bookId: book.id,
+      createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z' };
+    fixture.clips.set(book.id, [...fixture.clips.get(book.id)!.filter(clip => clip.id !== created!.id), created!]);
+    await route.abort('failed');
+  });
+  await page.route(`**/api/books/${book.id}/clips/*`, async route => {
+    if (route.request().method() !== 'DELETE') return route.fallback();
+    deleteAttempts += 1;
+    if (offline) return route.abort('failed');
+    fixture.clips.set(book.id, fixture.clips.get(book.id)!.filter(clip => clip.id !== created!.id));
+    await route.fulfill({ status: 204 });
+  });
+  await page.getByRole('button', { name: `Play ${book.title}`, exact: true }).click();
+  await expect.poll(() => page.locator('audio').evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThan(60);
+  await page.getByRole('button', { name: 'Save a clip of the last 30 seconds and the next 10', exact: true }).click();
+  await expect.poll(() => created?.id).not.toBeNull();
+  await page.getByRole('button', { name: 'Details', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: /Saved clips/ }).click();
+  const dialog = page.getByRole('dialog');
+  if (!await dialog.getByLabel('Name', { exact: true }).isVisible()) await dialog.locator('.clip-summary').filter({ hasText: 'A beginning' }).click();
+  await dialog.getByRole('button', { name: 'Remove', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Remove for good', exact: true }).click();
+  await expect.poll(() => deleteAttempts).toBeGreaterThan(0);
+  expect(fixture.clips.get(book.id)!.some(clip => clip.id === created!.id)).toBe(true);
+  await page.reload();
+  await page.locator('.book-row').nth(0).click();
+  await page.getByRole('button', { name: 'Details', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Full book page', exact: true }).click();
+  await page.getByRole('tab', { name: 'Clips', exact: true }).click();
+  await expect(page.locator('.book-clip-detail')).toHaveCount(1);
+  offline = false;
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await expect.poll(() => fixture.clips.get(book.id)!.some(clip => clip.id === created!.id)).toBe(false);
+  await page.reload();
+  await page.locator('.book-row').nth(0).click();
+  await page.getByRole('button', { name: 'Details', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Full book page', exact: true }).click();
+  await page.getByRole('tab', { name: 'Clips', exact: true }).click();
+  await expect(page.locator('.book-clip-detail')).toHaveCount(1);
+  expect(fixture.clips.get(book.id)).toHaveLength(1);
+});
+
 test('Continue from here makes a preview position an intentional listening position', async ({ page }) => {
   const fixture = await setup(page);
   const book = fixture.books[1];
