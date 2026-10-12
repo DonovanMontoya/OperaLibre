@@ -62,7 +62,7 @@ function Fixture() {
     {open && <EpubReadalong bookId="fixture" storageScope="catch-up-fixture" title="Catch-up fixture"
       immersive={immersive} onClose={() => setOpen(false)} positionLabel={`${position}s`}
       playback={immersive ? {
-        playing, speed: 1, sleepRemaining: 0,
+        playing, speed: 1, sleepRemaining: 0, sleepAtChapterEnd: false,
         onToggle: () => setPlaying(value => !value),
         onSkip: delta => setPosition(value => Math.max(0, value + delta)),
         onOpen: () => {}

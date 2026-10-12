@@ -63,6 +63,7 @@ type NativeAudioRecoveryIdentity = {
    * React still holds.
    */
   sleepTimerSeconds: () => number;
+  sleepAtChapterEnd: () => boolean;
 };
 
 interface NativeAudioPlugin {
@@ -84,7 +85,7 @@ interface NativeAudioPlugin {
   setRate(options: { rate: number }): Promise<void>;
   setVolume(options: { volume: number }): Promise<void>;
   setGain(options: { gain: number }): Promise<void>;
-  setSleepTimer(options: { seconds: number }): Promise<void>;
+  setSleepTimer(options: { seconds: number; atChapterEnd?: boolean }): Promise<void>;
   getSleepTimer(): Promise<{ remainingSeconds: number }>;
   setNowPlaying(options: {
     title: string;
@@ -203,9 +204,14 @@ export function pauseNativeAudio() {
   return NativeAudio.pause();
 }
 
-export function setNativeAudioSleepTimer(seconds: number) {
+/**
+ * `atChapterEnd` stops at the end of the chapter being played instead of
+ * after a countdown. AVPlayer watches for it itself, so the stop still lands
+ * on the boundary while the WebView is suspended.
+ */
+export function setNativeAudioSleepTimer(seconds: number, atChapterEnd = false) {
   if (!usesNativeAudioPlayer()) return Promise.resolve();
-  return NativeAudio.setSleepTimer({ seconds: Math.max(0, seconds) });
+  return NativeAudio.setSleepTimer({ seconds: Math.max(0, seconds), atChapterEnd });
 }
 
 /**
@@ -375,7 +381,8 @@ export function attachNativeAudioPlayer(
   // Unconditional: passing 0 also disarms a timer left behind by a WebView
   // reload, where the detach cleanup (and its stop()) never ran.
   void NativeAudio.setSleepTimer({
-    seconds: Math.max(0, recovery.sleepTimerSeconds())
+    seconds: Math.max(0, recovery.sleepTimerSeconds()),
+    atChapterEnd: recovery.sleepAtChapterEnd()
   }).catch(() => undefined);
   audio.addEventListener("ratechange", rateChange);
   audio.addEventListener("volumechange", volumeChange);

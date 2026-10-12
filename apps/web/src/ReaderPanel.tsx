@@ -258,6 +258,7 @@ export function renderEpubReader({
     readalongEnabled
   } = readerPreferences;
   const {
+    sleepAtChapterEnd,
     sleepRemaining
   } = sleepTimer;
 
@@ -309,6 +310,7 @@ export function renderEpubReader({
                 playing: isPlaying,
                 speed,
                 sleepRemaining,
+                sleepAtChapterEnd,
                 onToggle: togglePlayback,
                 onSkip: seekBy,
                 onOpen: openNativePlayerSheet

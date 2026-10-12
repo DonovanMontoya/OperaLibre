@@ -255,6 +255,7 @@ export function PlayerPane({
     configureSleepTimer,
     setSleepCustomDraft,
     setSleepCustomOpen,
+    sleepAtChapterEnd,
     sleepChoices,
     sleepCustomDraft,
     sleepCustomMinutes,
@@ -722,7 +723,7 @@ export function PlayerPane({
                     setSleepCustomDraft("");
                     openNativePlayerSheet("sleep");
                   }}>
-                    <Timer size={16} /> {sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
+                    <Timer size={16} /> {sleepAtChapterEnd ? "End of chapter" : sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
                   </button>
                   <button
                     type="button"
@@ -1358,12 +1359,16 @@ export function PlayerPane({
                 <label className="section-label" htmlFor="sleep"><Timer size={13} /> Nightfall</label>
                 <select
                   id="sleep"
-                  value={sleepCustomOpen ? "custom" : String(sleepMinutes)}
+                  value={sleepCustomOpen ? "custom" : sleepAtChapterEnd ? "chapter" : String(sleepMinutes)}
                   onChange={(event) => {
                     const choice = event.currentTarget.value;
                     if (choice === "custom") {
                       setSleepCustomDraft(sleepMinutes > 0 ? String(sleepMinutes) : "");
                       setSleepCustomOpen(true);
+                      return;
+                    }
+                    if (choice === "chapter") {
+                      configureSleepTimer(0, true);
                       return;
                     }
                     configureSleepTimer(Number(choice));
@@ -1375,6 +1380,7 @@ export function PlayerPane({
                       {formatSleepTimerMinutes(option)}
                     </option>
                   ))}
+                  {activeChapter || sleepAtChapterEnd ? <option value="chapter">End of chapter</option> : null}
                   <option value="custom">Custom…</option>
                 </select>
                 {sleepCustomOpen ? (
@@ -1397,6 +1403,7 @@ export function PlayerPane({
                   </form>
                 ) : null}
                 {sleepRemaining > 0 ? <span className="sleep-copy">{formatTime(sleepRemaining)} remaining</span> : null}
+                {sleepAtChapterEnd ? <span className="sleep-copy">Stops when this chapter ends</span> : null}
               </section>
             </div>
           ) : null}

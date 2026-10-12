@@ -59,8 +59,10 @@ export function useAudioElement({
   setPlaybackError,
   setPlaybackPosition,
   setPosition,
+  setSleepAtChapterEnd,
   setSleepMinutes,
   setSleepRemaining,
+  sleepAtChapterEndRef,
   sleepDeadlineRef,
   sleepRemainingRef,
   speed,
@@ -108,8 +110,10 @@ export function useAudioElement({
   setPlaybackError: Dispatch<SetStateAction<string | null>>;
   setPlaybackPosition: (audio: HTMLAudioElement, value: number) => number;
   setPosition: Dispatch<SetStateAction<number>>;
+  setSleepAtChapterEnd: Dispatch<SetStateAction<boolean>>;
   setSleepMinutes: Dispatch<SetStateAction<number>>;
   setSleepRemaining: Dispatch<SetStateAction<number>>;
+  sleepAtChapterEndRef: RefObject<boolean>;
   sleepDeadlineRef: RefObject<number | null>;
   sleepRemainingRef: RefObject<number>;
   speed: number;
@@ -197,7 +201,8 @@ export function useAudioElement({
           const deadline = sleepDeadlineRef.current;
           if (deadline !== null) return Math.max(0, (deadline - Date.now()) / 1000);
           return sleepRemainingRef.current;
-        }
+        },
+        sleepAtChapterEnd: () => sleepAtChapterEndRef.current
       },
       (trackId, positionSeconds, _bookPositionSeconds, nativeIsPlaying) => {
         if (!playbackBook.tracks.some((track) => track.id === trackId)) return false;
@@ -239,6 +244,7 @@ export function useAudioElement({
         sleepDeadlineRef.current = null;
         setSleepMinutes(0);
         setSleepRemaining(0);
+        setSleepAtChapterEnd(false);
       },
       () => {
         foregroundProgressSyncRef.current?.nativeStateSynchronized();

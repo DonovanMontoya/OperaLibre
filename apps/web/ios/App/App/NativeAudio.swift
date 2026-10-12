@@ -72,7 +72,10 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
     }
 
     @objc public func setSleepTimer(_ call: CAPPluginCall) {
-        engine.setSleepTimer(seconds: call.getDouble("seconds") ?? 0)
+        engine.setSleepTimer(
+            seconds: call.getDouble("seconds") ?? 0,
+            atChapterEnd: call.getBool("atChapterEnd") ?? false
+        )
         call.resolve()
     }
 
