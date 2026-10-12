@@ -33,6 +33,7 @@ import {
   mergeServerBookGains
 } from "./bookVolume";
 import { PlaybackGainChain, streamCanBeBoosted, webAudioBoostSupported } from "./playbackGain";
+import { STREAM_LOAD_FAILED, streamFailureMessage } from "./streamFailure";
 import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
 import { buildChapterSegments, chapterAtBookPosition } from "./chapters";
 import {
@@ -2013,16 +2014,28 @@ function MainApp({
         onLoadedMetadata={onLoadedMetadata}
         onError={() => {
           const code = audioRef.current?.error?.code;
+          const rejected = code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED;
           const message = code === MediaError.MEDIA_ERR_DECODE
             ? "This audio file could not be decoded."
-            : code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
-              ? isOperaLibre ? "This audio format is not supported on this device." : "This device cannot play the original Jellyfin audio file. Try an MP3 or AAC version; automatic conversion is not available."
+            : rejected
+              ? isOperaLibre ? STREAM_LOAD_FAILED : "This device cannot play the original Jellyfin audio file. Try an MP3 or AAC version; automatic conversion is not available."
               : code === MediaError.MEDIA_ERR_NETWORK
                 ? "Playback lost its connection to the audiobook server."
-                : "This audio track could not be loaded.";
+                : STREAM_LOAD_FAILED;
           setIsPlaying(false);
           clearPlayPendingForBook(playbackBookId);
           setPlaybackError(message);
+          // A refused or missing stream raises the same code as a file the
+          // browser cannot play; ask the server which it was. The element is
+          // keyed per track, so a reply for a track since left is dropped.
+          const rejectedElement = audioRef.current;
+          if (rejected && isOperaLibre && !nativeAudio && streamUrl && rejectedElement) {
+            void streamFailureMessage(streamUrl).then((reason) => {
+              if (audioRef.current === rejectedElement && rejectedElement.error) {
+                setPlaybackError(reason);
+              }
+            });
+          }
           // The element keeps paused=false after a media error, so the
           // toggle read "playing" and needed two taps. On iOS the element is
           // only the control clock and its own errors say nothing about
