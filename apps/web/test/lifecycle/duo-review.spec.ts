@@ -409,6 +409,7 @@ test('web readers can connect Libro.fm without native Settings', async ({ page }
   await page.getByRole('button', { name: 'Connect Libro.fm', exact: true }).press('Enter');
   await page.getByRole('button', { name: 'Close Libro.fm management' }).press('Enter');
   await expect(page.getByRole('button', { name: 'Manage Libro.fm', exact: true })).toBeVisible();
+  await expect(page.getByText('0 of 0 purchases', { exact: true })).toBeVisible();
   expect(writes).toContain('/api/me/libro');
 });
 
@@ -517,6 +518,27 @@ test('native Audible settings show failed refresh requests', async ({ page }) =>
   await page.locator('.store-settings-group > summary').filter({ hasText: 'Audible' }).click();
   await page.getByRole('button', { name: 'Refresh purchases', exact: true }).click();
   await expect(page.getByRole('alert').filter({ hasText: 'Refresh limit reached. Try again later.' })).toBeVisible();
+});
+
+test('native Get books keeps a way to each connected store\'s Settings', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openShell(page, true, true);
+  await page.route('**/api/me/libro', route => route.fulfill({ json: {
+    connected: true, email: 'reader@example.com', syncedAt: '2026-10-01T12:00:00Z',
+    accounts: [{ email: 'reader@example.com', syncedAt: '2026-10-01T12:00:00Z' }], books: [], jobs: []
+  } }));
+  await page.getByRole('button', { name: 'Get books', exact: true }).press('Enter');
+  const libro = page.getByRole('button', { name: 'Libro.fm accounts & settings', exact: true });
+  const audible = page.getByRole('button', { name: 'Audible accounts & settings', exact: true });
+  await expect(libro).toBeVisible();
+  await expect(audible).toBeVisible();
+  await expect(page.getByText('0 of 0 purchases', { exact: true })).toHaveCount(0);
+  const [libroBox, audibleBox] = [(await libro.boundingBox())!, (await audible.boundingBox())!];
+  expect(Math.abs(libroBox.x + libroBox.width - audibleBox.x - audibleBox.width)).toBeLessThan(1);
+  const heading = (await page.getByRole('heading', { name: 'Libro.fm', exact: true }).boundingBox())!;
+  expect(libroBox.y).toBeLessThan(heading.y + heading.height);
+  await libro.press('Enter');
+  await expect(page.locator('details.store-settings-group[open]')).toContainText('Libro.fm');
 });
 
 test('native Libro.fm settings show failed background refreshes', async ({ page }) => {

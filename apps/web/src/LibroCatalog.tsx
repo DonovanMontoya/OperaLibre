@@ -48,11 +48,11 @@ function LibroNickname({ account, busy, onSave, onCancel }: { account: LibroAcco
   </form>;
 }
 
-/** A store's heading in Get books, with the way to Settings while it has no account. */
+/** A store's heading in Get books, with the way to its Settings beside it. */
 export function StoreHeading({ store, connected, onOpenSettings }: { store: string; connected: boolean; onOpenSettings?: () => void; }) {
   return <>
     <div><h2>{store}</h2>{!connected ? <p>Connect your account in Settings to browse your purchases.</p> : null}</div>
-    {onOpenSettings ? <button type="button" className="purchase-settings-link" onClick={onOpenSettings}>Open Settings <ChevronRight size={14} /></button> : null}
+    {onOpenSettings ? <button type="button" className="purchase-settings-link" aria-label={connected ? `${store} accounts & settings` : "Open Settings"} onClick={onOpenSettings}>{connected ? "Accounts & settings" : "Open Settings"} <ChevronRight size={14} /></button> : null}
   </>;
 }
 
@@ -196,7 +196,7 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
         <div className="libro-connection-copy"><KeyRound size={16} /><div><strong>Libro.fm</strong><small>{busy === "connect" ? "Connecting…" : !account ? "Loading connection…" : !account.connected ? "Connect your account" : refreshJob?.status === "failed" ? "Connection needs attention" : accounts.length === 1 && accounts[0].nickname ? `${accounts[0].nickname} · Connected` : `${accounts.length} connected account${accounts.length === 1 ? "" : "s"}`}</small></div></div>
         <div className="libro-sidebar-actions"><button type="button" className={account?.connected ? undefined : "libro-primary-action"} aria-label={account?.connected ? "Manage Libro.fm" : "Connect Libro.fm"} disabled={!account || !!busy} onClick={() => setManaging(true)}>{account?.connected ? "Manage" : "Connect"}</button>{account?.connected ? refreshButton : null}</div>
       </div> : <>
-        <StoreHeading store="Libro.fm" onOpenSettings={account?.connected ? undefined : onOpenSettings} connected={!!account?.connected} />
+        <StoreHeading store="Libro.fm" onOpenSettings={onOpenSettings} connected={!!account?.connected} />
       </>}
     </header>
     {!account && !pollError && mode === "catalog" ? <p role="status">Loading your connection…</p> : null}
@@ -205,13 +205,13 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
     {account?.connected ? <>
       {filterEmail === undefined && accounts.length > 1 ? <label className="libro-account-filter">Account<select aria-label="Libro.fm account" value={accountFilter} onChange={event => setAccountFilter(event.target.value)}><option value="all">All Libro.fm accounts</option>{accounts.map(item => <option key={item.email} value={item.email}>{item.nickname || item.email}</option>)}</select></label> : null}
       {searchQuery === undefined ? <label className="libro-catalog-search"><Search size={15} /><input type="search" aria-label="Search Libro.fm purchases" placeholder="Search your purchases…" value={query} onChange={event => setQuery(event.target.value)} /></label> : null}
-      <div className="libro-view-toolbar">
+      {mode !== "catalog" || loadingLibrary ? <div className="libro-view-toolbar">
         <p className="libro-catalog-summary" role="status">{loadingLibrary ? "Loading your Libro.fm library…" : `${books.length} of ${account.books.length} purchases`}</p>
         {viewMode === undefined ? <div className="libro-view-toggle" role="group" aria-label="Purchase layout">
           <button type="button" aria-label="Cover grid" aria-pressed={view === "grid"} onClick={() => setView("grid")}><LayoutGrid size={18} /></button>
           <button type="button" aria-label="Compact list" aria-pressed={view === "list"} onClick={() => setView("list")}><List size={18} /></button>
         </div> : null}
-      </div>
+      </div> : null}
       {!books.length && !loadingLibrary ? <p className="libro-catalog-empty">{needle ? "No purchases match your search." : account.syncedAt ? "No audiobooks found in this account." : "Refresh your library to load your purchases."}</p> : null}
       <ul className={`libro-purchases purchase-book-list purchase-book-list--${activeView} libro-purchases--${activeView}`}>{books.map(book => {
         const job = account.jobs.find(job => job.kind === "libro-download" && job.targetId?.endsWith(`:${book.isbn}`));

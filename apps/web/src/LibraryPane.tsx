@@ -878,14 +878,9 @@ export function LibraryPane({
         </>
       ) : showAudiblePurchases ? (
         <>
-          {audibleNeedsAccount ? <section className="libro-catalog" aria-label="Audible library">
-            <header className="libro-catalog-head"><StoreHeading store="Audible" connected={false} onOpenSettings={() => openStoreSettings("audible")} /></header>
-          </section> : <>
-            {librarySource === "all" ? <h2 className="purchase-provider-heading">Audible</h2> : null}
-            {native ? <button type="button" className="purchase-settings-link" onClick={() => openStoreSettings("audible")}>
-              Audible accounts &amp; settings <ChevronRight size={14} />
-            </button> : null}
-          </>}
+          {audibleNeedsAccount || native ? <section className="libro-catalog" aria-label="Audible library">
+            <header className="libro-catalog-head"><StoreHeading store="Audible" connected={!audibleNeedsAccount} onOpenSettings={() => openStoreSettings("audible")} /></header>
+          </section> : librarySource === "all" ? <h2 className="purchase-provider-heading">Audible</h2> : null}
           {libationLoading || (libationStatus?.enabled && !libationBooksLoaded) ? (
             <div className="empty-state">Loading Audible library…</div>
           ) : null}
