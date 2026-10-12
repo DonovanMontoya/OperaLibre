@@ -143,7 +143,7 @@ pub(crate) fn classify_error(error: &str) -> Cause {
         || killed_by_signal(error)
     {
         Cause::RuntimeCrash
-    } else if has("stalled at") {
+    } else if has("stalled at") || has("produced no usable sentence fragments") {
         // Recognition never got past one point in the text.
         Cause::NoisyAudio
     } else {
@@ -1598,7 +1598,11 @@ mod tests {
             ),
             (
                 "Alignment produced no usable sentence fragments.",
-                Cause::Unknown,
+                Cause::NoisyAudio,
+            ),
+            (
+                "Alignment of `Chapter 3` produced no usable sentence fragments.",
+                Cause::NoisyAudio,
             ),
         ] {
             assert_eq!(classify_error(error), cause, "{error}");

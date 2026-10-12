@@ -1321,10 +1321,14 @@ pub(crate) async fn run_sync_generation(
         .iter()
         .filter(|&&index| spans[index].text_units > 0)
         .count();
-    let failed_count = |outcomes: &[sync_report::ScopeOutcome]| {
+    let systemic_failures = |outcomes: &[sync_report::ScopeOutcome]| {
         outcomes
             .iter()
-            .filter(|outcome| outcome.error.is_some())
+            .filter(|outcome| {
+                outcome.error.as_deref().is_some_and(|error| {
+                    sync_report::classify_error(error) != sync_report::Cause::NoisyAudio
+                })
+            })
             .count()
     };
     let mut gave_up = false;
@@ -1438,7 +1442,7 @@ pub(crate) async fn run_sync_generation(
         };
         run.outcomes.resize_with(scope_number, Default::default);
         run.outcomes.push(outcome);
-        if attempted >= FAIL_FAST_CHAPTERS && failed_count(&run.outcomes) == attempted {
+        if attempted >= FAIL_FAST_CHAPTERS && systemic_failures(&run.outcomes) == attempted {
             update_job_output(
                 state,
                 job_id,
@@ -1479,15 +1483,26 @@ pub(crate) async fn run_sync_generation(
     let failed = selected
         .iter()
         .filter_map(|&index| {
-            let error = outcomes.get(index)?.error.as_deref()?;
+            let outcome = outcomes.get(index)?;
+            let error = outcome.error.as_deref()?;
+            let cause = sync_report::diagnose_chapter(&sync_report::ChapterEvidence {
+                grade: Some(sync_report::Grade::Failed),
+                outcome,
+                language,
+                labels: &labels,
+            })
+            .map_or_else(
+                || sync_report::classify_error(error),
+                |diagnosis| diagnosis.cause,
+            );
             Some(JobChapter {
                 index,
                 label: scopes[index].label.clone(),
-                cause: Some(sync_report::classify_error(error)),
+                cause: Some(cause),
             })
         })
         .collect::<Vec<_>>();
-    // Nothing aligned: the runtime, not the book, is the likely problem.
+    // A content failure can still explain why nothing aligned.
     let all_failed = !failed.is_empty() && failed.len() == attempted;
     let failure = || {
         let detail = failed
@@ -1496,7 +1511,18 @@ pub(crate) async fn run_sync_generation(
         anyhow::anyhow!(detail.unwrap_or_default())
     };
     if all_failed && rerun.is_none() {
-        return Err(failure());
+        let mut graded = sync_report::grade_chapters(
+            &sync_report::with_outcomes(&spans, &outcomes),
+            fragments
+                .iter()
+                .map(|f| (f.start_seconds, f.end_seconds, f.text.as_str())),
+            &recovery_gaps,
+        );
+        sync_report::diagnose_chapters(&mut graded, &outcomes, &labels, language);
+        return Err(sync_report::DiagnosedFailure::from_chapters(
+            &graded,
+            failure().to_string(),
+        ));
     }
     update_job_progress(
         state,
@@ -5653,6 +5679,7 @@ case "$command" in
           n++ } }
       END { printf "]" }' "$source.words" > "$3" ;;
   align)
+    if [ -f "$0.empty-align" ]; then printf "[]" > "$4"; exit 0; fi
     partial=0; [ -f "$0.partial" ] && partial=1
     awk -v d="$duration" -v partial="$partial" 'BEGIN { RS = "\001" }
       { gsub(/\n/, " "); n = split($0, parts, /\. */); m = 0
@@ -6042,6 +6069,53 @@ esac
             );
         }
 
+        #[tokio::test]
+        async fn unrelated_narration_is_diagnosed_after_three_empty_chapters() {
+            let book = SpokenBook::new(&[9, 10, 11], Some("en"));
+            let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
+            let error = book.run_job(&job, None).await.unwrap_err();
+            let failure = error
+                .downcast_ref::<sync_report::DiagnosedFailure>()
+                .unwrap();
+            assert_eq!(failure.cause, Cause::EditionMismatch);
+            assert!(!generated_map_path(&book.state, "fixture").exists());
+            assert_eq!(
+                book.calls()
+                    .iter()
+                    .filter(|call| call.starts_with("detect"))
+                    .count(),
+                1
+            );
+            assert!(!book.calls().iter().any(|call| call.ends_with(" small.en")));
+        }
+
+        #[tokio::test]
+        async fn empty_automatic_retries_keep_the_previous_map() {
+            let book = SpokenBook::new(&[0, 1, 2], Some("en"));
+            book.run(None).await;
+            let map_path = generated_map_path(&book.state, "fixture");
+            let before = std::fs::read(&map_path).unwrap();
+            book.control("empty-align", "");
+            let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
+            let error = book.run_job(&job, None).await.unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<sync_report::DiagnosedFailure>()
+                    .unwrap()
+                    .cause,
+                Cause::NoisyAudio
+            );
+            assert_eq!(std::fs::read(&map_path).unwrap(), before);
+            let output = book.state.jobs.read().await[&job].output.clone();
+            assert_eq!(
+                output.matches("trying the larger whisper").count(),
+                3,
+                "{output}"
+            );
+            assert_eq!(output.matches("That failed too").count(), 3, "{output}");
+            assert!(!output.contains("keeping it"), "{output}");
+        }
+
         async fn set_language(book: &SpokenBook, language: Option<&str>) {
             book.state
                 .metadata_overrides
@@ -6059,7 +6133,7 @@ esac
 
         #[tokio::test]
         async fn a_mislabelled_language_is_suggested_not_applied_and_the_override_fixes_it() {
-            let book = SpokenBook::new(&[0, 1], Some("nl"));
+            let book = SpokenBook::new(&[0, 1, 2], Some("nl"));
             // Nothing matches anywhere, so the whole run fails, saying why.
             let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
             let error = book.run_job(&job, None).await.unwrap_err();
@@ -6078,16 +6152,27 @@ esac
 
             set_language(&book, Some("en")).await;
             let (report, output) = book.run(None).await;
-            assert_eq!(grades(&report), [Some(Grade::Good); 2], "{output}");
+            assert_eq!(grades(&report), [Some(Grade::Good); 3], "{output}");
             assert!(output.contains("whisper tiny.en, language en"), "{output}");
 
             // Clearing the override puts the EPUB's label back, and a re-run
             // of one chapter shows the suggestion on that chapter.
+            let map_path = generated_map_path(&book.state, "fixture");
+            let before = std::fs::read(&map_path).unwrap();
             set_language(&book, None).await;
-            let (report, output) = book.run(Some(&[1])).await;
+            let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
+            book.run_job(&job, Some(&[1])).await.unwrap_err();
+            assert_eq!(std::fs::read(&map_path).unwrap(), before);
+            let identity = probe_sync_map(&map_path, true).unwrap().identity;
+            let report =
+                sync_report::read_current_report(&book.state.sync_dir, "fixture", &identity)
+                    .unwrap();
+            let output = book.state.jobs.read().await[&job].output.clone();
             assert_eq!(report.chapters[0].grade, Some(Grade::Good));
+            assert_eq!(report.chapters[2].grade, Some(Grade::Good));
             let chapter = &report.chapters[1];
-            assert_eq!(chapter.grade, Some(Grade::Poor), "{output}");
+            assert_eq!(chapter.grade, Some(Grade::Failed), "{output}");
+            assert_eq!(chapter.status, sync_report::ChapterStatus::KeptPrevious);
             let diagnosis = chapter.diagnosis.as_ref().unwrap();
             assert_eq!(diagnosis.cause, Cause::LanguageMismatch);
             assert_eq!(diagnosis.fix.kind, FixKind::Suggested);
@@ -6102,7 +6187,7 @@ esac
 
             set_language(&book, Some("en")).await;
             let (report, _) = book.run(Some(&[1])).await;
-            assert_eq!(grades(&report), [Some(Grade::Good); 2]);
+            assert_eq!(grades(&report), [Some(Grade::Good); 3]);
             assert!(report.chapters.iter().all(|c| c.diagnosis.is_none()));
         }
     }
