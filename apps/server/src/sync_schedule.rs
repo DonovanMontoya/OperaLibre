@@ -697,6 +697,7 @@ mod tests {
     use super::*;
     use chrono::Timelike;
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn schedule_outcomes_survive_dismissed_job_results() {
         let root = tempfile::tempdir().unwrap();
@@ -733,6 +734,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn saving_finished_results_leaves_handoffs_and_active_jobs_unchanged() {
         let root = tempfile::tempdir().unwrap();
