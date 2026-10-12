@@ -276,6 +276,8 @@ Chapters graded `poor` or `failed` by a run carry a `diagnosis`, as does any cha
 
 `POST /api/books/{book_id}/sync/generate` with `{ "chapters": [12, 13] }` aligns only those chapters, by their report `index`, then splices them into the served map: their old sentences and the recovery gaps inside them are replaced, the rest of the map is unchanged, the map gets a new `generatedAt`, and those report entries are regraded. A re-run chapter that fails keeps its previous sentences and records the new error; if every requested chapter fails, the map is unchanged and the job fails. The request needs a generated map that is not outdated, a report that is current for it, and a book that still divides into the same chapters (same labels and times) as the report; otherwise it returns 409 with a message saying to re-sync the whole book. An empty list returns 400. A request already covered by a queued whole-book sync, or by a queued re-run of the same chapters, returns that job; any other request for a book with a queued re-run returns 409.
 
+Reports include `mapDigest`, the SHA-256 digest of the map they describe. Replacing a map invalidates its report even when its size and generation time stay the same. Estimated coverage only credits sentences whose document and text match the chapter's EPUB sections.
+
 #### Playback progress
 
 Progress updates use JSON with the current track and timing fields:

@@ -1169,10 +1169,7 @@ async fn read_sync_map(
 ) -> anyhow::Result<(alignment::SyncMap, sync_report::MapIdentity)> {
     let bytes = fs::read(path).await?;
     let map: alignment::SyncMap = serde_json::from_slice(&bytes)?;
-    let identity = sync_report::MapIdentity {
-        map_generated_at: map.generated_at.clone(),
-        map_size: bytes.len() as u64,
-    };
+    let identity = sync_report::MapIdentity::from_bytes(map.generated_at.clone(), &bytes);
     Ok((map, identity))
 }
 
@@ -2009,10 +2006,10 @@ async fn write_sync_map(
     write_bytes_atomic(path, &bytes)
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
-    Ok(sync_report::MapIdentity {
-        map_generated_at: map.generated_at.clone(),
-        map_size: bytes.len() as u64,
-    })
+    Ok(sync_report::MapIdentity::from_bytes(
+        map.generated_at.clone(),
+        &bytes,
+    ))
 }
 
 pub(crate) fn scope_transcript(

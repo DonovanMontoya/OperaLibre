@@ -2627,9 +2627,26 @@ pub(crate) fn probe_sync_map(path: &FsPath, generated: bool) -> Option<ProbedSyn
         #[serde(default)]
         generated_at: Option<String>,
     }
-    let file = std::fs::File::open(path).ok()?;
-    let map_size = file.metadata().ok()?.len();
-    let probe = serde_json::from_reader::<_, Probe>(std::io::BufReader::new(file)).ok()?;
+    struct DigestReader {
+        file: std::fs::File,
+        digest: Sha256,
+        size: u64,
+    }
+    impl Read for DigestReader {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            let count = self.file.read(bytes)?;
+            self.digest.update(&bytes[..count]);
+            self.size += count as u64;
+            Ok(count)
+        }
+    }
+    let mut reader = std::io::BufReader::new(DigestReader {
+        file: std::fs::File::open(path).ok()?,
+        digest: Sha256::new(),
+        size: 0,
+    });
+    let probe = serde_json::from_reader::<_, Probe>(&mut reader).ok()?;
+    let reader = reader.into_inner();
     if probe
         .precision
         .as_deref()
@@ -2643,7 +2660,8 @@ pub(crate) fn probe_sync_map(path: &FsPath, generated: bool) -> Option<ProbedSyn
             && probe.mapping_revision < alignment::MAPPING_REVISION,
         identity: sync_report::MapIdentity {
             map_generated_at: probe.generated_at,
-            map_size,
+            map_size: reader.size,
+            map_digest: Some(hex_digest(reader.digest.finalize())),
         },
     })
 }
@@ -3733,6 +3751,7 @@ mod mapping_revision_tests {
         assert!(!find().report_current);
         let report = serde_json::json!({
             "mapGeneratedAt": "1", "mapSize": std::fs::metadata(&map).unwrap().len(),
+            "mapDigest": probe_sync_map(&map, true).unwrap().identity.map_digest,
             "graded": "run", "chapters": [{
                 "index": 0, "label": "One", "startSeconds": 0.0, "endSeconds": 100.0,
                 "textCoverage": 0.9, "gapSeconds": 0.0, "skippedText": 0, "status": "aligned",
