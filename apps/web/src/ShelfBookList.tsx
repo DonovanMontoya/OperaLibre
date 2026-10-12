@@ -1,4 +1,4 @@
-import { BookHeadphones, BookOpen, Check, Cloud, Images, Search, Smartphone, Timer, TriangleAlert, Users } from "lucide-react";
+import { BookHeadphones, BookOpen, Check, ChevronDown, Cloud, Images, Search, Smartphone, Timer, TriangleAlert, Users } from "lucide-react";
 import { hasExtras } from "./readalong";
 import { memo, useState } from "react";
 import { compactProgressLabel } from "./bookProgress";
@@ -97,7 +97,7 @@ export function ShelfFacetGroup({
   );
 }
 
-type ShelfRun = { label: string | null; items: Array<{ book: Book; index: number }> };
+type ShelfRun = { label: string | null; collapsed: boolean; items: Array<{ book: Book; index: number }> };
 
 /**
  * The shelf's book rows. Memoized because the rest of MainApp re-renders on
@@ -120,7 +120,8 @@ export const ShelfBookList = memo(function ShelfBookList({
   native,
   readalongEnabled,
   sentenceFollowAvailable,
-  onSelectBook
+  onSelectBook,
+  onToggleGroup
 }: {
   columns: ShelfRun[][];
   viewMode: ShelfViewMode;
@@ -137,6 +138,7 @@ export const ShelfBookList = memo(function ShelfBookList({
   readalongEnabled: boolean;
   sentenceFollowAvailable: boolean;
   onSelectBook: (book: Book) => void;
+  onToggleGroup: (label: string) => void;
 }) {
   const isCompactView = viewMode === "compact";
   return (
@@ -144,14 +146,23 @@ export const ShelfBookList = memo(function ShelfBookList({
       {columns.map((column, columnIndex) => (
         <div className="book-leaf" key={`leaf-${columnIndex}`}>
         {column.map((run) => (
-        <section className="book-sort-run" key={`${run.label ?? "book"}-${run.items[0].book.id}`}>
+        <section className={`book-sort-run ${run.collapsed ? "is-collapsed" : ""}`} key={`${run.label ?? "book"}-${run.items[0].book.id}`}>
           {run.label ? (
             <div className="book-sort-group" role="heading" aria-level={2}>
-              <span>{bookSortGroupCaption(sortMode)}</span>
-              <strong>{run.label}</strong>
+              <button
+                type="button"
+                className="book-sort-group-toggle"
+                aria-expanded={!run.collapsed}
+                onClick={() => onToggleGroup(run.label!)}
+              >
+                <ChevronDown className="book-sort-group-chevron" size={13} strokeWidth={2} aria-hidden="true" />
+                <span>{bookSortGroupCaption(sortMode)}</span>
+                <strong>{run.label}</strong>
+                <em>{run.items.length} {run.items.length === 1 ? "book" : "books"}</em>
+              </button>
             </div>
           ) : null}
-          {run.items.map(({ book, index }) => {
+          {run.collapsed ? null : run.items.map(({ book, index }) => {
         const progressPercent = book.progress?.percentComplete ?? 0;
         const availableOnDevice =
           demoMode
