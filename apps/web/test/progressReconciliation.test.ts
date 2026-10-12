@@ -107,6 +107,7 @@ function fixture() {
     "./formatting": { trackOffsetSeconds: () => 0 }
   };
   const options: Record<string, any> = {
+    clipPreviewBookIdRef: ref(null),
     currentUser: { id: "reader" }, playbackBook: book, playbackBookKey: "book", nativeAudio: false,
     acknowledgedServerPositionRef: ref(new Map()), explicitSessionStartBookIdRef: ref(null),
     overruledSaveRef: ref(new Map()), playCancelGenerationRef: ref(0), playWhenTrackLoads: ref(false),
@@ -1574,3 +1575,23 @@ for (const settled of [false, true]) {
     assert.equal(server.bookPositionSeconds, 1800);
   });
 }
+
+test("clip previews leave the durable checkpoint and progress queue untouched", async () => {
+  const f = fixture();
+  f.write(f.local);
+  f.options.restoredProgressBookId.current = f.book.id;
+  f.options.playbackTouchedRef.current = true;
+  f.options.clipPreviewBookIdRef.current = f.book.id;
+  f.options.audioRef.current.currentTime = 15;
+  const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+  await sync.persistProgress();
+  assert.equal(f.checkpoint().bookPositionSeconds, f.local.bookPositionSeconds);
+  assert.equal(f.options.queuedProgressSaves.current.size, 0);
+  assert.equal(f.writes.length, 0);
+  f.options.clipPreviewBookIdRef.current = null;
+  f.options.audioRef.current.currentTime = f.local.positionSeconds;
+  await sync.persistProgress();
+  await sync.flushProgressSaveQueue();
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.writes[0].progress.bookPositionSeconds, f.local.bookPositionSeconds);
+});
