@@ -2254,7 +2254,8 @@ impl RecognitionSettings {
         let code = language
             .and_then(|value| value.split(['-', '_']).next())
             .map(|value| value.trim().to_ascii_lowercase())
-            .filter(|value| !value.is_empty());
+            .filter(|value| !value.is_empty())
+            .map(|value| if value == "eng" { "en".into() } else { value });
         let english = code.as_deref() == Some("en");
         Self {
             model: if english { "tiny.en" } else { "tiny" },
@@ -3433,12 +3434,18 @@ impl<'a> Aligner<'a> {
         let output_path = self
             .temp_dir
             .join(format!("alignment-{scope_number}-{window}.json"));
-        let args: Vec<std::ffi::OsString> = vec![
+        let mut args: Vec<std::ffi::OsString> = vec![
             "align".into(),
             audio_path.into(),
             transcript_path.as_os_str().into(),
             output_path.as_os_str().into(),
         ];
+        // Without a language, Echogarden guesses one from this window's text.
+        // Short or name-heavy passages can read as Klingon or Tagalog, which
+        // eSpeak cannot voice, and the whole book then fails.
+        if let Some(language) = &self.recognition.language {
+            args.push(format!("--language={language}").into());
+        }
         run_alignment_cli(
             self.cli_path,
             self.cli_args,
@@ -4069,6 +4076,54 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
                 .to_string()
                 .contains("audio extraction timed out")
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn forced_alignment_uses_the_book_language_instead_of_guessing() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = crate::unit_tests::fake_libation_state(root.path());
+        let job_id = create_job(&state, "sync-generate").await;
+        let cli = root.path().join("aligner");
+        // Echogarden's own guess for a short passage can be a language eSpeak
+        // cannot voice; only an explicit language avoids that failure.
+        std::fs::write(
+            &cli,
+            r#"#!/bin/sh
+case " $* " in
+  *" --language=en "*) ;;
+  *) echo "Error: Couldn't parse language identifier 'tlh'." >&2; exit 1;;
+esac
+printf '[{"type":"sentence","text":"Kaladin ran.","startTime":0,"endTime":2}]' > "$4"
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let audio = root.path().join("chapter.wav");
+        std::fs::write(&audio, "").unwrap();
+        let transcript = alignment::build_transcript(&[alignment::SpineSection {
+            href: "a.html".into(),
+            text: "Kaladin ran.".into(),
+        }]);
+        let recognition = RecognitionSettings::for_language(Some("eng"));
+        let aligner = Aligner {
+            state: &state,
+            job_id: &job_id,
+            cli_path: &cli,
+            cli_args: &[],
+            ffmpeg_path: None,
+            temp_dir: root.path(),
+            recognition: &recognition,
+            heard: Default::default(),
+        };
+        let fragments = aligner
+            .align_pass(&audio, &transcript, 0.0, 0, 0, "Chapter 55", &[])
+            .await
+            .unwrap();
+        assert_eq!(recognition.model, "tiny.en");
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].text, "Kaladin ran.");
     }
 
     fn chapter(title: &str, start_seconds: f64, end_seconds: Option<f64>) -> SyncChapterInput {
