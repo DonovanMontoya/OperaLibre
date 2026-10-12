@@ -735,17 +735,25 @@ jobs:
         shell: bash
         run: |
           previous_tag="$(node release-signing-tools/script/previous_release.mjs)"
+          # A tag left behind by rewritten history still names the tree it
+          # released. List commits since the commit here that carries that
+          # tree, or none when this history never had it.
+          previous_ref="${previous_tag}"
+          if [[ -n "${previous_tag}" ]] && ! git merge-base --is-ancestor "${previous_tag}" HEAD; then
+            previous_tree="$(git rev-parse "${previous_tag}^{tree}")"
+            previous_ref="$(git log --format='%H %T' HEAD | awk -v tree="${previous_tree}" '$2 == tree && !found { print $1; found = 1 }')"
+          fi
           {
             echo "## What's changed"
             echo
             if [[ -n "${RELEASE_DESCRIPTION//[[:space:]]/}" ]]; then
               printf '%s\n\n' "${RELEASE_DESCRIPTION}"
             fi
-            if [[ -n "${previous_tag}" ]]; then
-              git log --reverse --no-merges --pretty='- %s (`%h`)' "${previous_tag}..HEAD"
+            if [[ -n "${previous_ref}" ]]; then
+              git log --reverse --no-merges --pretty='- %s (`%h`)' "${previous_ref}..HEAD"
               echo
-              echo "**Full changelog:** https://github.com/${GITHUB_REPOSITORY}/compare/${previous_tag}...${RELEASE_TAG}"
-            else
+              echo "**Full changelog:** https://github.com/${GITHUB_REPOSITORY}/compare/${previous_ref}...${RELEASE_TAG}"
+            elif [[ -z "${previous_tag}" ]]; then
               git log --reverse --no-merges --pretty='- %s (`%h`)' HEAD
             fi
             echo

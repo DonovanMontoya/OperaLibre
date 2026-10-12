@@ -18,7 +18,9 @@ export function previousReleaseTag(tags, { channel, tag, stableTag = "" }) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const tags = execFileSync("git", ["tag", "--merged", "HEAD"], { encoding: "utf8" }).trim().split("\n");
+  // Not only tags merged into HEAD: rewritten history leaves the previous
+  // release unreachable, and the workflow maps it back onto this history.
+  const tags = execFileSync("git", ["tag"], { encoding: "utf8" }).trim().split("\n");
   console.log(previousReleaseTag(tags, { channel: process.env.RELEASE_CHANNEL,
     tag: process.env.RELEASE_TAG, stableTag: process.env.STABLE_TAG }));
 }
