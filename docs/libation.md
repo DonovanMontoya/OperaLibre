@@ -13,15 +13,15 @@ This integration is entirely optional. If you don't configure it, the relevant U
 
 - Libation must be **installed** on the same machine as the server (or somewhere the server process can execute).
 - On Linux, the system ICU runtime is required (a versioned `libicu` package on Ubuntu/Debian, `libicu` on Fedora/RHEL, or `icu-libs` on Alpine). If it is missing, the one-line installer offers to install the correct package with administrator access and verifies it before completing Libation setup.
-- A recent Libation CLI with `login-external` and `list-accounts` support is required for the installer's guided sign-in and account discovery. Existing authenticated Libation profiles remain supported.
+- A recent Libation CLI with `login-external` and `list-accounts` support is required for browser sign-in and account discovery. Existing authenticated Libation profiles remain supported.
 - OperaLibre stages server-requested downloads inside `library_root`; the server needs write access there.
 
 ## Set it up
 
-The [one-line installer](installing-a-release.md#setting-up-the-audible-import-during-install) can install Libation, configure its settings folder, and guide you through signing in to Audible. Accept its optional sign-in prompt to launch Libation directly during setup. After a successful sign-in, continue from step 4 below. If you skip sign-in, the installer prints a command with the correct paths to connect later.
+The [one-line installer](installing-a-release.md#setting-up-the-audible-import-during-install) can install Libation and configure its settings folder. After it finishes, continue from step 4 below and connect your Audible account in OperaLibre.
 
 1. Install Libation on the OperaLibre server and configure `libation_cli_path` (or place the CLI on `PATH`).
-2. Add every Audible account the server should browse in Libation itself, using its account settings or the installer's guided sign-in. You can also connect an account from OperaLibre using the browser sign-in below.
+2. Add every Audible account the server should browse in Libation itself, using its account settings. You can also connect an account from OperaLibre using the browser sign-in below.
 3. Point OperaLibre at that Libation installation with `libation_files_dir`, the directory holding `AccountsSettings.json` and `Settings.json`.
 4. Sign in to OperaLibre as an administrator. In installed apps, open **Settings → Book stores → Audible**; on the web, open **Get books → Audible**. OperaLibre checks Libation, browser sign-in support, and library storage automatically. Existing Libation accounts appear automatically; choose **Manage** on the web to change their settings. Use **Check setup** in account management to check the server again.
 
@@ -150,4 +150,4 @@ library sort orders.
 
 ## Security note
 
-The integration runs a local executable. Administrators can trigger acquisition and API clients can manage Audible sign-ins, so grant that role only to trusted people. Audible passwords are entered on Amazon's website. The installer's sign-in passes the final response URL directly to Libation; managed-account API sign-in passes it through OperaLibre once. Libation stores long-lived identity tokens in its private profile directory. Use HTTPS outside a trusted LAN/VPN, never log request bodies, and protect the Libation settings folder and server's `data_dir` as credential-bearing storage.
+The integration runs a local executable. Administrators can trigger acquisition and API clients can manage Audible sign-ins, so grant that role only to trusted people. Audible passwords are entered on Amazon's website. Signing in from OperaLibre passes the final response URL through the server once. Libation stores long-lived identity tokens in its private profile directory. Use HTTPS outside a trusted LAN/VPN, never log request bodies, and protect the Libation settings folder and server's `data_dir` as credential-bearing storage.
