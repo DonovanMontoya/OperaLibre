@@ -18,6 +18,7 @@ export function serverCapabilities(
     // Includes the device-only ledger; detailed listening statistics still need the server.
     statistics: opera,
     sharedActivity: connected && opera,
+    clips: connected && opera,
     imports: connected && opera,
     administration: connected && opera && user.isAdmin,
     metadataEditing: connected && opera && user.isAdmin,

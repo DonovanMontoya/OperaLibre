@@ -132,6 +132,11 @@ The archive includes accounts, permissions, progress, per-book settings, reading
 | `PUT` | `/api/books/{book_id}/progress` | Save playback progress for the current user and book. |
 | `PUT` | `/api/books/{book_id}/completion` | Mark the book finished or unfinished for the current user. Manual changes use `{ "finished": true }`, preserve position, and do not invent a dated reading-history event. Natural completion also sends `trackId`, `positionSeconds`, `bookPositionSeconds`, and `durationSeconds` so the final position, status, and actual completion are stored atomically. |
 | `PUT` | `/api/books/{book_id}/volume` | Set the current user's playback gain for the book. Body `{ "volumeGain": number }`, a linear multiplier clamped to `0.5`–`16.0`. Returns the updated book. |
+| `GET` | `/api/books/{book_id}/clips` | The current user's clips for the book, in listening order: `{ "clips": [...], "canExportAudio": bool }`. `canExportAudio` is false when the server has no ffmpeg. |
+| `POST` | `/api/books/{book_id}/clips` | Save a clip. Body `{ "startSeconds": number, "endSeconds": number, "title": string \| null, "note": string \| null, "id": string }`. Positions are whole-book seconds; the range is fitted to the book and must be 1–300 seconds long. `id` is optional: 32 lowercase hex characters chosen by the client make the request safe to repeat, and a repeat returns the clip as first stored. Returns the clip. |
+| `PUT` | `/api/books/{book_id}/clips/{clip_id}` | Replace a clip's range, title, and note. Same body as saving, without `id`. Returns the clip. |
+| `DELETE` | `/api/books/{book_id}/clips/{clip_id}` | Remove a clip. Returns 204, including when it is already gone. |
+| `GET` | `/api/books/{book_id}/clips/{clip_id}/audio` | The clip as an AAC `.m4a` attachment, encoded on request and joined across tracks when it spans them. Requires ffmpeg; 404 otherwise. One export runs at a time. |
 | `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. Admin only. |
 | `POST` | `/api/library/upload` | Upload one or more audio files as a new library folder. Admin only; multipart fields are `bookName` and one or more `files`. Subject to `max_upload_gib`. |
 | `POST` | `/api/books/{book_id}/ebook` | Pair one validated, unencrypted EPUB with an existing book. Admin only; multipart field `file`. Limited to 64 MiB or `max_upload_gib`, whichever is lower. Does not overwrite files; refuses books with an existing paired EPUB or sync map. Returns the refreshed book list. |
@@ -139,6 +144,8 @@ The archive includes accounts, permissions, progress, per-book settings, reading
 | `POST` | `/api/library/faststart` | Start a faststart conversion job. Admin only; body `{ "bookId": string \| null, "includeActive": bool }`. Returns `{ "jobId": ... }` to poll on `/api/jobs/{job_id}`. |
 
 Book responses include `hasCoverOverride`, `coverArtContentType`, and a versioned `coverArtUrl`; use the returned URL after changes. Cover reads retain book-access restrictions and ETag validation. Uploads never rewrite audio: a managed hidden image sidecar lives in the writable book folder and the metadata store records its selection. Both are needed to preserve an override in a backup or move. Invalid uploads leave the current cover unchanged.
+
+A clip is `{ "id", "bookId", "startSeconds", "endSeconds", "title", "note", "createdAt", "updatedAt" }`. Clips belong to the reader who saved them, follow the same book-access rules as the book, are removed with the account, and are included in server backups. Saving, changing, or exporting a clip never reads or writes playback progress.
 
 #### Faststart conversion
 

@@ -9930,3 +9930,77 @@ async fn libation_catalogue_wait_honors_shutdown_while_readiness_is_blocked() {
         "readiness must not override buffered shutdown"
     );
 }
+
+#[test]
+fn a_clip_is_split_across_the_tracks_it_touches() {
+    let book = book_with_tracks(
+        None,
+        vec![
+            track_with_duration("one", 0, Some(100.0)),
+            track_with_duration("two", 1, Some(50.0)),
+            track_with_duration("three", 2, Some(80.0)),
+        ],
+    );
+    let segment = |track_id: &str, offset_seconds: f64, duration_seconds: f64| super::ClipSegment {
+        track_id: track_id.to_string(),
+        offset_seconds,
+        duration_seconds,
+    };
+
+    assert_eq!(
+        super::clip_segments(&book, 20.0, 60.0),
+        vec![segment("one", 20.0, 40.0)]
+    );
+    assert_eq!(
+        super::clip_segments(&book, 90.0, 160.0),
+        vec![
+            segment("one", 90.0, 10.0),
+            segment("two", 0.0, 50.0),
+            segment("three", 0.0, 10.0)
+        ]
+    );
+    // Ending exactly on a boundary must not add an empty piece of the next
+    // track, which ffmpeg would refuse.
+    assert_eq!(
+        super::clip_segments(&book, 70.0, 100.0),
+        vec![segment("one", 70.0, 30.0)]
+    );
+    assert_eq!(
+        super::clip_segments(&book, 100.0, 130.0),
+        vec![segment("two", 0.0, 30.0)]
+    );
+}
+
+#[test]
+fn a_clip_in_a_track_of_unknown_length_is_taken_from_that_track() {
+    let book = book_with_tracks(
+        None,
+        vec![
+            track_with_duration("one", 0, Some(100.0)),
+            track_with_duration("two", 1, None),
+            track_with_duration("three", 2, Some(80.0)),
+        ],
+    );
+    assert_eq!(
+        super::clip_segments(&book, 130.0, 170.0),
+        vec![super::ClipSegment {
+            track_id: "two".to_string(),
+            offset_seconds: 30.0,
+            duration_seconds: 40.0,
+        }]
+    );
+}
+
+#[test]
+fn a_clip_longer_than_five_minutes_is_refused() {
+    let book = book_with_tracks(
+        Some(3_600.0),
+        vec![track_with_duration("one", 0, Some(3_600.0))],
+    );
+    assert_eq!(
+        super::clip_range(&book, 100.0, 400.0).unwrap(),
+        (100.0, 400.0)
+    );
+    assert!(super::clip_range(&book, 100.0, 400.5).is_err());
+    assert!(super::clip_range(&book, f64::NAN, 10.0).is_err());
+}

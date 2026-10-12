@@ -1,3 +1,4 @@
+import { ClippingSetting } from "./ClippingSetting";
 import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BehaviorSection } from "./BehaviorSection";
 import { BookPreviewSetting } from "./BookPreviewSetting";
@@ -227,6 +228,9 @@ export function BookStoreSettings({
 }
 
 export function BehaviorSettings({
+  clippingEnabled,
+  clippingAvailable,
+  toggleClippingEnabled,
   bookPreviewsAvailable,
   bookPreviewsEnabled,
   toggleBookPreviewsEnabled,
@@ -240,6 +244,9 @@ export function BehaviorSettings({
   togglePageTurnAnimation,
   updateFollowAggressiveness
 }: {
+  clippingEnabled: boolean;
+  clippingAvailable: boolean;
+  toggleClippingEnabled: () => void;
   bookPreviewsAvailable: boolean;
   bookPreviewsEnabled: boolean;
   toggleBookPreviewsEnabled: () => void;
@@ -257,6 +264,7 @@ export function BehaviorSettings({
     <section className="settings-card">
       <BehaviorSection>
         <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
+        {clippingAvailable ? <ClippingSetting enabled={clippingEnabled} onToggle={toggleClippingEnabled} /> : null}
         {bookPreviewsAvailable ? <BookPreviewSetting enabled={bookPreviewsEnabled} onToggle={toggleBookPreviewsEnabled} /> : null}
         <div className="settings-toggle-row">
           <span>

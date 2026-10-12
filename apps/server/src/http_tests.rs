@@ -7392,6 +7392,404 @@ async fn libation_status_route_exposes_pending_sign_in_without_waiting_for_the_c
     server.state.libation_login_sessions.lock().await.clear();
 }
 
+// ---------------------------------------------------------------------------
+// Clips
+// ---------------------------------------------------------------------------
+
+const CLIP_ID: &str = "0123456789abcdef0123456789abcdef";
+
+async fn save_clip(
+    server: &TestServer,
+    token: &str,
+    book: &str,
+    payload: serde_json::Value,
+) -> TestResponse {
+    server
+        .send_json("POST", &format!("/api/books/{book}/clips"), token, payload)
+        .await
+}
+
+async fn listed_clips(server: &TestServer, token: &str, book: &str) -> Vec<serde_json::Value> {
+    let response = server.get(&format!("/api/books/{book}/clips"), token).await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    response.json()["clips"].as_array().unwrap().clone()
+}
+
+#[tokio::test]
+async fn a_clip_is_saved_trimmed_and_removed() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&owner).await;
+
+    let saved = save_clip(
+        &server,
+        &owner,
+        &book,
+        serde_json::json!({ "startSeconds": 2.0, "endSeconds": 12.0 }),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    let id = saved.json()["id"].as_str().unwrap().to_string();
+
+    let trimmed = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/clips/{id}"),
+            &owner,
+            serde_json::json!({
+                "startSeconds": 4.0,
+                "endSeconds": 9.5,
+                "title": "  The reveal  ",
+                "note": " "
+            }),
+        )
+        .await;
+    assert_eq!(trimmed.status, StatusCode::OK, "{}", trimmed.text());
+
+    let clips = listed_clips(&server, &owner, &book).await;
+    assert_eq!(clips.len(), 1);
+    assert_eq!(clips[0]["startSeconds"], 4.0);
+    assert_eq!(clips[0]["endSeconds"], 9.5);
+    assert_eq!(clips[0]["title"], "The reveal");
+    assert!(clips[0]["note"].is_null(), "a blank note was kept");
+
+    for _ in 0..2 {
+        let removed = server
+            .send(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/books/{book}/clips/{id}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text());
+    }
+    assert!(listed_clips(&server, &owner, &book).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_repeated_clip_save_lands_once_and_keeps_a_later_trim() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&owner).await;
+    let payload = serde_json::json!({ "id": CLIP_ID, "startSeconds": 1.0, "endSeconds": 11.0 });
+
+    let first = save_clip(&server, &owner, &book, payload.clone()).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text());
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/clips/{CLIP_ID}"),
+            &owner,
+            serde_json::json!({ "startSeconds": 3.0, "endSeconds": 8.0 }),
+        )
+        .await;
+
+    // The phone never saw the first reply and sends the save again.
+    let retried = save_clip(&server, &owner, &book, payload).await;
+    assert_eq!(retried.status, StatusCode::OK, "{}", retried.text());
+
+    let clips = listed_clips(&server, &owner, &book).await;
+    assert_eq!(clips.len(), 1, "a retried save made a second clip");
+    assert_eq!(clips[0]["startSeconds"], 3.0, "a retried save undid a trim");
+}
+
+#[tokio::test]
+async fn a_clip_is_fitted_to_the_book_and_bounded() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&owner).await;
+
+    // Ten seconds past the last moment of a twenty-second book.
+    let fitted = save_clip(
+        &server,
+        &owner,
+        &book,
+        serde_json::json!({ "startSeconds": -4.0, "endSeconds": 30.0 }),
+    )
+    .await;
+    assert_eq!(fitted.status, StatusCode::OK, "{}", fitted.text());
+    assert_eq!(fitted.json()["startSeconds"], 0.0);
+    assert_eq!(fitted.json()["endSeconds"], 20.0);
+
+    for (payload, why) in [
+        (
+            serde_json::json!({ "startSeconds": 5.0, "endSeconds": 5.5 }),
+            "shorter than a second",
+        ),
+        (
+            serde_json::json!({ "startSeconds": 9.0, "endSeconds": 4.0 }),
+            "ends before it starts",
+        ),
+        (
+            serde_json::json!({ "startSeconds": 19.8, "endSeconds": 60.0 }),
+            "nothing left after fitting to the book",
+        ),
+        (
+            serde_json::json!({ "id": "not-an-id", "startSeconds": 1.0, "endSeconds": 5.0 }),
+            "a malformed id",
+        ),
+        (
+            serde_json::json!({ "startSeconds": 1.0, "endSeconds": 5.0, "title": "x".repeat(201) }),
+            "an overlong title",
+        ),
+    ] {
+        let refused = save_clip(&server, &owner, &book, payload).await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "accepted: {why}");
+    }
+    assert_eq!(listed_clips(&server, &owner, &book).await.len(), 1);
+}
+
+#[tokio::test]
+async fn clips_are_private_and_follow_book_access() {
+    let server = TestServer::start(2).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "clip-reader").await;
+    let books = server.get("/api/books", &owner).await.json();
+    let books = books.as_array().unwrap();
+    let shared = books[0]["id"].as_str().unwrap().to_string();
+    let denied = books[1]["id"].as_str().unwrap().to_string();
+
+    let saved = save_clip(
+        &server,
+        &owner,
+        &shared,
+        serde_json::json!({ "id": CLIP_ID, "startSeconds": 2.0, "endSeconds": 9.0 }),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+
+    assert!(
+        listed_clips(&server, &reader, &shared).await.is_empty(),
+        "one listener's clips were shown to another"
+    );
+    let clip_path = format!("/api/books/{shared}/clips/{CLIP_ID}");
+    let edited = server
+        .send_json(
+            "PUT",
+            &clip_path,
+            &reader,
+            serde_json::json!({ "startSeconds": 0.0, "endSeconds": 3.0 }),
+        )
+        .await;
+    assert_eq!(edited.status, StatusCode::NOT_FOUND, "{}", edited.text());
+    server
+        .send(
+            Request::builder()
+                .method("DELETE")
+                .uri(&clip_path)
+                .header(header::AUTHORIZATION, format!("Bearer {reader}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    let kept = listed_clips(&server, &owner, &shared).await;
+    assert_eq!(kept.len(), 1, "another listener removed the clip");
+    assert_eq!(kept[0]["startSeconds"], 2.0);
+
+    // The reader may have the same id for a clip of their own.
+    let own = save_clip(
+        &server,
+        &reader,
+        &shared,
+        serde_json::json!({ "id": CLIP_ID, "startSeconds": 5.0, "endSeconds": 7.0 }),
+    )
+    .await;
+    assert_eq!(own.status, StatusCode::OK, "{}", own.text());
+    assert_eq!(own.json()["startSeconds"], 5.0);
+
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let grant = server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{reader_id}/book-access"),
+            &owner,
+            serde_json::json!({ "allowedBookIds": [shared] }),
+        )
+        .await;
+    assert_eq!(grant.status, StatusCode::OK, "{}", grant.text());
+    let hidden = server
+        .get(&format!("/api/books/{denied}/clips"), &reader)
+        .await;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.text());
+    let refused = save_clip(
+        &server,
+        &reader,
+        &denied,
+        serde_json::json!({ "startSeconds": 1.0, "endSeconds": 5.0 }),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::NOT_FOUND, "{}", refused.text());
+}
+
+#[tokio::test]
+async fn clips_leave_with_their_listener_and_return_with_a_backup() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "clip-keeper").await;
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (book, _) = server.first_book_and_track(&owner).await;
+    for token in [&owner, &reader] {
+        let saved = save_clip(
+            &server,
+            token,
+            &book,
+            serde_json::json!({ "startSeconds": 3.0, "endSeconds": 13.0, "title": "Kept" }),
+        )
+        .await;
+        assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    }
+    let backup = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(backup.status, StatusCode::OK, "{}", backup.text());
+
+    let deleted = server
+        .send(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/users/{reader_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.text());
+    let stored = |server: &TestServer| {
+        let database = server.state.database.clone();
+        async move {
+            database
+                .call(|connection| {
+                    connection
+                        .query_row("SELECT COUNT(*) FROM clips", [], |row| row.get::<_, i64>(0))
+                })
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(stored(&server).await, 1, "a deleted listener's clip stayed");
+
+    let restored = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/backup")
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(backup.body.clone()))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.text());
+    assert_eq!(stored(&server).await, 2, "the backup dropped a clip");
+    let clips = listed_clips(&server, &owner, &book).await;
+    assert_eq!(clips[0]["title"], "Kept");
+}
+
+#[tokio::test]
+async fn a_backup_from_before_clips_still_restores() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let mut backup = server.get("/api/admin/backup", &owner).await.json();
+    backup["data"].as_object_mut().unwrap().remove("clips");
+
+    let restored = server
+        .send_json("POST", "/api/admin/backup", &owner, backup)
+        .await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.text());
+}
+
+#[tokio::test]
+async fn a_clip_across_two_tracks_exports_as_one_audio_file() {
+    let Some(tools) = faststart::discover_tools(None, None) else {
+        eprintln!("skipping: ffmpeg is not installed");
+        return;
+    };
+    let Some(ffprobe) = tools.ffprobe.clone() else {
+        eprintln!("skipping: ffprobe is not installed");
+        return;
+    };
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&owner).await;
+    let saved = save_clip(
+        &server,
+        &owner,
+        &book,
+        // Each track is ten seconds, so this takes four from the first and
+        // three from the second.
+        serde_json::json!({ "id": CLIP_ID, "startSeconds": 6.0, "endSeconds": 13.0 }),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    let audio_path = format!("/api/books/{book}/clips/{CLIP_ID}/audio");
+
+    let unavailable = server.get(&audio_path, &owner).await;
+    assert_eq!(unavailable.status, StatusCode::NOT_FOUND);
+    let listing = server
+        .get(&format!("/api/books/{book}/clips"), &owner)
+        .await
+        .json();
+    assert_eq!(listing["canExportAudio"], false);
+
+    server.state.faststart_tools = Some(tools);
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+
+    let exported = server.get(&audio_path, &owner).await;
+    assert_eq!(exported.status, StatusCode::OK, "{}", exported.text());
+    assert_eq!(exported.header(header::CONTENT_TYPE), "audio/mp4");
+    assert!(
+        exported
+            .header(header::CONTENT_DISPOSITION)
+            .contains(".m4a"),
+        "the export has no file name to save under"
+    );
+
+    let scratch = tempfile::tempdir().unwrap();
+    let file = scratch.path().join("clip.m4a");
+    std::fs::write(&file, &exported.body).unwrap();
+    let probed = std::process::Command::new(ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(&file)
+        .output()
+        .expect("ffprobe should run");
+    let duration: f64 = String::from_utf8_lossy(&probed.stdout)
+        .trim()
+        .parse()
+        .expect("the export is not readable audio");
+    assert!(
+        (duration - 7.0).abs() < 0.5,
+        "expected seven seconds of audio, got {duration}"
+    );
+
+    let leftovers = std::fs::read_dir(&server.state.download_temp_dir)
+        .unwrap()
+        .count();
+    assert_eq!(leftovers, 0, "the export left its working file behind");
+
+    let reader = server.add_reader(&owner, "clip-borrower").await;
+    let borrowed = server.get(&audio_path, &reader).await;
+    assert_eq!(
+        borrowed.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        borrowed.text()
+    );
+}
+
 #[tokio::test]
 async fn existing_sync_maps_are_graded_in_the_background_for_administrators() {
     let server = TestServer::start(1).await;
