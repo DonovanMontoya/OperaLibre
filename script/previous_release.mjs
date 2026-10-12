@@ -17,10 +17,24 @@ export function previousReleaseTag(tags, { channel, tag, stableTag = "" }) {
     .sort((a, b) => compare(b, a))[0] ?? (channel === "nightly" ? stableTag : "");
 }
 
+// History rewritten after a release leaves its tag unreachable from HEAD but
+// still naming the tree it released. Returns the tag when HEAD descends from
+// it, otherwise the newest commit on HEAD that carries that tree. Listing
+// commits since an unrelated tag would sign most of the history into the notes.
+export function changelogBase(tag, git) {
+  if (!tag) return "";
+  const commit = git(["rev-parse", `${tag}^{commit}`]);
+  const tree = git(["rev-parse", `${tag}^{tree}`]);
+  const history = git(["log", "--format=%H %T", "HEAD"]).split("\n").map((line) => line.split(" "));
+  if (history.some(([hash]) => hash === commit)) return tag;
+  const match = history.find(([, candidate]) => candidate === tree);
+  if (!match) throw new Error(`No commit in this history matches release ${tag}; its changelog has no starting point.`);
+  return match[0];
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  // Not only tags merged into HEAD: rewritten history leaves the previous
-  // release unreachable, and the workflow maps it back onto this history.
-  const tags = execFileSync("git", ["tag"], { encoding: "utf8" }).trim().split("\n");
-  console.log(previousReleaseTag(tags, { channel: process.env.RELEASE_CHANNEL,
-    tag: process.env.RELEASE_TAG, stableTag: process.env.STABLE_TAG }));
+  const git = (args) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).trim();
+  const tag = previousReleaseTag(git(["tag"]).split("\n"), { channel: process.env.RELEASE_CHANNEL,
+    tag: process.env.RELEASE_TAG, stableTag: process.env.STABLE_TAG });
+  console.log(changelogBase(tag, git));
 }
