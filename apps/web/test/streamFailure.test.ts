@@ -35,7 +35,7 @@ test("a probe that cannot reach the server stays generic", async () => {
   assert.equal(await streamFailureMessage(URL, unreachable), STREAM_LOAD_FAILED);
 });
 
-test("the probe asks for one byte and bypasses the cache", async () => {
+test("the probe asks for one byte with the media request's credentials, bypassing the cache", async () => {
   let seen: RequestInit | undefined;
   const recording: typeof fetch = async (_input, init) => {
     seen = init;
@@ -43,5 +43,6 @@ test("the probe asks for one byte and bypasses the cache", async () => {
   };
   await streamFailureMessage(URL, recording);
   assert.deepEqual(seen?.headers, { Range: "bytes=0-0" });
+  assert.equal(seen?.credentials, "include");
   assert.equal(seen?.cache, "no-store");
 });

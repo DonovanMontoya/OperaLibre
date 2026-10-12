@@ -18,6 +18,9 @@ export async function streamFailureMessage(
   try {
     response = await fetchStream(streamUrl, {
       headers: { Range: "bytes=0-0" },
+      // The media element sends cookies even to another origin; the probe must
+      // too, or a proxy's sign-in check answers instead of the stream.
+      credentials: "include",
       cache: "no-store"
     });
   } catch {
