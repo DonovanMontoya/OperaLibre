@@ -1,3 +1,4 @@
+import { ClippingSetting } from "./ClippingSetting";
 import { BehaviorSection } from "./BehaviorSection";
 import { ContinueReadingSetting } from "./ContinueReadingSetting";
 import type { usePurchases } from "./usePurchases";
@@ -123,6 +124,7 @@ export function renderUserMenu({
       ) : null}
       {!native ? <BehaviorSection>
         <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
+        {capabilities.clips ? <ClippingSetting enabled={readerPreferences.clippingEnabled} onToggle={readerPreferences.toggleClippingEnabled} /> : null}
         {sentenceFollowAvailable ? (
           <div className="user-menu-follow-aggressiveness" role="group" aria-labelledby="menu-follow-aggressiveness-label">
             <div>

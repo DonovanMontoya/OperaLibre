@@ -1,3 +1,4 @@
+import { ClippingSetting } from "./ClippingSetting";
 import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BehaviorSection } from "./BehaviorSection";
 import { ContinueReadingSetting } from "./ContinueReadingSetting";
@@ -226,6 +227,9 @@ export function BookStoreSettings({
 }
 
 export function BehaviorSettings({
+  clippingEnabled,
+  clippingAvailable,
+  toggleClippingEnabled,
   continueReadingAutoplay,
   toggleContinueReadingAutoplay,
   followAggressiveness,
@@ -236,6 +240,9 @@ export function BehaviorSettings({
   togglePageTurnAnimation,
   updateFollowAggressiveness
 }: {
+  clippingEnabled: boolean;
+  clippingAvailable: boolean;
+  toggleClippingEnabled: () => void;
   continueReadingAutoplay: boolean;
   toggleContinueReadingAutoplay: () => void;
   followAggressiveness: FollowAggressiveness;
@@ -250,6 +257,7 @@ export function BehaviorSettings({
     <section className="settings-card">
       <BehaviorSection>
         <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
+        {clippingAvailable ? <ClippingSetting enabled={clippingEnabled} onToggle={toggleClippingEnabled} /> : null}
         <div className="settings-toggle-row">
           <span>
             <strong>Games tab</strong>

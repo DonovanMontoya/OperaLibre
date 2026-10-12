@@ -20,7 +20,7 @@ import { BookVolumeControl, PlaybackSpeedControl } from "./PlaybackControls";
 import { formatSleepTimerMinutes, SLEEP_TIMER_MAX_MINUTES, SLEEP_TIMER_MIN_MINUTES } from "./sleepTimer";
 import type { Book, Chapter, Progress } from "./types";
 
-export type NativePlayerSheet = "speed" | "sleep" | "chapters" | "details" | null;
+export type NativePlayerSheet = "speed" | "sleep" | "chapters" | "details" | "clips" | null;
 
 export function BookDetailsSheet({
   activeChapter,
@@ -31,6 +31,7 @@ export function BookDetailsSheet({
   displayBookRemainingSeconds,
   markBookUnplayed,
   openBookDetails,
+  openClips,
   playbackBook,
   playbackDescription,
   setNativePlayerSheet
@@ -43,6 +44,7 @@ export function BookDetailsSheet({
   displayBookRemainingSeconds: number | null;
   markBookUnplayed: (book: Book) => void;
   openBookDetails: (bookId: string) => void;
+  openClips?: () => void;
   playbackBook: Book;
   playbackDescription: string | null;
   setNativePlayerSheet: Dispatch<SetStateAction<NativePlayerSheet>>;
@@ -91,6 +93,14 @@ export function BookDetailsSheet({
                 : "Progress unavailable"}
             </small>
           </div>
+        ) : null}
+
+        {openClips ? (
+          <button type="button" className="book-saved-clips" onClick={openClips}>
+            <Bookmark size={21} aria-hidden="true" />
+            <span><strong>Saved clips</strong><small>Revisit, trim, and share passages from this book</small></span>
+            <ChevronRight size={18} aria-hidden="true" />
+          </button>
         ) : null}
 
         <div className="details-sheet-facts">

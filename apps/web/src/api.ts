@@ -2,6 +2,7 @@ import { createPlaybackReporter } from "./playbackReporting";
 import type { ServerBackend, ProgressWrite, ProgressWriteOptions } from "./serverBackend";
 import { Capacitor } from "@capacitor/core";
 import { ApiError } from "./apiError";
+import type { Clip } from "./clips";
 import type {
   AlignmentStatus,
   AuthStatus,
@@ -1051,6 +1052,68 @@ export async function setBookVolume(bookId: string, volumeGain: number): Promise
     if (error instanceof ApiError && error.status === 404) return false;
     throw error;
   }
+}
+
+export type ClipList = { clips: Clip[]; canExportAudio: boolean };
+
+/** A book's clips, or null from a server released before clips existed. */
+export async function listClips(bookId: string): Promise<ClipList | null> {
+  try {
+    return await request<ClipList>(`/api/books/${encodeURIComponent(bookId)}/clips`);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+type ClipFields = Pick<Clip, "id" | "bookId" | "startSeconds" | "endSeconds" | "title" | "note">;
+
+function clipBody({ id, startSeconds, endSeconds, title, note }: ClipFields) {
+  return JSON.stringify({ id, startSeconds, endSeconds, title, note });
+}
+
+/** Safe to repeat: the server keeps one clip per id. */
+export async function saveClip(clip: ClipFields) {
+  return request<Clip>(`/api/books/${encodeURIComponent(clip.bookId)}/clips`, {
+    method: "POST",
+    body: clipBody(clip)
+  });
+}
+
+export async function updateClip(clip: ClipFields) {
+  return request<Clip>(`/api/books/${encodeURIComponent(clip.bookId)}/clips/${encodeURIComponent(clip.id)}`, {
+    method: "PUT",
+    body: clipBody(clip)
+  });
+}
+
+export async function deleteClip(clip: Pick<Clip, "id" | "bookId">) {
+  return request<void>(`/api/books/${encodeURIComponent(clip.bookId)}/clips/${encodeURIComponent(clip.id)}`, {
+    method: "DELETE"
+  });
+}
+
+/** The clip cut into an audio file. The server encodes it on request. */
+export async function downloadClipAudio(clip: Pick<Clip, "id" | "bookId">): Promise<Blob> {
+  requireOperaLibreServer();
+  const path = `/api/books/${encodeURIComponent(clip.bookId)}/clips/${encodeURIComponent(clip.id)}/audio`;
+  return fetchWithTimeout(`${currentApiBase()}${path}`, {
+    headers: authenticatedHeaders(),
+    cache: "no-store",
+    credentials: usesNativeCredentialStorage() ? "omit" : "include"
+  }, async (response) => {
+    if (!response.ok) {
+      let message = `Could not prepare the clip: ${response.status}`;
+      try {
+        const body = await response.json();
+        if (typeof body?.message === "string") message = body.message;
+      } catch {
+        // Keep the HTTP fallback when the server did not return JSON.
+      }
+      throw new ApiError(message, response.status);
+    }
+    return response.blob();
+  }, 120_000);
 }
 
 export async function rescanLibrary() {

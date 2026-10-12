@@ -1412,6 +1412,7 @@ pub(crate) async fn delete_user(
 
     state.progress.remove_user(&user_id).await?;
     state.book_settings.remove_user(&user_id).await?;
+    remove_user_clips(&state.database, &user_id).await?;
     // Dropped before the history purge, so a flush of the buffered sessions
     // cannot re-persist the account between the two steps.
     state.open_sessions.lock().await.forget_user(&user_id);
