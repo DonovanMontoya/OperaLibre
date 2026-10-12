@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { publishRelease } from "./publish_release.mjs";
-import { previousReleaseTag } from "./previous_release.mjs";
+import { changelogBase, previousReleaseTag } from "./previous_release.mjs";
 
 const tag = "0.5.1-nightly.20260927.12";
 const manifestName = "operalibre-manifest-v1.json";
@@ -142,4 +143,31 @@ test("nightly baselines normalize prefixes and sort run numbers numerically", ()
   const tags = ["v0.1.0-nightly.20260926.99", "v0.5.1-nightly.20260927.9",
     "0.5.1-nightly.20260927.11", tag, `v${tag}`];
   assert.equal(previousReleaseTag(tags, { channel: "nightly", tag, stableTag: "0.5.0" }), "0.5.1-nightly.20260927.11");
+});
+
+test("changelogs start from the rewritten copy of an unreachable release", (t) => {
+  const repo = mkdtempSync(path.join(tmpdir(), "operalibre-changelog-test-"));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  const git = (args) => execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...args], { cwd: repo, encoding: "utf8" }).trim();
+  const release = (version) => {
+    writeFileSync(path.join(repo, "version"), version);
+    git(["add", "version"]);
+    git(["commit", "--quiet", "--message", version]);
+    git(["tag", version]);
+  };
+  git(["init", "--quiet"]);
+  release("0.1.0");
+  release("0.2.0");
+  release("0.3.0");
+  assert.equal(changelogBase("0.2.0", git), "0.2.0");
+  assert.equal(changelogBase("", git), "");
+
+  // Same trees under new hashes, as a re-signed history has; 0.3.0 is dropped.
+  const first = git(["commit-tree", "0.1.0^{tree}", "-m", "0.1.0 rewritten"]);
+  const second = git(["commit-tree", "0.2.0^{tree}", "-p", first, "-m", "0.2.0 rewritten"]);
+  git(["reset", "--quiet", "--hard", second]);
+  assert.equal(changelogBase("0.1.0", git), first);
+  assert.equal(changelogBase("0.2.0", git), second);
+  assert.throws(() => changelogBase("0.3.0", git), /No commit in this history matches release 0\.3\.0/);
 });

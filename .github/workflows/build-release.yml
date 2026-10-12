@@ -734,17 +734,18 @@ jobs:
       - name: Build release notes
         shell: bash
         run: |
-          previous_tag="$(node release-signing-tools/script/previous_release.mjs)"
+          # A tag, or the matching commit when history was rewritten after it.
+          previous_ref="$(node release-signing-tools/script/previous_release.mjs)"
           {
             echo "## What's changed"
             echo
             if [[ -n "${RELEASE_DESCRIPTION//[[:space:]]/}" ]]; then
               printf '%s\n\n' "${RELEASE_DESCRIPTION}"
             fi
-            if [[ -n "${previous_tag}" ]]; then
-              git log --reverse --no-merges --pretty='- %s (`%h`)' "${previous_tag}..HEAD"
+            if [[ -n "${previous_ref}" ]]; then
+              git log --reverse --no-merges --pretty='- %s (`%h`)' "${previous_ref}..HEAD"
               echo
-              echo "**Full changelog:** https://github.com/${GITHUB_REPOSITORY}/compare/${previous_tag}...${RELEASE_TAG}"
+              echo "**Full changelog:** https://github.com/${GITHUB_REPOSITORY}/compare/${previous_ref}...${RELEASE_TAG}"
             else
               git log --reverse --no-merges --pretty='- %s (`%h`)' HEAD
             fi
