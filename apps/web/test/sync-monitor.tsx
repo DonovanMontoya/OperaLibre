@@ -3,7 +3,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { SyncJobMonitor } from "../src/SyncJobMonitor";
-import type { Book, JobStatus } from "../src/types";
+import type { Book, JobStatus, SyncChapterReport, SyncReport } from "../src/types";
 import "../src/styles.css";
 
 const TITLES = [
@@ -35,9 +35,37 @@ function book(index: number, synced: boolean): Book {
   } as Book;
 }
 
-const books = [...TITLES.map((_, i) => book(i, i % 3 === 0))];
+const books = [...TITLES.map((_, i) => book(i, i % 3 === 0 || i === 10))];
 
 books[0].syncFile!.outdated = true;
+books[0].syncFile!.quality = { grade: "good", flagged: 0 };
+books[3].syncFile!.quality = { grade: "poor", flagged: 3 };
+books[6].syncFile!.quality = { grade: "good", flagged: 0 };
+books[9].syncFile!.quality = { grade: "review", flagged: 1 };
+books[10].syncFile!.quality = { grade: "poor", flagged: 1 };
+
+function report(bookId: string): SyncReport {
+  const quality = books.find((entry) => entry.id === bookId)?.syncFile?.quality;
+  const chapters: SyncChapterReport[] = Array.from({ length: 14 }, (_, index) => ({
+    index, label: index === 0 ? "Opening Credits" : `Chapter ${index}`,
+    startSeconds: index * 1500, endSeconds: index * 1500 + 1500,
+    textCoverage: 0.97 + (index % 3) * 0.01, gapSeconds: index % 4, skippedText: 0,
+    status: "aligned", grade: "good",
+  }));
+  chapters[0] = { ...chapters[0], status: "empty", textCoverage: 1, gapSeconds: 0, grade: null };
+  if (quality?.grade === "poor") {
+    Object.assign(chapters[7], { textCoverage: 0.62, gapSeconds: 412, grade: "poor" });
+    Object.assign(chapters[11], { textCoverage: 0.91, gapSeconds: 95, grade: "review" });
+    Object.assign(chapters[4], { textCoverage: 0.86, gapSeconds: 31, grade: "review" });
+  } else if (quality?.grade === "review") {
+    Object.assign(chapters[5], { textCoverage: 0.88, gapSeconds: 140, grade: "review" });
+  }
+  return {
+    mapGeneratedAt: "1791504810", mapSize: 4_937_055,
+    graded: bookId === "book-10" ? "estimate" : "run",
+    grade: quality?.grade ?? null, chapters,
+  };
+}
 
 const now = Date.now();
 const jobs: JobStatus[] = [
@@ -106,6 +134,8 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   }
   if (url.includes("/api/jobs")) return json(jobsEnabled ? jobs : []);
   if (url.includes("/api/sync-schedules")) return json(init?.method === "DELETE" ? [] : schedules);
+  const reportFor = url.match(/\/api\/books\/([^/]+)\/sync\/report/);
+  if (reportFor) return json(report(decodeURIComponent(reportFor[1])));
   if (url.includes("/api/books")) return json(books);
   return realFetch(input as RequestInfo, init);
 };

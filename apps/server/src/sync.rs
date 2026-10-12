@@ -170,6 +170,9 @@ struct SyncCheckpoint {
     completed_scopes: usize,
     fragments: Vec<alignment::SyncFragment>,
     recovery_gaps: Vec<alignment::RecoveryGap>,
+    /// Indexed by scope; a scope with no text keeps the default.
+    #[serde(default)]
+    outcomes: Vec<sync_report::ScopeOutcome>,
 }
 
 fn sync_checkpoint_path(state: &AppState, id: &str) -> PathBuf {
@@ -705,45 +708,8 @@ async fn enqueue_sync_map_inner(
 
     let (epub_path, tracks, book_title) = {
         let library = state.library.read().await;
-        let book = library.book(&book_id)?;
-        let reading_file = book
-            .reading_file
-            .as_ref()
-            .filter(|reading_file| reading_file.extension == "epub")
-            .ok_or(ApiError::bad_request(
-                "Sync generation needs an EPUB readalong companion for this book.",
-            ))?;
-        let epub_path = library
-            .reading_paths
-            .get(&reading_file.id)
-            .cloned()
-            .ok_or(ApiError::not_found("Readalong path not found"))?;
-        let tracks = book
-            .tracks
-            .iter()
-            .map(|track| {
-                library
-                    .track_paths
-                    .get(&track.id)
-                    .cloned()
-                    .map(|path| SyncTrackInput {
-                        path,
-                        title: track.title.clone(),
-                        duration_seconds: track.duration_seconds,
-                        chapters: track
-                            .chapters
-                            .iter()
-                            .map(|chapter| SyncChapterInput {
-                                title: chapter.title.clone(),
-                                start_seconds: chapter.start_seconds,
-                                end_seconds: chapter.end_seconds,
-                            })
-                            .collect(),
-                    })
-                    .ok_or(ApiError::not_found("Track path not found"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        (epub_path, tracks, book.title.clone())
+        let (epub_path, tracks) = sync_inputs(&library, &book_id)?;
+        (epub_path, tracks, library.book(&book_id)?.title.clone())
     };
     if tracks.is_empty() {
         return Err(ApiError::bad_request("This book has no audio tracks."));
@@ -886,6 +852,52 @@ async fn enqueue_sync_map_inner(
     Ok(Json(JobCreated { job_id }))
 }
 
+/// The EPUB and audio tracks a sync of one book reads.
+pub(crate) fn sync_inputs(
+    library: &LibraryState,
+    book_id: &str,
+) -> Result<(PathBuf, Vec<SyncTrackInput>), ApiError> {
+    let book = library.book(book_id)?;
+    let reading_file = book
+        .reading_file
+        .as_ref()
+        .filter(|reading_file| reading_file.extension == "epub")
+        .ok_or(ApiError::bad_request(
+            "Sync generation needs an EPUB readalong companion for this book.",
+        ))?;
+    let epub_path = library
+        .reading_paths
+        .get(&reading_file.id)
+        .cloned()
+        .ok_or(ApiError::not_found("Readalong path not found"))?;
+    let tracks = book
+        .tracks
+        .iter()
+        .map(|track| {
+            library
+                .track_paths
+                .get(&track.id)
+                .cloned()
+                .map(|path| SyncTrackInput {
+                    path,
+                    title: track.title.clone(),
+                    duration_seconds: track.duration_seconds,
+                    chapters: track
+                        .chapters
+                        .iter()
+                        .map(|chapter| SyncChapterInput {
+                            title: chapter.title.clone(),
+                            start_seconds: chapter.start_seconds,
+                            end_seconds: chapter.end_seconds,
+                        })
+                        .collect(),
+                })
+                .ok_or(ApiError::not_found("Track path not found"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((epub_path, tracks))
+}
+
 pub(crate) struct SyncTrackInput {
     pub(crate) path: PathBuf,
     pub(crate) title: String,
@@ -900,12 +912,12 @@ pub(crate) struct SyncChapterInput {
 }
 
 #[derive(Clone, Debug)]
-struct SyncAlignmentScope {
-    track_index: usize,
-    section_range: std::ops::Range<usize>,
-    audio_range: Option<(f64, f64)>,
-    time_offset_seconds: f64,
-    label: String,
+pub(crate) struct SyncAlignmentScope {
+    pub(crate) track_index: usize,
+    pub(crate) section_range: std::ops::Range<usize>,
+    pub(crate) audio_range: Option<(f64, f64)>,
+    pub(crate) time_offset_seconds: f64,
+    pub(crate) label: String,
 }
 
 /// The share of the progress bar given to alignment itself. Reading the EPUB
@@ -941,9 +953,13 @@ impl ScopeProgress {
     }
 }
 
-/// How long a scope's audio runs, used only to weight the progress bar: a
-/// half-hour chapter should move it further than a two-minute one.
-fn scope_audio_seconds(scope: &SyncAlignmentScope, tracks: &[SyncTrackInput]) -> Option<f64> {
+/// How long a scope's audio runs: it weights the progress bar, so a
+/// half-hour chapter moves it further than a two-minute one, and bounds the
+/// chapter a report grades.
+pub(crate) fn scope_audio_seconds(
+    scope: &SyncAlignmentScope,
+    tracks: &[SyncTrackInput],
+) -> Option<f64> {
     match scope.audio_range {
         Some((start, end)) => (end > start).then_some(end - start),
         None => tracks[scope.track_index]
@@ -994,73 +1010,11 @@ pub(crate) async fn run_sync_generation(
     )
     .await;
 
-    let mut track_start_seconds = vec![0.0f64; tracks.len()];
-    for index in 1..tracks.len() {
-        let previous_duration = tracks[index - 1].duration_seconds.ok_or_else(|| {
-            anyhow::anyhow!(
-                "Track `{}` has no known duration; cannot compute book positions.",
-                tracks[index - 1].title
-            )
-        })?;
-        track_start_seconds[index] = track_start_seconds[index - 1] + previous_duration;
+    let plan = plan_scopes(&epub, tracks, runtime.ffmpeg_path.is_some())?;
+    if let Some(note) = &plan.note {
+        update_job_output(state, job_id, &format!("{note}\n")).await;
     }
-
-    // Prefer embedded chapter boundaries for a single large audio file. This
-    // resets the aligner throughout an M4B instead of letting small errors
-    // accumulate over the entire book. Keep the established whole-track path
-    // when chapter metadata, TOC matching, or ffmpeg slicing is unavailable.
-    let scopes = if tracks.len() == 1 {
-        match chapter_alignment_scopes(
-            &tracks[0],
-            &epub.toc,
-            &epub.sections,
-            runtime.ffmpeg_path.is_some(),
-        ) {
-            Ok(scopes) => {
-                update_job_output(
-                    state,
-                    job_id,
-                    &format!(
-                        "Matched {} embedded audio chapters; aligning each independently.\n",
-                        scopes.len()
-                    ),
-                )
-                .await;
-                scopes
-            }
-            Err(reason) => {
-                update_job_output(
-                    state,
-                    job_id,
-                    &format!("Using whole-track alignment: {reason}\n"),
-                )
-                .await;
-                vec![SyncAlignmentScope {
-                    track_index: 0,
-                    section_range: 0..epub.sections.len(),
-                    audio_range: None,
-                    time_offset_seconds: 0.0,
-                    label: tracks[0].title.clone(),
-                }]
-            }
-        }
-    } else {
-        let titles = tracks
-            .iter()
-            .map(|track| track.title.clone())
-            .collect::<Vec<_>>();
-        alignment::build_track_scopes(&titles, &epub.toc, epub.sections.len())
-            .map_err(|message| anyhow::anyhow!(message))?
-            .into_iter()
-            .map(|scope| SyncAlignmentScope {
-                track_index: scope.track_index,
-                section_range: scope.section_range,
-                audio_range: None,
-                time_offset_seconds: track_start_seconds[scope.track_index],
-                label: tracks[scope.track_index].title.clone(),
-            })
-            .collect()
-    };
+    let scopes = plan.scopes;
 
     let recognition = RecognitionSettings::for_language(epub.language.as_deref());
     if runtime.ffmpeg_path.is_some() {
@@ -1106,6 +1060,7 @@ pub(crate) async fn run_sync_generation(
     let checkpoint_path = sync_checkpoint_path(state, job_id);
     let fingerprint = checkpoint_fingerprint(epub_path, tracks, &scopes, runtime).await?;
     let mut completed_scopes = 0;
+    let mut outcomes = Vec::new();
     match fs::read(&checkpoint_path).await {
         Ok(bytes) => {
             let checkpoint: SyncCheckpoint = serde_json::from_slice(&bytes)?;
@@ -1114,6 +1069,7 @@ pub(crate) async fn run_sync_generation(
                 completed_scopes = checkpoint.completed_scopes;
                 fragments = checkpoint.fragments;
                 recovery_gaps = checkpoint.recovery_gaps;
+                outcomes = checkpoint.outcomes;
                 done_weight = scope_weights.iter().take(completed_scopes).sum();
             }
         }
@@ -1180,16 +1136,22 @@ pub(crate) async fn run_sync_generation(
         .await;
         fragments.extend(scope_fragments.fragments);
         recovery_gaps.extend(scope_fragments.recovery_gaps);
+        outcomes.resize_with(scope_number, Default::default);
+        outcomes.push(sync_report::ScopeOutcome {
+            skipped_text: scope_fragments.skipped_text,
+        });
         fs::create_dir_all(checkpoint_path.parent().unwrap()).await?;
         let checkpoint = SyncCheckpoint {
             fingerprint: fingerprint.clone(),
             completed_scopes: scope_number + 1,
             fragments: std::mem::take(&mut fragments),
             recovery_gaps: std::mem::take(&mut recovery_gaps),
+            outcomes: std::mem::take(&mut outcomes),
         };
         let saved = write_bytes_atomic(&checkpoint_path, &serde_json::to_vec(&checkpoint)?).await;
         fragments = checkpoint.fragments;
         recovery_gaps = checkpoint.recovery_gaps;
+        outcomes = checkpoint.outcomes;
         saved.map_err(|error| anyhow::anyhow!(error.message))?;
         update_job_progress(state, job_id, progress.at(1.0)).await;
         pause_at_checkpoint(state, job_id).await?;
@@ -1221,9 +1183,30 @@ pub(crate) async fn run_sync_generation(
     let sync_path = state
         .sync_dir
         .join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"));
-    write_sync_map(&sync_path, &sync_map)
+    let map_identity = write_sync_map(&sync_path, &sync_map)
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
+    let report = sync_report::SyncReport::new(
+        map_identity,
+        sync_report::Graded::Run,
+        sync_report::grade_chapters(
+            &sync_report::chapter_spans(&epub, tracks, &scopes, &outcomes),
+            sync_map
+                .fragments
+                .iter()
+                .map(|f| (f.start_seconds, f.end_seconds, f.text.as_str())),
+            &sync_map.recovery_gaps,
+        ),
+    );
+    // The map is already published; without a report it is graded later.
+    if let Err(error) = sync_report::write_report(&state.sync_dir, book_id, &report).await {
+        update_job_output(
+            state,
+            job_id,
+            &format!("Could not save the chapter grades: {}\n", error.message),
+        )
+        .await;
+    }
 
     let _ = fs::remove_file(checkpoint_path).await;
     Ok(fragment_count)
@@ -1231,18 +1214,93 @@ pub(crate) async fn run_sync_generation(
 
 /// Sync maps name every sentence of a book, so they are written compactly:
 /// pretty-printing a long title's map adds a third to several megabytes
-/// that every reader downloads.
-async fn write_sync_map(path: &FsPath, map: &alignment::SyncMap) -> Result<(), ApiError> {
+/// that every reader downloads. Returns the identity its report describes.
+async fn write_sync_map(
+    path: &FsPath,
+    map: &alignment::SyncMap,
+) -> Result<sync_report::MapIdentity, ApiError> {
     let bytes = serde_json::to_vec(map)
         .map_err(|error| ApiError::internal(format!("Could not encode the sync map: {error}")))?;
-    write_bytes_atomic(path, &bytes).await
+    write_bytes_atomic(path, &bytes).await?;
+    Ok(sync_report::MapIdentity::from_bytes(
+        map.generated_at.clone(),
+        &bytes,
+    ))
 }
 
-fn scope_transcript(
+pub(crate) fn scope_transcript(
     epub: &alignment::EpubDocument,
     scope: &SyncAlignmentScope,
 ) -> alignment::Transcript {
     alignment::build_transcript(&epub.sections[scope.section_range.clone()])
+}
+
+pub(crate) struct ScopePlan {
+    pub(crate) scopes: Vec<SyncAlignmentScope>,
+    /// How the book was divided, for the job log.
+    pub(crate) note: Option<String>,
+}
+
+/// Divides a book into the scopes it is aligned in. Grading uses the same
+/// plan, so a report's chapters are exactly the stretches that were aligned.
+pub(crate) fn plan_scopes(
+    epub: &alignment::EpubDocument,
+    tracks: &[SyncTrackInput],
+    chapter_slicing: bool,
+) -> anyhow::Result<ScopePlan> {
+    // Prefer embedded chapter boundaries for a single large audio file. This
+    // resets the aligner throughout an M4B instead of letting small errors
+    // accumulate over the entire book. Keep the established whole-track path
+    // when chapter metadata, TOC matching, or ffmpeg slicing is unavailable.
+    if tracks.len() == 1 {
+        return Ok(
+            match chapter_alignment_scopes(&tracks[0], &epub.toc, &epub.sections, chapter_slicing) {
+                Ok(scopes) => ScopePlan {
+                    note: Some(format!(
+                        "Matched {} embedded audio chapters; aligning each independently.",
+                        scopes.len()
+                    )),
+                    scopes,
+                },
+                Err(reason) => ScopePlan {
+                    note: Some(format!("Using whole-track alignment: {reason}")),
+                    scopes: vec![SyncAlignmentScope {
+                        track_index: 0,
+                        section_range: 0..epub.sections.len(),
+                        audio_range: None,
+                        time_offset_seconds: 0.0,
+                        label: tracks[0].title.clone(),
+                    }],
+                },
+            },
+        );
+    }
+    let mut track_start_seconds = vec![0.0f64; tracks.len()];
+    for index in 1..tracks.len() {
+        let previous_duration = tracks[index - 1].duration_seconds.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Track `{}` has no known duration; cannot compute book positions.",
+                tracks[index - 1].title
+            )
+        })?;
+        track_start_seconds[index] = track_start_seconds[index - 1] + previous_duration;
+    }
+    let titles = tracks
+        .iter()
+        .map(|track| track.title.clone())
+        .collect::<Vec<_>>();
+    let scopes = alignment::build_track_scopes(&titles, &epub.toc, epub.sections.len())
+        .map_err(|message| anyhow::anyhow!(message))?
+        .into_iter()
+        .map(|scope| SyncAlignmentScope {
+            track_index: scope.track_index,
+            section_range: scope.section_range,
+            audio_range: None,
+            time_offset_seconds: track_start_seconds[scope.track_index],
+            label: tracks[scope.track_index].title.clone(),
+        })
+        .collect();
+    Ok(ScopePlan { scopes, note: None })
 }
 
 fn chapter_alignment_scopes(
@@ -1417,6 +1475,9 @@ struct Aligner<'a> {
 struct ScopeAlignment {
     fragments: Vec<alignment::SyncFragment>,
     recovery_gaps: Vec<alignment::RecoveryGap>,
+    /// Edition-only text deliberately left unmatched, in the units
+    /// `sync_report::text_units` counts, so it does not lower the grade.
+    skipped_text: u64,
 }
 
 impl Aligner<'_> {
@@ -1458,10 +1519,6 @@ impl Aligner<'_> {
                 }
                 self.align_single_pass(scope, track, transcript, scope_number)
                     .await
-                    .map(|fragments| ScopeAlignment {
-                        fragments,
-                        recovery_gaps: Vec::new(),
-                    })
             }
         }
     }
@@ -1473,7 +1530,7 @@ impl Aligner<'_> {
         track: &SyncTrackInput,
         transcript: &alignment::Transcript,
         scope_number: usize,
-    ) -> anyhow::Result<Vec<alignment::SyncFragment>> {
+    ) -> anyhow::Result<ScopeAlignment> {
         let sliced = match scope.audio_range {
             Some((start, end)) => {
                 let ffmpeg = self.ffmpeg_path.expect("chapter scopes require ffmpeg");
@@ -1491,6 +1548,7 @@ impl Aligner<'_> {
             .map(|(start, end)| end - start)
             .or(track.duration_seconds);
         let mut recognized = Vec::new();
+        let mut skipped_text = 0;
         if duration.is_some_and(|seconds| seconds <= MAX_SINGLE_PASS_SECONDS) {
             recognized = self
                 .transcribe_checked(
@@ -1501,7 +1559,8 @@ impl Aligner<'_> {
                     duration.unwrap(),
                 )
                 .await?;
-            self.mask_unspoken_sentences(&mut prepared, &recognized, 0..transcript.len_utf16())
+            skipped_text = self
+                .mask_unspoken_sentences(&mut prepared, &recognized, 0..transcript.len_utf16())
                 .await;
             prepared.include_unmapped_leading_narration(&recognized);
             self.include_unmapped_narration(&mut prepared, &recognized, true)
@@ -1521,7 +1580,11 @@ impl Aligner<'_> {
         if let Some(path) = sliced {
             let _ = fs::remove_file(path).await;
         }
-        fragments
+        Ok(ScopeAlignment {
+            fragments: fragments?,
+            recovery_gaps: Vec::new(),
+            skipped_text,
+        })
     }
 
     /// Walks the scope in windows. Each window is transcribed to find where
@@ -1554,6 +1617,7 @@ impl Aligner<'_> {
         let mut recovering = false;
         let mut recovery_start = None;
         let mut recovery_gaps = Vec::new();
+        let mut skipped_text = 0;
 
         while position < scope_end - 0.5 && cursor < text_len {
             windows += 1;
@@ -1581,15 +1645,27 @@ impl Aligner<'_> {
                 // window model can have enough short anchors to avoid retry
                 // while still mishearing every complete sentence after noise.
                 // Use the stronger model for these bounded recovery scans.
-                let recognized = self
+                let mut recognized = match self
                     .transcribe(
                         &audio,
                         scope_number,
                         &windows.to_string(),
                         self.recognition.retry_model(),
                     )
-                    .await;
-                let mut recognized = recognized?;
+                    .await
+                {
+                    Ok(words) => words,
+                    Err(error) => {
+                        self.note_failed_retry(&error).await;
+                        self.transcribe(
+                            &audio,
+                            scope_number,
+                            &windows.to_string(),
+                            self.recognition.model,
+                        )
+                        .await?
+                    }
+                };
                 if let Some(retry_start) =
                     alignment::recovery_clock_retry_start(&recognized, &transcript.text)
                     && retry_start > 0.0
@@ -1730,7 +1806,8 @@ impl Aligner<'_> {
                         )
                         .await?;
                     let _ = fs::remove_file(audio).await;
-                    self.mask_unspoken_sentences(&mut transcript, &recognized, cursor..text_len)
+                    skipped_text += self
+                        .mask_unspoken_sentences(&mut transcript, &recognized, cursor..text_len)
                         .await;
                     let text = transcript.window(cursor, text_len);
                     let anchor = alignment::find_window_anchor(
@@ -1791,12 +1868,13 @@ impl Aligner<'_> {
                         let _ = fs::remove_file(audio).await;
                         // Inspect the recognition lookahead before cutting the
                         // alignment window. An omission may cross that cut.
-                        self.mask_unspoken_sentences(
-                            &mut transcript,
-                            &recognized,
-                            cursor..recognition_end,
-                        )
-                        .await;
+                        skipped_text += self
+                            .mask_unspoken_sentences(
+                                &mut transcript,
+                                &recognized,
+                                cursor..recognition_end,
+                            )
+                            .await;
                         let anchor = alignment::find_window_anchor(
                             &recognized,
                             &transcript.text,
@@ -1918,6 +1996,7 @@ impl Aligner<'_> {
         Ok(ScopeAlignment {
             fragments,
             recovery_gaps,
+            skipped_text,
         })
     }
 
@@ -1965,9 +2044,19 @@ impl Aligner<'_> {
             "  Retrying uncertain speech recognition in this window.\n",
         )
         .await;
-        let recognized = self
+        // Retries only refine a usable result. The larger model can crash on
+        // audio the first one handled, so keep that result rather than fail
+        // the book.
+        let recognized = match self
             .transcribe(audio_path, scope_number, &window.to_string(), model)
-            .await?;
+            .await
+        {
+            Ok(retry) => retry,
+            Err(error) => {
+                self.note_failed_retry(&error).await;
+                return Ok(recognized);
+            }
+        };
         let Some(ffmpeg) = self
             .ffmpeg_path
             .filter(|_| duration > 60.0 && alignment::recognition_needs_retry(&recognized, text))
@@ -1993,7 +2082,14 @@ impl Aligner<'_> {
                 .transcribe(&audio, scope_number, &format!("{window}-{part}"), model)
                 .await;
             let _ = fs::remove_file(audio).await;
-            for mut word in result? {
+            let words = match result {
+                Ok(words) => words,
+                Err(error) => {
+                    self.note_failed_retry(&error).await;
+                    return Ok(recognized);
+                }
+            };
+            for mut word in words {
                 word.start_time += start;
                 word.end_time += start;
                 if (part == "left" && word.start_time < midpoint)
@@ -2018,6 +2114,17 @@ impl Aligner<'_> {
             .await?;
         }
         Ok(shorter)
+    }
+
+    async fn note_failed_retry(&self, error: &anyhow::Error) {
+        let reason = error.to_string();
+        let reason = reason.lines().next().unwrap_or_default();
+        update_job_output(
+            self.state,
+            self.job_id,
+            &format!("  Continuing without a failed recognition retry: {reason}\n"),
+        )
+        .await;
     }
 
     async fn transcribe(
@@ -2048,7 +2155,7 @@ impl Aligner<'_> {
             "Speech recognition",
         )
         .await?;
-        let timeline_json = fs::read_to_string(&output_path).await?;
+        let timeline_json = read_cli_output(&output_path, "Speech recognition").await?;
         #[cfg(test)]
         if let Some(directory) = std::env::var_os("OPERALIBRE_PROBE_OUTPUT") {
             fs::copy(
@@ -2062,17 +2169,22 @@ impl Aligner<'_> {
         Ok(alignment::recognized_words(&entries))
     }
 
+    /// Returns how much text was masked, as `sync_report::text_units`.
     async fn mask_unspoken_sentences(
         &self,
         transcript: &mut alignment::Transcript,
         recognized: &[alignment::RecognizedWord],
         range: std::ops::Range<u64>,
-    ) {
+    ) -> u64 {
         let mut window = transcript.window(range.start, range.end);
         let count = window.mask_unspoken_sentences(recognized);
+        let mut masked = 0;
         if count > 0 {
             let start = alignment::utf16_to_byte_index(&transcript.text, range.start);
             let end = alignment::utf16_to_byte_index(&transcript.text, range.end);
+            // Masking blanks text in place, so the difference is what was hidden.
+            masked = sync_report::text_units(&transcript.text[start..end])
+                .saturating_sub(sync_report::text_units(&window.text));
             transcript.text.replace_range(start..end, &window.text);
             update_job_output(
                 self.state,
@@ -2081,6 +2193,7 @@ impl Aligner<'_> {
             )
             .await;
         }
+        masked
     }
 
     async fn include_unmapped_narration(
@@ -2128,14 +2241,23 @@ impl Aligner<'_> {
                 "  Verifying apparently missing narration before splitting alignment.\n",
             )
             .await;
-            confirmation = self
+            // Without confirmation, align the window whole instead of splitting.
+            confirmation = match self
                 .transcribe(
                     audio_path,
                     scope_number,
                     &format!("{window}-interruption-check"),
                     self.recognition.retry_model(),
                 )
-                .await?;
+                .await
+            {
+                Ok(words) => words,
+                Err(error) => {
+                    self.note_failed_retry(&error).await;
+                    interruptions.clear();
+                    Vec::new()
+                }
+            };
             let confirmed = alignment::interrupted_passages(transcript, &confirmation);
             interruptions.retain(|gap| {
                 confirmed.iter().any(|other| {
@@ -2244,6 +2366,7 @@ impl Aligner<'_> {
         Ok(ScopeAlignment {
             fragments,
             recovery_gaps,
+            skipped_text: 0,
         })
     }
 
@@ -2313,7 +2436,8 @@ impl Aligner<'_> {
             &format!("Alignment of `{label}`"),
         )
         .await?;
-        let timeline_json = fs::read_to_string(&output_path).await?;
+        let timeline_json =
+            read_cli_output(&output_path, &format!("Alignment of `{label}`")).await?;
         #[cfg(test)]
         if let Some(directory) = std::env::var_os("OPERALIBRE_PROBE_OUTPUT") {
             fs::copy(
@@ -2337,6 +2461,20 @@ impl Aligner<'_> {
             time_offset_seconds,
         ))
     }
+}
+
+/// Echogarden's launcher reports a crashed worker as a clean exit, so a
+/// missing result is the only sign the command failed.
+async fn read_cli_output(path: &FsPath, what: &str) -> anyhow::Result<String> {
+    fs::read_to_string(path).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            anyhow::anyhow!(
+                "{what} stopped without writing a result. The alignment runtime may have crashed."
+            )
+        } else {
+            error.into()
+        }
+    })
 }
 
 async fn run_alignment_cli(
@@ -2614,6 +2752,19 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
                 .unwrap();
         assert_eq!(checkpoint.completed_scopes, 1);
         assert_eq!(checkpoint.fragments.len(), 1);
+        assert_eq!(checkpoint.outcomes.len(), 1);
+        // Stand in for edition-only text the first track's run left unmatched;
+        // the resumed run must grade with it rather than start from zero.
+        let mut edited: serde_json::Value =
+            serde_json::from_slice(&fs::read(sync_checkpoint_path(&state, &id)).await.unwrap())
+                .unwrap();
+        edited["outcomes"][0]["skippedText"] = 34.into();
+        fs::write(
+            sync_checkpoint_path(&state, &id),
+            serde_json::to_vec(&edited).unwrap(),
+        )
+        .await
+        .unwrap();
         let paused_progress = state.jobs.read().await[&id].progress.clone().unwrap();
         assert_eq!(paused_progress.completed, Some(1));
         assert_eq!(paused_progress.fraction, Some(0.49));
@@ -2681,6 +2832,27 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
         assert_eq!(map.fragments[0].start_seconds, 1.0);
         assert_eq!(map.fragments[1].start_seconds, 3601.0);
         assert!(!sync_checkpoint_path(&state, &id).exists());
+        let identity = probe_sync_map(
+            &state.sync_dir.join(format!("fixture{SYNC_SIDECAR_SUFFIX}")),
+            true,
+        )
+        .unwrap()
+        .identity;
+        let report = sync_report::read_current_report(&state.sync_dir, "fixture", &identity)
+            .expect("a finished run grades its own map");
+        assert_eq!(report.graded, sync_report::Graded::Run);
+        assert_eq!(
+            report
+                .chapters
+                .iter()
+                .map(|c| (c.start_seconds, c.end_seconds, c.skipped_text))
+                .collect::<Vec<_>>(),
+            vec![(0.0, 3600.0, 34), (3600.0, 7200.0, 0)]
+        );
+        // Only the first sentence of each chapter was aligned; the saved
+        // skipped text accounts for the rest of the first.
+        assert_eq!(report.chapters[0].text_coverage, 1.0);
+        assert!(report.chapters[1].text_coverage < 0.8);
         // Reusing a checkpoint after an EPUB change must start over, even
         // with the same job ID and unchanged audio.
         fs::write(
@@ -3438,6 +3610,7 @@ esac
                 additional_after,
                 0.0,
                 None,
+                false,
             )
             .await
         }
@@ -3449,6 +3622,7 @@ esac
             additional_after: Option<usize>,
             book_offset: f64,
             empty_sentence: Option<usize>,
+            crashing_retry_model: bool,
         ) -> (Vec<alignment::SyncFragment>, String) {
             let root = tempfile::tempdir().unwrap();
             let (state, _) = crate::unit_tests::fake_libation_state(root.path());
@@ -3495,6 +3669,16 @@ esac
                 FAKE_ECHOGARDEN.replace("NARRATION_PATH", &narration_path.display().to_string());
             let script = if let Some(index) = empty_sentence {
                 script.replace("  align)\n", &format!("  align)\n    if grep -q '^Sentence {index} ' \"$3\"; then printf '[]' > \"$4\"; exit 0; fi\n"))
+            } else {
+                script
+            };
+            // Echogarden's launcher exits 0 without output when its worker
+            // segfaults, as the larger whisper model does on some audio.
+            let script = if crashing_retry_model {
+                script.replace(
+                    "command=\"$1\"",
+                    "case \" $* \" in *\" --whisper.model=base.en \"*) exit 0;; esac\ncommand=\"$1\"",
+                )
             } else {
                 script
             };
@@ -3574,6 +3758,17 @@ esac
                 .align_scope(&scope, &track, &transcript, 0, &progress)
                 .await
                 .unwrap();
+            // Masked edition-only text is reported so it does not lower the grade.
+            assert_eq!(
+                result.skipped_text,
+                if unspoken_after.is_some() {
+                    sync_report::text_units(
+                        "This extra paragraph exists only in the printed edition.",
+                    )
+                } else {
+                    0
+                }
+            );
             for gap in &result.recovery_gaps {
                 assert!(gap.start_seconds.is_finite() && gap.end_seconds.is_finite());
                 assert!(gap.start_seconds < gap.end_seconds);
@@ -3705,6 +3900,36 @@ esac
         }
 
         #[tokio::test]
+        async fn a_crashing_retry_model_falls_back_instead_of_failing_the_book() {
+            let count = 400;
+            let outage = 60..190;
+            let (fragments, output) = align_fake_book_with_settings(
+                count,
+                std::slice::from_ref(&outage),
+                None,
+                None,
+                0.0,
+                None,
+                true,
+            )
+            .await;
+
+            assert!(
+                output.contains("Continuing without a failed recognition retry"),
+                "{output}"
+            );
+            assert_eq!(fragments.len(), count - 130, "{output}");
+            assert_monotonic(&fragments);
+            for (index, fragment) in (0..60).chain(190..count).zip(&fragments) {
+                assert_eq!(fragment.text, sentence(index));
+                assert!(
+                    (fragment.start_seconds - narrated_start(index)).abs() < 0.75,
+                    "{index}: {fragment:?}"
+                );
+            }
+        }
+
+        #[tokio::test]
         async fn recovery_handles_bad_openings_and_endings_without_guessing() {
             for (count, outage) in [(40, 0..15), (40, 0..40), (40, 25..40), (200, 130..200)] {
                 let (fragments, output) = align_fake_book(count, outage.clone(), None, None).await;
@@ -3752,6 +3977,7 @@ esac
                 None,
                 1000.0,
                 Some(15),
+                false,
             )
             .await;
             assert_eq!(fragments.len(), 24, "{output}");

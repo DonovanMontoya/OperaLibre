@@ -113,6 +113,7 @@ The archive includes accounts, permissions, progress, per-book settings, reading
 | `GET` | `/api/books/{book_id}/sync` | The readalong sync map (`.sync.json`). Serves an aligned sidecar or generated map when one exists; otherwise returns 404. Outdated maps remain available until replaced. |
 | `GET` | `/api/books/{book_id}/tracks/{track_id}/stream` | Stream one track in its original format, with HTTP byte-range support for seeking. Accepts the scoped media token. |
 | `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sentence- and word-level sync map. Admin only; requires an enabled add-on or manually configured alignment CLI. Jobs are durably queued and deduplicated by book; queued and interrupted jobs resume after restart with the same job IDs. Interrupted books resume from the last completed chapter or track; unfinished sections are repeated. Changed inputs, alignment runtime, or server alignment code invalidate saved sections. Paused jobs remain paused across restarts. Returns `{ "jobId": "..." }`. |
+| `GET` | `/api/books/{book_id}/sync/report` | Chapter-by-chapter grades for the served sync map. Admin only. Returns 404 until the current map has been graded. See [Sync grades](#sync-grades). |
 | `GET` | `/api/alignment/status` | Whether sync generation is enabled: `{ "enabled": bool, "cliPath": string \| null }`. Admin only. |
 | `GET` | `/api/experimental-features/readalong-sync` | Installed, enabled, version, package availability, size, and management status for the optional generator. Admin only. Add `?refresh=true` to refresh release metadata. |
 | `POST` | `/api/experimental-features/readalong-sync/install` | Download, verify, and install or update the official platform package. Owner only; managed release installations only. |
@@ -193,7 +194,7 @@ Sync administration endpoints (administrator only):
 
 Nightly sweeps queue at most `booksPerNight` missing or outdated maps per run; the immediate run endpoint is not limited by that setting. Changing the rule to `enabled: false` stops future batches without cancelling queued work. Scheduled starts more than 15 minutes late are skipped; nightly rules advance to their next local occurrence. Job summaries include optional `queuePosition` (ascending queue order) and `pauseRequested`. The status `paused` retains saved sections; a running job with `pauseRequested: true` is stopping its current section. Completed sections remain saved; resuming repeats the unfinished section. Accepted jobs and recent outcomes survive restarts, and interrupted books resume from the last completed section after the library and generator become available. Paused books remain paused. Before a server update launches its updater, sync workers stop and the queue is saved for automatic recovery. Updates repeat unfinished sections rather than waiting for them to finish; manually paused jobs are left paused. Failed or cancelled update preparation releases the queue on the current server.
 
-Books that can be followed expose a `syncFile` object (`fileName`, `source`, `url`, and `outdated`). `source` is `sidecar` for an aligned `.sync.json` beside the book or `generated` for one produced by the alignment job. Books without an aligned map have `syncFile: null`. `outdated` recommends remapping an older OperaLibre-generated map but does not prevent playback. Generated maps include `mappingRevision`, advanced only for improvements that warrant remapping, independently of the map schema or application release. A missing `mappingRevision` is treated as 0; a lower revision marks a generated map outdated, while equal or higher revisions remain current. Third-party maps without this provenance are not marked outdated. The sync map itself is JSON:
+Books that can be followed expose a `syncFile` object (`fileName`, `source`, `url`, `outdated`, and, once graded, `quality`). `source` is `sidecar` for an aligned `.sync.json` beside the book or `generated` for one produced by the alignment job. Books without an aligned map have `syncFile: null`. `outdated` recommends remapping an older OperaLibre-generated map but does not prevent playback. Generated maps include `mappingRevision`, advanced only for improvements that warrant remapping, independently of the map schema or application release. A missing `mappingRevision` is treated as 0; a lower revision marks a generated map outdated, while equal or higher revisions remain current. Third-party maps without this provenance are not marked outdated. The sync map itself is JSON:
 
 ```json
 {
@@ -214,6 +215,36 @@ Books that can be followed expose a `syncFile` object (`fileName`, `source`, `ur
 ```
 
 `startSeconds`/`endSeconds` are book-absolute positions (across all tracks), `href` is the EPUB spine document as written in the OPF manifest, and `text` is the sentence to locate and highlight inside that document. `words` (optional) times each word as `[startSeconds, endSeconds, offsetUtf16, lengthUtf16]` inside `text`. `precision` is `sentence` for a forced alignment. Legacy estimated maps are not served as sentence alignments. Version 1 maps, which carried sentences only, are still accepted.
+
+#### Sync grades
+
+`quality` summarizes the served map's grade as `{ "grade": "poor", "flagged": 2 }`, where `grade` is `good`, `review`, or `poor` (clients should also accept `failed`) and `flagged` counts chapters graded below `good`. It is absent until the map is graded: maps written by the alignment job are graded as they are saved, and other maps are graded in the background after a library scan. Grading never changes the map. Administrators can fetch the chapter detail from `/api/books/{book_id}/sync/report`:
+
+```json
+{
+  "mapGeneratedAt": "1791504810",
+  "mapSize": 4937055,
+  "graded": "run",
+  "grade": "poor",
+  "chapters": [
+    {
+      "index": 7,
+      "label": "Chapter 7",
+      "startSeconds": 10500.0,
+      "endSeconds": 12000.0,
+      "textCoverage": 0.62,
+      "gapSeconds": 412.0,
+      "skippedText": 0,
+      "status": "aligned",
+      "grade": "poor"
+    }
+  ]
+}
+```
+
+`graded` is `run` when the alignment job graded its own result and `estimate` when an existing map was graded without realigning. Chapters are the stretches the book is aligned in, in book order, with book-absolute times. `textCoverage` is the share of the chapter's text (ignoring whitespace) covered by sentences, not counting `skippedText`, the UTF-16 units of edition-only text a run deliberately left unmatched. `gapSeconds` is the audio in the chapter that holds the reader's place without a sentence. A chapter is `good` with at least 95% coverage and no more than 5% of its audio unmatched, `review` with at least 80% and no more than 20%, and `poor` otherwise. A chapter with `status: "empty"` has no text and `grade: null`. The book's `grade` is the worst grade among chapters of at least two minutes, or among all chapters when none is that long.
+
+Reports include `mapDigest`, the SHA-256 digest of the map they describe. Replacing a map invalidates its report even when its size and generation time stay the same. Estimated coverage only credits sentences whose document and text match the chapter's EPUB sections.
 
 #### Playback progress
 
