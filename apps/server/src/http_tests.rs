@@ -7292,6 +7292,7 @@ async fn existing_sync_maps_are_graded_in_the_background_for_administrators() {
     let saved = set_language(&owner, "en-GB".into()).await;
     assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
     assert_eq!(saved.json()["languageOverride"], "en");
+    assert!(saved.json()["previousLanguageOverride"].is_null());
     // Editing the book's details leaves it alone.
     let edited = server
         .send_json(
@@ -7315,7 +7316,43 @@ async fn existing_sync_maps_are_graded_in_the_background_for_administrators() {
     let cleared = set_language(&owner, serde_json::Value::Null).await;
     assert_eq!(cleared.status, StatusCode::OK);
     assert!(cleared.json()["languageOverride"].is_null());
+    assert_eq!(cleared.json()["previousLanguageOverride"], "en");
     assert!(server.get(&report_uri, &owner).await.json()["languageOverride"].is_null());
+
+    // A failed queue request can restore the setting it replaced, while a
+    // later administrator's edit defeats that conditional rollback.
+    set_language(&owner, "fr".into()).await;
+    let changed = set_language(&owner, "en".into()).await;
+    assert_eq!(changed.json()["previousLanguageOverride"], "fr");
+    let rollback = server
+        .send_json(
+            "PUT",
+            &language_uri,
+            &owner,
+            serde_json::json!({ "language": "fr", "expectedLanguage": "en" }),
+        )
+        .await;
+    assert_eq!(rollback.status, StatusCode::OK, "{}", rollback.text());
+    assert_eq!(
+        server.get(&report_uri, &owner).await.json()["languageOverride"],
+        "fr"
+    );
+    set_language(&owner, "en".into()).await;
+    set_language(&owner, "nl".into()).await;
+    let stale = server
+        .send_json(
+            "PUT",
+            &language_uri,
+            &owner,
+            serde_json::json!({ "language": "fr", "expectedLanguage": "en" }),
+        )
+        .await;
+    assert_eq!(stale.status, StatusCode::CONFLICT);
+    assert_eq!(
+        server.get(&report_uri, &owner).await.json()["languageOverride"],
+        "nl"
+    );
+    set_language(&owner, serde_json::Value::Null).await;
 
     // A replaced map is not described by the old report.
     let tracks = {

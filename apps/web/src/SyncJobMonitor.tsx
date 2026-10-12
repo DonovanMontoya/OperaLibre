@@ -365,10 +365,21 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
    * null, then syncs the given chapters in it, or the whole book with none.
    */
   async function changeLanguage(bookId: string, language: string | null, chapters?: number[]) {
-    await setSyncLanguage(bookId, language);
-    if (language) await generateSyncMap(bookId, chapters?.length ? chapters : undefined);
-    setRevision((value) => value + 1);
-    if (openReport?.bookId === bookId) await loadReport(bookId);
+    const saved = await setSyncLanguage(bookId, language);
+    try {
+      if (language) await generateSyncMap(bookId, chapters?.length ? chapters : undefined);
+    } catch (err) {
+      try {
+        await setSyncLanguage(bookId, saved.previousLanguageOverride, saved.languageOverride ?? undefined);
+      } catch {
+        const reason = err instanceof Error ? err.message : "Could not queue the sync.";
+        throw new Error(`${reason} The language could not be restored. Check the book’s language setting before retrying.`);
+      }
+      throw err;
+    } finally {
+      setRevision((value) => value + 1);
+      if (openReport?.bookId === bookId) await loadReport(bookId);
+    }
   }
 
   async function changeJob(jobId: string, action: "remove" | "up" | "down" | "pause" | "resume") {
