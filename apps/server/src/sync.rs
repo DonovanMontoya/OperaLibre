@@ -1579,15 +1579,27 @@ impl Aligner<'_> {
                 // window model can have enough short anchors to avoid retry
                 // while still mishearing every complete sentence after noise.
                 // Use the stronger model for these bounded recovery scans.
-                let recognized = self
+                let mut recognized = match self
                     .transcribe(
                         &audio,
                         scope_number,
                         &windows.to_string(),
                         self.recognition.retry_model(),
                     )
-                    .await;
-                let mut recognized = recognized?;
+                    .await
+                {
+                    Ok(words) => words,
+                    Err(error) => {
+                        self.note_failed_retry(&error).await;
+                        self.transcribe(
+                            &audio,
+                            scope_number,
+                            &windows.to_string(),
+                            self.recognition.model,
+                        )
+                        .await?
+                    }
+                };
                 if let Some(retry_start) =
                     alignment::recovery_clock_retry_start(&recognized, &transcript.text)
                     && retry_start > 0.0
@@ -1963,9 +1975,19 @@ impl Aligner<'_> {
             "  Retrying uncertain speech recognition in this window.\n",
         )
         .await;
-        let recognized = self
+        // Retries only refine a usable result. The larger model can crash on
+        // audio the first one handled, so keep that result rather than fail
+        // the book.
+        let recognized = match self
             .transcribe(audio_path, scope_number, &window.to_string(), model)
-            .await?;
+            .await
+        {
+            Ok(retry) => retry,
+            Err(error) => {
+                self.note_failed_retry(&error).await;
+                return Ok(recognized);
+            }
+        };
         let Some(ffmpeg) = self
             .ffmpeg_path
             .filter(|_| duration > 60.0 && alignment::recognition_needs_retry(&recognized, text))
@@ -1991,7 +2013,14 @@ impl Aligner<'_> {
                 .transcribe(&audio, scope_number, &format!("{window}-{part}"), model)
                 .await;
             let _ = fs::remove_file(audio).await;
-            for mut word in result? {
+            let words = match result {
+                Ok(words) => words,
+                Err(error) => {
+                    self.note_failed_retry(&error).await;
+                    return Ok(recognized);
+                }
+            };
+            for mut word in words {
                 word.start_time += start;
                 word.end_time += start;
                 if (part == "left" && word.start_time < midpoint)
@@ -2016,6 +2045,17 @@ impl Aligner<'_> {
             .await?;
         }
         Ok(shorter)
+    }
+
+    async fn note_failed_retry(&self, error: &anyhow::Error) {
+        let reason = error.to_string();
+        let reason = reason.lines().next().unwrap_or_default();
+        update_job_output(
+            self.state,
+            self.job_id,
+            &format!("  Continuing without a failed recognition retry: {reason}\n"),
+        )
+        .await;
     }
 
     async fn transcribe(
@@ -2046,7 +2086,7 @@ impl Aligner<'_> {
             "Speech recognition",
         )
         .await?;
-        let timeline_json = fs::read_to_string(&output_path).await?;
+        let timeline_json = read_cli_output(&output_path, "Speech recognition").await?;
         #[cfg(test)]
         if let Some(directory) = std::env::var_os("OPERALIBRE_PROBE_OUTPUT") {
             fs::copy(
@@ -2126,14 +2166,23 @@ impl Aligner<'_> {
                 "  Verifying apparently missing narration before splitting alignment.\n",
             )
             .await;
-            confirmation = self
+            // Without confirmation, align the window whole instead of splitting.
+            confirmation = match self
                 .transcribe(
                     audio_path,
                     scope_number,
                     &format!("{window}-interruption-check"),
                     self.recognition.retry_model(),
                 )
-                .await?;
+                .await
+            {
+                Ok(words) => words,
+                Err(error) => {
+                    self.note_failed_retry(&error).await;
+                    interruptions.clear();
+                    Vec::new()
+                }
+            };
             let confirmed = alignment::interrupted_passages(transcript, &confirmation);
             interruptions.retain(|gap| {
                 confirmed.iter().any(|other| {
@@ -2305,7 +2354,8 @@ impl Aligner<'_> {
             &format!("Alignment of `{label}`"),
         )
         .await?;
-        let timeline_json = fs::read_to_string(&output_path).await?;
+        let timeline_json =
+            read_cli_output(&output_path, &format!("Alignment of `{label}`")).await?;
         #[cfg(test)]
         if let Some(directory) = std::env::var_os("OPERALIBRE_PROBE_OUTPUT") {
             fs::copy(
@@ -2329,6 +2379,20 @@ impl Aligner<'_> {
             time_offset_seconds,
         ))
     }
+}
+
+/// Echogarden's launcher reports a crashed worker as a clean exit, so a
+/// missing result is the only sign the command failed.
+async fn read_cli_output(path: &FsPath, what: &str) -> anyhow::Result<String> {
+    fs::read_to_string(path).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            anyhow::anyhow!(
+                "{what} stopped without writing a result. The alignment runtime may have crashed."
+            )
+        } else {
+            error.into()
+        }
+    })
 }
 
 async fn run_alignment_cli(
@@ -3383,6 +3447,7 @@ esac
                 additional_after,
                 0.0,
                 None,
+                false,
             )
             .await
         }
@@ -3394,6 +3459,7 @@ esac
             additional_after: Option<usize>,
             book_offset: f64,
             empty_sentence: Option<usize>,
+            crashing_retry_model: bool,
         ) -> (Vec<alignment::SyncFragment>, String) {
             let root = tempfile::tempdir().unwrap();
             let (state, _) = crate::unit_tests::fake_libation_state(root.path());
@@ -3440,6 +3506,16 @@ esac
                 FAKE_ECHOGARDEN.replace("NARRATION_PATH", &narration_path.display().to_string());
             let script = if let Some(index) = empty_sentence {
                 script.replace("  align)\n", &format!("  align)\n    if grep -q '^Sentence {index} ' \"$3\"; then printf '[]' > \"$4\"; exit 0; fi\n"))
+            } else {
+                script
+            };
+            // Echogarden's launcher exits 0 without output when its worker
+            // segfaults, as the larger whisper model does on some audio.
+            let script = if crashing_retry_model {
+                script.replace(
+                    "command=\"$1\"",
+                    "case \" $* \" in *\" --whisper.model=base.en \"*) exit 0;; esac\ncommand=\"$1\"",
+                )
             } else {
                 script
             };
@@ -3650,6 +3726,36 @@ esac
         }
 
         #[tokio::test]
+        async fn a_crashing_retry_model_falls_back_instead_of_failing_the_book() {
+            let count = 400;
+            let outage = 60..190;
+            let (fragments, output) = align_fake_book_with_settings(
+                count,
+                std::slice::from_ref(&outage),
+                None,
+                None,
+                0.0,
+                None,
+                true,
+            )
+            .await;
+
+            assert!(
+                output.contains("Continuing without a failed recognition retry"),
+                "{output}"
+            );
+            assert_eq!(fragments.len(), count - 130, "{output}");
+            assert_monotonic(&fragments);
+            for (index, fragment) in (0..60).chain(190..count).zip(&fragments) {
+                assert_eq!(fragment.text, sentence(index));
+                assert!(
+                    (fragment.start_seconds - narrated_start(index)).abs() < 0.75,
+                    "{index}: {fragment:?}"
+                );
+            }
+        }
+
+        #[tokio::test]
         async fn recovery_handles_bad_openings_and_endings_without_guessing() {
             for (count, outage) in [(40, 0..15), (40, 0..40), (40, 25..40), (200, 130..200)] {
                 let (fragments, output) = align_fake_book(count, outage.clone(), None, None).await;
@@ -3697,6 +3803,7 @@ esac
                 None,
                 1000.0,
                 Some(15),
+                false,
             )
             .await;
             assert_eq!(fragments.len(), 24, "{output}");
