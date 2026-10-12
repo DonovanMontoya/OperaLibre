@@ -190,6 +190,8 @@ public final class AudiobookPlayer {
     private var sleepChapterLastPosition: Double?
     /// The longest stretch of an item one playback tick can cover.
     private static let sleepChapterStepSeconds = 4.0
+    /// A marker this close to a file's start opens the file.
+    private static let sleepChapterFileStartSeconds = 1.0
     private var pendingErrorWhileInactive: String?
     /// Set when an interruption ended without `.shouldResume` while the app
     /// was not active. The retained play intent may only auto-resume within a
@@ -445,10 +447,14 @@ public final class AudiobookPlayer {
         seekSerial += 1
         let serial = seekSerial
         let seekGeneration = generation
+        // A seek that lands just past a chapter boundary is not that chapter
+        // ending; the end-of-chapter stop starts over from where it lands.
+        sleepChapterLastPosition = nil
         player.seek(to: CMTime(seconds: position, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             guard let self, serial == self.seekSerial, seekGeneration == self.generation,
                   player === self.player, player.currentItem === item else { return }
+            self.sleepChapterLastPosition = nil
             if finished || item.status != .readyToPlay {
                 // An item that is not ready yet runs its resume seek from the
                 // status observer; that seek owns readiness.
@@ -820,13 +826,14 @@ public final class AudiobookPlayer {
                 let endedIndex = self.queuedItems.firstIndex(where: { $0 === endedItem })
             else { return }
             // A chapter that ends with its file stops here, as the queue
-            // moves on. The book's last file ends the wait without a pause
+            // moves on. A next file that opens without a marker continues the
+            // chapter, and the book's last file ends the wait without a pause
             // of its own.
             if self.sleepAtChapterEnd {
-                if endedIndex < self.queuedItems.count - 1 {
-                    self.finishSleepTimer()
-                } else {
+                if endedIndex >= self.queuedItems.count - 1 {
                     self.sleepAtChapterEnd = false
+                } else if self.chapterStartsWithQueuedTrack(at: endedIndex + 1) {
+                    self.finishSleepTimer()
                 }
             }
             if endedIndex >= self.queuedItems.count - 1 {
@@ -1490,6 +1497,13 @@ public final class AudiobookPlayer {
     /// a gap between markers still belongs to the chapter before it.
     private func sleepChapterIndex(at position: Double) -> Int? {
         nowPlayingChapters.lastIndex { position >= $0.startSeconds }
+    }
+
+    private func chapterStartsWithQueuedTrack(at index: Int) -> Bool {
+        guard queuedTracks.indices.contains(index) else { return true }
+        return queuedTracks[index].chapters.contains {
+            $0.startSeconds <= Self.sleepChapterFileStartSeconds
+        }
     }
 
     private func finishSleepTimer() {

@@ -176,26 +176,52 @@ export function useSleepTimer({
 export function useChapterEndSleep({
   armed,
   audioRef,
+  bookId,
   bookPosition,
   chapterSegments,
+  intentionalSeekGenerationRef,
   pausePlaybackRef,
   setSleepAtChapterEnd
 }: {
   armed: boolean;
   audioRef: RefObject<HTMLAudioElement | null>;
+  bookId: string | null;
   bookPosition: number;
   chapterSegments: ChapterSegment[];
+  intentionalSeekGenerationRef: RefObject<Map<string, number>>;
   pausePlaybackRef: RefObject<(audio: HTMLAudioElement | null | undefined) => void>;
   setSleepAtChapterEnd: Dispatch<SetStateAction<boolean>>;
 }) {
-  const previousRef = useRef<{ segments: ChapterSegment[]; position: number } | null>(null);
+  const previousRef = useRef<{
+    segments: ChapterSegment[];
+    position: number;
+    seekGeneration: number;
+  } | null>(null);
   useEffect(() => {
     const previous = previousRef.current;
-    previousRef.current = armed ? { segments: chapterSegments, position: bookPosition } : null;
-    // Positions from another book's chapters say nothing about this one.
-    if (!armed || !previous || previous.segments !== chapterSegments) return;
+    const seekGeneration = bookId ? intentionalSeekGenerationRef.current.get(bookId) ?? 0 : 0;
+    previousRef.current = armed
+      ? { segments: chapterSegments, position: bookPosition, seekGeneration }
+      : null;
+    // Positions from another book's chapters say nothing about this one, and
+    // a seek that lands just past a boundary is not the chapter ending.
+    if (
+      !armed
+      || !previous
+      || previous.segments !== chapterSegments
+      || previous.seekGeneration !== seekGeneration
+    ) return;
     if (!playedPastChapterEnd(chapterSegments, previous.position, bookPosition)) return;
     setSleepAtChapterEnd(false);
     pausePlaybackRef.current(audioRef.current);
-  }, [armed, audioRef, bookPosition, chapterSegments, pausePlaybackRef, setSleepAtChapterEnd]);
+  }, [
+    armed,
+    audioRef,
+    bookId,
+    bookPosition,
+    chapterSegments,
+    intentionalSeekGenerationRef,
+    pausePlaybackRef,
+    setSleepAtChapterEnd
+  ]);
 }

@@ -66,7 +66,11 @@ export function chapterAtBookPosition(
   return match;
 }
 
-/** The longest stretch of book time one playback clock update can cover. */
+/**
+ * The longest stretch of book time one playback clock update can cover. Seeks
+ * the player makes are told apart by the caller; this bounds what is left, such
+ * as a clock that resumes far from where it was last read.
+ */
 const PLAYBACK_STEP_SECONDS = 4;
 
 /**

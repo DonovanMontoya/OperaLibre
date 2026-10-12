@@ -1141,8 +1141,10 @@ function MainApp({
   useChapterEndSleep({
     armed: sleepAtChapterEnd && isPlaying && !nativeAudio,
     audioRef,
+    bookId: playbackBookKey,
     bookPosition,
     chapterSegments,
+    intentionalSeekGenerationRef,
     pausePlaybackRef,
     setSleepAtChapterEnd
   });
