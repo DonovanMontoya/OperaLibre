@@ -15895,6 +15895,30 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 .admin-sync-monitor .admin-sync-schedule-error { font-size: 0.72rem; color: var(--sync-fail); margin: 0 0 12px; }
 .admin-sync-book-list:has(.admin-sync-schedule-form) { max-height: none; }
 
+/* Books graded Poor or Failed lead the library across both columns. */
+.admin-sync-book-group-attention { grid-column: 1 / -1; }
+.admin-sync-book-group-attention > summary svg:first-child { color: var(--sync-fail); }
+.admin-sync-book-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+/* Admin buttons are outlined lift pills; this one keeps the state pill's look. */
+.admin-sync-monitor button.admin-sync-grade { min-height: 0; gap: 4px; padding: 4px 8px; border: 0; box-shadow: none; font: 600 0.56rem "JetBrains Mono", monospace; letter-spacing: 0.05em; }
+.admin-sync-monitor button.admin-sync-grade.admin-sync-job-state-done { color: var(--sync-done); background: var(--sync-done-bg); }
+.admin-sync-monitor button.admin-sync-grade.admin-sync-job-state-queued { color: var(--ink-faded); background: rgba(var(--ink-rgb), 0.07); }
+.admin-sync-monitor button.admin-sync-grade.admin-sync-job-state-failed { color: var(--sync-fail); background: var(--sync-fail-bg); }
+.admin-sync-monitor button.admin-sync-grade:hover { transform: none; filter: brightness(0.96); }
+.admin-sync-monitor button.admin-sync-grade:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.admin-sync-grade svg { transition: transform 0.15s ease; }
+.admin-sync-grade[aria-expanded="true"] svg { transform: rotate(180deg); }
+.admin-sync-chapters { display: grid; gap: 8px; margin-bottom: 12px; padding: 10px 12px; border-radius: 8px; background: rgba(var(--ink-rgb), 0.04); }
+.admin-sync-monitor .admin-sync-chapters-note { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--ink-faded); font-size: 0.72rem; }
+.admin-sync-chapter-list { display: grid; margin: 0; padding: 0; list-style: none; max-height: 260px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.admin-sync-chapter-list > li { display: grid; grid-template-columns: minmax(0, 1fr) 3.4rem 4.6rem 4.4rem; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid rgba(var(--ink-rgb), 0.07); font-size: 0.74rem; font-variant-numeric: tabular-nums; }
+.admin-sync-chapter-list > li:last-child { border-bottom: 0; }
+.admin-sync-chapter-list > li > span:not(:first-child) { justify-self: end; }
+.admin-sync-chapter-list > .admin-sync-chapter-head { padding-top: 0; color: var(--ink-faded); font-size: 0.64rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.admin-sync-chapter-label { overflow-wrap: anywhere; }
+.admin-sync-chapter-list > li > .admin-sync-chapter-empty { grid-column: 2 / -1; color: var(--ink-faded); }
+.admin-sync-book-list:has(.admin-sync-chapters) { max-height: none; }
+
 @media (max-width: 700px) {
   .admin-sync-library { grid-template-columns: minmax(0, 1fr); gap: 18px; }
   .admin-sync-book-row { align-items: flex-start; }

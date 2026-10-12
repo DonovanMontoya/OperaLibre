@@ -1,6 +1,7 @@
 import { AlertTriangle, ArrowDown, ArrowUp, Pause, Play, X, ArrowUpRight, BookOpen, Check, ChevronDown, Clock, LoaderCircle, Moon, PlayCircle, RefreshCw, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { cancelBookSyncSchedule, controlSyncJob, removeSyncJob, generateSyncMap, getBooks, getSyncSweep, listJobs, listSyncSchedules, runSyncSweep, scheduleBookSync, setSyncSweep, type SyncSchedule, type SyncSweep } from "./api";
+import { cancelBookSyncSchedule, controlSyncJob, removeSyncJob, generateSyncMap, getBooks, getSyncReport, getSyncSweep, listJobs, listSyncSchedules, runSyncSweep, scheduleBookSync, setSyncSweep, type SyncSchedule, type SyncSweep } from "./api";
+import { formatTime } from "./formatting";
 import { jobElapsedMinutes } from "./jobTiming";
 import {
   syncFeedChanged,
@@ -8,9 +9,12 @@ import {
   syncJobPollDelay,
   sortSyncJobs
 } from "./syncJobFeed";
-import type { Book, JobStatus } from "./types";
+import { coveragePercent, gradeLabel, gradeTone, groupSyncedBooks, sortChapters } from "./syncQuality";
+import type { Book, JobStatus, SyncReport } from "./types";
 
 type Feed = { jobs: JobStatus[]; now: number };
+/** The book whose chapter grades are open, and what loading them returned. */
+type OpenReport = { bookId: string; data?: SyncReport; error?: string };
 
 /** The label and colour a job's state carries in the activity list. */
 function jobState(status: string) {
@@ -31,6 +35,31 @@ function relativeTime(runAt: number, now: number) {
   const hours = Math.round(minutes / 60);
   if (Math.abs(hours) < 24) return RELATIVE.format(hours, "hour");
   return RELATIVE.format(Math.round(hours / 24), "day");
+}
+
+/** A book's chapters, worst first, loaded when its grade is opened. */
+function SyncChapterGrades({ report }: { report: OpenReport }) {
+  if (report.error) return <p className="admin-sync-schedule-error" role="alert">{report.error}</p>;
+  if (!report.data) return <p className="admin-sync-chapters-note"><LoaderCircle size={12} className="spin-icon" aria-hidden="true" />Loading chapters…</p>;
+  const { data } = report;
+  return <>
+    {data.graded === "estimate" ? <p className="admin-sync-chapters-note">Estimated grade, measured from the existing map. Re-sync for a full grade.</p> : null}
+    {data.chapters.length === 0 ? <p className="admin-sync-chapters-note">This book’s chapters could not be matched to its text, so they have no grades.</p> : (
+      <ol className="admin-sync-chapter-list">
+        <li className="admin-sync-chapter-head" aria-hidden="true"><span>Chapter</span><span>Text</span><span>Unmatched</span><span>Grade</span></li>
+        {sortChapters(data.chapters).map((chapter) => (
+          <li key={chapter.index}>
+            <span className="admin-sync-chapter-label">{chapter.label}</span>
+            {chapter.grade ? <>
+              <span title="Share of the chapter’s text that is highlighted">{coveragePercent(chapter)}</span>
+              <span title="Audio no sentence was matched to">{formatTime(chapter.gapSeconds)}</span>
+              <span className={`admin-sync-job-state admin-sync-job-state-${gradeTone(chapter.grade)}`}>{gradeLabel(chapter.grade)}</span>
+            </> : <span className="admin-sync-chapter-empty">No text to follow</span>}
+          </li>
+        ))}
+      </ol>
+    )}
+  </>;
 }
 
 /** One nightly rule and one "do it now" button for the whole library. */
@@ -193,7 +222,21 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
   const [libraryBooks, setLibraryBooks] = useState(books);
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [openReport, setOpenReport] = useState<OpenReport | null>(null);
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  async function toggleReport(bookId: string) {
+    if (openReport?.bookId === bookId) { setOpenReport(null); return; }
+    setOpenReport({ bookId });
+    let next: OpenReport;
+    try {
+      next = { bookId, data: await getSyncReport(bookId) };
+    } catch (err) {
+      next = { bookId, error: err instanceof Error ? err.message : "Could not load this book’s chapter grades." };
+    }
+    // Drop an answer for a book that was closed or switched away from meanwhile.
+    setOpenReport((current) => current?.bookId === bookId ? next : current);
+  }
 
   function openSchedule(bookId: string) {
     const next = new Date();
@@ -342,6 +385,12 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
     || book.title.toLowerCase().includes(needle)
     || (book.author?.toLowerCase().includes(needle) ?? false);
   const visibleBooks = eligibleBooks.filter(matches);
+  const { attention, synced } = groupSyncedBooks(visibleBooks.filter(isSynced));
+  const groups = [
+    ...(attention.length ? [{ title: "Needs attention", kind: "attention", items: attention, empty: "" }] : []),
+    { title: "Ready to optimize", kind: "ready", items: visibleBooks.filter((book) => !isSynced(book)), empty: needle ? "No matches." : "Every eligible book has been synced." },
+    { title: "Already synced", kind: "synced", items: synced, empty: needle ? "No matches." : "Synced books will appear here." },
+  ];
 
   const syncedTotal = eligibleBooks.filter(isSynced).length;
   const pendingSchedules = schedules?.filter((entry) => entry.status === "scheduled" || entry.status === "dispatching").length ?? 0;
@@ -464,11 +513,10 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
         </div>
         <p className="admin-experiment-detail">Sync a book now or schedule it for later. Books need audio and an EPUB companion.</p>
         <div className="admin-sync-library">
-        {[{ title: "Ready to optimize", synced: false, items: visibleBooks.filter((book) => !isSynced(book)), empty: needle ? "No matches." : "Every eligible book has been synced." },
-          { title: "Already synced", synced: true, items: visibleBooks.filter(isSynced), empty: needle ? "No matches." : "Synced books will appear here." }].map((group) => (
-          <details key={group.title} className="admin-sync-book-group" open>
+        {groups.map((group) => (
+          <details key={group.title} className={`admin-sync-book-group admin-sync-book-group-${group.kind}`} open>
             <summary>
-              {group.synced ? <Check size={16} /> : <BookOpen size={16} />}
+              {group.kind === "attention" ? <AlertTriangle size={16} /> : group.kind === "synced" ? <Check size={16} /> : <BookOpen size={16} />}
               <span>{group.title}</span><span className="admin-sync-count">{group.items.length}</span><ChevronDown className="admin-sync-chevron" size={15} />
             </summary>
             <div className="admin-sync-book-list">
@@ -477,12 +525,27 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                 const pending = schedule?.status === "scheduled" || schedule?.status === "dispatching";
                 const job = activeJobs.get(book.id);
                 const percent = job ? syncJobPercent(job) : null;
+                const quality = book.syncFile?.quality;
+                const reportOpen = openReport?.bookId === book.id;
                 return (
                 <div className="admin-sync-book-entry" key={book.id}>
                 <div className="admin-sync-book-row">
                   <div className="admin-sync-book-info">
                     {onOpenBook ? <button type="button" className="admin-sync-book-link" onClick={() => onOpenBook(book.id)}>{book.title}<ArrowUpRight size={13} aria-hidden="true" /></button> : <strong>{book.title}</strong>}
-                    {book.syncFile?.outdated ? <span className="admin-sync-job-state admin-sync-job-state-queued" title="A mapping update is available. The existing map remains usable until you remap it.">Outdated map</span> : null}
+                    {book.syncFile?.outdated || quality ? <span className="admin-sync-book-badges">
+                      {book.syncFile?.outdated ? <span className="admin-sync-job-state admin-sync-job-state-queued" title="A mapping update is available. The existing map remains usable until you remap it.">Outdated map</span> : null}
+                      {quality ? <button
+                        type="button"
+                        className={`admin-sync-job-state admin-sync-grade admin-sync-job-state-${gradeTone(quality.grade)}`}
+                        aria-expanded={reportOpen}
+                        aria-label={`${gradeLabel(quality.grade)} sync. ${reportOpen ? "Hide" : "Show"} chapter grades for ${book.title}`}
+                        title={quality.flagged ? `${quality.flagged} ${quality.flagged === 1 ? "chapter is" : "chapters are"} below Good` : "Every chapter is Good"}
+                        onClick={() => void toggleReport(book.id)}
+                      >
+                        {gradeLabel(quality.grade)}{quality.flagged ? ` · ${quality.flagged}` : ""}
+                        <ChevronDown size={11} aria-hidden="true" />
+                      </button> : null}
+                    </span> : null}
                     {book.author ? <span className="admin-sync-author">{book.author}</span> : null}
                   </div>
                   <div className="admin-sync-book-actions">
@@ -506,6 +569,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                   </span>
                   <button type="button" className="admin-sync-book-link" disabled={busyBook !== null} onClick={() => void act(book.id, "cancel")} aria-label={`Cancel scheduled sync for ${book.title}`}>Cancel</button>
                 </div> : null}
+                {reportOpen && openReport ? <div className="admin-sync-chapters"><SyncChapterGrades report={openReport} /></div> : null}
                 {actionError?.bookId === book.id ? <p role="alert" className="admin-sync-schedule-error">{actionError.message}</p> : null}
                 {schedule?.error ? <p className="admin-sync-schedule-error">{schedule.error}</p> : null}
                 {schedulingBook === book.id ? <form className="admin-sync-schedule-form" onSubmit={(event) => { event.preventDefault(); void act(book.id, "schedule"); }}>

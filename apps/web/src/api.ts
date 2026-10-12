@@ -28,6 +28,7 @@ import type {
   ServerType,
   SyncAddonStatus,
   SyncMap,
+  SyncReport,
   UpdateInstallStarted,
   FrontendUpdateStatus,
   UpdateStatus,
@@ -1274,6 +1275,10 @@ export async function generateSyncMap(bookId: string) {
   return request<JobCreated>(`/api/books/${encodeURIComponent(bookId)}/sync/generate`, {
     method: "POST"
   });
+}
+
+export async function getSyncReport(bookId: string) {
+  return request<SyncReport>(`/api/books/${encodeURIComponent(bookId)}/sync/report`);
 }
 
 export async function getAlignmentStatus() {
