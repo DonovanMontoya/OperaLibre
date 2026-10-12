@@ -198,12 +198,20 @@ export function usePlaybackRestore({
       const localCopies = [mappedDevice, checkpoint, cached];
       const previousLocal = freshestProgress(...localCopies);
       if (nativeProgress) {
+        // Loading a paused native player can refresh its recovery timestamp.
+        // An unchanged acknowledged position is not new listening: uploading
+        // it would replace another device's recording merely by opening the app.
+        const unchangedAcknowledgedPosition = previousLocal?.syncStatus === "synced"
+          && nativeProgress.trackId === previousLocal.trackId
+          && Math.abs(nativeProgress.positionSeconds - previousLocal.positionSeconds) <= 0.01
+          && Math.abs(nativeProgress.bookPositionSeconds - previousLocal.bookPositionSeconds) <= 0.01;
         // Compare with the surviving local copy, not superseded legacy mirrors
         // that may still carry server time. Unmarked recovery retains its old
         // timestamp ordering; acknowledgements contribute only recording time.
         const recordedAt = previousLocal?.localUpdatedAt
           ?? (previousLocal?.syncStatus !== "synced" ? previousLocal?.updatedAt : undefined);
-        nativeProgress = recordedAt && progressTimestamp(nativeProgress.updatedAt) <= progressTimestamp(recordedAt)
+        nativeProgress = unchangedAcknowledgedPosition
+          || (recordedAt && progressTimestamp(nativeProgress.updatedAt) <= progressTimestamp(recordedAt))
           ? null
           : pendingProgress(nativeProgress, previousLocal,
               previousLocal?.syncStatus ? serverRevisionFromSummary(playbackBook.progress) : undefined);
