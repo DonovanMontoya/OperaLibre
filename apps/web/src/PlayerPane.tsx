@@ -248,7 +248,7 @@ export function PlayerPane({
     removeOfflineDownload
   } = offlineDownloads;
   const {
-    changeBookCompletion,
+    requestBookCompletion,
     markBookUnplayed
   } = bookCompletion;
   const {
@@ -348,7 +348,8 @@ export function PlayerPane({
   let storageAction: ReactNode = null;
   let completionAction: ReactNode = null;
   let resetAction: ReactNode = null;
-  let libraryActions: ReactNode = null;
+  let editAction: ReactNode = null;
+  let epubAction: ReactNode = null;
   if (selectedBook) {
     const downloaded = downloadedBookIds.has(selectedBook.id);
     const finished = selectedBook.progress?.status === "finished";
@@ -466,24 +467,21 @@ export function PlayerPane({
 
     completionAction = (
       <button
-        className={`${chip} book-action-completion ${finished ? "active" : ""}`}
+        className={`${menuItem} book-action-completion ${finished ? "active" : ""}`}
         type="button"
         onClick={() => {
           haptic("light");
-          void changeBookCompletion(selectedBook, !finished);
+          requestBookCompletion(selectedBook, !finished);
         }}
         disabled={completionPending}
         aria-pressed={finished}
         aria-label={finished ? `Mark ${selectedBook.title} unfinished` : `Mark ${selectedBook.title} finished`}
         title={finished ? "Mark unfinished" : "Mark finished"}
       >
-        {actionFace(
-          completionPending
-            ? <LoaderCircle size={actionIcon} className="spin-icon" />
-            : compactActions && finished ? <Check size={actionIcon} /> : <CircleCheck size={actionIcon} />,
-          "Finished",
-          finished ? "Mark unfinished" : "Mark finished"
-        )}
+        {completionPending
+          ? <LoaderCircle size={actionIcon} className="spin-icon" />
+          : <CircleCheck size={actionIcon} />}
+        <span>{finished ? "Mark unfinished" : "Mark finished"}</span>
       </button>
     );
 
@@ -501,41 +499,41 @@ export function PlayerPane({
       </button>
     ) : null;
 
-    libraryActions = canEdit || canAddEpub ? (
-      <>
-        {canEdit ? (
-          <button
-            className={`${menuItem} book-action-edit`}
-            type="button"
-            onClick={() => {
-              haptic("light");
-              openMetadataEditor(selectedBook);
-            }}
-            aria-label={`Edit info for ${selectedBook.title}`}
-            title="Edit book info"
-          >
-            <Pencil size={actionIcon} />
-            <span>Edit info</span>
-          </button>
-        ) : null}
-        {canAddEpub ? (
-          <button
-            className={`${menuItem} book-action-epub`}
-            type="button"
-            onClick={() => {
-              haptic("light");
-              setEbookUploadBook(selectedBook);
-              setEbookUploadFile(null);
-              setEbookUploadError(null);
-            }}
-            aria-label={`Add matching EPUB for ${selectedBook.title}`}
-            title="Add a matching EPUB"
-          >
-            <BookOpen size={actionIcon} />
-            <span>Add EPUB</span>
-          </button>
-        ) : null}
-      </>
+    editAction = canEdit ? (
+      <button
+        className={`${chip} book-action-edit`}
+        type="button"
+        onClick={() => {
+          haptic("light");
+          openMetadataEditor(selectedBook);
+        }}
+        aria-label={`Edit info for ${selectedBook.title}`}
+        title="Edit book info"
+      >
+        {actionFace(<Pencil size={actionIcon} />, "Edit", "Edit info")}
+      </button>
+    ) : compactActions ? (
+      <span className="book-action book-action-edit is-unavailable" title="Editing is not available for this book">
+        {actionFace(<Pencil size={actionIcon} />, "Edit")}
+      </span>
+    ) : null;
+
+    epubAction = canAddEpub ? (
+      <button
+        className={`${menuItem} book-action-epub`}
+        type="button"
+        onClick={() => {
+          haptic("light");
+          setEbookUploadBook(selectedBook);
+          setEbookUploadFile(null);
+          setEbookUploadError(null);
+        }}
+        aria-label={`Add matching EPUB for ${selectedBook.title}`}
+        title="Add a matching EPUB"
+      >
+        <BookOpen size={actionIcon} />
+        <span>Add EPUB</span>
+      </button>
     ) : null;
   }
 
@@ -861,10 +859,8 @@ export function PlayerPane({
                       <div className="book-action-rail">
                         {readAction}
                         {storageAction}
-                        {completionAction}
-                        {/* More keeps its place even when this book and account leave it nothing to hold. */}
+                        {editAction}
                         <button className="book-action book-action-more" type="button"
-                          disabled={!resetAction && !libraryActions}
                           aria-label="More book actions" aria-expanded={bookActionsOpen} aria-controls={bookActionsId}
                           onClick={() => {
                             bookActionsRef.current?.querySelector<HTMLDetailsElement>(".track-downloads")?.removeAttribute("open");
@@ -879,13 +875,15 @@ export function PlayerPane({
                         onClick={event => {
                           if (event.target instanceof Element && event.target.closest("button")) setBookActionsOpen(false);
                         }}>
+                        {completionAction}
                         {resetAction}
-                        {libraryActions}
+                        {epubAction}
                       </div>
                     </div>
                   ) : (
                     <>
-                      {libraryActions}
+                      {editAction}
+                      {epubAction}
                       {completionAction}
                       {resetAction}
                       {readAction}

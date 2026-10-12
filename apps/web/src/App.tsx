@@ -135,7 +135,7 @@ import {
 } from "./PlayerSheets";
 import { AudiobookUploadDialog, EbookUploadDialog } from "./UploadDialogs";
 import { MetadataEditorDialog } from "./MetadataEditorDialog";
-import { SyncConfirmationDialog, UnplayedConfirmationDialog, type DeviceNotice } from "./ConfirmDialogs";
+import { CompletionConfirmationDialog, SyncConfirmationDialog, UnplayedConfirmationDialog, type DeviceNotice } from "./ConfirmDialogs";
 import {
   type DeviceDownloadActivity
 } from "./SettingsCards";
@@ -1234,7 +1234,11 @@ function MainApp({
   const {
     changeBookCompletion,
     confirmBookUnplayed,
-    markBookUnplayed
+    markBookUnplayed,
+    cancelBookCompletion,
+    completionConfirmation,
+    confirmBookCompletion,
+    requestBookCompletion
   } = bookCompletion;
   const {
     applyPlaybackVolume,
@@ -2277,6 +2281,17 @@ function MainApp({
         />
       ) : null}
 
+      {completionConfirmation ? (
+        <CompletionConfirmationDialog
+          book={completionConfirmation.book}
+          finished={completionConfirmation.finished}
+          pending={completionPendingBookId === completionConfirmation.book.id}
+          error={completionError?.bookId === completionConfirmation.book.id ? completionError.message : null}
+          onCancel={cancelBookCompletion}
+          onConfirm={confirmBookCompletion}
+        />
+      ) : null}
+
       {unplayedConfirmationBook ? (
         <UnplayedConfirmationDialog
           completionError={completionError}
@@ -2292,7 +2307,7 @@ function MainApp({
         <BookDetailsSheet
           activeChapter={activeChapter}
           bookCompletionPercent={bookCompletionPercent}
-          changeBookCompletion={changeBookCompletion}
+          requestBookCompletion={requestBookCompletion}
           closeNativePlayerSheet={closeNativePlayerSheet}
           completionPendingBookId={completionPendingBookId}
           displayBookRemainingSeconds={displayBookRemainingSeconds}

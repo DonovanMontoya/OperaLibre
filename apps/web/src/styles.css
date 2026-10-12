@@ -19069,7 +19069,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 .admin-sync-monitor .admin-sync-icon-button svg { flex-shrink: 0; }
 
 /* Book details on phones and in the native apps: reading, the device copy,
-   Finished and More hold fixed places in a rail of round buttons beneath the
+   Edit and More hold fixed places in a rail of round buttons beneath the
    play bar, whatever the book offers. A missing ebook or a finished download
    changes the button's face and caption, never its position. Wide browser
    windows keep the labelled chips. */

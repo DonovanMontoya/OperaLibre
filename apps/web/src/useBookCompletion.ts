@@ -7,7 +7,7 @@ import { Capacitor } from "@capacitor/core";
 import { haptic } from "./native";
 import type { DeviceNotice } from "./ConfirmDialogs";
 import type { QueuedProgressSave } from "./playbackTypes";
-import type { Dispatch, RefObject, SetStateAction } from "react";
+import { useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { acknowledgeProgressSeekIntent, progressSeekStorage, readProgressSeekIntent } from "./progressSeekIntent";
 
 export function useBookCompletion({
@@ -51,6 +51,26 @@ export function useBookCompletion({
   setIsPlaying: Dispatch<SetStateAction<boolean>>;
   setUnplayedConfirmationBookId: Dispatch<SetStateAction<string | null>>;
 }) {
+  const [completionConfirmation, setCompletionConfirmation] = useState<{ book: Book; finished: boolean } | null>(null);
+
+  function requestBookCompletion(book: Book, finished: boolean) {
+    if (completionPendingBookId === book.id) return;
+    setCompletionError(null);
+    setCompletionConfirmation({ book, finished });
+  }
+
+  function cancelBookCompletion() {
+    if (completionPendingBookId === completionConfirmation?.book.id) return;
+    setCompletionConfirmation(null);
+    setCompletionError(null);
+  }
+
+  async function confirmBookCompletion() {
+    if (!completionConfirmation) return;
+    const { book, finished } = completionConfirmation;
+    if (await changeBookCompletion(book, finished)) setCompletionConfirmation(null);
+  }
+
   async function changeBookCompletion(
     book: Book,
     finished: boolean,
@@ -194,6 +214,10 @@ export function useBookCompletion({
   }
 
   return {
+    cancelBookCompletion,
+    completionConfirmation,
+    confirmBookCompletion,
+    requestBookCompletion,
     changeBookCompletion,
     confirmBookUnplayed,
     markBookUnplayed
