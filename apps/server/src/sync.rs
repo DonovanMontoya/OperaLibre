@@ -4771,8 +4771,19 @@ esac
                 completed: 0,
                 total: 1,
             };
+            // Window recovery can find no timing; scope generation rejects that
+            // result, while these tests inspect the gaps it recovered through.
             let result = aligner
-                .align_scope(&scope, &track, &transcript, 0, &progress)
+                .align_windowed(
+                    &scope,
+                    &track,
+                    &transcript,
+                    0,
+                    &ffmpeg,
+                    0.0,
+                    track.duration_seconds.unwrap(),
+                    &progress,
+                )
                 .await
                 .unwrap();
             // Masked edition-only text is reported so it does not lower the grade.
@@ -5495,8 +5506,10 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
             );
             assert!(book.report().chapters[1].error.is_some());
 
+            let mut failed = chapter(1);
+            failed.cause = Some(sync_report::Cause::NoisyAudio);
             let generated = book.run(Some(&[0, 1])).await.unwrap();
-            assert_eq!(generated.failed, vec![chapter(1)]);
+            assert_eq!(generated.failed, vec![failed.clone()]);
             let after = book.map();
             assert_eq!(in_chapter(&after, 0)[0]["startSeconds"], 1.0);
             assert_eq!(in_chapter(&after, 1), in_chapter(&before, 1));
@@ -5504,7 +5517,7 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
 
             // A whole-book sync also keeps usable timing for an empty chapter.
             let generated = book.run(None).await.unwrap();
-            assert_eq!(generated.failed, vec![chapter(1)]);
+            assert_eq!(generated.failed, vec![failed.clone()]);
             assert_eq!(in_chapter(&book.map(), 1), in_chapter(&before, 1));
         }
 
@@ -5931,21 +5944,22 @@ esac
                 "{larger:?}"
             );
 
-            // When the larger model hears no better, the first result stays.
+            // When neither model finds timing, the previous map stays.
             std::fs::remove_file(book.runtime.cli_path.with_extension("calls")).unwrap();
             book.control("clear-models", "");
             let before = book.map();
             let (report, output) = book.run(None).await;
-            assert_eq!(report.chapters[1].grade, Some(Grade::Poor), "{output}");
+            assert_eq!(report.chapters[1].grade, Some(Grade::Failed), "{output}");
+            assert_eq!(
+                report.chapters[1].status,
+                sync_report::ChapterStatus::KeptPrevious
+            );
             let diagnosis = report.chapters[1].diagnosis.as_ref().unwrap();
             assert_eq!(diagnosis.cause, Cause::NoisyAudio);
             assert!(diagnosis.fix.attempted && !diagnosis.fix.applied);
             assert!(diagnosis.evidence.unanchored_windows.unwrap() > 0);
-            assert!(
-                output.contains("That did not improve Chapter 2"),
-                "{output}"
-            );
-            assert_ne!(
+            assert!(output.contains("That failed too"), "{output}");
+            assert_eq!(
                 in_range(&book.map(), &report.chapters[1]),
                 in_range(&before, &report.chapters[1])
             );
@@ -6151,6 +6165,13 @@ esac
                 1
             );
             assert!(!book.calls().iter().any(|call| call.ends_with(" small.en")));
+
+            let mixed = SpokenBook::new(&[0, 9, 2], Some("en"));
+            let job = create_job(&mixed.state, SYNC_GENERATE_JOB_KIND).await;
+            let generated = mixed.run_job(&job, None).await.unwrap();
+            assert_eq!(generated.failed.len(), 1);
+            assert_eq!(generated.failed[0].index, 1);
+            assert_eq!(generated.failed[0].cause, Some(Cause::EditionMismatch));
         }
 
         #[tokio::test]
