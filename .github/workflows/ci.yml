@@ -271,8 +271,20 @@ jobs:
           swiftc apps/web/ios/App/App/CarLibrary.swift apps/web/ios/Tests/CarLibraryTests.swift -o "$RUNNER_TEMP/car-library-tests"
           "$RUNNER_TEMP/car-library-tests"
 
+      - name: Test simulator runtime selection
+        run: python3 script/test_simulator_runtime.py
+
       - name: Test iOS CarPlay cover cache
+        id: car_artwork
         run: python3 script/test_car_artwork.py
+
+      - name: Upload failed CarPlay cover test results
+        if: failure() && steps.car_artwork.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: operalibre-carplay-cover-test-results
+          path: output/car-artwork-tests/*.xcresult
+          if-no-files-found: warn
 
       - name: Install Rust for BookPlayer contract test
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
