@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { createServer, type ViteDevServer } from 'vite';
-import { library } from '../performance/fixtures';
+import { library, wav } from '../performance/fixtures';
 
 let server: ViteDevServer;
 let url: string;
@@ -37,6 +37,12 @@ async function setup(page: Page, platform: 'ios' | 'android' | 'web', admin = tr
     else if (path === '/api/books') body = books;
     else if (path === '/api/libation/status') body = { accounts: [], configured: false, available: false };
     else if (path === '/api/me/libro') body = { connected: false, accounts: [], books: [], jobs: [] };
+    else if (path.endsWith('/completion')) {
+      const book = books.find(book => path === `/api/books/${book.id}/completion`)!;
+      const { finished } = request.postDataJSON();
+      body = { ...book.progress, status: finished ? 'finished' : 'inProgress', finishedOverride: finished,
+        updatedAt: '1700000002' };
+    }
     else if (path.endsWith('/progress')) body = null;
     await route.fulfill({ json: body });
   });
@@ -96,7 +102,7 @@ async function openBook(page: Page, index: number) {
 async function slots(page: Page) {
   return page.locator('.book-detail-actions').evaluate(grid => {
     const origin = grid.getBoundingClientRect();
-    return Object.fromEntries(['read', 'storage', 'completion', 'more'].map(slot => {
+    return Object.fromEntries(['read', 'storage', 'edit', 'more'].map(slot => {
       const element = grid.querySelector(`.book-action-${slot}`);
       if (!element) return [slot, null];
       const box = element.getBoundingClientRect();
@@ -116,19 +122,21 @@ for (const platform of ['ios', 'android', 'web'] as const) {
           await openBook(page, index);
           const positions = await slots(page);
           baseline ??= positions;
-          for (const slot of ['read', 'storage', 'completion', 'more']) expect(positions[slot]).toEqual(baseline[slot]);
-          const { read, storage, completion, more } = positions;
+          for (const slot of ['read', 'storage', 'edit', 'more']) expect(positions[slot]).toEqual(baseline[slot]);
+          const { read, storage, edit, more } = positions;
           expect(storage!.x).toBeGreaterThan(read!.x);
-          expect(completion!.x).toBeGreaterThan(storage!.x);
-          expect(more!.x).toBeGreaterThan(completion!.x);
-          for (const slot of [storage, completion, more]) expect(slot!.y).toEqual(read!.y);
+          expect(edit!.x).toBeGreaterThan(storage!.x);
+          expect(more!.x).toBeGreaterThan(edit!.x);
+          for (const slot of [storage, edit, more]) expect(slot!.y).toEqual(read!.y);
           const actions = page.locator('.book-detail-actions');
           if (index === 0) await expect(actions.locator('.book-action-read')).toHaveText('No ebook');
           if (index === 1) await expect(actions.getByRole('button', { name: /Open read along/ })).toBeVisible();
           if (index === 2) await expect(actions.getByRole('button', { name: /Open extras/ })).toBeVisible();
           await expect(actions.locator('.book-action-storage')).toHaveText(index >= 3 ? 'On device' : 'Download');
           await expect(actions.locator('.book-action-completion')).toHaveAttribute('aria-pressed', index === 2 ? 'true' : 'false');
-          expect(await actions.locator('.book-action-edit').count()).toBe(admin ? 1 : 0);
+          await expect(actions.locator('.book-action-edit')).toBeVisible();
+          await expect(actions.locator('.book-action-edit')).toHaveText('Edit');
+          expect(await actions.locator('button.book-action-edit').count()).toBe(admin ? 1 : 0);
           for (const control of await actions.locator('button:visible, a:visible').all()) {
             const box = (await control.boundingBox())!;
             expect(box.height).toBeGreaterThanOrEqual(44);
@@ -140,15 +148,10 @@ for (const platform of ['ios', 'android', 'web'] as const) {
           const moreButton = actions.getByRole('button', { name: 'More book actions' });
           const menu = actions.getByRole('group', { name: 'Book actions' });
           await expect(menu).toBeHidden();
-          // More keeps its place but has nothing to open for a reader's unstarted book.
-          if (!admin && index !== 1 && index !== 2) {
-            await expect(moreButton).toBeDisabled();
-            await page.getByRole('button', { name: platform === 'web' ? 'Open library' : 'Back to Library', exact: true }).click();
-            await expect(page.locator('.book-row').first()).toBeVisible();
-            continue;
-          }
           await moreButton.click();
           await expect(menu).toBeVisible();
+          await expect(menu.locator('.book-action-completion')).toBeVisible();
+          await expect(menu.locator('.book-action-edit')).toHaveCount(0);
           await expect(menu.locator('.book-action-reset')).toHaveCount(index === 1 || index === 2 ? 1 : 0);
           await expect(menu.locator('.book-action-epub')).toHaveCount(admin && index !== 1 && index !== 4 ? 1 : 0);
           for (const control of await menu.locator('button').all()) {
@@ -171,6 +174,120 @@ for (const platform of ['ios', 'android', 'web'] as const) {
     }
   }
 }
+
+for (const platform of ['ios', 'android', 'web'] as const) {
+  for (const finished of [false, true]) {
+    test(`${platform} confirms marking a book ${finished ? 'unfinished' : 'finished'} before writing`, async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      const { books, writes } = await setup(page, platform);
+      const index = finished ? 2 : 1;
+      await openBook(page, index);
+      const actions = page.locator('.book-detail-actions');
+      const label = finished ? 'Mark unfinished' : 'Mark finished';
+      const trigger = actions.getByRole('button', { name: `Mark ${books[index].title} ${finished ? 'unfinished' : 'finished'}`, exact: true });
+      const dialog = page.getByRole('dialog', { name: `${label}?`, exact: true });
+      async function requestChange() {
+        await actions.getByRole('button', { name: 'More book actions' }).click();
+        await trigger.click();
+        await expect(dialog).toBeVisible();
+        await expect(actions.getByRole('group', { name: 'Book actions' })).toBeHidden();
+        expect(writes).toEqual([]);
+      }
+      await requestChange();
+      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(dialog).toBeHidden();
+      await expect(actions.locator('.book-action-completion')).toHaveAttribute('aria-pressed', String(finished));
+      await requestChange();
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
+      await expect(actions.locator('.book-action-completion')).toHaveAttribute('aria-pressed', String(finished));
+      await requestChange();
+      await dialog.getByRole('button', { name: label, exact: true }).click();
+      await expect(dialog).toBeHidden();
+      await expect(actions.locator('.book-action-completion')).toHaveAttribute('aria-pressed', String(!finished));
+      expect(writes).toEqual([`PUT /api/books/${books[index].id}/completion`]);
+      if (platform === 'web' && !finished) {
+        await actions.locator('button.book-action-edit').click();
+        const editor = page.getByRole('dialog', { name: 'Edit Book Info', exact: true });
+        await expect(editor).toBeVisible();
+        await editor.getByRole('button', { name: 'Close metadata editor' }).click();
+        await expect(editor).toBeHidden();
+      }
+    });
+  }
+}
+
+for (const platform of ['ios', 'android'] as const) {
+  test(`${platform} preserves player details after cancelling or marking unfinished`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const { books, writes } = await setup(page, platform);
+    await page.route('**/fixture.wav*', route => route.fulfill({ contentType: 'audio/wav', body: wav() }));
+    await page.route(`**/api/books/${books[2].id}/progress`, route => route.fulfill({ json: {
+      bookId: books[2].id, trackId: books[2].tracks[0].id, positionSeconds: 60,
+      bookPositionSeconds: 60, durationSeconds: 120, finishedOverride: true, updatedAt: new Date().toISOString()
+    } }));
+    await openBook(page, 2);
+    await page.getByRole('button', { name: `Play ${books[2].title}`, exact: true }).click();
+    await page.locator('.native-now-utility').getByRole('button', { name: 'Details', exact: true }).click();
+    const sheet = page.locator('.details-sheet');
+    const trigger = sheet.getByRole('button', { name: 'Mark unfinished', exact: true });
+    const confirmation = page.getByRole('dialog', { name: 'Mark unfinished?', exact: true });
+    const completionWrites = () => writes.filter(write => write.endsWith('/completion'));
+    await trigger.click();
+    await expect(confirmation).toBeVisible();
+    await expect(sheet).toBeVisible();
+    await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(confirmation).toBeHidden();
+    await expect(trigger).toBeFocused();
+    await expect(trigger).toHaveAttribute('aria-pressed', 'true');
+    expect(completionWrites()).toEqual([]);
+    await trigger.click();
+    await expect(confirmation).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(confirmation).toBeHidden();
+    await expect(trigger).toBeFocused();
+    expect(completionWrites()).toEqual([]);
+    await trigger.click();
+    await confirmation.getByRole('button', { name: 'Mark unfinished', exact: true }).click();
+    await expect(confirmation).toBeHidden();
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByRole('button', { name: 'Mark finished', exact: true })).toHaveAttribute('aria-pressed', 'false');
+    expect(completionWrites()).toEqual([`PUT /api/books/${books[2].id}/completion`]);
+  });
+}
+
+test('completion confirmation retains errors and retries without dismissing early', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const { books } = await setup(page, 'web');
+  let attempts = 0;
+  let finishSave: (() => void) | undefined;
+  await page.route('**/api/books/*/completion', async route => {
+    attempts++;
+    if (attempts === 1) await route.fulfill({ status: 500, json: { message: 'Could not save reading status' } });
+    else {
+      await new Promise<void>(resolve => { finishSave = resolve; });
+      await route.fulfill({ json: { ...books[1].progress, status: 'finished', finishedOverride: true, updatedAt: '1700000002' } });
+    }
+  });
+  await openBook(page, 1);
+  await page.getByRole('button', { name: 'More book actions' }).click();
+  await page.getByRole('button', { name: `Mark ${books[1].title} finished`, exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Mark finished?', exact: true });
+  await dialog.getByRole('button', { name: 'Mark finished', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Could not save reading status');
+  await expect(page.locator('.book-action-completion')).toHaveAttribute('aria-pressed', 'false');
+  await dialog.getByRole('button', { name: 'Mark finished', exact: true }).click();
+  await expect(dialog).toHaveAttribute('aria-busy', 'true');
+  await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeVisible();
+  await expect.poll(() => finishSave !== undefined).toBe(true);
+  finishSave!();
+  await expect(dialog).toBeHidden();
+  await expect(page.locator('.book-action-completion')).toHaveAttribute('aria-pressed', 'true');
+  expect(attempts).toBe(2);
+});
 
 test('desktop keeps secondary book actions visible when resizing from a phone', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });

@@ -136,7 +136,7 @@ import {
 } from "./PlayerSheets";
 import { AudiobookUploadDialog, EbookUploadDialog } from "./UploadDialogs";
 import { MetadataEditorDialog } from "./MetadataEditorDialog";
-import { SyncConfirmationDialog, UnplayedConfirmationDialog, type DeviceNotice } from "./ConfirmDialogs";
+import { CompletionConfirmationDialog, SyncConfirmationDialog, UnplayedConfirmationDialog, type DeviceNotice } from "./ConfirmDialogs";
 import {
   type DeviceDownloadActivity
 } from "./SettingsCards";
@@ -522,6 +522,7 @@ function MainApp({
   const shellRef = useRef<HTMLElement | null>(null);
   const miniPlayerRef = useRef<HTMLElement | null>(null);
   const playerPaneRef = useRef<HTMLElement | null>(null);
+  const libraryPaneRef = useRef<HTMLElement | null>(null);
   const bookDetailsSwipeStartRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const saveStartedAt = useRef(0);
   const playWhenTrackLoads = useRef(false);
@@ -1235,7 +1236,11 @@ function MainApp({
   const {
     changeBookCompletion,
     confirmBookUnplayed,
-    markBookUnplayed
+    markBookUnplayed,
+    cancelBookCompletion,
+    completionConfirmation,
+    confirmBookCompletion,
+    requestBookCompletion
   } = bookCompletion;
   const {
     applyPlaybackVolume,
@@ -1783,6 +1788,7 @@ function MainApp({
     chaptersOpen,
     gamesEnabled,
     isViewingPlayingBook,
+    libraryPaneRef,
     librarySource,
     native,
     nativePlayerView,
@@ -2126,6 +2132,7 @@ function MainApp({
         isOperaLibre={isOperaLibre}
         lastPurchaseSource={lastPurchaseSource}
         libraryOpen={libraryOpen}
+        libraryPaneRef={libraryPaneRef}
         librarySource={librarySource}
         localMode={localMode}
         native={native}
@@ -2290,6 +2297,17 @@ function MainApp({
         />
       ) : null}
 
+      {completionConfirmation ? (
+        <CompletionConfirmationDialog
+          book={completionConfirmation.book}
+          finished={completionConfirmation.finished}
+          pending={completionPendingBookId === completionConfirmation.book.id}
+          error={completionError?.bookId === completionConfirmation.book.id ? completionError.message : null}
+          onCancel={cancelBookCompletion}
+          onConfirm={confirmBookCompletion}
+        />
+      ) : null}
+
       {unplayedConfirmationBook ? (
         <UnplayedConfirmationDialog
           completionError={completionError}
@@ -2305,7 +2323,7 @@ function MainApp({
         <BookDetailsSheet
           activeChapter={activeChapter}
           bookCompletionPercent={bookCompletionPercent}
-          changeBookCompletion={changeBookCompletion}
+          requestBookCompletion={requestBookCompletion}
           closeNativePlayerSheet={closeNativePlayerSheet}
           completionPendingBookId={completionPendingBookId}
           displayBookRemainingSeconds={displayBookRemainingSeconds}
