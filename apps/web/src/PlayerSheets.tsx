@@ -18,14 +18,14 @@ import { bookSubtitle, durationFromTracks, formatDurationLabel, formatTime } fro
 import { haptic } from "./native";
 import { BookVolumeControl, PlaybackSpeedControl } from "./PlaybackControls";
 import { formatSleepTimerMinutes, SLEEP_TIMER_MAX_MINUTES, SLEEP_TIMER_MIN_MINUTES } from "./sleepTimer";
-import type { Book, Chapter, Progress } from "./types";
+import type { Book, Chapter } from "./types";
 
 export type NativePlayerSheet = "speed" | "sleep" | "chapters" | "details" | null;
 
 export function BookDetailsSheet({
   activeChapter,
   bookCompletionPercent,
-  changeBookCompletion,
+  requestBookCompletion,
   closeNativePlayerSheet,
   completionPendingBookId,
   displayBookRemainingSeconds,
@@ -37,7 +37,7 @@ export function BookDetailsSheet({
 }: {
   activeChapter: ChapterSegment | null;
   bookCompletionPercent: number | null;
-  changeBookCompletion: (book: Book, finished: boolean, finalProgress?: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">, resetToUnplayed?: boolean) => Promise<boolean>;
+  requestBookCompletion: (book: Book, finished: boolean) => void;
   closeNativePlayerSheet: () => void;
   completionPendingBookId: string | null;
   displayBookRemainingSeconds: number | null;
@@ -138,7 +138,8 @@ export function BookDetailsSheet({
             aria-pressed={playbackBook.progress?.status === "finished"}
             onClick={() => {
               haptic("light");
-              void changeBookCompletion(
+              closeNativePlayerSheet();
+              requestBookCompletion(
                 playbackBook,
                 playbackBook.progress?.status !== "finished"
               );
