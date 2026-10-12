@@ -65,6 +65,25 @@ async function expectResume(page: Page, saved: number) {
   await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
 }
 
+test('browsing another book and pausing the mini-player keeps the live position', async ({ page, server }) => {
+  const book = await setup(page, server);
+  await play(page);
+  await page.getByRole('button', { name: 'Forward 30 seconds', exact: true }).first().click();
+  await expect.poll(() => position(page)).toBeGreaterThan(30);
+  await page.locator('.book-row').filter({ hasText: 'Second Book' }).click();
+  const mini = page.getByRole('complementary', { name: 'Mini player' });
+  await expect(mini).toBeVisible();
+  const before = await position(page);
+  await mini.getByRole('button', { name: 'Pause', exact: true }).click();
+  await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
+  const paused = await position(page);
+  expect(paused).toBeGreaterThanOrEqual(before);
+  await expect.poll(async () => Math.abs((await server.progress(book.id))!.positionSeconds - paused)).toBeLessThan(1);
+  await expectResume(page, paused);
+  await mini.getByRole('button', { name: 'Play', exact: true }).click();
+  await expect.poll(() => position(page)).toBeGreaterThan(paused + 1);
+});
+
 test('editing the playing book updates lock-screen metadata without changing its position', async ({ page, server }) => {
   await setup(page, server);
   await play(page);
