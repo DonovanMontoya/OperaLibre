@@ -1210,10 +1210,7 @@ async fn read_sync_map(
 ) -> anyhow::Result<(alignment::SyncMap, sync_report::MapIdentity)> {
     let bytes = fs::read(path).await?;
     let map: alignment::SyncMap = serde_json::from_slice(&bytes)?;
-    let identity = sync_report::MapIdentity {
-        map_generated_at: map.generated_at.clone(),
-        map_size: bytes.len() as u64,
-    };
+    let identity = sync_report::MapIdentity::from_bytes(map.generated_at.clone(), &bytes);
     Ok((map, identity))
 }
 
@@ -1362,10 +1359,14 @@ pub(crate) async fn run_sync_generation(
         .iter()
         .filter(|&&index| spans[index].text_units > 0)
         .count();
-    let failed_count = |outcomes: &[sync_report::ScopeOutcome]| {
+    let systemic_failures = |outcomes: &[sync_report::ScopeOutcome]| {
         outcomes
             .iter()
-            .filter(|outcome| outcome.error.is_some())
+            .filter(|outcome| {
+                outcome.error.as_deref().is_some_and(|error| {
+                    sync_report::classify_error(error) != sync_report::Cause::NoisyAudio
+                })
+            })
             .count()
     };
     let mut gave_up = false;
@@ -1479,7 +1480,7 @@ pub(crate) async fn run_sync_generation(
         };
         run.outcomes.resize_with(scope_number, Default::default);
         run.outcomes.push(outcome);
-        if attempted >= FAIL_FAST_CHAPTERS && failed_count(&run.outcomes) == attempted {
+        if attempted >= FAIL_FAST_CHAPTERS && systemic_failures(&run.outcomes) == attempted {
             update_job_output(
                 state,
                 job_id,
@@ -1520,15 +1521,26 @@ pub(crate) async fn run_sync_generation(
     let failed = selected
         .iter()
         .filter_map(|&index| {
-            let error = outcomes.get(index)?.error.as_deref()?;
+            let outcome = outcomes.get(index)?;
+            let error = outcome.error.as_deref()?;
+            let cause = sync_report::diagnose_chapter(&sync_report::ChapterEvidence {
+                grade: Some(sync_report::Grade::Failed),
+                outcome,
+                language,
+                labels: &labels,
+            })
+            .map_or_else(
+                || sync_report::classify_error(error),
+                |diagnosis| diagnosis.cause,
+            );
             Some(JobChapter {
                 index,
                 label: scopes[index].label.clone(),
-                cause: Some(sync_report::classify_error(error)),
+                cause: Some(cause),
             })
         })
         .collect::<Vec<_>>();
-    // Nothing aligned: the runtime, not the book, is the likely problem.
+    // A content failure can still explain why nothing aligned.
     let all_failed = !failed.is_empty() && failed.len() == attempted;
     let failure = || {
         let detail = failed
@@ -1537,7 +1549,18 @@ pub(crate) async fn run_sync_generation(
         anyhow::anyhow!(detail.unwrap_or_default())
     };
     if all_failed && rerun.is_none() {
-        return Err(failure());
+        let mut graded = sync_report::grade_chapters(
+            &sync_report::with_outcomes(&spans, &outcomes),
+            fragments
+                .iter()
+                .map(|f| (f.start_seconds, f.end_seconds, f.text.as_str())),
+            &recovery_gaps,
+        );
+        sync_report::diagnose_chapters(&mut graded, &outcomes, &labels, language);
+        return Err(sync_report::DiagnosedFailure::from_chapters(
+            &graded,
+            failure().to_string(),
+        ));
     }
     update_job_progress(
         state,
@@ -1616,7 +1639,9 @@ pub(crate) async fn run_sync_generation(
         Some(base) => {
             let mut chapters = base.report.chapters;
             for (chapter, regraded) in chapters.iter_mut().zip(graded) {
-                if selected.binary_search(&chapter.index).is_ok() {
+                if selected.binary_search(&chapter.index).is_ok()
+                    && outcomes.get(chapter.index).is_some()
+                {
                     *chapter = regraded;
                 }
             }
@@ -2022,10 +2047,10 @@ async fn write_sync_map(
     write_bytes_atomic(path, &bytes)
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
-    Ok(sync_report::MapIdentity {
-        map_generated_at: map.generated_at.clone(),
-        map_size: bytes.len() as u64,
-    })
+    Ok(sync_report::MapIdentity::from_bytes(
+        map.generated_at.clone(),
+        &bytes,
+    ))
 }
 
 pub(crate) fn scope_transcript(
@@ -2392,7 +2417,7 @@ impl<'a> Aligner<'a> {
             }
             _ => None,
         };
-        match windowed {
+        let aligned = match windowed {
             Some((ffmpeg, scope_end)) => {
                 self.align_windowed(
                     scope,
@@ -2413,7 +2438,13 @@ impl<'a> Aligner<'a> {
                 self.align_single_pass(scope, track, transcript, scope_number)
                     .await
             }
-        }
+        }?;
+        anyhow::ensure!(
+            !aligned.fragments.is_empty() || transcript.text.trim().is_empty(),
+            "Alignment of `{}` produced no usable sentence fragments.",
+            scope.label
+        );
+        Ok(aligned)
     }
 
     /// The established path: one aligner run over the scope's whole audio.
@@ -4778,8 +4809,19 @@ esac
                 completed: 0,
                 total: 1,
             };
+            // Window recovery can find no timing; scope generation rejects that
+            // result, while these tests inspect the gaps it recovered through.
             let result = aligner
-                .align_scope(&scope, &track, &transcript, 0, &progress)
+                .align_windowed(
+                    &scope,
+                    &track,
+                    &transcript,
+                    0,
+                    &ffmpeg,
+                    0.0,
+                    track.duration_seconds.unwrap(),
+                    &progress,
+                )
                 .await
                 .unwrap();
             // Masked edition-only text is reported so it does not lower the grade.
@@ -5146,6 +5188,10 @@ if [ -f "$0.crash" ] && grep -qxF "$track" "$0.crash"; then
   fi
   exit 0
 fi
+if [ -f "$0.empty" ] && grep -qxF "$track" "$0.empty"; then
+  printf '[]' > "$4"
+  exit 0
+fi
 start=1
 [ -f "$0.start" ] && start=$(cat "$0.start")
 printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$3")" "$start" "$((start + 2))" > "$4"
@@ -5485,6 +5531,60 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
         }
 
         #[tokio::test]
+        async fn empty_results_preserve_previous_chapter_timing() {
+            let book = ChapterBook::new(3);
+            let previous = book.seed_previous_map();
+            let before = book.map();
+            book.control("empty", "2.wav\n");
+            book.run(Some(&[1])).await.unwrap_err();
+            assert_eq!(std::fs::read(book.map_path()).unwrap(), previous);
+            assert_eq!(
+                book.report().chapters[1].status,
+                ChapterStatus::KeptPrevious
+            );
+            assert!(book.report().chapters[1].error.is_some());
+
+            let mut failed = chapter(1);
+            failed.cause = Some(sync_report::Cause::NoisyAudio);
+            let generated = book.run(Some(&[0, 1])).await.unwrap();
+            assert_eq!(generated.failed, vec![failed.clone()]);
+            let after = book.map();
+            assert_eq!(in_chapter(&after, 0)[0]["startSeconds"], 1.0);
+            assert_eq!(in_chapter(&after, 1), in_chapter(&before, 1));
+            assert_eq!(in_chapter(&after, 2), in_chapter(&before, 2));
+
+            // A whole-book sync also keeps usable timing for an empty chapter.
+            let generated = book.run(None).await.unwrap();
+            assert_eq!(generated.failed, vec![failed.clone()]);
+            assert_eq!(in_chapter(&book.map(), 1), in_chapter(&before, 1));
+        }
+
+        #[tokio::test]
+        async fn early_failure_preserves_reports_for_unattempted_chapters() {
+            let book = ChapterBook::new(4);
+            let previous = book.seed_previous_map();
+            let mut report = book.report();
+            report.chapters[3].status = ChapterStatus::KeptPrevious;
+            report.chapters[3].error = Some("Earlier chapter failure".into());
+            report.chapters[3].error_detail =
+                Some("Earlier chapter failure: original details".into());
+            std::fs::write(
+                book.state.sync_dir.join("fixture.report.json"),
+                serde_json::to_vec(&report).unwrap(),
+            )
+            .unwrap();
+            let fourth = serde_json::to_value(&book.report().chapters[3]).unwrap();
+            book.control("fail", "1.wav\n2.wav\n3.wav\n");
+            book.run(Some(&[0, 1, 2, 3])).await.unwrap_err();
+            assert_eq!(book.calls(), ["1.wav", "2.wav", "3.wav"]);
+            assert_eq!(std::fs::read(book.map_path()).unwrap(), previous);
+            assert_eq!(
+                serde_json::to_value(&book.report().chapters[3]).unwrap(),
+                fourth
+            );
+        }
+
+        #[tokio::test]
         async fn a_failed_rerun_leaves_the_chapter_as_it_was() {
             let book = ChapterBook::new(3);
             let previous = book.seed_previous_map();
@@ -5694,6 +5794,7 @@ case "$command" in
           n++ } }
       END { printf "]" }' "$source.words" > "$3" ;;
   align)
+    if [ -f "$0.empty-align" ]; then printf "[]" > "$4"; exit 0; fi
     partial=0; [ -f "$0.partial" ] && partial=1
     awk -v d="$duration" -v partial="$partial" 'BEGIN { RS = "\001" }
       { gsub(/\n/, " "); n = split($0, parts, /\. */); m = 0
@@ -5881,21 +5982,22 @@ esac
                 "{larger:?}"
             );
 
-            // When the larger model hears no better, the first result stays.
+            // When neither model finds timing, the previous map stays.
             std::fs::remove_file(book.runtime.cli_path.with_extension("calls")).unwrap();
             book.control("clear-models", "");
             let before = book.map();
             let (report, output) = book.run(None).await;
-            assert_eq!(report.chapters[1].grade, Some(Grade::Poor), "{output}");
+            assert_eq!(report.chapters[1].grade, Some(Grade::Failed), "{output}");
+            assert_eq!(
+                report.chapters[1].status,
+                sync_report::ChapterStatus::KeptPrevious
+            );
             let diagnosis = report.chapters[1].diagnosis.as_ref().unwrap();
             assert_eq!(diagnosis.cause, Cause::NoisyAudio);
             assert!(diagnosis.fix.attempted && !diagnosis.fix.applied);
             assert!(diagnosis.evidence.unanchored_windows.unwrap() > 0);
-            assert!(
-                output.contains("That did not improve Chapter 2"),
-                "{output}"
-            );
-            assert_ne!(
+            assert!(output.contains("That failed too"), "{output}");
+            assert_eq!(
                 in_range(&book.map(), &report.chapters[1]),
                 in_range(&before, &report.chapters[1])
             );
@@ -6083,6 +6185,60 @@ esac
             );
         }
 
+        #[tokio::test]
+        async fn unrelated_narration_is_diagnosed_after_three_empty_chapters() {
+            let book = SpokenBook::new(&[9, 10, 11], Some("en"));
+            let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
+            let error = book.run_job(&job, None).await.unwrap_err();
+            let failure = error
+                .downcast_ref::<sync_report::DiagnosedFailure>()
+                .unwrap();
+            assert_eq!(failure.cause, Cause::EditionMismatch);
+            assert!(!generated_map_path(&book.state, "fixture").exists());
+            assert_eq!(
+                book.calls()
+                    .iter()
+                    .filter(|call| call.starts_with("detect"))
+                    .count(),
+                1
+            );
+            assert!(!book.calls().iter().any(|call| call.ends_with(" small.en")));
+
+            let mixed = SpokenBook::new(&[0, 9, 2], Some("en"));
+            let job = create_job(&mixed.state, SYNC_GENERATE_JOB_KIND).await;
+            let generated = mixed.run_job(&job, None).await.unwrap();
+            assert_eq!(generated.failed.len(), 1);
+            assert_eq!(generated.failed[0].index, 1);
+            assert_eq!(generated.failed[0].cause, Some(Cause::EditionMismatch));
+        }
+
+        #[tokio::test]
+        async fn empty_automatic_retries_keep_the_previous_map() {
+            let book = SpokenBook::new(&[0, 1, 2], Some("en"));
+            book.run(None).await;
+            let map_path = generated_map_path(&book.state, "fixture");
+            let before = std::fs::read(&map_path).unwrap();
+            book.control("empty-align", "");
+            let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
+            let error = book.run_job(&job, None).await.unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<sync_report::DiagnosedFailure>()
+                    .unwrap()
+                    .cause,
+                Cause::NoisyAudio
+            );
+            assert_eq!(std::fs::read(&map_path).unwrap(), before);
+            let output = book.state.jobs.read().await[&job].output.clone();
+            assert_eq!(
+                output.matches("trying the larger whisper").count(),
+                3,
+                "{output}"
+            );
+            assert_eq!(output.matches("That failed too").count(), 3, "{output}");
+            assert!(!output.contains("keeping it"), "{output}");
+        }
+
         async fn set_language(book: &SpokenBook, language: Option<&str>) {
             book.state
                 .metadata_overrides
@@ -6100,7 +6256,7 @@ esac
 
         #[tokio::test]
         async fn a_mislabelled_language_is_suggested_not_applied_and_the_override_fixes_it() {
-            let book = SpokenBook::new(&[0, 1], Some("nl"));
+            let book = SpokenBook::new(&[0, 1, 2], Some("nl"));
             // Nothing matches anywhere, so the whole run fails, saying why.
             let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
             let error = book.run_job(&job, None).await.unwrap_err();
@@ -6119,16 +6275,27 @@ esac
 
             set_language(&book, Some("en")).await;
             let (report, output) = book.run(None).await;
-            assert_eq!(grades(&report), [Some(Grade::Good); 2], "{output}");
+            assert_eq!(grades(&report), [Some(Grade::Good); 3], "{output}");
             assert!(output.contains("whisper tiny.en, language en"), "{output}");
 
             // Clearing the override puts the EPUB's label back, and a re-run
             // of one chapter shows the suggestion on that chapter.
+            let map_path = generated_map_path(&book.state, "fixture");
+            let before = std::fs::read(&map_path).unwrap();
             set_language(&book, None).await;
-            let (report, output) = book.run(Some(&[1])).await;
+            let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
+            book.run_job(&job, Some(&[1])).await.unwrap_err();
+            assert_eq!(std::fs::read(&map_path).unwrap(), before);
+            let identity = probe_sync_map(&map_path, true).unwrap().identity;
+            let report =
+                sync_report::read_current_report(&book.state.sync_dir, "fixture", &identity)
+                    .unwrap();
+            let output = book.state.jobs.read().await[&job].output.clone();
             assert_eq!(report.chapters[0].grade, Some(Grade::Good));
+            assert_eq!(report.chapters[2].grade, Some(Grade::Good));
             let chapter = &report.chapters[1];
-            assert_eq!(chapter.grade, Some(Grade::Poor), "{output}");
+            assert_eq!(chapter.grade, Some(Grade::Failed), "{output}");
+            assert_eq!(chapter.status, sync_report::ChapterStatus::KeptPrevious);
             let diagnosis = chapter.diagnosis.as_ref().unwrap();
             assert_eq!(diagnosis.cause, Cause::LanguageMismatch);
             assert_eq!(diagnosis.fix.kind, FixKind::Suggested);
@@ -6143,7 +6310,7 @@ esac
 
             set_language(&book, Some("en")).await;
             let (report, _) = book.run(Some(&[1])).await;
-            assert_eq!(grades(&report), [Some(Grade::Good); 2]);
+            assert_eq!(grades(&report), [Some(Grade::Good); 3]);
             assert!(report.chapters.iter().all(|c| c.diagnosis.is_none()));
         }
     }

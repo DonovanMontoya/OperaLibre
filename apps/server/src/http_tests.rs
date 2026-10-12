@@ -7378,7 +7378,7 @@ async fn existing_sync_maps_are_graded_in_the_background_for_administrators() {
             (11.0, "Chapter 2"),
         ]
         .map(|(start, text)| {
-            serde_json::json!({"startSeconds": start, "endSeconds": start + 1.0, "href": "x", "text": text})
+            serde_json::json!({"startSeconds": start, "endSeconds": start + 1.0, "href": if start < 10.0 { "text/ch1.xhtml" } else { "text/ch2.xhtml" }, "text": text})
         });
         std::fs::create_dir_all(map_path.parent().unwrap()).unwrap();
         std::fs::write(
@@ -7414,7 +7414,7 @@ async fn existing_sync_maps_are_graded_in_the_background_for_administrators() {
             quality: None,
             report_current: false,
         });
-        library.reading_paths.insert("epub".into(), epub);
+        library.reading_paths.insert("epub".into(), epub.clone());
         library.sync_paths.insert(book_id.clone(), map_path.clone());
     }
     let report_uri = format!("/api/books/{book_id}/sync/report");
@@ -7519,10 +7519,104 @@ async fn existing_sync_maps_are_graded_in_the_background_for_administrators() {
     assert!(server.get(&report_uri, &owner).await.json()["languageOverride"].is_null());
 
     // A replaced map is not described by the old report.
+    let tracks = {
+        let library = server.state.library.read().await;
+        sync_inputs(&library, &book_id).unwrap().1
+    };
+    let old_estimate = sync_report::estimate_report(&epub, &tracks, &map_path).unwrap();
     write_map("200");
     assert_eq!(
         server.get(&report_uri, &owner).await.status,
         StatusCode::NOT_FOUND
+    );
+
+    // A run that finishes while an estimate is in flight owns its report.
+    let mut fresh = sync_report::estimate_report(&epub, &tracks, &map_path).unwrap();
+    fresh.graded = sync_report::Graded::Run;
+    sync_report::write_report(&server.state.sync_dir, &book_id, &fresh)
+        .await
+        .unwrap();
+    let report_path = server.state.sync_dir.join(format!("{book_id}.report.json"));
+    let run_bytes = std::fs::read(&report_path).unwrap();
+    for estimate in [
+        &old_estimate,
+        &sync_report::estimate_report(&epub, &tracks, &map_path).unwrap(),
+    ] {
+        sync_report::publish_backfill(&server.state, &book_id, &map_path, estimate)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&report_path).unwrap(), run_bytes);
+        assert_eq!(
+            server.get(&report_uri, &owner).await.json()["graded"],
+            "run"
+        );
+    }
+
+    // Starting a sync after estimation also prevents publication, even when
+    // no report exists yet. Once it ends without publishing, backfill can retry.
+    std::fs::remove_file(&report_path).unwrap();
+    server.state.library.write().await.books[0]
+        .sync_file
+        .as_mut()
+        .unwrap()
+        .report_current = false;
+    let (job_id, _) =
+        create_queued_job(&server.state, SYNC_GENERATE_JOB_KIND, Some(book_id.clone())).await;
+    for status in ["queued", "running", "paused"] {
+        server
+            .state
+            .jobs
+            .write()
+            .await
+            .get_mut(&job_id)
+            .unwrap()
+            .status = status.into();
+        sync_report::publish_backfill(&server.state, &book_id, &map_path, &fresh)
+            .await
+            .unwrap();
+        assert!(!report_path.exists());
+        assert!(
+            !server.state.library.read().await.books[0]
+                .sync_file
+                .as_ref()
+                .unwrap()
+                .report_current
+        );
+    }
+    server
+        .state
+        .jobs
+        .write()
+        .await
+        .get_mut(&job_id)
+        .unwrap()
+        .status = "completed".into();
+    // A new job waits until the final check and report publication finish.
+    let library_guard = server.state.library.write().await;
+    let mut publication = Box::pin(sync_report::publish_backfill(
+        &server.state,
+        &book_id,
+        &map_path,
+        &fresh,
+    ));
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(publication.as_mut(), &mut context).is_pending());
+    let mut enqueue = Box::pin(create_queued_job(
+        &server.state,
+        SYNC_GENERATE_JOB_KIND,
+        Some(book_id.clone()),
+    ));
+    assert!(std::future::Future::poll(enqueue.as_mut(), &mut context).is_pending());
+    drop(library_guard);
+    let (published, _) = tokio::join!(publication, enqueue);
+    published.unwrap();
+    assert!(report_path.exists());
+    assert!(
+        server.state.library.read().await.books[0]
+            .sync_file
+            .as_ref()
+            .unwrap()
+            .report_current
     );
 }
 
