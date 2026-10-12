@@ -13,8 +13,8 @@ const GOOD_GAP_SHARE: f64 = 0.05;
 const REVIEW_COVERAGE: f64 = 0.80;
 const REVIEW_GAP_SHARE: f64 = 0.20;
 
-/// Title cards and back matter are too short to say much about a book, so
-/// they keep their own grade but do not set the book's.
+/// Short title cards and back matter do not set the book's quality grade.
+/// Explicit alignment failures still need attention at any duration.
 const MIN_BOOK_GRADE_SECONDS: f64 = 120.0;
 
 const REPORT_SUFFIX: &str = ".report.json";
@@ -522,7 +522,11 @@ impl SyncReport {
         let worst = |long_only: bool| {
             self.chapters
                 .iter()
-                .filter(|c| !long_only || c.end_seconds - c.start_seconds >= MIN_BOOK_GRADE_SECONDS)
+                .filter(|c| {
+                    !long_only
+                        || c.grade == Some(Grade::Failed)
+                        || c.end_seconds - c.start_seconds >= MIN_BOOK_GRADE_SECONDS
+                })
                 .filter_map(|c| c.grade)
                 .max()
         };
@@ -1453,7 +1457,7 @@ mod tests {
                 .ends_with("worker crashed")
         );
         assert_eq!(report.grade, Some(Grade::Failed));
-        // A short chapter failing does not set the book's grade.
+        // A short alignment failure still needs attention beside good chapters.
         let short = graded(&spans[2..], &[], &[]);
         assert_eq!(short.grade, Some(Grade::Failed));
         let mixed = graded(
@@ -1461,7 +1465,7 @@ mod tests {
             &[(1.0, &text)],
             &[],
         );
-        assert_eq!(mixed.grade, Some(Grade::Good));
+        assert_eq!(mixed.grade, Some(Grade::Failed));
         assert_eq!(mixed.quality().unwrap().flagged, 1);
     }
 

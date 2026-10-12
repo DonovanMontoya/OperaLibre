@@ -63,23 +63,25 @@ pub(crate) async fn remove_sync_job(
     _: AdminUser,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    let _schedule_guard = state.sync_schedule_lock.lock().await;
     let mut jobs = state.jobs.write().await;
     let job = jobs
         .get(&id)
         .filter(|job| job.kind == SYNC_GENERATE_JOB_KIND)
         .ok_or_else(|| ApiError::not_found("Sync job not found"))?;
-    if !matches!(job.status.as_str(), "queued" | "paused") {
+    if !matches!(job.status.as_str(), "queued" | "paused") && !finished_sync_result(job) {
         return Err(ApiError::conflict(
-            "Only queued or paused syncs can be removed.",
+            "Only queued, paused, or finished syncs can be removed.",
         ));
     }
+    crate::sync_schedule::save_finished_results(&state, &jobs).await?;
     let previous = jobs.remove(&id).unwrap();
     if let Err(error) = save_queue(&state, &jobs).await {
         jobs.insert(id, previous);
         return Err(error);
     }
     state.update_manager.sync_queue_changed.notify_waiters();
-    // The worker cannot be using this checkpoint while queued or paused.
+    // A running worker cannot be using this job's checkpoint.
     let _ = fs::remove_file(sync_checkpoint_path(&state, &previous.id)).await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -397,6 +399,35 @@ async fn save_update_queue(state: &AppState) -> anyhow::Result<()> {
 
 pub(crate) const SYNC_GENERATE_JOB_KIND: &str = "sync-generate";
 
+fn finished_sync_result(job: &JobStatus) -> bool {
+    job.kind == SYNC_GENERATE_JOB_KIND
+        && matches!(job.status.as_str(), "completed" | "failed" | "cancelled")
+}
+
+/// A book keeps its latest result until it finishes another sync. Active
+/// jobs and other kinds of work never replace or lose their entries here.
+pub(crate) fn prune_sync_results(jobs: &mut HashMap<String, JobStatus>) {
+    let mut latest: HashMap<String, (u64, String)> = HashMap::new();
+    for job in jobs.values().filter(|job| finished_sync_result(job)) {
+        if let Some(book_id) = &job.target_id {
+            let order = (job_started_timestamp(job), job.id.clone());
+            let entry = latest
+                .entry(book_id.clone())
+                .or_insert_with(|| order.clone());
+            if order > *entry {
+                *entry = order;
+            }
+        }
+    }
+    jobs.retain(|id, job| {
+        !finished_sync_result(job)
+            || job
+                .target_id
+                .as_ref()
+                .is_none_or(|book_id| latest[book_id].1 == *id)
+    });
+}
+
 /// Queue snapshots are serialized while holding the job table's write lock,
 /// so a completion cannot be overwritten by an older enqueue snapshot.
 pub(crate) async fn save_queue(
@@ -415,6 +446,7 @@ pub(crate) async fn save_queue(
 }
 
 pub(crate) async fn restore_queue(state: &AppState) -> Result<(), ApiError> {
+    let _schedule_guard = state.sync_schedule_lock.lock().await;
     let bytes = match fs::read(state.database_path.with_file_name("sync-jobs.json")).await {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -442,6 +474,15 @@ pub(crate) async fn restore_queue(state: &AppState) -> Result<(), ApiError> {
             }));
         }
         jobs.insert(job.id.clone(), job);
+    }
+    if let Err(error) = crate::sync_schedule::save_finished_results(state, &jobs).await {
+        tracing::error!(
+            ?error,
+            "could not persist recovered scheduled sync outcomes"
+        );
+    } else {
+        prune_sync_results(&mut jobs);
+        prune_finished_jobs(&mut jobs);
     }
     Ok(())
 }

@@ -6739,6 +6739,207 @@ async fn sync_queue_controls_are_durable_and_reject_running_jobs() {
 }
 
 #[tokio::test]
+async fn sync_results_replace_older_results_only_when_a_new_sync_finishes() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let (failed, _) = create_queued_job(&server.state, "sync-generate", Some("book".into())).await;
+    update_job_finished(
+        &server.state,
+        &failed,
+        "failed",
+        None,
+        Some("worker crashed".into()),
+    )
+    .await;
+    let (other, _) = create_queued_job(&server.state, "sync-generate", Some("other".into())).await;
+    update_job_finished(
+        &server.state,
+        &other,
+        "failed",
+        None,
+        Some("other failure".into()),
+    )
+    .await;
+    let unrelated = create_job(&server.state, "library-scan").await;
+    server
+        .state
+        .jobs
+        .write()
+        .await
+        .get_mut(&unrelated)
+        .unwrap()
+        .target_id = Some("book".into());
+    update_job_finished(&server.state, &unrelated, "completed", Some(0), None).await;
+    let (retry, _) = create_queued_job(&server.state, "sync-generate", Some("book".into())).await;
+    update_job_running(&server.state, &retry).await;
+    assert!(
+        server.state.jobs.read().await.contains_key(&failed),
+        "keep the error while a retry runs"
+    );
+    // Chapter re-runs obey the same rule as whole-book syncs.
+    server
+        .state
+        .jobs
+        .write()
+        .await
+        .get_mut(&retry)
+        .unwrap()
+        .chapters = vec![JobChapter {
+        index: 1,
+        label: "Chapter 2".into(),
+        cause: None,
+    }];
+    update_job_finished(&server.state, &retry, "completed", Some(0), None).await;
+    let jobs = server
+        .get("/api/jobs?kind=sync-generate", &owner)
+        .await
+        .json();
+    assert_eq!(jobs.as_array().unwrap().len(), 2);
+    assert!(!server.state.jobs.read().await.contains_key(&failed));
+    assert!(server.state.jobs.read().await.contains_key(&unrelated));
+    server.state.jobs.write().await.clear();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    assert!(!server.state.jobs.read().await.contains_key(&failed));
+    assert_eq!(server.state.jobs.read().await[&retry].status, "completed");
+    assert!(server.state.jobs.read().await.contains_key(&other));
+    // A fresh failure replaces the previous result, rather than piling up.
+    let (new_failure, _) =
+        create_queued_job(&server.state, "sync-generate", Some("book".into())).await;
+    update_job_finished(
+        &server.state,
+        &new_failure,
+        "failed",
+        None,
+        Some("new failure".into()),
+    )
+    .await;
+    assert!(!server.state.jobs.read().await.contains_key(&retry));
+    assert_eq!(
+        server.state.jobs.read().await[&new_failure]
+            .error
+            .as_deref(),
+        Some("new failure")
+    );
+}
+
+#[tokio::test]
+async fn legacy_sync_history_is_consolidated_without_losing_active_jobs() {
+    let server = TestServer::start(0).await;
+    let (old, _) = create_queued_job(&server.state, "sync-generate", Some("book".into())).await;
+    // Seed a pre-upgrade snapshot, without invoking completion's cleanup.
+    server
+        .state
+        .jobs
+        .write()
+        .await
+        .get_mut(&old)
+        .unwrap()
+        .status = "failed".into();
+    let (recent, _) = create_queued_job(&server.state, "sync-generate", Some("book".into())).await;
+    server
+        .state
+        .jobs
+        .write()
+        .await
+        .get_mut(&recent)
+        .unwrap()
+        .status = "completed".into();
+    let (active, _) = create_queued_job(&server.state, "sync-generate", Some("book".into())).await;
+    let (paused, _) =
+        create_queued_job(&server.state, "sync-generate", Some("paused-book".into())).await;
+    server
+        .state
+        .jobs
+        .write()
+        .await
+        .get_mut(&paused)
+        .unwrap()
+        .status = "paused".into();
+    crate::sync::save_queue(&server.state, &*server.state.jobs.read().await)
+        .await
+        .unwrap();
+    server.state.jobs.write().await.clear();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    let jobs = server.state.jobs.read().await;
+    assert!(!jobs.contains_key(&old));
+    assert_eq!(jobs[&recent].status, "completed");
+    assert_eq!(jobs[&active].status, "queued");
+    assert_eq!(jobs[&paused].status, "paused");
+}
+
+#[tokio::test]
+async fn finished_sync_results_can_be_dismissed_durably_without_changing_books() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "reader").await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let before = server.get("/api/books", &owner).await.json();
+    let map = server.state.sync_dir.join(format!("{book_id}.sync.json"));
+    fs::create_dir_all(&server.state.sync_dir).await.unwrap();
+    fs::write(&map, b"existing timing").await.unwrap();
+    let report = server.state.sync_dir.join(format!("{book_id}.report.json"));
+    fs::write(&report, b"existing chapter grades")
+        .await
+        .unwrap();
+    for status in ["completed", "failed", "cancelled"] {
+        let (id, _) =
+            create_queued_job(&server.state, "sync-generate", Some(book_id.clone())).await;
+        update_job_finished(&server.state, &id, status, None, None).await;
+        let uri = format!("/api/sync-jobs/{id}");
+        assert_eq!(
+            server
+                .send_json("DELETE", &uri, &reader, serde_json::json!({}))
+                .await
+                .status,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            server
+                .send_json("DELETE", &uri, &owner, serde_json::json!({}))
+                .await
+                .status,
+            StatusCode::NO_CONTENT
+        );
+        server.state.jobs.write().await.clear();
+        crate::sync::restore_queue(&server.state).await.unwrap();
+        assert!(!server.state.jobs.read().await.contains_key(&id));
+        assert_eq!(
+            server.get(&format!("/api/jobs/{id}"), &owner).await.status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(server.get("/api/books", &owner).await.json(), before);
+        assert_eq!(fs::read(&map).await.unwrap(), b"existing timing");
+        assert_eq!(fs::read(&report).await.unwrap(), b"existing chapter grades");
+    }
+    let (id, _) = create_queued_job(&server.state, "sync-generate", Some(book_id)).await;
+    update_job_finished(
+        &server.state,
+        &id,
+        "failed",
+        None,
+        Some("still failed".into()),
+    )
+    .await;
+    let path = server.state.database_path.with_file_name("sync-jobs.json");
+    fs::remove_file(&path).await.unwrap();
+    fs::create_dir(&path).await.unwrap();
+    let response = server
+        .send_json(
+            "DELETE",
+            &format!("/api/sync-jobs/{id}"),
+            &owner,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(server.state.jobs.read().await[&id].status, "failed");
+    assert_eq!(
+        server.state.jobs.read().await[&id].error.as_deref(),
+        Some("still failed")
+    );
+}
+
+#[tokio::test]
 async fn sync_queue_controls_require_admin_and_roll_back_failed_saves() {
     let server = TestServer::start(0).await;
     let owner = server.setup_owner().await;

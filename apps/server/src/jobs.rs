@@ -415,7 +415,7 @@ pub(crate) fn prune_finished_jobs(jobs: &mut HashMap<String, JobStatus>) {
     }
     let mut finished: Vec<(String, u64)> = jobs
         .values()
-        .filter(|job| matches!(job.status.as_str(), "completed" | "failed"))
+        .filter(|job| matches!(job.status.as_str(), "completed" | "failed" | "cancelled"))
         .map(|job| (job.id.clone(), job_started_timestamp(job)))
         .collect();
     finished.sort_by_key(|(_, started_at)| *started_at);
@@ -466,6 +466,19 @@ pub(crate) async fn update_job_finished(
     exit_code: Option<i32>,
     error: Option<String>,
 ) {
+    let sync_job = state
+        .jobs
+        .read()
+        .await
+        .get(job_id)
+        .is_some_and(|job| job.kind == crate::sync::SYNC_GENERATE_JOB_KIND);
+    // The scheduler takes this lock before reading jobs. Record its outcome
+    // before a finished result can disappear from the activity history.
+    let _schedule_guard = if sync_job {
+        Some(state.sync_schedule_lock.lock().await)
+    } else {
+        None
+    };
     let mut jobs = state.jobs.write().await;
     if let Some(job) = jobs.get_mut(job_id) {
         job.status = status.to_string();
@@ -482,12 +495,19 @@ pub(crate) async fn update_job_finished(
         job.error = error;
         job.progress = None;
     }
-    if jobs
-        .get(job_id)
-        .is_some_and(|job| job.kind == crate::sync::SYNC_GENERATE_JOB_KIND)
-        && let Err(error) = crate::sync::save_queue(state, &jobs).await
-    {
+    let mut keep_results = false;
+    if sync_job {
+        if let Err(error) = crate::sync_schedule::save_finished_results(state, &jobs).await {
+            tracing::error!(?error, "could not persist scheduled sync outcome");
+            keep_results = true;
+        } else {
+            crate::sync::prune_sync_results(&mut jobs);
+        }
+    }
+    if !keep_results {
+        prune_finished_jobs(&mut jobs);
+    }
+    if sync_job && let Err(error) = crate::sync::save_queue(state, &jobs).await {
         tracing::error!(?error, "could not persist sync completion");
     }
-    prune_finished_jobs(&mut jobs);
 }
