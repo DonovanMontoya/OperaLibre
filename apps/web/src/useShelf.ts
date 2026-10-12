@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   bookSortGroupLabel,
   compareShelfLabels,
@@ -12,6 +12,13 @@ import {
   sortModeStorageKey
 } from "./shelfSort";
 import { readStoredValue, writeStoredValue } from "./appStorage";
+import {
+  type CollapsedShelfGroups,
+  isShelfGroupCollapsed,
+  readCollapsedShelfGroups,
+  toggleCollapsedShelfGroup,
+  writeCollapsedShelfGroups
+} from "./shelfGroups";
 import { runShelfLayoutTransition } from "./shelfTransition";
 import { readStoredShelfViewMode, type ShelfViewMode, writeStoredShelfViewMode } from "./shelfView";
 import {
@@ -84,6 +91,7 @@ export function useShelf({
   const shelfSearchRef = useRef<HTMLInputElement | null>(null);
   const [shelfFilters, setShelfFilters] = useState<ShelfFilters>(EMPTY_SHELF_FILTERS);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<CollapsedShelfGroups>(() => readCollapsedShelfGroups(window.localStorage));
   const filterToggleRef = useRef<HTMLButtonElement | null>(null);
 
   // Restores whatever sort was last chosen for this shelf rather than collapsing to
@@ -102,6 +110,15 @@ export function useShelf({
     setSortReversed(!sortReversed);
     writeStoredValue(`operalibre.sortReversed.${librarySource}`, String(!sortReversed));
   }
+
+  // Stable so the memoized shelf rows do not re-render on every playback tick.
+  const toggleShelfGroup = useCallback((label: string) => {
+    setCollapsedGroups((groups) => {
+      const next = toggleCollapsedShelfGroup(groups, sortMode, label);
+      writeCollapsedShelfGroups(window.localStorage, next);
+      return next;
+    });
+  }, [sortMode]);
 
   function selectViewMode(mode: ShelfViewMode) {
     viewBeforeWideShelfRef.current = null;
@@ -354,19 +371,23 @@ export function useShelf({
   const visibleBookRuns = useMemo(() => {
     const runs: Array<{
       label: string | null;
+      collapsed: boolean;
       items: Array<{ book: (typeof visibleBooks)[number]; index: number }>;
     }> = [];
+    // A search opens folded groups: a match hidden behind a heading reads as no match.
+    const searching = searchQuery.trim().length > 0;
     visibleBooks.forEach((book, index) => {
       const label = bookSortGroupLabel(book, sortMode, shelfFilters.tags);
       const previous = runs[runs.length - 1];
       if (label && previous?.label && compareShelfLabels(label, previous.label) === 0) {
         previous.items.push({ book, index });
       } else {
-        runs.push({ label, items: [{ book, index }] });
+        const collapsed = !!label && !searching && isShelfGroupCollapsed(collapsedGroups, sortMode, label);
+        runs.push({ label, collapsed, items: [{ book, index }] });
       }
     });
     return runs;
-  }, [shelfFilters.tags, sortMode, visibleBooks]);
+  }, [collapsedGroups, searchQuery, shelfFilters.tags, sortMode, visibleBooks]);
 
   const splitShelfIntoLeaves = native && playbackFold.posture !== "closed" && playbackFold.fold?.axis === "vertical";
   const visibleBookColumns = useMemo(() => {
@@ -376,7 +397,7 @@ export function useShelf({
     for (const run of visibleBookRuns) {
       const column = weights[0] <= weights[1] ? 0 : 1;
       columns[column].push(run);
-      weights[column] += run.items.length + 0.5;
+      weights[column] += (run.collapsed ? 0 : run.items.length) + 0.5;
     }
     return columns;
   }, [splitShelfIntoLeaves, visibleBookRuns]);
@@ -410,6 +431,7 @@ export function useShelf({
     sortMode,
     sortOrderLabel,
     sortReversed,
+    toggleShelfGroup,
     viewMode,
     visibleBookColumns,
     visibleBooks

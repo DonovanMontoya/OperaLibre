@@ -1516,21 +1516,72 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .book-sort-group {
   min-width: 0;
-  display: flex;
   grid-column: 1 / -1;
-  align-items: baseline;
-  gap: 9px;
   margin: 18px 0 5px;
-  padding: 0 4px 8px;
   border-bottom: 1px solid rgba(217, 181, 116, 0.2);
-  text-align: left;
 }
 
 .book-sort-group:first-child {
   margin-top: 2px;
 }
 
-.book-sort-group > span {
+/* A folded group is only its heading, so a run of them packs like a list. */
+.book-sort-run.is-collapsed + .book-sort-run.is-collapsed > .book-sort-group {
+  margin-top: 4px;
+}
+
+.book-sort-group-toggle {
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 0 4px 8px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.book-sort-group-toggle:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.book-sort-group-chevron {
+  flex: none;
+  align-self: center;
+  color: rgba(241, 231, 208, 0.42);
+  transition: transform 160ms ease;
+}
+
+.book-sort-run.is-collapsed .book-sort-group-chevron {
+  transform: rotate(-90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .book-sort-group-chevron {
+    transition: none;
+  }
+}
+
+.book-sort-group-toggle:hover .book-sort-group-chevron {
+  color: var(--gold-soft);
+}
+
+.book-sort-group-toggle > em {
+  flex: none;
+  margin-left: auto;
+  color: rgba(241, 231, 208, 0.42);
+  font: 0.55rem "JetBrains Mono", monospace;
+  font-style: normal;
+  letter-spacing: 0.08em;
+}
+
+.book-sort-group-toggle > span {
   flex: none;
   color: rgba(241, 231, 208, 0.42);
   font: 0.55rem "JetBrains Mono", monospace;
@@ -1538,7 +1589,7 @@ html:not(.native-app) .web-shell > .player-pane {
   text-transform: uppercase;
 }
 
-.book-sort-group > strong {
+.book-sort-group-toggle > strong {
   min-width: 0;
   overflow: hidden;
   color: var(--gold-soft);
@@ -1803,10 +1854,13 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .book-list.is-compact .book-sort-group {
   margin: 12px 0 3px;
+}
+
+.book-list.is-compact .book-sort-group-toggle {
   padding-bottom: 5px;
 }
 
-.book-list.is-compact .book-sort-group > strong {
+.book-list.is-compact .book-sort-group-toggle > strong {
   font-size: 0.88rem;
 }
 

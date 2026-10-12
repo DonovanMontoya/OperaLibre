@@ -61,6 +61,11 @@ Use **Sort by** to choose the order and the arrow beside it to reverse that
 order. Your choice is remembered separately for Your Library and Audible.
 The count below the controls shows how many books match.
 
+Sorting by series, tag, genre, or progress groups the shelf under headings.
+Select a heading to fold that group away, such as a long series you are not
+reading right now, and select it again to open it. Folded groups stay folded on
+that device, and a search shows matching books even inside a folded group.
+
 Search Your Library with words from a book's title, author, narrator, series,
 tags, or genres. Every word must match the book, but they can come from different
 fields: **Carroll Wonderland** finds **Alice’s Adventures in Wonderland** by

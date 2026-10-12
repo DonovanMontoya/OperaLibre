@@ -181,6 +181,7 @@ export function LibraryPane({
     sortMode,
     sortOrderLabel,
     sortReversed,
+    toggleShelfGroup,
     viewMode,
     visibleBookColumns,
     visibleBooks
@@ -874,6 +875,7 @@ export function LibraryPane({
             readalongEnabled={readalongEnabled}
             sentenceFollowAvailable={shelf.sentenceFollowAvailable}
             onSelectBook={selectFromShelf}
+            onToggleGroup={toggleShelfGroup}
           />
         </>
       ) : showAudiblePurchases ? (
