@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run CarPlay artwork cache regressions in an isolated test bundle.
+"""Run CarPlay artwork cache regressions in a disposable UIKit test host.
 
 Usage: python3 script/test_car_artwork.py [booted-simulator-udid]
 Requires Xcode. Without an argument, creates and removes its own simulator.
@@ -27,6 +27,25 @@ def add(kind, fields):
     return identifier
 
 def quote(value): return json.dumps(str(value))
+# UIKit image rendering needs an initialized application context. A hostless
+# xctest process can block its first renderer while SpringBoard registers it.
+host_file = OUT / 'CarArtworkHost.swift'
+host_file.write_text('''import UIKit
+
+@main
+final class CarArtworkHost: UIResponder, UIApplicationDelegate {
+    var window: UIWindow?
+
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        let window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = UIViewController()
+        window.makeKeyAndVisible()
+        self.window = window
+        return true
+    }
+}
+''')
 # Compile the actual store and models; the tests replace only network image I/O.
 files = [ROOT / 'apps/web/ios/App/App/CarLibrary.swift',
          ROOT / 'apps/web/ios/App/App/CarLibraryStore.swift',
@@ -36,22 +55,36 @@ builds = [add('PBXBuildFile', f'fileRef = {ref};') for ref in refs]
 source = add('PBXSourcesBuildPhase', f'buildActionMask = 2147483647; files = ({",".join(builds)}); runOnlyForDeploymentPostprocessing = 0;')
 frameworks = add('PBXFrameworksBuildPhase', 'buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;')
 bundle = add('PBXFileReference', 'explicitFileType = wrapper.cfbundle; path = CarArtworkTests.xctest; sourceTree = BUILT_PRODUCTS_DIR;')
-group = add('PBXGroup', f'children = ({",".join(refs + [bundle])}); sourceTree = "<group>";')
+host_ref = add('PBXFileReference', f'lastKnownFileType = sourcecode.swift; path = {quote(host_file)}; sourceTree = "<absolute>";')
+host_build = add('PBXBuildFile', f'fileRef = {host_ref};')
+host_source = add('PBXSourcesBuildPhase', f'buildActionMask = 2147483647; files = ({host_build}); runOnlyForDeploymentPostprocessing = 0;')
+host_frameworks = add('PBXFrameworksBuildPhase', 'buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;')
+host_bundle = add('PBXFileReference', 'explicitFileType = wrapper.application; path = CarArtworkHost.app; sourceTree = BUILT_PRODUCTS_DIR;')
+group = add('PBXGroup', f'children = ({",".join(refs + [bundle, host_ref, host_bundle])}); sourceTree = "<group>";')
 settings = '''CLANG_ENABLE_MODULES = YES; GENERATE_INFOPLIST_FILE = YES; SWIFT_VERSION = 5.0;
 IPHONEOS_DEPLOYMENT_TARGET = 15.0; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 TARGETED_DEVICE_FAMILY = "1,2"; PRODUCT_BUNDLE_IDENTIFIER = com.operalibre.car-artwork.tests;
 PRODUCT_NAME = "$(TARGET_NAME)"; CODE_SIGNING_ALLOWED = NO;
 LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
 SWIFT_OPTIMIZATION_LEVEL = "-O";'''
-config = add('XCBuildConfiguration', f'name = Release; buildSettings = {{{settings}}};')
+host_settings = settings.replace('com.operalibre.car-artwork.tests', 'com.operalibre.car-artwork.host')
+host_config = add('XCBuildConfiguration', f'name = Release; buildSettings = {{{host_settings}}};')
+host_configs = add('XCConfigurationList', f'buildConfigurations = ({host_config}); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;')
+host_target = add('PBXNativeTarget', f'buildConfigurationList = {host_configs}; buildPhases = ({host_source},{host_frameworks}); buildRules = (); dependencies = (); name = CarArtworkHost; productName = CarArtworkHost; productReference = {host_bundle}; productType = "com.apple.product-type.application"; packageProductDependencies = ();')
+dependency = add('PBXTargetDependency', f'target = {host_target};')
+test_settings = settings + '''
+TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CarArtworkHost.app/CarArtworkHost";
+BUNDLE_LOADER = "$(TEST_HOST)";'''
+config = add('XCBuildConfiguration', f'name = Release; buildSettings = {{{test_settings}}};')
 configs = add('XCConfigurationList', f'buildConfigurations = ({config}); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;')
-target = add('PBXNativeTarget', f'buildConfigurationList = {configs}; buildPhases = ({source},{frameworks}); buildRules = (); dependencies = (); name = CarArtworkTests; productName = CarArtworkTests; productReference = {bundle}; productType = "com.apple.product-type.bundle.unit-test"; packageProductDependencies = ();')
-project = add('PBXProject', f'attributes = {{LastUpgradeCheck = 2600;}}; buildConfigurationList = {configs}; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; knownRegions = (en,Base); mainGroup = {group}; projectDirPath = ""; projectRoot = ""; targets = ({target}); packageReferences = ();')
+target = add('PBXNativeTarget', f'buildConfigurationList = {configs}; buildPhases = ({source},{frameworks}); buildRules = (); dependencies = ({dependency}); name = CarArtworkTests; productName = CarArtworkTests; productReference = {bundle}; productType = "com.apple.product-type.bundle.unit-test"; packageProductDependencies = ();')
+project = add('PBXProject', f'attributes = {{LastUpgradeCheck = 2600; TargetAttributes = {{{target} = {{TestTargetID = {host_target};}};}};}}; buildConfigurationList = {host_configs}; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; knownRegions = (en,Base); mainGroup = {group}; projectDirPath = ""; projectRoot = ""; targets = ({host_target},{target}); packageReferences = ();')
 (PROJECT / 'project.pbxproj').write_text('// !$*UTF8*$!\n{ archiveVersion = 1; classes = {}; objectVersion = 56; objects = {\n' + '\n'.join(f'{key} = {{{value}}};' for key,value in objects.items()) + f'\n}}; rootObject = {project}; }}\n')
 schemes = PROJECT / 'xcshareddata/xcschemes'; schemes.mkdir(parents=True, exist_ok=True)
 ref = f'<BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{target}" BuildableName="CarArtworkTests.xctest" BlueprintName="CarArtworkTests" ReferencedContainer="container:CarArtwork.xcodeproj"/>'
+host_scheme_ref = f'<BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{host_target}" BuildableName="CarArtworkHost.app" BlueprintName="CarArtworkHost" ReferencedContainer="container:CarArtwork.xcodeproj"/>'
 (schemes / 'CarArtwork.xcscheme').write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
-<Scheme LastUpgradeVersion="2600" version="1.3"><BuildAction><BuildActionEntries><BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">{ref}</BuildActionEntry></BuildActionEntries></BuildAction><TestAction buildConfiguration="Release" shouldUseLaunchSchemeArgsEnv="YES"><Testables><TestableReference skipped="NO">{ref}</TestableReference></Testables></TestAction></Scheme>''')
+<Scheme LastUpgradeVersion="2600" version="1.3"><BuildAction><BuildActionEntries><BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">{host_scheme_ref}</BuildActionEntry><BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">{ref}</BuildActionEntry></BuildActionEntries></BuildAction><TestAction buildConfiguration="Release" shouldUseLaunchSchemeArgsEnv="YES"><MacroExpansion>{host_scheme_ref}</MacroExpansion><Testables><TestableReference skipped="NO">{ref}</TestableReference></Testables></TestAction></Scheme>''')
 
 owned_simulator = len(sys.argv) == 1
 if owned_simulator:
@@ -84,3 +117,6 @@ finally:
     if owned_simulator:
         subprocess.run(['xcrun', 'simctl', 'shutdown', simulator], check=False)
         subprocess.run(['xcrun', 'simctl', 'delete', simulator], check=False)
+    else:
+        subprocess.run(['xcrun', 'simctl', 'uninstall', simulator,
+                        'com.operalibre.car-artwork.host'], check=False)
