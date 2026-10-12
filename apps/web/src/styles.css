@@ -679,10 +679,30 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .library-results-summary {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
   color: rgba(241, 231, 208, 0.65);
   font: 0.65rem "JetBrains Mono", monospace;
+}
+
+.library-expand-all {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 44px;
+  padding: 0 8px;
+  border: 1px solid rgba(217, 181, 116, 0.22);
+  background: transparent;
+  color: var(--gold-soft);
+  font: inherit;
+  white-space: nowrap;
+}
+
+.library-expand-all:hover {
+  background: rgba(217, 181, 116, 0.08);
 }
 
 .library-sort {

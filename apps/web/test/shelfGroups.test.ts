@@ -11,6 +11,7 @@ register(`data:text/javascript,${encodeURIComponent(`
   }
 `)}`, import.meta.url);
 const {
+  expandShelfGroups,
   isShelfGroupCollapsed,
   readCollapsedShelfGroups,
   SHELF_COLLAPSED_GROUPS_STORAGE_KEY,
@@ -50,6 +51,22 @@ test("toggling again opens the group and drops the empty sort", () => {
   const folded = toggleCollapsedShelfGroup({ genre: ["fantasy"] }, "series", "Harry Potter");
   const reopened = toggleCollapsedShelfGroup(folded, "series", "Harry Potter");
   assert.deepEqual(reopened, { genre: ["fantasy"] });
+});
+
+test("expand all reopens every saved group in the current sort after reload", () => {
+  const groups = { series: ["Harry Potter", "Discworld", "Filtered-out series"], genre: ["Fantasy"] };
+  const storage = memoryStorage();
+  writeCollapsedShelfGroups(expandShelfGroups(groups, "series"), storage);
+  const restored = readCollapsedShelfGroups(storage);
+  for (const label of groups.series) {
+    assert.equal(isShelfGroupCollapsed(restored, "series", label), false);
+  }
+  assert.equal(isShelfGroupCollapsed(restored, "genre", "Fantasy"), true);
+  assert.deepEqual(groups.series, ["Harry Potter", "Discworld", "Filtered-out series"]);
+  assert.deepEqual(expandShelfGroups(restored, "series"), restored);
+  assert.deepEqual(toggleCollapsedShelfGroup(restored, "series", "Discworld"), {
+    genre: ["Fantasy"], series: ["Discworld"]
+  });
 });
 
 test("unreadable saved state opens every group instead of failing", () => {
