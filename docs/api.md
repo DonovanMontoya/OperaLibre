@@ -188,7 +188,7 @@ Sync administration endpoints (administrator only):
 | `PUT` | `/api/sync-schedules/{book_id}` | Schedule with `{ "runAt": <Unix milliseconds> }`. |
 | `DELETE` | `/api/sync-jobs/{job_id}` | Remove a queued or paused sync and its saved sections, or dismiss a completed, failed, or cancelled result. Returns 204; running jobs return 409. Dismissal persists across restarts and leaves maps, chapter reports, and listening progress unchanged. Admin only. |
 | `PATCH` | `/api/sync-jobs/{job_id}` | Send `{ "action": "up" }`, `down`, `pause`, or `resume`. Up/down moves a queued job one place. Pause interrupts the current section and retains completed chapters or tracks; queued jobs pause immediately. Resume appends a paused job to the queue and repeats the unfinished section. Returns the job; incompatible states return 409. Admin only. |
-| `DELETE` | `/api/sync-schedules/{book_id}` | Cancel a schedule before it joins the queue. |
+| `DELETE` | `/api/sync-schedules/{book_id}` | Cancel a schedule before it joins the queue, or dismiss a finished schedule result. |
 | `GET` | `/api/sync-sweep` | Nightly rule, `pendingCount` (missing or outdated maps), and `eligibleCount`. |
 | `PUT` | `/api/sync-sweep` | Save `{ "enabled": true, "localTime": "01:00", "timeZone": "America/New_York", "booksPerNight": 2 }`. Limit: 1–100, default 2 when omitted. |
 | `POST` | `/api/sync-sweep/run` | Queue all missing and outdated maps immediately; skips active jobs and individual schedules. Returns `queued`, `skipped`, and `error`. |

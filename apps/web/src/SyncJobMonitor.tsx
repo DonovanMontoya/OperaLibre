@@ -696,10 +696,18 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                 {schedule?.error ? (() => {
                   // A schedule whose job failed says why in the job's words.
                   const failed = jobs?.find((entry) => entry.id === schedule.jobId);
+                  // Dismissing or replacing its activity result also clears
+                  // this copy of the notice; the saved book grade remains.
+                  if (jobs && schedule.jobId && !failed) return null;
                   const problem = failed ? jobProblem(failed) : null;
-                  return problem
-                    ? <SyncProblem problem={problem} className="admin-sync-schedule-problem" />
-                    : <p className="admin-sync-schedule-error">{schedule.error}</p>;
+                  return <div className="admin-sync-scheduled">
+                    {problem
+                      ? <SyncProblem problem={problem} className="admin-sync-schedule-problem" />
+                      : <p className="admin-sync-schedule-error">{schedule.error}</p>}
+                    <button type="button" className="admin-sync-icon-button" disabled={busyBook !== null || busyJob !== null}
+                      aria-label={`Dismiss scheduled sync result for ${book.title}`} title="Dismiss result"
+                      onClick={() => void (failed ? changeJob(failed.id, "remove") : act(book.id, "cancel"))}><X size={14} /></button>
+                  </div>;
                 })() : null}
                 {schedulingBook === book.id ? <form className="admin-sync-schedule-form" onSubmit={(event) => { event.preventDefault(); void act(book.id, "schedule"); }}>
                   <label htmlFor={`sync-time-${book.id}`}>Start time · {timeZone}</label>

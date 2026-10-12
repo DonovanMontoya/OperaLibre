@@ -130,6 +130,7 @@ jobs.push(
 const schedules = [
   { bookId: "book-5", runAt: now + 7 * 3_600_000, status: "scheduled", jobId: null, error: null },
   { bookId: "book-7", runAt: now - 600 * 60_000, status: "failed", jobId: "j9", error: "Scheduled sync failed. See sync activity, then retry." },
+  { bookId: "book-10", runAt: now - 60_000, status: "failed", jobId: null, error: "Follow along was disabled before the scheduled start." },
   { bookId: "book-11", runAt: now + 30 * 3_600_000, status: "scheduled", jobId: null, error: null },
 ];
 
@@ -175,7 +176,15 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     return json(job);
   }
   if (url.includes("/api/jobs")) return json(jobsEnabled ? jobs : []);
-  if (url.includes("/api/sync-schedules")) return json(init?.method === "DELETE" ? [] : schedules);
+  if (url.includes("/api/sync-schedules")) {
+    if (init?.method === "DELETE") {
+      const bookId = decodeURIComponent(url.split("/").pop()!);
+      const index = schedules.findIndex((entry) => entry.bookId === bookId);
+      if (index >= 0) schedules.splice(index, 1);
+      return new Response(null, { status: 204 });
+    }
+    return json(schedules);
+  }
   const generateFor = url.match(/\/api\/books\/([^/]+)\/sync\/generate/);
   if (generateFor) {
     const bookId = decodeURIComponent(generateFor[1]);
