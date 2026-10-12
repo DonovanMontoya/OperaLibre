@@ -13,6 +13,7 @@ import {
   Bell,
   ChevronDown,
   ChevronRight,
+  ChevronsUpDown,
   CircleCheck,
   Cloud,
   CloudDownload,
@@ -162,8 +163,10 @@ export function LibraryPane({
     changeShelfLayout,
     clearShelfFilters,
     closeShelfFilters,
+    expandAllShelfGroups,
     filterToggleRef,
     filtersOpen,
+    hasCollapsedShelfGroups,
     purchaseViewMode,
     reverseSort,
     searchQuery,
@@ -660,13 +663,19 @@ export function LibraryPane({
           </div>
         ) : null}
 
-        {librarySource !== "libro" && librarySource !== "all" ? <div className="library-results-summary" role="status" aria-live="polite" aria-atomic="true">
-          <span>
+        {librarySource !== "libro" && librarySource !== "all" ? <div className="library-results-summary">
+          <span role="status" aria-live="polite" aria-atomic="true">
             {librarySource === "local"
               ? isLoading ? "Loading books…" : `${visibleBooks.length} of ${books.length} books`
               : libationLoading ? "Loading books…" : `${visibleLibationBooks.length} of ${audibleBookCount} books`}
           </span>
           <span>{sortOrderLabel}</span>
+          {librarySource === "local" && hasCollapsedShelfGroups ? (
+            <button type="button" className="library-expand-all" onClick={expandAllShelfGroups}>
+              <ChevronsUpDown size={14} aria-hidden="true" />
+              Expand all
+            </button>
+          ) : null}
         </div> : null}
 
       </div>

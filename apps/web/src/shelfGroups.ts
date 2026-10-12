@@ -45,6 +45,12 @@ export function isShelfGroupCollapsed(groups: CollapsedShelfGroups, sortMode: st
   return groups[sortMode]?.some((entry) => compareShelfLabels(entry, label) === 0) ?? false;
 }
 
+export function expandShelfGroups(groups: CollapsedShelfGroups, sortMode: string): CollapsedShelfGroups {
+  const updated = { ...groups };
+  delete updated[sortMode];
+  return updated;
+}
+
 export function toggleCollapsedShelfGroup(groups: CollapsedShelfGroups, sortMode: string, label: string): CollapsedShelfGroups {
   const key = label.trim();
   const current = groups[sortMode] ?? [];

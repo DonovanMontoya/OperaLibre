@@ -14,6 +14,7 @@ import {
 import { readStoredValue, writeStoredValue } from "./appStorage";
 import {
   type CollapsedShelfGroups,
+  expandShelfGroups,
   isShelfGroupCollapsed,
   readCollapsedShelfGroups,
   toggleCollapsedShelfGroup,
@@ -119,6 +120,14 @@ export function useShelf({
       return next;
     });
   }, [sortMode]);
+
+  function expandAllShelfGroups() {
+    setCollapsedGroups((groups) => {
+      const next = expandShelfGroups(groups, sortMode);
+      writeCollapsedShelfGroups(next);
+      return next;
+    });
+  }
 
   function selectViewMode(mode: ShelfViewMode) {
     viewBeforeWideShelfRef.current = null;
@@ -408,8 +417,10 @@ export function useShelf({
     changeShelfLayout,
     clearShelfFilters,
     closeShelfFilters,
+    expandAllShelfGroups,
     filterToggleRef,
     filtersOpen,
+    hasCollapsedShelfGroups: (collapsedGroups[sortMode]?.length ?? 0) > 0,
     purchaseViewMode,
     reverseSort,
     searchQuery,
