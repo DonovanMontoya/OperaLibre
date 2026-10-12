@@ -1180,9 +1180,12 @@ pub(crate) async fn language_override(state: &AppState, book_id: &str) -> Option
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SyncLanguageRequest {
     /// A language code such as `en`; null to use the EPUB's label again.
     language: Option<String>,
+    /// A rollback must not replace a later administrator's edit.
+    expected_language: Option<String>,
 }
 
 /// A primary language subtag, such as `en` from `en-GB`.
@@ -1208,9 +1211,24 @@ pub(crate) async fn set_sync_language(
                 .ok_or_else(|| ApiError::bad_request("Use a language code such as en or nl."))
         })
         .transpose()?;
-    state
+    let expected = request
+        .expected_language
+        .as_deref()
+        .map(|value| {
+            language_code(value)
+                .ok_or_else(|| ApiError::bad_request("Use a language code such as en or nl."))
+        })
+        .transpose()?;
+    let previous = state
         .metadata_overrides
         .mutate(|overrides| {
+            let previous = overrides
+                .books
+                .get(&book_id)
+                .and_then(|book| book.sync_language.clone());
+            if expected.as_ref().is_some_and(|expected| previous.as_ref() != Some(expected)) {
+                return Err(ApiError::conflict("This book’s sync language changed. Refresh its report before changing it again."));
+            }
             match overrides.books.get_mut(&book_id) {
                 Some(book) => book.sync_language = language.clone(),
                 None if language.is_some() => {
@@ -1224,10 +1242,13 @@ pub(crate) async fn set_sync_language(
                 }
                 None => {}
             }
-            Ok(())
+            Ok(previous)
         })
         .await?;
-    Ok(Json(serde_json::json!({ "languageOverride": language })))
+    Ok(Json(serde_json::json!({
+        "languageOverride": language,
+        "previousLanguageOverride": previous,
+    })))
 }
 
 #[cfg(test)]

@@ -200,9 +200,16 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   }
   const languageFor = url.match(/\/api\/books\/([^/]+)\/sync\/language/);
   if (languageFor) {
-    const { language } = JSON.parse(String(init?.body));
-    languageOverrides.set(decodeURIComponent(languageFor[1]), language);
-    return json({ languageOverride: language });
+    const { language, expectedLanguage } = JSON.parse(String(init?.body));
+    const bookId = decodeURIComponent(languageFor[1]);
+    const previousLanguageOverride = languageOverrides.get(bookId) ?? null;
+    if (expectedLanguage && previousLanguageOverride !== expectedLanguage) {
+      return new Response(JSON.stringify({ message: "This book’s sync language changed." }), {
+        status: 409, headers: { "Content-Type": "application/json" }
+      });
+    }
+    languageOverrides.set(bookId, language);
+    return json({ languageOverride: language, previousLanguageOverride });
   }
   const reportFor = url.match(/\/api\/books\/([^/]+)\/sync\/report/);
   if (reportFor) return json(report(decodeURIComponent(reportFor[1])));
