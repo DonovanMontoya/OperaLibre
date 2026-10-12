@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { nativeTabItems, fullShelfMustYield, nativeTabSelection, spreadTab } from "../src/nativeTabs.ts";
+import { nativeTabItems, fullShelfMustYield, nativeTabSelection, shelfRetapped, spreadTab } from "../src/nativeTabs.ts";
 
 test("native tabs keep Administration inside Settings and never need More", () => {
   for (const games of [false, true]) {
@@ -44,4 +44,15 @@ test("the full shelf gives way to anything shown on the player page", () => {
   assert.equal(fullShelfMustYield("shelf", "now", "library"), false);
   assert.equal(fullShelfMustYield("reading", "now", "split"), false);
   assert.equal(fullShelfMustYield("reading", "now", "player"), false);
+});
+
+test("tapping Shelf scrolls to the top only when its list is already showing", () => {
+  assert.equal(shelfRetapped("shelf", "shelf", false, "split", "now"), true);
+  // The first tap closes an open book; arriving from another tab keeps the place.
+  assert.equal(shelfRetapped("shelf", "shelf", false, "split", "details"), false);
+  assert.equal(shelfRetapped("shelf", "reading", false, "split", "now"), false);
+  assert.equal(shelfRetapped("settings", "shelf", false, "split", "now"), false);
+  // On the iPad spread, Shelf is showing only as the collection alone.
+  assert.equal(shelfRetapped("shelf", "reading", true, "library", "now"), true);
+  assert.equal(shelfRetapped("shelf", "shelf", true, "split", "now"), false);
 });
