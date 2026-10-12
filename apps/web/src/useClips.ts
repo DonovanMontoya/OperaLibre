@@ -61,6 +61,7 @@ function sameContent(left: ClipEdit, right: ClipEdit) {
 }
 
 export function useClips({
+  clipPreviewBookIdRef,
   audioRef,
   book,
   bookDuration,
@@ -72,6 +73,7 @@ export function useClips({
   seekBookPosition,
   userId
 }: {
+  clipPreviewBookIdRef: RefObject<string | null>;
   audioRef: RefObject<HTMLAudioElement | null>;
   /** The book in the player. Clips are saved from, and played in, that book. */
   book: Book | null;
@@ -82,7 +84,7 @@ export function useClips({
   enabled: boolean;
   pausePlayback: (audio: HTMLAudioElement | null | undefined) => void;
   persistProgress: () => Promise<void>;
-  seekBookPosition: (value: number, autoPlay?: boolean) => void;
+  seekBookPosition: (value: number, autoPlay?: boolean, temporary?: boolean) => void;
   userId: string;
 }) {
   const bookId = book?.id ?? null;
@@ -287,6 +289,8 @@ export function useClips({
    */
   function playClip(clip: Clip) {
     if (!book || book.id !== clip.bookId) return;
+    void persistProgress();
+    clipPreviewBookIdRef.current = book.id;
     setReturningTo(null);
     haptic("light");
     setAudition({
@@ -301,13 +305,13 @@ export function useClips({
       reached: false,
       startedAt: Date.now()
     });
-    seekBookPosition(clip.startSeconds, true);
+    seekBookPosition(clip.startSeconds, true, true);
   }
 
   function finishAudition(finished: Audition) {
     setAudition(null);
     pausePlayback(audioRef.current);
-    seekBookPosition(finished.returnTo);
+    seekBookPosition(finished.returnTo, false, true);
     setReturningTo(finished.returnTo);
   }
   const finishAuditionRef = useRef(finishAudition);
@@ -321,8 +325,9 @@ export function useClips({
   useEffect(() => {
     if (returningTo === null || Math.abs(bookPosition - returningTo) > 1.5) return;
     setReturningTo(null);
+    clipPreviewBookIdRef.current = null;
     void persistProgressRef.current();
-  }, [bookPosition, returningTo]);
+  }, [bookPosition, returningTo, clipPreviewBookIdRef]);
 
   function stopAudition() {
     if (!audition) return;
@@ -331,6 +336,7 @@ export function useClips({
   }
 
   function continueFrom(clip: Clip) {
+    clipPreviewBookIdRef.current = null;
     setAudition(null);
     setReturningTo(null);
     seekBookPosition(clip.startSeconds, true);
@@ -338,7 +344,8 @@ export function useClips({
 
   useEffect(() => {
     if (!audition) return;
-    if (bookId !== audition.bookId) {
+    if (bookId !== audition.bookId || clipPreviewBookIdRef.current !== audition.bookId) {
+      if (clipPreviewBookIdRef.current === audition.bookId) clipPreviewBookIdRef.current = null;
       setAudition(null);
       return;
     }
@@ -347,7 +354,10 @@ export function useClips({
       // The seek takes a moment, longer across tracks; until it lands the
       // player still reports the place the listener came from.
       if (inside) setAudition({ ...audition, reached: true });
-      else if (Date.now() - audition.startedAt > AUDITION_START_TIMEOUT_MS) setAudition(null);
+      else if (Date.now() - audition.startedAt > AUDITION_START_TIMEOUT_MS) {
+        clipPreviewBookIdRef.current = null;
+        setAudition(null);
+      }
       return;
     }
     if (inside) return;
@@ -355,8 +365,11 @@ export function useClips({
     // Anywhere else means the listener moved on their own; that is now their
     // place, and pulling them back would be the surprise.
     if (ranOut) finishAuditionRef.current(audition);
-    else setAudition(null);
-  }, [audition, bookId, bookPosition]);
+    else {
+      clipPreviewBookIdRef.current = null;
+      setAudition(null);
+    }
+  }, [audition, bookId, bookPosition, clipPreviewBookIdRef]);
 
   const stopAuditionRef = useRef(stopAudition);
   stopAuditionRef.current = stopAudition;

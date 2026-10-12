@@ -638,6 +638,7 @@ function MainApp({
   // Mirrored in a ref so persistProgress (called from pagehide/visibility
   // listeners holding stale closures) always sees the live value.
   const pendingSeekRef = useRef<PendingSeek | null>(null);
+  const clipPreviewBookIdRef = useRef<string | null>(null);
   const setPendingSeek = (value: PendingSeek | null) => {
     pendingSeekRef.current = value;
     setPendingSeekState(value);
@@ -944,6 +945,7 @@ function MainApp({
     storeCanonicalServerProgress,
     updateBookProgress
   } = useProgressSync({
+    clipPreviewBookIdRef,
     acknowledgedSeekGenerationRef,
     acknowledgedServerPositionRef,
     activeTrackIndex,
@@ -1316,6 +1318,7 @@ function MainApp({
     updateBookGain,
     updateSpeed
   } = usePlaybackControls({
+    clipPreviewBookIdRef,
     activeChapter,
     activeTrackIndex,
     audioRef,
@@ -1393,6 +1396,7 @@ function MainApp({
     : playbackBook;
   const clipSheetDuration = clipSheetBook?.durationSeconds ?? (clipSheetBook ? durationFromTracks(clipSheetBook) : 0);
   const clips = useClips({
+    clipPreviewBookIdRef,
     audioRef,
     book: playbackBook,
     collectionBook: clipSheetBook,
