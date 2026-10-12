@@ -244,6 +244,8 @@ Books that can be followed expose a `syncFile` object (`fileName`, `source`, `ur
 
 `graded` is `run` when the alignment job graded its own result and `estimate` when an existing map was graded without realigning. Chapters are the stretches the book is aligned in, in book order, with book-absolute times. `textCoverage` is the share of the chapter's text (ignoring whitespace) covered by sentences, not counting `skippedText`, the UTF-16 units of edition-only text a run deliberately left unmatched. `gapSeconds` is the audio in the chapter that holds the reader's place without a sentence. A chapter is `good` with at least 95% coverage and no more than 5% of its audio unmatched, `review` with at least 80% and no more than 20%, and `poor` otherwise. A chapter with `status: "empty"` has no text and `grade: null`. The book's `grade` is the worst grade among chapters of at least two minutes, or among all chapters when none is that long.
 
+Reports include `mapDigest`, the SHA-256 digest of the map they describe. Replacing a map invalidates its report even when its size and generation time stay the same. Estimated coverage only credits sentences whose document and text match the chapter's EPUB sections.
+
 #### Playback progress
 
 Progress updates use JSON with the current track and timing fields:

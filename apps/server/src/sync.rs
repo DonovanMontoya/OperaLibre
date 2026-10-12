@@ -1183,14 +1183,11 @@ pub(crate) async fn run_sync_generation(
     let sync_path = state
         .sync_dir
         .join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"));
-    let map_size = write_sync_map(&sync_path, &sync_map)
+    let map_identity = write_sync_map(&sync_path, &sync_map)
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
     let report = sync_report::SyncReport::new(
-        sync_report::MapIdentity {
-            map_generated_at: sync_map.generated_at.clone(),
-            map_size,
-        },
+        map_identity,
         sync_report::Graded::Run,
         sync_report::grade_chapters(
             &sync_report::chapter_spans(&epub, tracks, &scopes, &outcomes),
@@ -1217,12 +1214,18 @@ pub(crate) async fn run_sync_generation(
 
 /// Sync maps name every sentence of a book, so they are written compactly:
 /// pretty-printing a long title's map adds a third to several megabytes
-/// that every reader downloads. Returns the size written.
-async fn write_sync_map(path: &FsPath, map: &alignment::SyncMap) -> Result<u64, ApiError> {
+/// that every reader downloads. Returns the identity its report describes.
+async fn write_sync_map(
+    path: &FsPath,
+    map: &alignment::SyncMap,
+) -> Result<sync_report::MapIdentity, ApiError> {
     let bytes = serde_json::to_vec(map)
         .map_err(|error| ApiError::internal(format!("Could not encode the sync map: {error}")))?;
     write_bytes_atomic(path, &bytes).await?;
-    Ok(bytes.len() as u64)
+    Ok(sync_report::MapIdentity::from_bytes(
+        map.generated_at.clone(),
+        &bytes,
+    ))
 }
 
 pub(crate) fn scope_transcript(

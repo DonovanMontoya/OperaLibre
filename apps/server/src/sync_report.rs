@@ -54,12 +54,24 @@ pub(crate) struct ScopeOutcome {
 }
 
 /// Which map a report describes. A report is current only while the served
-/// map still has this generation time and size.
+/// map still has the same contents. Older reports without a digest are stale.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MapIdentity {
     pub(crate) map_generated_at: Option<String>,
     pub(crate) map_size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) map_digest: Option<String>,
+}
+
+impl MapIdentity {
+    pub(crate) fn from_bytes(map_generated_at: Option<String>, bytes: &[u8]) -> Self {
+        Self {
+            map_generated_at,
+            map_size: bytes.len() as u64,
+            map_digest: Some(hex_digest(Sha256::digest(bytes))),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -339,34 +351,71 @@ pub(crate) fn estimate_report(
         #[serde(default)]
         recovery_gaps: Vec<alignment::RecoveryGap>,
     }
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct GradedFragment {
-        start_seconds: f64,
-        end_seconds: f64,
-        text: String,
-    }
     let bytes = std::fs::read(map_path)?;
     let map: GradedMap = serde_json::from_slice(&bytes)?;
-    let identity = MapIdentity {
-        map_generated_at: map.generated_at,
-        map_size: bytes.len() as u64,
-    };
+    let identity = MapIdentity::from_bytes(map.generated_at, &bytes);
     drop(bytes);
     let epub = alignment::parse_epub_file(epub_path)?;
     // A book that cannot be divided gets an empty report, so later scans do
     // not reread it until the map changes.
-    let chapters = match plan_scopes(&epub, tracks, true) {
-        Ok(plan) => grade_chapters(
-            &chapter_spans(&epub, tracks, &plan.scopes, &[]),
-            map.fragments
-                .iter()
-                .map(|f| (f.start_seconds, f.end_seconds, f.text.as_str())),
-            &map.recovery_gaps,
-        ),
-        Err(_) => Vec::new(),
-    };
+    let chapters = estimate_chapters(&epub, tracks, &map.fragments, &map.recovery_gaps);
     Ok(SyncReport::new(identity, Graded::Estimate, chapters))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GradedFragment {
+    start_seconds: f64,
+    end_seconds: f64,
+    href: String,
+    text: String,
+}
+
+fn estimate_chapters(
+    epub: &alignment::EpubDocument,
+    tracks: &[SyncTrackInput],
+    fragments: &[GradedFragment],
+    gaps: &[alignment::RecoveryGap],
+) -> Vec<ChapterReport> {
+    match plan_scopes(epub, tracks, true) {
+        Ok(plan) => {
+            let spans = chapter_spans(epub, tracks, &plan.scopes, &[]);
+            let mut order = (0..spans.len()).collect::<Vec<_>>();
+            order.sort_by(|a, b| spans[*a].start_seconds.total_cmp(&spans[*b].start_seconds));
+            let sections = epub
+                .sections
+                .iter()
+                .map(|section| (section.href.as_str(), compact_text(&section.text)))
+                .collect::<Vec<_>>();
+            let fragments = fragments.iter().filter(|fragment| {
+                let Some(&index) = order
+                    .partition_point(|&index| spans[index].start_seconds <= fragment.start_seconds)
+                    .checked_sub(1)
+                    .map(|position| &order[position])
+                else {
+                    return false;
+                };
+                let text = compact_text(&fragment.text);
+                fragment.start_seconds < spans[index].end_seconds
+                    && !text.is_empty()
+                    && sections[plan.scopes[index].section_range.clone()]
+                        .iter()
+                        .any(|(href, section)| *href == fragment.href && section.contains(&text))
+            });
+            grade_chapters(
+                &spans,
+                fragments.map(|f| (f.start_seconds, f.end_seconds, f.text.as_str())),
+                gaps,
+            )
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+fn compact_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
 }
 
 /// Coalesces backfill requests: scans can finish in bursts, and one pass at a
@@ -438,9 +487,11 @@ async fn backfill_reports(state: &AppState) {
             };
             (map_path, epub_path, tracks)
         };
-        let graded =
-            tokio::task::spawn_blocking(move || estimate_report(&epub_path, &tracks, &map_path))
-                .await;
+        let estimate_path = map_path.clone();
+        let graded = tokio::task::spawn_blocking(move || {
+            estimate_report(&epub_path, &tracks, &estimate_path)
+        })
+        .await;
         let report = match graded {
             Ok(Ok(report)) => report,
             Ok(Err(error)) => {
@@ -452,22 +503,58 @@ async fn backfill_reports(state: &AppState) {
                 continue;
             }
         };
-        if let Err(error) = write_report(&state.sync_dir, &book_id, &report).await {
+        if let Err(error) = publish_backfill(state, &book_id, &map_path, &report).await {
             tracing::warn!(book_id, ?error, "could not save sync report");
-            continue;
-        }
-        // The listing shows the grade now rather than after the next scan.
-        let mut library = state.library.write().await;
-        if let Some(file) = library
-            .books
-            .iter_mut()
-            .find(|book| book.id == book_id)
-            .and_then(|book| book.sync_file.as_mut())
-        {
-            file.quality = report.quality();
-            file.report_current = true;
         }
     }
+}
+
+/// Hold both locks through publication: a scan cannot change the served path,
+/// and a sync cannot start after the final check and overwrite its own report.
+pub(crate) async fn publish_backfill(
+    state: &AppState,
+    book_id: &str,
+    map_path: &FsPath,
+    report: &SyncReport,
+) -> Result<(), ApiError> {
+    let jobs = state.jobs.read().await;
+    if jobs.values().any(|job| {
+        job.kind == SYNC_GENERATE_JOB_KIND
+            && job.target_id.as_deref() == Some(book_id)
+            && (is_active_job(job) || job.status == "paused")
+    }) {
+        return Ok(());
+    }
+    let mut library = state.library.write().await;
+    if library.sync_paths.get(book_id).map(PathBuf::as_path) != Some(map_path) {
+        return Ok(());
+    }
+    let path = map_path.to_path_buf();
+    let sync_dir = state.sync_dir.clone();
+    let book = book_id.to_string();
+    let expected = report.map.clone();
+    let still_missing = tokio::task::spawn_blocking(move || {
+        probe_sync_map(&path, false).is_some_and(|probe| {
+            probe.identity == expected && read_current_report(&sync_dir, &book, &expected).is_none()
+        })
+    })
+    .await
+    .map_err(|error| ApiError::internal(error.to_string()))?;
+    if !still_missing {
+        return Ok(());
+    }
+    write_report(&state.sync_dir, book_id, report).await?;
+    // The listing shows the grade now rather than after the next scan.
+    if let Some(file) = library
+        .books
+        .iter_mut()
+        .find(|book| book.id == book_id)
+        .and_then(|book| book.sync_file.as_mut())
+    {
+        file.quality = report.quality();
+        file.report_current = true;
+    }
+    Ok(())
 }
 
 /// The chapter-by-chapter report for an administrator. 404 until the served
@@ -527,6 +614,7 @@ mod tests {
             MapIdentity {
                 map_generated_at: Some("1".into()),
                 map_size: 10,
+                map_digest: Some("fixture".into()),
             },
             Graded::Run,
             grade_chapters(
@@ -727,6 +815,103 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn same_size_sidecar_replacement_invalidates_the_report() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("book.sync.json");
+        let original = br#"{"version":2,"fragments":[{"startSeconds":1,"endSeconds":2,"href":"a.xhtml","text":"old"}]}"#;
+        let replacement = br#"{"version":2,"fragments":[{"startSeconds":1,"endSeconds":2,"href":"a.xhtml","text":"new"}]}"#;
+        assert_eq!(original.len(), replacement.len());
+        std::fs::write(&path, original).unwrap();
+        let identity = probe_sync_map(&path, false).unwrap().identity;
+        assert_eq!(identity, MapIdentity::from_bytes(None, original));
+        let mut report = graded(&[span(0.0, 10.0, "old", 0)], &[(1.0, "old")], &[]);
+        report.map = identity;
+        write_report(root.path(), "book", &report).await.unwrap();
+        assert!(read_current_report(root.path(), "book", &report.map).is_some());
+        std::fs::write(&path, replacement).unwrap();
+        let replaced = probe_sync_map(&path, false).unwrap().identity;
+        assert_ne!(replaced, report.map);
+        assert_eq!(replaced.map_size, report.map.map_size);
+        assert_eq!(replaced.map_generated_at, report.map.map_generated_at);
+        assert!(read_current_report(root.path(), "book", &replaced).is_none());
+
+        // Reports written before content identities were introduced are rebuilt.
+        let mut legacy = serde_json::to_value(&report).unwrap();
+        legacy.as_object_mut().unwrap().remove("mapDigest");
+        std::fs::write(
+            report_path(root.path(), "book").unwrap(),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        assert!(read_current_report(root.path(), "book", &report.map).is_none());
+    }
+
+    #[test]
+    fn estimated_coverage_requires_text_from_the_scopes_own_section() {
+        let texts = ["One two.\n\nThree four.", "Six ten.\n\nEight nine."];
+        for shared_href in [false, true] {
+            let hrefs = ["a.xhtml", if shared_href { "a.xhtml" } else { "b.xhtml" }];
+            let epub = alignment::EpubDocument {
+                sections: texts
+                    .iter()
+                    .zip(hrefs)
+                    .map(|(text, href)| alignment::SpineSection {
+                        href: href.into(),
+                        text: (*text).into(),
+                    })
+                    .collect(),
+                toc: (0..2)
+                    .map(|index| alignment::TocEntry {
+                        title: format!("Chapter {}", index + 1),
+                        spine_index: index,
+                    })
+                    .collect(),
+                image_count: 0,
+                language: None,
+            };
+            let tracks = (0..2)
+                .map(|index| SyncTrackInput {
+                    path: PathBuf::from(format!("{index}.wav")),
+                    title: format!("Chapter {}", index + 1),
+                    duration_seconds: Some(300.0),
+                    chapters: Vec::new(),
+                })
+                .collect::<Vec<_>>();
+            let fragments = |shifted: bool, wrong_href: bool| {
+                (0..2)
+                    .map(|index| {
+                        let text_index = if shifted { 1 - index } else { index };
+                        GradedFragment {
+                            start_seconds: index as f64 * 300.0 + 1.0,
+                            end_seconds: index as f64 * 300.0 + 10.0,
+                            href: if wrong_href {
+                                "missing.xhtml".into()
+                            } else {
+                                hrefs[text_index].into()
+                            },
+                            text: texts[text_index]
+                                .split_whitespace()
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let correct = estimate_chapters(&epub, &tracks, &fragments(false, false), &[]);
+            assert_eq!(correct.len(), 2);
+            assert!(correct.iter().all(|chapter| chapter.text_coverage == 1.0));
+            for wrong in [fragments(true, false), fragments(false, true)] {
+                let chapters = estimate_chapters(&epub, &tracks, &wrong, &[]);
+                assert_eq!(chapters.len(), 2);
+                assert!(
+                    chapters.iter().all(|chapter| chapter.text_coverage == 0.0),
+                    "shared href: {shared_href}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn a_report_is_current_only_for_the_map_it_graded() {
         let root = tempfile::tempdir().unwrap();
         let report = graded(&[span(0.0, 10.0, "abc", 0)], &[(1.0, "abc")], &[]);
@@ -738,14 +923,17 @@ mod tests {
             MapIdentity {
                 map_generated_at: Some("2".into()),
                 map_size: 10,
+                map_digest: Some("fixture".into()),
             },
             MapIdentity {
                 map_generated_at: Some("1".into()),
                 map_size: 11,
+                map_digest: Some("fixture".into()),
             },
             MapIdentity {
                 map_generated_at: None,
                 map_size: 10,
+                map_digest: Some("fixture".into()),
             },
         ] {
             assert!(read_current_report(root.path(), "book", &stale).is_none());
