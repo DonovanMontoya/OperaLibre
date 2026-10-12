@@ -1601,7 +1601,9 @@ pub(crate) async fn run_sync_generation(
         Some(base) => {
             let mut chapters = base.report.chapters;
             for (chapter, regraded) in chapters.iter_mut().zip(graded) {
-                if selected.binary_search(&chapter.index).is_ok() {
+                if selected.binary_search(&chapter.index).is_ok()
+                    && outcomes.get(chapter.index).is_some()
+                {
                     *chapter = regraded;
                 }
             }
@@ -2377,7 +2379,7 @@ impl<'a> Aligner<'a> {
             }
             _ => None,
         };
-        match windowed {
+        let aligned = match windowed {
             Some((ffmpeg, scope_end)) => {
                 self.align_windowed(
                     scope,
@@ -2398,7 +2400,13 @@ impl<'a> Aligner<'a> {
                 self.align_single_pass(scope, track, transcript, scope_number)
                     .await
             }
-        }
+        }?;
+        anyhow::ensure!(
+            !aligned.fragments.is_empty() || transcript.text.trim().is_empty(),
+            "Alignment of `{}` produced no usable sentence fragments.",
+            scope.label
+        );
+        Ok(aligned)
     }
 
     /// The established path: one aligner run over the scope's whole audio.
@@ -5131,6 +5139,10 @@ if [ -f "$0.crash" ] && grep -qxF "$track" "$0.crash"; then
   fi
   exit 0
 fi
+if [ -f "$0.empty" ] && grep -qxF "$track" "$0.empty"; then
+  printf '[]' > "$4"
+  exit 0
+fi
 start=1
 [ -f "$0.start" ] && start=$(cat "$0.start")
 printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$3")" "$start" "$((start + 2))" > "$4"
@@ -5467,6 +5479,58 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
             assert_eq!(report.chapters[1].grade, Some(Grade::Good));
             let output = book.state.jobs.read().await[&job].output.clone();
             assert!(output.contains("Re-running Chapter 2;"), "{output}");
+        }
+
+        #[tokio::test]
+        async fn empty_results_preserve_previous_chapter_timing() {
+            let book = ChapterBook::new(3);
+            let previous = book.seed_previous_map();
+            let before = book.map();
+            book.control("empty", "2.wav\n");
+            book.run(Some(&[1])).await.unwrap_err();
+            assert_eq!(std::fs::read(book.map_path()).unwrap(), previous);
+            assert_eq!(
+                book.report().chapters[1].status,
+                ChapterStatus::KeptPrevious
+            );
+            assert!(book.report().chapters[1].error.is_some());
+
+            let generated = book.run(Some(&[0, 1])).await.unwrap();
+            assert_eq!(generated.failed, vec![chapter(1)]);
+            let after = book.map();
+            assert_eq!(in_chapter(&after, 0)[0]["startSeconds"], 1.0);
+            assert_eq!(in_chapter(&after, 1), in_chapter(&before, 1));
+            assert_eq!(in_chapter(&after, 2), in_chapter(&before, 2));
+
+            // A whole-book sync also keeps usable timing for an empty chapter.
+            let generated = book.run(None).await.unwrap();
+            assert_eq!(generated.failed, vec![chapter(1)]);
+            assert_eq!(in_chapter(&book.map(), 1), in_chapter(&before, 1));
+        }
+
+        #[tokio::test]
+        async fn early_failure_preserves_reports_for_unattempted_chapters() {
+            let book = ChapterBook::new(4);
+            let previous = book.seed_previous_map();
+            let mut report = book.report();
+            report.chapters[3].status = ChapterStatus::KeptPrevious;
+            report.chapters[3].error = Some("Earlier chapter failure".into());
+            report.chapters[3].error_detail =
+                Some("Earlier chapter failure: original details".into());
+            std::fs::write(
+                book.state.sync_dir.join("fixture.report.json"),
+                serde_json::to_vec(&report).unwrap(),
+            )
+            .unwrap();
+            let fourth = serde_json::to_value(&book.report().chapters[3]).unwrap();
+            book.control("fail", "1.wav\n2.wav\n3.wav\n");
+            book.run(Some(&[0, 1, 2, 3])).await.unwrap_err();
+            assert_eq!(book.calls(), ["1.wav", "2.wav", "3.wav"]);
+            assert_eq!(std::fs::read(book.map_path()).unwrap(), previous);
+            assert_eq!(
+                serde_json::to_value(&book.report().chapters[3]).unwrap(),
+                fourth
+            );
         }
 
         #[tokio::test]
