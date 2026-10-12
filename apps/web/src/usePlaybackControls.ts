@@ -45,6 +45,7 @@ const START_OVER_PROGRESS_CHECK_MS = 2_500;
  * playing book, over either the web audio element or the native player.
  */
 export function usePlaybackControls({
+  clipPreviewBookIdRef,
   activeChapter,
   activeTrackIndex,
   audioRef,
@@ -114,6 +115,7 @@ export function usePlaybackControls({
   volume,
   wantsAutoplayRef
 }: {
+  clipPreviewBookIdRef: RefObject<string | null>;
   activeChapter: ChapterSegment | null;
   activeTrackIndex: number;
   audioRef: RefObject<HTMLAudioElement | null>;
@@ -254,6 +256,7 @@ export function usePlaybackControls({
       setRestoredPlaybackBookId(resolvedBookId);
     }
     if (deliberateSeek && bookId) {
+      if (clipPreviewBookIdRef.current === bookId) clipPreviewBookIdRef.current = null;
       recordProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, bookId, seekTargetBookPosition);
       intentionalSeekGenerationRef.current.set(
         bookId,
@@ -499,14 +502,14 @@ export function usePlaybackControls({
     void persistProgress();
   }
 
-  function seekBookPositionInBook(book: Book, value: number, autoPlay = false) {
+  function seekBookPositionInBook(book: Book, value: number, autoPlay = false, temporary = false) {
     const targetBookDuration = book.durationSeconds ?? durationFromTracks(book);
     const clampedValue = Math.max(0, Math.min(value, targetBookDuration || value));
     const location = resolveBookPosition(book.tracks, clampedValue);
     if (!location) return;
     const targetTrack = book.tracks.find((track) => track.id === location.trackId)!;
     const trackPosition = location.positionSeconds;
-    markPlaybackTouched(true, book.id, true, clampedValue);
+    markPlaybackTouched(!temporary, book.id, true, clampedValue);
     if (playbackBook?.id !== book.id) explicitSessionStartBookIdRef.current = book.id;
     setPlaybackBookId(book.id);
 
@@ -527,12 +530,12 @@ export function usePlaybackControls({
     wantsAutoplayRef.current = autoPlay;
   }
 
-  function seekBookPosition(value: number, autoPlay = false) {
+  function seekBookPosition(value: number, autoPlay = false, temporary = false) {
     if (!playbackBook) {
       return;
     }
 
-    seekBookPositionInBook(playbackBook, value, autoPlay);
+    seekBookPositionInBook(playbackBook, value, autoPlay, temporary);
   }
 
   // Start when the active engine has a source. The native control element

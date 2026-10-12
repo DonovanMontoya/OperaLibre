@@ -234,3 +234,40 @@ test('expanded clip editor shows only its passage and returns to the list', asyn
   await expect(dialog.getByLabel('Name', { exact: true })).toHaveCount(0);
   expect(fixture.writes).toEqual([]);
 });
+
+test('interrupted preview never checkpoints its temporary position or seek intent', async ({ page }) => {
+  const fixture = await setup(page);
+  const book = fixture.books[1];
+  fixture.clips.get(book.id)![0].endSeconds = 25;
+  await page.locator('.book-row').nth(1).click();
+  await page.getByRole('tab', { name: 'Clips', exact: true }).click();
+  await page.getByRole('button', { name: 'Preview Passage from book 2', exact: true }).click();
+  const audio = page.locator('audio');
+  await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThan(13);
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  const durable = await page.evaluate(() => Object.entries(localStorage)
+    .filter(([key]) => key.startsWith('operalibre.progressCheckpoint.v1')).map(([, value]) => JSON.parse(value)));
+  expect(durable.find(progress => progress.bookId === book.id)?.bookPositionSeconds).toBe(90);
+  expect(fixture.writes.filter(write => write.bookId === book.id).every(write => write.position === 90)).toBe(true);
+  expect(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('operalibre.progressSeekIntent.v1')))).toEqual([]);
+  await page.reload();
+  await page.getByRole('button', { name: `Play ${book.title}`, exact: true }).click();
+  await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThanOrEqual(90);
+});
+
+test('Continue from here makes a preview position an intentional listening position', async ({ page }) => {
+  const fixture = await setup(page);
+  const book = fixture.books[1];
+  fixture.clips.get(book.id)![0].endSeconds = 25;
+  await page.locator('.book-row').nth(1).click();
+  await page.getByRole('tab', { name: 'Clips', exact: true }).click();
+  await page.getByRole('button', { name: 'Preview Passage from book 2', exact: true }).click();
+  await expect.poll(() => page.locator('audio').evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThan(11);
+  await page.locator('.book-clip-detail').click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Continue from here', exact: true }).click();
+  await expect.poll(() => fixture.writes.some(write => write.bookId === book.id && write.position >= 10 && write.position < 25)).toBe(true);
+  const durable = await page.evaluate(() => Object.entries(localStorage)
+    .filter(([key]) => key.startsWith('operalibre.progressCheckpoint.v1')).map(([, value]) => JSON.parse(value)));
+  expect(durable.find(progress => progress.bookId === book.id)?.bookPositionSeconds).toBeGreaterThanOrEqual(10);
+  expect(durable.find(progress => progress.bookId === book.id)?.bookPositionSeconds).toBeLessThan(25);
+});
