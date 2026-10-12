@@ -145,7 +145,7 @@ import { useDisplaySettings } from "./useDisplaySettings";
 import { useReaderPreferences } from "./useReaderPreferences";
 import { useUploads } from "./useUploads";
 import { useMetadataEditor } from "./useMetadataEditor";
-import { useSleepTimer } from "./useSleepTimer";
+import { useChapterEndSleep, useSleepTimer } from "./useSleepTimer";
 import { useShelf } from "./useShelf";
 import { usePurchases } from "./usePurchases";
 import { useCarPlay } from "./useCarPlay";
@@ -745,10 +745,13 @@ function MainApp({
   });
   const {
     configureSleepTimer,
+    setSleepAtChapterEnd,
     setSleepCustomDraft,
     setSleepCustomOpen,
     setSleepMinutes,
     setSleepRemaining,
+    sleepAtChapterEnd,
+    sleepAtChapterEndRef,
     sleepChoices,
     sleepCustomDraft,
     sleepCustomMinutes,
@@ -1135,6 +1138,16 @@ function MainApp({
     [selectedBook]
   );
   const activeChapter = chapterAtBookPosition(chapterSegments, bookPosition);
+  useChapterEndSleep({
+    armed: sleepAtChapterEnd && isPlaying && !nativeAudio,
+    audioRef,
+    bookId: playbackBookKey,
+    bookPosition,
+    chapterSegments,
+    intentionalSeekGenerationRef,
+    pausePlaybackRef,
+    setSleepAtChapterEnd
+  });
   const chapterElapsed = activeChapter
     ? Math.max(0, bookPosition - activeChapter.startSeconds)
     : position;
@@ -1630,8 +1643,10 @@ function MainApp({
     setPlaybackError,
     setPlaybackPosition,
     setPosition,
+    setSleepAtChapterEnd,
     setSleepMinutes,
     setSleepRemaining,
+    sleepAtChapterEndRef,
     sleepDeadlineRef,
     sleepRemainingRef,
     speed,
@@ -2051,7 +2066,22 @@ function MainApp({
           setIsPlaying(false);
           void persistProgress();
         }}
-        onEnded={playNextTrack}
+        onEnded={() => {
+          // A chapter that ends with its file stops here, before the next
+          // track starts. The book's last track ends the wait either way.
+          const nextTrackIndex = activeTrackIndex + 1;
+          const sleepNow = sleepAtChapterEndRef.current && (
+            !playbackBook
+            || nextTrackIndex >= playbackBook.tracks.length
+            || chapterAtBookPosition(chapterSegments, trackOffsetSeconds(playbackBook, nextTrackIndex))?.id
+              !== activeChapter?.id
+          );
+          playNextTrack();
+          if (!sleepNow) return;
+          setSleepAtChapterEnd(false);
+          playWhenTrackLoads.current = false;
+          wantsAutoplayRef.current = false;
+        }}
       />
 
       <button
@@ -2224,6 +2254,7 @@ function MainApp({
           readerTools={!native && readalongPanelElement && isViewingPlayingBook ? {
             speed,
             sleepRemaining: sleepTimer.sleepRemaining,
+            sleepAtChapterEnd,
             onOpen: openNativePlayerSheet
           } : null}
           restartOrPreviousChapter={restartOrPreviousChapter}
@@ -2299,9 +2330,11 @@ function MainApp({
 
       {nativePlayerSheet === "sleep" ? (
         <SleepTimerSheet
+          canSleepAtChapterEnd={activeChapter !== null}
           closeNativePlayerSheet={closeNativePlayerSheet}
           configureSleepTimer={configureSleepTimer}
           setNativePlayerSheet={setNativePlayerSheet}
+          sleepAtChapterEnd={sleepAtChapterEnd}
           setSleepCustomDraft={setSleepCustomDraft}
           setSleepCustomOpen={setSleepCustomOpen}
           sleepChoices={sleepChoices}

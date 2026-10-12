@@ -47,6 +47,7 @@ export function MiniPlayer({
   readerTools?: {
     speed: number;
     sleepRemaining: number;
+    sleepAtChapterEnd: boolean;
     onOpen: (sheet: "speed" | "sleep" | "chapters") => void;
   } | null;
   restartOrPreviousChapter: () => void;
@@ -142,10 +143,10 @@ export function MiniPlayer({
           <button
             type="button"
             onClick={() => readerTools.onOpen("sleep")}
-            aria-label={readerTools.sleepRemaining > 0 ? `Sleep timer, ${Math.ceil(readerTools.sleepRemaining / 60)} minutes left` : "Sleep timer"}
+            aria-label={readerTools.sleepAtChapterEnd ? "Sleep timer, stops at the end of the chapter" : readerTools.sleepRemaining > 0 ? `Sleep timer, ${Math.ceil(readerTools.sleepRemaining / 60)} minutes left` : "Sleep timer"}
           >
             <Timer size={16} />
-            {readerTools.sleepRemaining > 0 ? <small>{Math.ceil(readerTools.sleepRemaining / 60)}m</small> : null}
+            {readerTools.sleepAtChapterEnd ? <small>Ch.</small> : readerTools.sleepRemaining > 0 ? <small>{Math.ceil(readerTools.sleepRemaining / 60)}m</small> : null}
           </button>
           <button type="button" onClick={() => readerTools.onOpen("chapters")} aria-label="Chapters">
             <ListMusic size={16} />
