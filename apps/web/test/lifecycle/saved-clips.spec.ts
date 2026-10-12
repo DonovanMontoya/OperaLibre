@@ -100,7 +100,7 @@ for (const width of [390, 1280]) {
     await page.screenshot({ path: testInfo.outputPath(`clips-${width}.png`), animations: 'disabled' });
     await page.locator('.book-clip-detail').filter({ hasText: 'Passage from book 2' }).click();
     const dialog = page.getByRole('dialog');
-    await expect(dialog.getByRole('heading', { name: 'Saved clips' })).toBeVisible();
+    await expect(dialog.getByRole('heading', { name: 'Edit clip' })).toBeVisible();
     await expect(dialog.getByRole('button', { name: /Passage from book 2/ })).toBeVisible();
     await expect(dialog.getByText('Passage from book 1', { exact: true })).toHaveCount(0);
     await dialog.getByLabel('Name', { exact: true }).fill('Remember this passage');
@@ -211,4 +211,26 @@ test('Audio clips behavior preference persists and restores saved passages witho
   await expect(page.locator('.book-clip-detail')).toContainText('Passage from book 2');
   expect(fixture.clips.get(fixture.books[1].id)).toHaveLength(1);
   expect(fixture.writes.some(write => write.position === 0)).toBe(false);
+});
+
+test('expanded clip editor shows only its passage and returns to the list', async ({ page }) => {
+  const fixture = await setup(page);
+  const book = fixture.books[1];
+  const first = fixture.clips.get(book.id)![0];
+  fixture.clips.set(book.id, [first, { ...first, id: 'a'.repeat(32), title: 'Another saved passage', startSeconds: 30, endSeconds: 40 }]);
+  await page.locator('.book-row').nth(1).click();
+  await page.getByRole('tab', { name: 'Clips', exact: true }).click();
+  await page.getByRole('button', { name: 'Manage clips', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.locator('.clip-row')).toHaveCount(2);
+  await dialog.getByRole('button', { name: /Another saved passage/ }).click();
+  await expect(dialog.getByRole('heading', { name: 'Edit clip', exact: true })).toBeVisible();
+  await expect(dialog.locator('.clip-row')).toHaveCount(1);
+  await expect(dialog.getByText('Passage from book 2', { exact: true })).toHaveCount(0);
+  await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue('Another saved passage');
+  await dialog.getByRole('button', { name: 'Back to clips', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: 'Saved clips', exact: true })).toBeVisible();
+  await expect(dialog.locator('.clip-row')).toHaveCount(2);
+  await expect(dialog.getByLabel('Name', { exact: true })).toHaveCount(0);
+  expect(fixture.writes).toEqual([]);
 });
