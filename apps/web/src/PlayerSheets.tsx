@@ -138,7 +138,6 @@ export function BookDetailsSheet({
             aria-pressed={playbackBook.progress?.status === "finished"}
             onClick={() => {
               haptic("light");
-              closeNativePlayerSheet();
               requestBookCompletion(
                 playbackBook,
                 playbackBook.progress?.status !== "finished"

@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { createServer, type ViteDevServer } from 'vite';
-import { library } from '../performance/fixtures';
+import { library, wav } from '../performance/fixtures';
 
 let server: ViteDevServer;
 let url: string;
@@ -215,6 +215,45 @@ for (const platform of ['ios', 'android', 'web'] as const) {
       }
     });
   }
+}
+
+for (const platform of ['ios', 'android'] as const) {
+  test(`${platform} preserves player details after cancelling or marking unfinished`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const { books, writes } = await setup(page, platform);
+    await page.route('**/fixture.wav*', route => route.fulfill({ contentType: 'audio/wav', body: wav() }));
+    await page.route(`**/api/books/${books[2].id}/progress`, route => route.fulfill({ json: {
+      bookId: books[2].id, trackId: books[2].tracks[0].id, positionSeconds: 60,
+      bookPositionSeconds: 60, durationSeconds: 120, finishedOverride: true, updatedAt: new Date().toISOString()
+    } }));
+    await openBook(page, 2);
+    await page.getByRole('button', { name: `Play ${books[2].title}`, exact: true }).click();
+    await page.locator('.native-now-utility').getByRole('button', { name: 'Details', exact: true }).click();
+    const sheet = page.locator('.details-sheet');
+    const trigger = sheet.getByRole('button', { name: 'Mark unfinished', exact: true });
+    const confirmation = page.getByRole('dialog', { name: 'Mark unfinished?', exact: true });
+    const completionWrites = () => writes.filter(write => write.endsWith('/completion'));
+    await trigger.click();
+    await expect(confirmation).toBeVisible();
+    await expect(sheet).toBeVisible();
+    await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(confirmation).toBeHidden();
+    await expect(trigger).toBeFocused();
+    await expect(trigger).toHaveAttribute('aria-pressed', 'true');
+    expect(completionWrites()).toEqual([]);
+    await trigger.click();
+    await expect(confirmation).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(confirmation).toBeHidden();
+    await expect(trigger).toBeFocused();
+    expect(completionWrites()).toEqual([]);
+    await trigger.click();
+    await confirmation.getByRole('button', { name: 'Mark unfinished', exact: true }).click();
+    await expect(confirmation).toBeHidden();
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByRole('button', { name: 'Mark finished', exact: true })).toHaveAttribute('aria-pressed', 'false');
+    expect(completionWrites()).toEqual([`PUT /api/books/${books[2].id}/completion`]);
+  });
 }
 
 test('completion confirmation retains errors and retries without dismissing early', async ({ page }) => {
