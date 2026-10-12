@@ -24,6 +24,7 @@ function jobState(status: string) {
   if (status === "paused") return { label: "Paused", tone: "queued" };
   if (status === "completed") return { label: "Completed", tone: "done" };
   if (status === "failed") return { label: "Failed", tone: "failed" };
+  if (status === "cancelled") return { label: "Cancelled", tone: "queued" };
   return { label: status, tone: "queued" };
 }
 
@@ -542,6 +543,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
             const attention = syncJobAttention(job);
             const scope = syncJobScope(job, title);
             const problem = jobProblem(job);
+            const finished = ["completed", "failed", "cancelled"].includes(job.status);
             // A finished sync with chapters it could not align is not all good news.
             const state = attention ? { ...jobState(job.status), tone: "queued" } : jobState(job.status);
             return (
@@ -560,6 +562,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                     {job.pauseRequested && job.status === "running" ? "Pausing…" : state.label}
                     </span>
                     {job.status === "queued" || job.status === "paused" ? <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null} aria-label={`Remove ${title} from sync queue`} title="Remove from queue" onClick={() => void changeJob(job.id, "remove")}><X size={14} /></button> : null}
+                    {finished ? <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null} aria-label={`Dismiss sync result for ${title}`} title="Dismiss result" onClick={() => void changeJob(job.id, "remove")}><X size={14} /></button> : null}
                   </div>
                 </div>
                 {scope ? <p className="admin-sync-job-step">{scope}</p> : null}
@@ -712,7 +715,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
         </div>
       </section>
 
-      <p className="admin-experiment-detail">Jobs run one at a time and continue when you close this view. The queue and recent results survive server restarts. Interrupted books resume from the last completed chapter or track when Follow along is enabled. Pause finishes the current section before saving; books without matched chapters may need to finish the whole track. Paused jobs stay paused across restarts. Existing maps remain available.</p>
+      <p className="admin-experiment-detail">Jobs run one at a time and continue when you close this view. The queue and latest result for each book survive server restarts. A new result replaces older results for that book. Dismiss a finished result with ×; books still needing a sync remain in the book list. Interrupted books resume from the last completed chapter or track when Follow along is enabled. Pause finishes the current section before saving; books without matched chapters may need to finish the whole track. Paused jobs stay paused across restarts. Existing maps remain available.</p>
     </div>
   );
 }

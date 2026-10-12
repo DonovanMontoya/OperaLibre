@@ -92,6 +92,43 @@ async fn save(state: &AppState, entries: &[SyncSchedule]) -> Result<(), ApiError
     .await
 }
 
+fn record_finished_result(entry: &mut SyncSchedule, job: &JobStatus) -> bool {
+    if entry.status != "submitted" {
+        return false;
+    }
+    match job.status.as_str() {
+        "completed" | "cancelled" => {
+            entry.status = job.status.clone();
+            entry.error = None;
+        }
+        "failed" => {
+            entry.status = "failed".into();
+            entry.error = Some("Scheduled sync failed. See sync activity, then retry.".into());
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// Record submitted schedules' outcomes before job history is removed.
+/// Callers hold the schedule lock before the job lock, as the scheduler does.
+pub(crate) async fn save_finished_results(
+    state: &AppState,
+    jobs: &HashMap<String, JobStatus>,
+) -> Result<(), ApiError> {
+    let mut entries = load(state).await?;
+    let mut changed = false;
+    for entry in &mut entries {
+        if let Some(job) = entry.job_id.as_ref().and_then(|id| jobs.get(id)) {
+            changed |= record_finished_result(entry, job);
+        }
+    }
+    if changed {
+        save(state, &entries).await?;
+    }
+    Ok(())
+}
+
 async fn load_sweep(state: &AppState) -> Result<SyncSweep, ApiError> {
     match fs::read(state.database_path.with_file_name("sync-sweep.json")).await {
         Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
@@ -540,8 +577,10 @@ fn due_status(entry: &SyncSchedule, now: u64) -> Option<&'static str> {
 }
 
 pub(crate) async fn tick(state: &AppState) -> Result<(), ApiError> {
-    let _guard = state.sync_schedule_lock.lock().await;
+    // Invalid recovered jobs can finish here, which records their schedule
+    // outcome under the schedule lock itself.
     crate::sync::resume_queue(state).await;
+    let _guard = state.sync_schedule_lock.lock().await;
     let mut entries = load(state).await?;
     let now = unix_now_millis();
     let ready = state.library.read().await.catalogue_ready;
@@ -550,14 +589,7 @@ pub(crate) async fn tick(state: &AppState) -> Result<(), ApiError> {
             let jobs = state.jobs.read().await;
             let job = entries[index].job_id.as_ref().and_then(|id| jobs.get(id));
             match job {
-                Some(job) if job.status == "completed" => {
-                    entries[index].status = "completed".into()
-                }
-                Some(job) if job.status == "failed" => {
-                    entries[index].status = "failed".into();
-                    entries[index].error =
-                        Some("Scheduled sync failed. See sync activity, then retry.".into());
-                }
+                Some(job) if record_finished_result(&mut entries[index], job) => {}
                 None => {
                     entries[index].status = "failed".into();
                     entries[index].error = Some("The saved job result is no longer available. Check the book’s sync status before retrying.".into());
@@ -664,6 +696,82 @@ pub(crate) fn start(state: AppState) {
 mod tests {
     use super::*;
     use chrono::Timelike;
+
+    #[tokio::test]
+    async fn schedule_outcomes_survive_dismissed_job_results() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = crate::unit_tests::fake_libation_state(root.path());
+        for status in ["completed", "failed", "cancelled"] {
+            let job_id = create_job(&state, SYNC_GENERATE_JOB_KIND).await;
+            let entry = SyncSchedule {
+                book_id: "fixture".into(),
+                run_at: 1,
+                status: "submitted".into(),
+                job_id: Some(job_id.clone()),
+                error: None,
+            };
+            save(&state, &[entry]).await.unwrap();
+            {
+                let _guard = state.sync_schedule_lock.lock().await;
+                let mut jobs = state.jobs.write().await;
+                jobs.get_mut(&job_id).unwrap().status = status.into();
+                save_finished_results(&state, &jobs).await.unwrap();
+                jobs.remove(&job_id);
+            }
+            // A scheduler tick after dismissal must retain the saved outcome.
+            tick(&state).await.unwrap();
+            let entries = load(&state).await.unwrap();
+            assert_eq!(entries[0].status, status);
+            if status == "failed" {
+                assert_eq!(
+                    entries[0].error.as_deref(),
+                    Some("Scheduled sync failed. See sync activity, then retry.")
+                );
+            } else {
+                assert!(entries[0].error.is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn saving_finished_results_leaves_handoffs_and_active_jobs_unchanged() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = crate::unit_tests::fake_libation_state(root.path());
+        let done = create_job(&state, SYNC_GENERATE_JOB_KIND).await;
+        let active = create_job(&state, SYNC_GENERATE_JOB_KIND).await;
+        state.jobs.write().await.get_mut(&done).unwrap().status = "completed".into();
+        let entries = [
+            ("scheduled", Some(done.clone())),
+            ("dispatching", Some(done)),
+            ("submitted", Some(active)),
+            ("submitted", Some("missing".into())),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (status, job_id))| SyncSchedule {
+            book_id: format!("book{index}"),
+            run_at: u64::MAX,
+            status: status.into(),
+            job_id,
+            error: None,
+        })
+        .collect::<Vec<_>>();
+        save(&state, &entries).await.unwrap();
+        let before = fs::read(state.database_path.with_file_name("sync-schedules.json"))
+            .await
+            .unwrap();
+        {
+            let _guard = state.sync_schedule_lock.lock().await;
+            let jobs = state.jobs.read().await;
+            save_finished_results(&state, &jobs).await.unwrap();
+        }
+        assert_eq!(
+            fs::read(state.database_path.with_file_name("sync-schedules.json"))
+                .await
+                .unwrap(),
+            before
+        );
+    }
 
     #[test]
     fn schedules_only_dispatch_near_their_start_time() {
