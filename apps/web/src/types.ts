@@ -146,8 +146,12 @@ export type SyncChapterReport = {
   /** Audio in the chapter that no sentence was matched to. */
   gapSeconds: number;
   skippedText: number;
-  status: "aligned" | "empty" | string;
+  /** `failed` and `kept-previous` chapters could not be aligned on their last run; `kept-previous` still has an earlier map's sentences. */
+  status: "aligned" | "empty" | "failed" | "kept-previous" | string;
+  /** First line of why the chapter could not be aligned. */
   error?: string | null;
+  /** The whole error, when it runs past the first line. */
+  errorDetail?: string | null;
   /** Null for a chapter with no text to align. */
   grade: SyncGrade | null;
 };
@@ -430,6 +434,16 @@ export type JobStatus = {
   error: string | null;
   /** Only set while the job runs; cleared once it has a result. */
   progress?: JobProgress | null;
+  /** Sync jobs that re-run only some chapters. Absent for a whole-book sync. */
+  chapters?: JobChapter[];
+  /** Chapters a completed sync could not align. */
+  failedChapters?: JobChapter[];
+};
+
+export type JobChapter = {
+  /** The chapter's `index` in the sync report. */
+  index: number;
+  label: string;
 };
 
 export type JobCreated = {

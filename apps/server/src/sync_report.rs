@@ -26,6 +26,8 @@ pub(crate) enum Grade {
     Good,
     Review,
     Poor,
+    /// The chapter's last run could not align it.
+    Failed,
 }
 
 /// `estimate` grades an existing map without its run's record of text that
@@ -43,6 +45,11 @@ pub(crate) enum ChapterStatus {
     Aligned,
     /// The chapter has no text to align, such as a picture-only section.
     Empty,
+    /// Alignment failed and the chapter has no sentences; readers hold their
+    /// place through it.
+    Failed,
+    /// Alignment failed and the chapter keeps the previous map's sentences.
+    KeptPrevious,
 }
 
 /// What a run learned about one scope beyond its fragments and gaps. Saved
@@ -51,6 +58,9 @@ pub(crate) enum ChapterStatus {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ScopeOutcome {
     pub(crate) skipped_text: u64,
+    /// Why the scope could not be aligned, in full.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) error: Option<String>,
 }
 
 /// Which map a report describes. A report is current only while the served
@@ -74,6 +84,13 @@ pub(crate) struct ChapterReport {
     pub(crate) gap_seconds: f64,
     pub(crate) skipped_text: u64,
     pub(crate) status: ChapterStatus,
+    /// The first line of why the chapter could not be aligned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) error: Option<String>,
+    /// The whole error when it runs past its first line, kept for working
+    /// out what went wrong.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) error_detail: Option<String>,
     /// Derived whenever a report is built or read, so changed thresholds
     /// apply to every existing report.
     #[serde(default, skip_deserializing)]
@@ -139,8 +156,10 @@ impl SyncReport {
 }
 
 fn chapter_grade(chapter: &ChapterReport) -> Option<Grade> {
-    if chapter.status == ChapterStatus::Empty {
-        return None;
+    match chapter.status {
+        ChapterStatus::Empty => return None,
+        ChapterStatus::Failed | ChapterStatus::KeptPrevious => return Some(Grade::Failed),
+        ChapterStatus::Aligned => {}
     }
     let duration = chapter.end_seconds - chapter.start_seconds;
     let gap_share = if duration > 0.0 {
@@ -172,6 +191,7 @@ pub(crate) fn text_units(text: &str) -> u64 {
 
 /// One aligned scope as a report sees it: where it sits in the book and how
 /// much text it was expected to highlight.
+#[derive(Clone)]
 pub(crate) struct ChapterSpan {
     pub(crate) label: String,
     pub(crate) start_seconds: f64,
@@ -179,6 +199,13 @@ pub(crate) struct ChapterSpan {
     pub(crate) end_seconds: f64,
     pub(crate) text_units: u64,
     pub(crate) skipped_text: u64,
+    pub(crate) error: Option<String>,
+}
+
+impl ChapterSpan {
+    pub(crate) fn range(&self) -> std::ops::Range<f64> {
+        self.start_seconds..self.end_seconds
+    }
 }
 
 pub(crate) fn chapter_spans(
@@ -190,22 +217,23 @@ pub(crate) fn chapter_spans(
     scopes
         .iter()
         .enumerate()
-        .map(|(index, scope)| ChapterSpan {
+        .map(|(index, scope)| (scope, outcomes.get(index)))
+        .map(|(scope, outcome)| ChapterSpan {
             label: scope.label.clone(),
             start_seconds: scope.time_offset_seconds,
             end_seconds: scope.time_offset_seconds
                 + scope_audio_seconds(scope, tracks).unwrap_or(f64::INFINITY),
             text_units: text_units(&scope_transcript(epub, scope).text),
-            skipped_text: outcomes
-                .get(index)
-                .map_or(0, |outcome| outcome.skipped_text),
+            skipped_text: outcome.map_or(0, |outcome| outcome.skipped_text),
+            error: outcome.and_then(|outcome| outcome.error.clone()),
         })
         .collect()
 }
 
 /// Grades each chapter from the map's sentences and the audio it could not
 /// place. A sentence belongs to the chapter its start falls in; recovery gaps
-/// are clipped to each chapter.
+/// are clipped to each chapter. A chapter whose run failed but still has
+/// sentences kept them from an earlier map.
 pub(crate) fn grade_chapters<'a>(
     spans: &[ChapterSpan],
     fragments: impl IntoIterator<Item = (f64, f64, &'a str)>,
@@ -266,11 +294,16 @@ pub(crate) fn grade_chapters<'a>(
                 .fold(0.0, |total, overlap| total + overlap)
                 .min(end - start);
             let expected = span.text_units.saturating_sub(span.skipped_text);
-            let status = if span.text_units == 0 {
-                ChapterStatus::Empty
-            } else {
-                ChapterStatus::Aligned
+            let status = match &span.error {
+                _ if span.text_units == 0 => ChapterStatus::Empty,
+                None => ChapterStatus::Aligned,
+                Some(_) if matched[index] > 0 => ChapterStatus::KeptPrevious,
+                Some(_) => ChapterStatus::Failed,
             };
+            let error = span
+                .error
+                .as_deref()
+                .map(|error| error.lines().next().unwrap_or_default().to_string());
             ChapterReport {
                 index,
                 label: span.label.clone(),
@@ -284,6 +317,11 @@ pub(crate) fn grade_chapters<'a>(
                 gap_seconds,
                 skipped_text: span.skipped_text,
                 status,
+                error_detail: span
+                    .error
+                    .clone()
+                    .filter(|detail| Some(detail) != error.as_ref()),
+                error,
                 grade: None,
             }
         })
@@ -318,6 +356,129 @@ pub(crate) async fn write_report(
     let path = report_path(sync_dir, book_id)
         .ok_or_else(|| ApiError::internal("The book id cannot name a sync report."))?;
     write_json_atomic(&path, report).await
+}
+
+/// Saves a report and shows its grade in the book listing now rather than
+/// after the next scan.
+pub(crate) async fn publish_report(
+    state: &AppState,
+    book_id: &str,
+    report: &SyncReport,
+) -> Result<(), ApiError> {
+    write_report(&state.sync_dir, book_id, report).await?;
+    let mut library = state.library.write().await;
+    if let Some(file) = library
+        .books
+        .iter_mut()
+        .find(|book| book.id == book_id)
+        .and_then(|book| book.sync_file.as_mut())
+    {
+        file.quality = report.quality();
+        file.report_current = true;
+    }
+    Ok(())
+}
+
+pub(crate) const BOOK_CHANGED: &str =
+    "This book changed since its last full sync. Re-sync the whole book.";
+
+/// The served map a chapter re-run splices into, and the report it updates.
+pub(crate) struct RerunBase {
+    pub(crate) map: MapIdentity,
+    pub(crate) report: SyncReport,
+    pub(crate) chapters: Vec<JobChapter>,
+}
+
+/// Re-running chapters is safe only while the book still divides into exactly
+/// the chapters the served map's report describes; otherwise their sentences
+/// would be spliced over the wrong stretch of audio.
+pub(crate) fn rerun_base(
+    sync_dir: &FsPath,
+    book_id: &str,
+    map_path: &FsPath,
+    spans: &[ChapterSpan],
+    chapters: &[usize],
+) -> Result<RerunBase, &'static str> {
+    let map = probe_sync_map(map_path, true).ok_or(BOOK_CHANGED)?.identity;
+    let report = read_current_report(sync_dir, book_id, &map).ok_or(
+        "This book’s chapter grades are still being updated. Try again shortly, or re-sync the whole book.",
+    )?;
+    let same_time = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    let unchanged = report.chapters.len() == spans.len()
+        && report.chapters.iter().zip(spans).all(|(chapter, span)| {
+            chapter.label == span.label
+                && same_time(chapter.start_seconds, span.start_seconds)
+                // An unknown length ends where the map's timing does.
+                && (!span.end_seconds.is_finite()
+                    || same_time(chapter.end_seconds, span.end_seconds))
+        });
+    if !unchanged {
+        return Err(BOOK_CHANGED);
+    }
+    let chapters = chapters
+        .iter()
+        .map(|&index| {
+            report
+                .chapters
+                .get(index)
+                .map(|chapter| JobChapter {
+                    index,
+                    label: chapter.label.clone(),
+                })
+                .ok_or(BOOK_CHANGED)
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(RerunBase {
+        map,
+        report,
+        chapters,
+    })
+}
+
+/// A map's timing inside one chapter: the sentences that start there, and
+/// recovery gaps clipped to it.
+pub(crate) fn chapter_timing(
+    map: &alignment::SyncMap,
+    range: &std::ops::Range<f64>,
+) -> (Vec<alignment::SyncFragment>, Vec<alignment::RecoveryGap>) {
+    (
+        map.fragments
+            .iter()
+            .filter(|fragment| range.contains(&fragment.start_seconds))
+            .cloned()
+            .collect(),
+        map.recovery_gaps
+            .iter()
+            .filter_map(|gap| clip_gap(gap, range.start, range.end))
+            .collect(),
+    )
+}
+
+/// Takes a chapter's timing out of a map, keeping the parts of recovery gaps
+/// that run past either end.
+pub(crate) fn remove_chapter_timing(map: &mut alignment::SyncMap, range: &std::ops::Range<f64>) {
+    map.fragments
+        .retain(|fragment| !range.contains(&fragment.start_seconds));
+    map.recovery_gaps = map
+        .recovery_gaps
+        .iter()
+        .flat_map(|gap| {
+            [
+                clip_gap(gap, f64::NEG_INFINITY, range.start),
+                clip_gap(gap, range.end, f64::INFINITY),
+            ]
+        })
+        .flatten()
+        .collect();
+}
+
+fn clip_gap(gap: &alignment::RecoveryGap, start: f64, end: f64) -> Option<alignment::RecoveryGap> {
+    let start = gap.start_seconds.max(start);
+    let end = gap.end_seconds.min(end);
+    (end > start).then_some(alignment::RecoveryGap {
+        start_seconds: start,
+        end_seconds: end,
+    })
 }
 
 /// Grades an existing map without speech recognition: the book is divided as
@@ -452,20 +613,8 @@ async fn backfill_reports(state: &AppState) {
                 continue;
             }
         };
-        if let Err(error) = write_report(&state.sync_dir, &book_id, &report).await {
+        if let Err(error) = publish_report(state, &book_id, &report).await {
             tracing::warn!(book_id, ?error, "could not save sync report");
-            continue;
-        }
-        // The listing shows the grade now rather than after the next scan.
-        let mut library = state.library.write().await;
-        if let Some(file) = library
-            .books
-            .iter_mut()
-            .find(|book| book.id == book_id)
-            .and_then(|book| book.sync_file.as_mut())
-        {
-            file.quality = report.quality();
-            file.report_current = true;
         }
     }
 }
@@ -508,6 +657,7 @@ mod tests {
             end_seconds: end,
             text_units: text_units(text),
             skipped_text: skipped,
+            error: None,
         }
     }
 
@@ -661,6 +811,158 @@ mod tests {
         assert_eq!(report.grade, Some(Grade::Review));
         let json = serde_json::to_value(&report).unwrap();
         assert!(json["chapters"][1]["endSeconds"].is_number(), "{json}");
+    }
+
+    #[test]
+    fn failed_chapters_grade_failed_whether_or_not_they_kept_earlier_sentences() {
+        let text = "a".repeat(100);
+        let mut spans = vec![
+            span(0.0, 600.0, &text, 0),
+            span(600.0, 1200.0, &text, 0),
+            span(1200.0, 1260.0, &text, 0),
+        ];
+        for span in &mut spans {
+            span.error = Some("Alignment failed with status 3:\nworker crashed".into());
+        }
+        spans[0].error = None;
+        let report = graded(&spans, &[(1.0, &text), (700.0, &text)], &[]);
+        let statuses = report
+            .chapters
+            .iter()
+            .map(|c| (c.status, c.grade))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            statuses,
+            [
+                (ChapterStatus::Aligned, Some(Grade::Good)),
+                (ChapterStatus::KeptPrevious, Some(Grade::Failed)),
+                (ChapterStatus::Failed, Some(Grade::Failed)),
+            ]
+        );
+        assert_eq!(
+            report.chapters[1].error.as_deref(),
+            Some("Alignment failed with status 3:")
+        );
+        assert!(
+            report.chapters[1]
+                .error_detail
+                .as_deref()
+                .unwrap()
+                .ends_with("worker crashed")
+        );
+        assert_eq!(report.grade, Some(Grade::Failed));
+        // A short chapter failing does not set the book's grade.
+        let short = graded(&spans[2..], &[], &[]);
+        assert_eq!(short.grade, Some(Grade::Failed));
+        let mixed = graded(
+            &[span(0.0, 600.0, &text, 0), spans[2].clone()],
+            &[(1.0, &text)],
+            &[],
+        );
+        assert_eq!(mixed.grade, Some(Grade::Good));
+        assert_eq!(mixed.quality().unwrap().flagged, 1);
+    }
+
+    fn fragment(start: f64) -> alignment::SyncFragment {
+        alignment::SyncFragment {
+            start_seconds: start,
+            end_seconds: start + 1.0,
+            href: "x".into(),
+            text: format!("At {start}."),
+            words: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_chapter_is_cut_out_of_a_map_without_touching_its_neighbours() {
+        let mut map = alignment::SyncMap {
+            version: alignment::SYNC_MAP_VERSION,
+            mapping_revision: alignment::MAPPING_REVISION,
+            generator: None,
+            generated_at: None,
+            precision: None,
+            fragments: [5.0, 99.5, 100.0, 150.0, 199.9, 200.0]
+                .map(fragment)
+                .to_vec(),
+            recovery_gaps: vec![gap(90.0, 110.0), gap(120.0, 130.0), gap(190.0, 260.0)],
+        };
+        let range = 100.0..200.0;
+        let (kept, kept_gaps) = chapter_timing(&map, &range);
+        assert_eq!(
+            kept.iter().map(|f| f.start_seconds).collect::<Vec<_>>(),
+            [100.0, 150.0, 199.9]
+        );
+        assert_eq!(
+            kept_gaps,
+            [gap(100.0, 110.0), gap(120.0, 130.0), gap(190.0, 200.0)]
+        );
+        remove_chapter_timing(&mut map, &range);
+        assert_eq!(
+            map.fragments
+                .iter()
+                .map(|f| f.start_seconds)
+                .collect::<Vec<_>>(),
+            [5.0, 99.5, 200.0]
+        );
+        assert_eq!(map.recovery_gaps, [gap(90.0, 100.0), gap(200.0, 260.0)]);
+        // A chapter of unknown length runs to the end of the book.
+        remove_chapter_timing(&mut map, &(50.0..f64::INFINITY));
+        assert_eq!(map.fragments.len(), 1);
+        assert!(map.recovery_gaps.is_empty());
+    }
+
+    #[test]
+    fn a_rerun_needs_the_chapters_the_report_was_graded_with() {
+        let root = tempfile::tempdir().unwrap();
+        let map_path = root.path().join("book.sync.json");
+        std::fs::write(
+            &map_path,
+            r#"{"version":2,"generatedAt":"7","fragments":[]}"#,
+        )
+        .unwrap();
+        let identity = probe_sync_map(&map_path, true).unwrap().identity;
+        let text = "a".repeat(100);
+        let spans = [
+            span(0.0, 100.0, &text, 0),
+            span(100.0, f64::INFINITY, &text, 0),
+        ];
+        let mut report = graded(&spans, &[(1.0, &text), (150.0, &text)], &[]);
+        report.map = identity.clone();
+        std::fs::write(
+            root.path().join("book.report.json"),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        let check = |spans: &[ChapterSpan], chapters: &[usize]| {
+            rerun_base(root.path(), "book", &map_path, spans, chapters).map(|base| base.chapters)
+        };
+        assert_eq!(
+            check(&spans, &[1]).unwrap(),
+            [JobChapter {
+                index: 1,
+                label: "Chapter at 100".into()
+            }]
+        );
+        let mut renamed = spans.to_vec();
+        renamed[0].label = "Prologue".into();
+        let mut moved = spans.to_vec();
+        moved[1].start_seconds = 101.0;
+        for (spans, chapters) in [
+            (&renamed[..], &[1][..]),
+            (&moved[..], &[0][..]),
+            (&spans[..1], &[0][..]),
+            (&spans[..], &[2][..]),
+        ] {
+            assert_eq!(check(spans, chapters), Err(BOOK_CHANGED));
+        }
+        // A report for an earlier map cannot vouch for this one.
+        std::fs::write(
+            &map_path,
+            r#"{"version":2,"generatedAt":"8","fragments":[]}"#,
+        )
+        .unwrap();
+        let stale = check(&spans, &[1]).unwrap_err();
+        assert!(stale.contains("grades are still being updated"), "{stale}");
     }
 
     /// Opt-in estimate of a real map. Reads the EPUB, audio tags and map

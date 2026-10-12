@@ -1271,9 +1271,11 @@ export async function getSyncMap(bookId: string, signal?: AbortSignal) {
   return request<SyncMap>(`/api/books/${encodeURIComponent(bookId)}/sync`, { signal });
 }
 
-export async function generateSyncMap(bookId: string) {
+/** Syncs the whole book, or with `chapters` (report indices), re-runs just those. */
+export async function generateSyncMap(bookId: string, chapters?: number[]) {
   return request<JobCreated>(`/api/books/${encodeURIComponent(bookId)}/sync/generate`, {
-    method: "POST"
+    method: "POST",
+    ...(chapters ? { body: JSON.stringify({ chapters }) } : {})
   });
 }
 

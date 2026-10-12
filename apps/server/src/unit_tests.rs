@@ -2707,6 +2707,8 @@ fn prune_finished_jobs_keeps_active_and_newest() {
                 output: String::new(),
                 error: None,
                 progress: None,
+                chapters: Vec::new(),
+                failed_chapters: Vec::new(),
             },
         );
     }
@@ -2738,6 +2740,8 @@ fn job_list_summaries_bound_output_without_breaking_unicode() {
         output: output.clone(),
         error: Some(output),
         progress: None,
+        chapters: Vec::new(),
+        failed_chapters: Vec::new(),
     };
 
     let summary = super::job_for_list(&job);
@@ -2767,6 +2771,8 @@ fn job_timestamps_advance_when_the_clock_value_is_already_used() {
             output: String::new(),
             error: None,
             progress: None,
+            chapters: Vec::new(),
+            failed_chapters: Vec::new(),
         },
     );
 

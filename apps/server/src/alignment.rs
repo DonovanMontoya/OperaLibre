@@ -3296,6 +3296,16 @@ pub(crate) fn build_test_epub() -> Vec<u8> {
 
 #[cfg(test)]
 pub(crate) fn build_test_epub_with_text(chapter_one: &str, chapter_two: &str) -> Vec<u8> {
+    build_test_epub_with_chapters(&[
+        ("Chapter 1: The Meadow", chapter_one),
+        ("Chapter 2: The River", chapter_two),
+    ])
+}
+
+/// An EPUB of `(table-of-contents title, body HTML)` chapters, one spine
+/// document each. The first carries a head the parser must ignore.
+#[cfg(test)]
+pub(crate) fn build_test_epub_with_chapters(chapters: &[(&str, &str)]) -> Vec<u8> {
     use std::io::Write;
     let mut buffer = std::io::Cursor::new(Vec::new());
     {
@@ -3313,42 +3323,56 @@ pub(crate) fn build_test_epub_with_text(chapter_one: &str, chapter_two: &str) ->
                 </rootfiles></container>"#,
             )
             .unwrap();
+        let items = (1..=chapters.len())
+            .map(|n| format!(r#"<item id="c{n}" href="text/ch{n}.xhtml" media-type="application/xhtml+xml"/>"#))
+            .collect::<String>();
+        let spine = (1..=chapters.len())
+            .map(|n| format!(r#"<itemref idref="c{n}"/>"#))
+            .collect::<String>();
         writer.start_file("OEBPS/content.opf", options).unwrap();
         writer
             .write_all(
-                br#"<?xml version="1.0"?><package><manifest>
+                format!(
+                    r#"<?xml version="1.0"?><package><manifest>
                 <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
-                <item id="c1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>
-                <item id="c2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/>
+                {items}
                 <item id="css" href="style.css" media-type="text/css"/>
                 <item id="map" href="images/map.png" media-type="image/png"/>
-                </manifest><spine>
-                <itemref idref="c1"/><itemref idref="c2"/>
-                </spine></package>"#,
-            )
-            .unwrap();
-        writer.start_file("OEBPS/nav.xhtml", options).unwrap();
-        writer
-            .write_all(
-                br#"<html><body><nav epub:type="toc"><ol>
-                <li><a href="text/ch1.xhtml">Chapter 1: The Meadow</a></li>
-                <li><a href="text/ch2.xhtml">Chapter 2: The River</a></li>
-                </ol></nav></body></html>"#,
-            )
-            .unwrap();
-        writer.start_file("OEBPS/text/ch1.xhtml", options).unwrap();
-        writer
-            .write_all(
-                format!(
-                    "<html><head><title>Ignored</title><style>p{{}}</style></head><body>{chapter_one}</body></html>"
+                </manifest><spine>{spine}</spine></package>"#
                 )
                 .as_bytes(),
             )
             .unwrap();
-        writer.start_file("OEBPS/text/ch2.xhtml", options).unwrap();
+        let toc = chapters
+            .iter()
+            .enumerate()
+            .map(|(index, (title, _))| {
+                format!(
+                    r#"<li><a href="text/ch{}.xhtml">{title}</a></li>"#,
+                    index + 1
+                )
+            })
+            .collect::<String>();
+        writer.start_file("OEBPS/nav.xhtml", options).unwrap();
         writer
-            .write_all(format!("<html><body>{chapter_two}</body></html>").as_bytes())
+            .write_all(
+                format!(r#"<html><body><nav epub:type="toc"><ol>{toc}</ol></nav></body></html>"#)
+                    .as_bytes(),
+            )
             .unwrap();
+        for (index, (_, body)) in chapters.iter().enumerate() {
+            let head = if index == 0 {
+                "<head><title>Ignored</title><style>p{}</style></head>"
+            } else {
+                ""
+            };
+            writer
+                .start_file(format!("OEBPS/text/ch{}.xhtml", index + 1), options)
+                .unwrap();
+            writer
+                .write_all(format!("<html>{head}<body>{body}</body></html>").as_bytes())
+                .unwrap();
+        }
         writer.finish().unwrap();
     }
     buffer.into_inner()

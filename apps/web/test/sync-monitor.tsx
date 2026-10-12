@@ -39,7 +39,7 @@ const books = [...TITLES.map((_, i) => book(i, i % 3 === 0 || i === 10))];
 
 books[0].syncFile!.outdated = true;
 books[0].syncFile!.quality = { grade: "good", flagged: 0 };
-books[3].syncFile!.quality = { grade: "poor", flagged: 3 };
+books[3].syncFile!.quality = { grade: "failed", flagged: 5 };
 books[6].syncFile!.quality = { grade: "good", flagged: 0 };
 books[9].syncFile!.quality = { grade: "review", flagged: 1 };
 books[10].syncFile!.quality = { grade: "poor", flagged: 1 };
@@ -53,7 +53,14 @@ function report(bookId: string): SyncReport {
     status: "aligned", grade: "good",
   }));
   chapters[0] = { ...chapters[0], status: "empty", textCoverage: 1, gapSeconds: 0, grade: null };
-  if (quality?.grade === "poor") {
+  if (quality?.grade === "failed") {
+    // One chapter kept an earlier run's sentences, one has none.
+    Object.assign(chapters[9], { textCoverage: 0.94, gapSeconds: 12, status: "kept-previous", grade: "failed",
+      error: "Alignment of `Chapter 9` stopped without writing a result. The alignment runtime may have crashed." });
+    Object.assign(chapters[12], { textCoverage: 0, gapSeconds: 1500, status: "failed", grade: "failed",
+      error: "Alignment of `Chapter 12` failed with status exit status: 134:" });
+  }
+  if (quality?.grade === "poor" || quality?.grade === "failed") {
     Object.assign(chapters[7], { textCoverage: 0.62, gapSeconds: 412, grade: "poor" });
     Object.assign(chapters[11], { textCoverage: 0.91, gapSeconds: 95, grade: "review" });
     Object.assign(chapters[4], { textCoverage: 0.86, gapSeconds: 31, grade: "review" });
@@ -75,7 +82,8 @@ const jobs: JobStatus[] = [
   { id: "j2", kind: "sync-generate", targetId: "book-2", status: "queued", startedAt: String(now - 5 * 60_000),
     finishedAt: null, exitCode: null, output: "", error: null },
   { id: "j3", kind: "sync-generate", targetId: "book-3", status: "completed", startedAt: String(now - 200 * 60_000),
-    finishedAt: String(now - 120 * 60_000), exitCode: 0, output: "", error: null },
+    finishedAt: String(now - 120 * 60_000), exitCode: 0, output: "", error: null,
+    failedChapters: [{ index: 9, label: "Chapter 9" }, { index: 12, label: "Chapter 12" }] },
   { id: "j4", kind: "sync-generate", targetId: "book-4", status: "failed", startedAt: String(now - 400 * 60_000),
     finishedAt: String(now - 380 * 60_000), exitCode: 1, output: "",
     error: "Recognition model download failed: connection reset by peer" },
@@ -83,6 +91,8 @@ const jobs: JobStatus[] = [
 
 jobs.push(
   { id: "j5", kind: "sync-generate", targetId: "book-5", status: "queued", startedAt: String(now - 4 * 60_000), finishedAt: null, exitCode: null, output: "", error: null },
+  { id: "j7", kind: "sync-generate", targetId: "book-9", status: "queued", startedAt: String(now - 2 * 60_000), finishedAt: null, exitCode: null, output: "", error: null,
+    chapters: [{ index: 5, label: "Chapter 5" }] },
   { id: "j6", kind: "sync-generate", targetId: "book-6", status: "paused", startedAt: String(now - 3 * 60_000), finishedAt: null, exitCode: null, output: "", error: null, pauseRequested: true, progress: { fraction: 0.3, step: "Paused" } as JobStatus["progress"] },
 );
 
@@ -134,6 +144,19 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   }
   if (url.includes("/api/jobs")) return json(jobsEnabled ? jobs : []);
   if (url.includes("/api/sync-schedules")) return json(init?.method === "DELETE" ? [] : schedules);
+  const generateFor = url.match(/\/api\/books\/([^/]+)\/sync\/generate/);
+  if (generateFor) {
+    const bookId = decodeURIComponent(generateFor[1]);
+    const chapters: number[] | undefined = init?.body ? JSON.parse(String(init.body)).chapters : undefined;
+    // Stoner's estimate no longer matches its chapters, as after a re-tagged audiobook.
+    if (chapters && bookId === "book-10") {
+      return new Response(JSON.stringify({ message: "This book changed since its last full sync. Re-sync the whole book." }), { status: 409, headers: { "Content-Type": "application/json" } });
+    }
+    const id = `j${jobs.length + 10}`;
+    jobs.push({ id, kind: "sync-generate", targetId: bookId, status: "queued", startedAt: String(Date.now()), finishedAt: null, exitCode: null, output: "", error: null,
+      chapters: chapters?.map((index) => ({ index, label: `Chapter ${index}` })) });
+    return json({ jobId: id });
+  }
   const reportFor = url.match(/\/api\/books\/([^/]+)\/sync\/report/);
   if (reportFor) return json(report(decodeURIComponent(reportFor[1])));
   if (url.includes("/api/books")) return json(books);
