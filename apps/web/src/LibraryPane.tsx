@@ -265,7 +265,6 @@ export function LibraryPane({
       ) : null}
       <div className="pane-title">
         <div>
-          <span className="eyebrow"><Library size={13} /> The Collection</span>
           <h1>OperaLibre</h1>
         </div>
         {native && ipad && shelfLayout !== "library" ? (
