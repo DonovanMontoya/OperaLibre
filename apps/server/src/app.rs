@@ -30,6 +30,7 @@ pub(crate) struct AppState {
     pub(crate) update_manager: updates::UpdateManager,
     pub(crate) sync_dir: PathBuf,
     pub(crate) sync_schedule_lock: Arc<Mutex<()>>,
+    pub(crate) sync_report_backfill: Arc<sync_report::Backfill>,
     /// Where cover art extracted during the scan is kept.
     pub(crate) covers_dir: PathBuf,
     /// Shared database handle whose state gate quiesces every writer during a
@@ -307,6 +308,10 @@ pub(crate) fn build_router(
         .route(
             "/api/books/{book_id}/sync/generate",
             post(generate_sync_map),
+        )
+        .route(
+            "/api/books/{book_id}/sync/report",
+            get(sync_report::get_sync_report),
         )
         .route("/api/alignment/status", get(alignment_status))
         .route("/api/sync-schedules", get(sync_schedule::list))

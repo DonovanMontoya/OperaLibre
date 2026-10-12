@@ -123,6 +123,42 @@ export type SyncFile = {
   /** `sidecar` and `generated` are both forced alignments. */
   source: "sidecar" | "generated" | string;
   url: string;
+  /** Absent until the server has graded this map. */
+  quality?: SyncQuality;
+};
+
+/** Worst first is `failed`; a book takes its worst chapter's grade. */
+export type SyncGrade = "good" | "review" | "poor" | "failed";
+
+export type SyncQuality = {
+  grade: SyncGrade;
+  /** Chapters graded below good. */
+  flagged: number;
+};
+
+export type SyncChapterReport = {
+  index: number;
+  label: string;
+  startSeconds: number;
+  endSeconds: number;
+  /** Share of the chapter's text that is highlighted, 0 to 1. */
+  textCoverage: number;
+  /** Audio in the chapter that no sentence was matched to. */
+  gapSeconds: number;
+  skippedText: number;
+  status: "aligned" | "empty" | string;
+  error?: string | null;
+  /** Null for a chapter with no text to align. */
+  grade: SyncGrade | null;
+};
+
+export type SyncReport = {
+  mapGeneratedAt: string | null;
+  mapSize: number;
+  /** `estimate` grades an existing map without re-running alignment. */
+  graded: "run" | "estimate";
+  grade: SyncGrade | null;
+  chapters: SyncChapterReport[];
 };
 
 /** `[startSeconds, endSeconds, offsetUtf16, lengthUtf16]` inside the fragment text. */

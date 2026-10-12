@@ -1796,6 +1796,7 @@ exit 0
         update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
         sync_dir: data_dir.join("sync"),
         sync_schedule_lock: super::Arc::new(super::Mutex::new(())),
+        sync_report_backfill: super::Arc::default(),
         covers_dir: data_dir.join("covers"),
         database: database.clone(),
         database_path: data_dir.join("operalibre.db"),
