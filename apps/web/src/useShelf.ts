@@ -91,7 +91,7 @@ export function useShelf({
   const shelfSearchRef = useRef<HTMLInputElement | null>(null);
   const [shelfFilters, setShelfFilters] = useState<ShelfFilters>(EMPTY_SHELF_FILTERS);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [collapsedGroups, setCollapsedGroups] = useState<CollapsedShelfGroups>(() => readCollapsedShelfGroups(window.localStorage));
+  const [collapsedGroups, setCollapsedGroups] = useState<CollapsedShelfGroups>(() => readCollapsedShelfGroups());
   const filterToggleRef = useRef<HTMLButtonElement | null>(null);
 
   // Restores whatever sort was last chosen for this shelf rather than collapsing to
@@ -115,7 +115,7 @@ export function useShelf({
   const toggleShelfGroup = useCallback((label: string) => {
     setCollapsedGroups((groups) => {
       const next = toggleCollapsedShelfGroup(groups, sortMode, label);
-      writeCollapsedShelfGroups(window.localStorage, next);
+      writeCollapsedShelfGroups(next);
       return next;
     });
   }, [sortMode]);

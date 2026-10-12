@@ -1,12 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
+import { register } from "node:module";
+
+register(`data:text/javascript,${encodeURIComponent(`
+  export async function resolve(specifier, context, nextResolve) {
+    if (specifier.startsWith(".") && !specifier.endsWith(".ts")) {
+      try { return await nextResolve(specifier + ".ts", context); } catch {}
+    }
+    return nextResolve(specifier, context);
+  }
+`)}`, import.meta.url);
+const {
   isShelfGroupCollapsed,
   readCollapsedShelfGroups,
   SHELF_COLLAPSED_GROUPS_STORAGE_KEY,
   toggleCollapsedShelfGroup,
   writeCollapsedShelfGroups
-} from "../src/shelfGroups.ts";
+} = await import("../src/shelfGroups.ts");
 
 function memoryStorage(initialValue: string | null = null) {
   const values = new Map<string, string>();
@@ -19,7 +29,7 @@ function memoryStorage(initialValue: string | null = null) {
 
 test("a folded series stays folded after the app reopens", () => {
   const storage = memoryStorage();
-  writeCollapsedShelfGroups(storage, toggleCollapsedShelfGroup({}, "series", "Harry Potter"));
+  writeCollapsedShelfGroups(toggleCollapsedShelfGroup({}, "series", "Harry Potter"), storage);
   const restored = readCollapsedShelfGroups(storage);
   assert.equal(isShelfGroupCollapsed(restored, "series", "Harry Potter"), true);
   assert.equal(isShelfGroupCollapsed(restored, "series", "Discworld"), false);
@@ -45,5 +55,30 @@ test("toggling again opens the group and drops the empty sort", () => {
 test("unreadable saved state opens every group instead of failing", () => {
   for (const saved of ["not json", "[]", "null", JSON.stringify({ series: "Harry Potter", tag: [3, ""] })]) {
     assert.deepEqual(readCollapsedShelfGroups(memoryStorage(saved)), {});
+  }
+});
+
+test("equivalent numeric and linguistic labels stay folded when the run label changes", () => {
+  for (const [first, reversed] of [["Series 1", "Series 01"], ["Straße", "Strasse"], ["Æther", "Aether"]]) {
+    const groups = toggleCollapsedShelfGroup({}, "series", first);
+    assert.equal(isShelfGroupCollapsed(groups, "series", reversed), true);
+    assert.deepEqual(toggleCollapsedShelfGroup(groups, "series", reversed), {});
+  }
+});
+
+test("blocked browser storage leaves groups usable in memory", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { get localStorage() { throw new DOMException("Blocked", "SecurityError"); } }
+  });
+  try {
+    assert.deepEqual(readCollapsedShelfGroups(), {});
+    const groups = toggleCollapsedShelfGroup({}, "series", "Discworld");
+    assert.doesNotThrow(() => writeCollapsedShelfGroups(groups));
+    assert.equal(isShelfGroupCollapsed(groups, "series", "Discworld"), true);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "window", previous);
+    else Reflect.deleteProperty(globalThis, "window");
   }
 });
