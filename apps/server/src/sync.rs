@@ -3639,6 +3639,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn failed_sync_jobs_name_their_cause() {
         let root = tempfile::tempdir().unwrap();
@@ -3679,6 +3680,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_books_language_override_replaces_the_epub_label_for_recognition() {
         let root = tempfile::tempdir().unwrap();
