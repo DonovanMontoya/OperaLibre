@@ -7364,3 +7364,173 @@ async fn existing_sync_maps_are_graded_in_the_background_for_administrators() {
             .report_current
     );
 }
+
+#[tokio::test]
+async fn chapter_reruns_need_a_current_generated_map_and_survive_restarts() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "reader").await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let epub = server._root.path().join("book.epub");
+    std::fs::write(&epub, alignment::build_test_epub()).unwrap();
+    let map_path = server
+        .state
+        .sync_dir
+        .join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"));
+    let write_map = |generated_at: &str| {
+        std::fs::create_dir_all(map_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &map_path,
+            serde_json::to_vec(&serde_json::json!({
+                "version": 2, "generator": "echogarden", "generatedAt": generated_at,
+                "mappingRevision": alignment::MAPPING_REVISION,
+                "fragments": [{"startSeconds": 3.0, "endSeconds": 4.0, "href": "x", "text": "The meadow was quiet."}],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    };
+    write_map("100");
+    {
+        let mut library = server.state.library.write().await;
+        let book = &mut library.books[0];
+        book.reading_file = Some(ReadingFile {
+            id: "epub".into(),
+            file_name: "book.epub".into(),
+            extension: "epub".into(),
+            content_type: "application/epub+zip".into(),
+            url: "/readalong".into(),
+        });
+        for (index, track) in book.tracks.iter_mut().enumerate() {
+            track.title = format!("Chapter {}", index + 1);
+            track.duration_seconds = Some(10.0);
+        }
+        book.sync_file = Some(SyncFile {
+            outdated: false,
+            file_name: "map.sync.json".into(),
+            source: "generated".into(),
+            url: "/sync".into(),
+            quality: None,
+            report_current: false,
+        });
+        library.reading_paths.insert("epub".into(), epub.clone());
+        library.sync_paths.insert(book_id.clone(), map_path.clone());
+        let (_, tracks) = crate::sync::sync_inputs(&library, &book_id).unwrap();
+        let report = sync_report::estimate_report(&epub, &tracks, &map_path).unwrap();
+        sync_report::write_report(&server.state.sync_dir, &book_id, &report)
+            .await
+            .unwrap();
+    }
+    let cli = server._root.path().join("sync-cli");
+    std::fs::write(&cli, "fixture").unwrap();
+    server.state.alignment_config.cli_path = Some(cli);
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    // Keep accepted jobs queued rather than running the fixture.
+    let _slot = server
+        .state
+        .update_manager
+        .sync_slots
+        .acquire()
+        .await
+        .unwrap();
+    let uri = format!("/api/books/{book_id}/sync/generate");
+    let rerun = |chapters: serde_json::Value| {
+        let server = &server;
+        let uri = uri.clone();
+        let owner = owner.clone();
+        async move {
+            server
+                .send_json(
+                    "POST",
+                    &uri,
+                    &owner,
+                    serde_json::json!({ "chapters": chapters }),
+                )
+                .await
+        }
+    };
+
+    let refused = server
+        .send_json("POST", &uri, &reader, serde_json::json!({"chapters": [1]}))
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        rerun(serde_json::json!([])).await.status,
+        StatusCode::BAD_REQUEST
+    );
+
+    let created = rerun(serde_json::json!([1, 1])).await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let job_id = created.json()["jobId"].as_str().unwrap().to_string();
+    let job = server
+        .get(&format!("/api/jobs/{job_id}"), &owner)
+        .await
+        .json();
+    assert_eq!(
+        job["chapters"],
+        serde_json::json!([{"index": 1, "label": "Chapter 2"}])
+    );
+    // The queued re-run covers the same chapters, but not the whole book.
+    assert_eq!(rerun(serde_json::json!([1])).await.json()["jobId"], job_id);
+    let whole = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri(&uri)
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(whole.status, StatusCode::CONFLICT, "{}", whole.text());
+    assert_eq!(
+        rerun(serde_json::json!([0])).await.status,
+        StatusCode::CONFLICT
+    );
+    // Recovery after a restart re-runs the same chapters.
+    server.state.jobs.write().await.clear();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    assert_eq!(
+        server.state.jobs.read().await[&job_id].chapters,
+        [JobChapter {
+            index: 1,
+            label: "Chapter 2".into()
+        }]
+    );
+    server.state.jobs.write().await.clear();
+
+    let conflict = |response: TestResponse, expected: &str| {
+        assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.text());
+        assert!(response.text().contains(expected), "{}", response.text());
+    };
+    // A report for an earlier map, a changed book, an outdated map, and a
+    // map the owner supplied cannot take a single chapter.
+    write_map("200");
+    conflict(
+        rerun(serde_json::json!([1])).await,
+        "grades are still being updated",
+    );
+    write_map("100");
+    server.state.library.write().await.books[0].tracks[0].duration_seconds = Some(12.0);
+    conflict(
+        rerun(serde_json::json!([1])).await,
+        sync_report::BOOK_CHANGED,
+    );
+    server.state.library.write().await.books[0].tracks[0].duration_seconds = Some(10.0);
+    let edit_file = async |change: fn(&mut SyncFile)| {
+        let mut library = server.state.library.write().await;
+        change(library.books[0].sync_file.as_mut().unwrap());
+    };
+    edit_file(|file| file.outdated = true).await;
+    conflict(rerun(serde_json::json!([1])).await, "outdated");
+    edit_file(|file| {
+        file.outdated = false;
+        file.source = "sidecar".into();
+    })
+    .await;
+    conflict(
+        rerun(serde_json::json!([1])).await,
+        "Only maps OperaLibre generated",
+    );
+    assert!(server.state.jobs.read().await.is_empty());
+}

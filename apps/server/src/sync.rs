@@ -474,8 +474,16 @@ pub(crate) async fn resume_queue(state: &AppState) {
         let Some(book_id) = job.target_id else {
             continue;
         };
-        if let Err(error) =
-            enqueue_sync_map_inner(state.clone(), book_id, Some(job.id.clone()), false).await
+        let chapters = (!job.chapters.is_empty())
+            .then(|| job.chapters.iter().map(|chapter| chapter.index).collect());
+        if let Err(error) = enqueue_sync_map_inner(
+            state.clone(),
+            book_id,
+            chapters,
+            Some(job.id.clone()),
+            false,
+        )
+        .await
         {
             if error.status == StatusCode::CONFLICT || error.status.is_server_error() {
                 tracing::warn!(?error, "sync recovery will retry");
@@ -544,19 +552,87 @@ pub(crate) async fn alignment_status(
     })))
 }
 
+#[derive(Deserialize)]
+pub(crate) struct GenerateSyncRequest {
+    /// Report indices of the chapters to re-run; absent for the whole book.
+    chapters: Option<Vec<usize>>,
+}
+
 pub(crate) async fn generate_sync_map(
     State(state): State<AppState>,
     _: AdminUser,
     Path(book_id): Path<String>,
+    body: Option<Json<GenerateSyncRequest>>,
 ) -> Result<Json<JobCreated>, ApiError> {
-    enqueue_sync_map(state, book_id).await
+    let chapters = body.and_then(|Json(body)| body.chapters);
+    if chapters.as_ref().is_some_and(Vec::is_empty) {
+        return Err(ApiError::bad_request(
+            "Choose at least one chapter to re-run.",
+        ));
+    }
+    enqueue_sync_map_inner(state, book_id, chapters, None, false).await
 }
 
 pub(crate) async fn enqueue_sync_map(
     state: AppState,
     book_id: String,
 ) -> Result<Json<JobCreated>, ApiError> {
-    enqueue_sync_map_inner(state, book_id, None, false).await
+    enqueue_sync_map_inner(state, book_id, None, None, false).await
+}
+
+/// Chapter re-runs splice into a current map OperaLibre generated; any other
+/// map is replaced by re-syncing the whole book.
+async fn rerun_map_path(state: &AppState, book_id: &str) -> Result<PathBuf, ApiError> {
+    let library = state.library.read().await;
+    match &library.book(book_id)?.sync_file {
+        Some(file) if file.source == "generated" && !file.outdated => {}
+        Some(file) if file.source == "generated" => {
+            return Err(ApiError::conflict(
+                "This book’s map is outdated. Re-sync the whole book.",
+            ));
+        }
+        _ => {
+            return Err(ApiError::conflict(
+                "Only maps OperaLibre generated can re-run single chapters. Re-sync the whole book.",
+            ));
+        }
+    }
+    library
+        .sync_paths
+        .get(book_id)
+        .cloned()
+        .ok_or_else(|| ApiError::conflict(sync_report::BOOK_CHANGED))
+}
+
+/// Refuses a re-run the book can no longer take before it joins the queue,
+/// and names its chapters for the job.
+async fn rerun_request_chapters(
+    state: &AppState,
+    book_id: &str,
+    epub_path: &FsPath,
+    tracks: &[SyncTrackInput],
+    chapter_slicing: bool,
+    chapters: &[usize],
+) -> Result<Vec<JobChapter>, ApiError> {
+    let map_path = rerun_map_path(state, book_id).await?;
+    let (sync_dir, book_id, epub_path, tracks, chapters) = (
+        state.sync_dir.clone(),
+        book_id.to_string(),
+        epub_path.to_path_buf(),
+        tracks.to_vec(),
+        chapters.to_vec(),
+    );
+    tokio::task::spawn_blocking(move || {
+        let epub = alignment::parse_epub_file(&epub_path).map_err(|_| sync_report::BOOK_CHANGED)?;
+        let plan =
+            plan_scopes(&epub, &tracks, chapter_slicing).map_err(|_| sync_report::BOOK_CHANGED)?;
+        let spans = sync_report::chapter_spans(&epub, &tracks, &plan.scopes, &[]);
+        sync_report::rerun_base(&sync_dir, &book_id, &map_path, &spans, &chapters)
+            .map(|base| base.chapters)
+    })
+    .await
+    .map_err(|error| ApiError::internal(error.to_string()))?
+    .map_err(ApiError::conflict)
 }
 
 /// Accept a sweep as one durable queue update. Start the workers only after
@@ -630,6 +706,8 @@ pub(crate) async fn enqueue_sync_batch(
                 output: String::new(),
                 error: None,
                 progress: Some(JobProgress::new("Waiting for the sync queue")),
+                chapters: Vec::new(),
+                failed_chapters: Vec::new(),
             },
         );
         timestamp = timestamp.saturating_add(1);
@@ -654,7 +732,8 @@ pub(crate) async fn enqueue_sync_batch(
         let _lifecycle = lifecycle;
         for (book_id, job_id) in created {
             if let Err(error) =
-                enqueue_sync_map_inner(state.clone(), book_id, Some(job_id.clone()), true).await
+                enqueue_sync_map_inner(state.clone(), book_id, None, Some(job_id.clone()), true)
+                    .await
             {
                 if error.status == StatusCode::CONFLICT {
                     // An update can pause dispatch after the batch was accepted.
@@ -671,9 +750,14 @@ pub(crate) async fn enqueue_sync_batch(
     Ok((count, requested - count))
 }
 
+/// Queues a sync of the whole book, or with `chapters`, a re-run of just those.
+/// A recovered job passes its saved chapters with its `resume_id`; it is
+/// checked again when it runs rather than refused here, where a refusal would
+/// only be retried.
 async fn enqueue_sync_map_inner(
     state: AppState,
     book_id: String,
+    mut chapters: Option<Vec<usize>>,
     resume_id: Option<String>,
     already_persisted: bool,
 ) -> Result<Json<JobCreated>, ApiError> {
@@ -716,6 +800,24 @@ async fn enqueue_sync_map_inner(
     }
 
     let resuming = resume_id.is_some();
+    if let Some(chapters) = &mut chapters {
+        chapters.sort_unstable();
+        chapters.dedup();
+    }
+    let rerun_chapters = match &chapters {
+        Some(chapters) if !resuming => {
+            rerun_request_chapters(
+                &state,
+                &book_id,
+                &epub_path,
+                &tracks,
+                runtime.ffmpeg_path.is_some(),
+                chapters,
+            )
+            .await?
+        }
+        _ => Vec::new(),
+    };
     let (job_id, created) = if let Some(id) = resume_id {
         (id, true)
     } else {
@@ -723,6 +825,21 @@ async fn enqueue_sync_map_inner(
     };
     {
         let mut jobs = state.jobs.write().await;
+        // A queued whole-book sync covers any chapters; a queued re-run
+        // covers only its own, and must finish before anything wider.
+        let covered = |job: &JobStatus| {
+            job.chapters.is_empty()
+                || chapters.as_ref().is_some_and(|wanted| {
+                    wanted
+                        .iter()
+                        .all(|index| job.chapters.iter().any(|chapter| chapter.index == *index))
+                })
+        };
+        if !created && jobs.get(&job_id).is_some_and(|job| !covered(job)) {
+            return Err(ApiError::conflict(
+                "This book already has chapters waiting to re-run. Let them finish, or remove them from the queue, first.",
+            ));
+        }
         let position = jobs
             .values()
             .map(sync_queue_order)
@@ -732,6 +849,7 @@ async fn enqueue_sync_map_inner(
         if created && let Some(job) = jobs.get_mut(&job_id) {
             if !resuming {
                 job.queue_position = Some(position);
+                job.chapters = rerun_chapters;
             }
             job.resume_pending = job.status == "queued";
             job.progress = Some(JobProgress::new("Waiting for the sync queue"));
@@ -779,22 +897,46 @@ async fn enqueue_sync_map_inner(
         )
         .await;
 
+        let run = async {
+            // The book may have changed since a re-run was queued.
+            if chapters.is_some() {
+                rerun_map_path(&state_for_job, &book_id)
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error.message))?;
+            }
+            run_sync_generation(
+                &state_for_job,
+                &job_id_for_task,
+                &book_id,
+                &runtime,
+                &epub_path,
+                &tracks,
+                chapters.as_deref(),
+            )
+            .await
+        };
         let result = tokio::select! {
             biased;
             _ = wait_for_update(&mut update_pause) => { guard.disarm(); return; }
-            result = run_sync_generation(
-                &state_for_job, &job_id_for_task, &book_id, &runtime, &epub_path, &tracks,
-            ) => result,
+            result = run => result,
         };
 
         match result {
-            Ok(fragment_count) => {
-                update_job_output(
-                    &state_for_job,
-                    &job_id_for_task,
-                    &format!("Wrote sync map with {fragment_count} sentences and word timings.\n"),
-                )
-                .await;
+            Ok(generated) => {
+                let mut summary = format!(
+                    "Wrote sync map with {} sentences and word timings.\n",
+                    generated.fragment_count
+                );
+                if !generated.failed.is_empty() {
+                    summary.push_str(&format!(
+                        "Could not align {}; see the chapter grades.\n",
+                        chapter_labels(&generated.failed)
+                    ));
+                }
+                update_job_output(&state_for_job, &job_id_for_task, &summary).await;
+                if let Some(job) = state_for_job.jobs.write().await.get_mut(&job_id_for_task) {
+                    job.failed_chapters = generated.failed;
+                }
                 update_job_progress(
                     &state_for_job,
                     &job_id_for_task,
@@ -898,6 +1040,7 @@ pub(crate) fn sync_inputs(
     Ok((epub_path, tracks))
 }
 
+#[derive(Clone)]
 pub(crate) struct SyncTrackInput {
     pub(crate) path: PathBuf,
     pub(crate) title: String,
@@ -905,6 +1048,7 @@ pub(crate) struct SyncTrackInput {
     pub(crate) chapters: Vec<SyncChapterInput>,
 }
 
+#[derive(Clone)]
 pub(crate) struct SyncChapterInput {
     pub(crate) title: String,
     pub(crate) start_seconds: f64,
@@ -978,6 +1122,52 @@ fn scope_progress_weights(scopes: &[SyncAlignmentScope], tracks: &[SyncTrackInpu
         .unwrap_or_else(|| vec![1.0; scopes.len()])
 }
 
+/// What a finished run wrote: the map's sentence count and the chapters it
+/// could not align.
+#[derive(Debug)]
+pub(crate) struct SyncGenerated {
+    pub(crate) fragment_count: usize,
+    pub(crate) failed: Vec<JobChapter>,
+}
+
+/// When this many chapters fail before any aligns, the runtime itself is
+/// probably broken; the job stops rather than fail every chapter in turn.
+const FAIL_FAST_CHAPTERS: usize = 3;
+
+/// The map readers follow now, or for a book the library has not listed, the
+/// one its sync would replace.
+async fn served_map_path(state: &AppState, book_id: &str) -> PathBuf {
+    state
+        .library
+        .read()
+        .await
+        .sync_paths
+        .get(book_id)
+        .cloned()
+        .unwrap_or_else(|| generated_map_path(state, book_id))
+}
+
+fn generated_map_path(state: &AppState, book_id: &str) -> PathBuf {
+    state
+        .sync_dir
+        .join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"))
+}
+
+/// A whole map, with the identity its report is matched by.
+async fn read_sync_map(
+    path: &FsPath,
+) -> anyhow::Result<(alignment::SyncMap, sync_report::MapIdentity)> {
+    let bytes = fs::read(path).await?;
+    let map: alignment::SyncMap = serde_json::from_slice(&bytes)?;
+    let identity = sync_report::MapIdentity::from_bytes(map.generated_at.clone(), &bytes);
+    Ok((map, identity))
+}
+
+/// Aligns the whole book, or with `chapters`, only those scopes, spliced into
+/// the served map. A chapter that fails is recorded and the run goes on: a
+/// whole-book run keeps that chapter's sentences from the previous map, and a
+/// re-run leaves them as they were. Only when nothing aligns does the job
+/// fail, leaving the served map untouched.
 pub(crate) async fn run_sync_generation(
     state: &AppState,
     job_id: &str,
@@ -985,7 +1175,8 @@ pub(crate) async fn run_sync_generation(
     runtime: &SyncAddonRuntime,
     epub_path: &FsPath,
     tracks: &[SyncTrackInput],
-) -> anyhow::Result<usize> {
+    chapters: Option<&[usize]>,
+) -> anyhow::Result<SyncGenerated> {
     let epub_path_owned = epub_path.to_path_buf();
     let epub =
         tokio::task::spawn_blocking(move || alignment::parse_epub_file(&epub_path_owned)).await??;
@@ -1015,6 +1206,38 @@ pub(crate) async fn run_sync_generation(
         update_job_output(state, job_id, &format!("{note}\n")).await;
     }
     let scopes = plan.scopes;
+    let spans = sync_report::chapter_spans(&epub, tracks, &scopes, &[]);
+    let map_path = served_map_path(state, book_id).await;
+    let rerun = match chapters {
+        Some(chapters) => {
+            let (sync_dir, book, path, spans, chapters) = (
+                state.sync_dir.clone(),
+                book_id.to_string(),
+                map_path.clone(),
+                spans.clone(),
+                chapters.to_vec(),
+            );
+            let base = tokio::task::spawn_blocking(move || {
+                sync_report::rerun_base(&sync_dir, &book, &path, &spans, &chapters)
+            })
+            .await?
+            .map_err(|message| anyhow::anyhow!(message))?;
+            update_job_output(
+                state,
+                job_id,
+                &format!(
+                    "Re-running {}; the rest of the map stays as it is.\n",
+                    chapter_labels(&base.chapters)
+                ),
+            )
+            .await;
+            Some(base)
+        }
+        None => None,
+    };
+    let mut selected = chapters.map_or_else(|| (0..scopes.len()).collect(), <[usize]>::to_vec);
+    selected.sort_unstable();
+    selected.dedup();
 
     let recognition = RecognitionSettings::for_language(epub.language.as_deref());
     if runtime.ffmpeg_path.is_some() {
@@ -1049,10 +1272,14 @@ pub(crate) async fn run_sync_generation(
         "section"
     };
     let scope_weights = scope_progress_weights(&scopes, tracks);
-    let total_weight = scope_weights.iter().sum::<f64>().max(f64::MIN_POSITIVE);
+    let total_weight = selected
+        .iter()
+        .map(|&index| scope_weights[index])
+        .sum::<f64>()
+        .max(f64::MIN_POSITIVE);
     let mut done_weight = 0.0f64;
     let mut fragments = Vec::new();
-    let mut recovery_gaps = if tracks.len() == 1 {
+    let mut recovery_gaps = if tracks.len() == 1 && rerun.is_none() {
         unscoped_audio_gaps(&tracks[0], &scopes)
     } else {
         Vec::new()
@@ -1064,27 +1291,52 @@ pub(crate) async fn run_sync_generation(
     match fs::read(&checkpoint_path).await {
         Ok(bytes) => {
             let checkpoint: SyncCheckpoint = serde_json::from_slice(&bytes)?;
-            if checkpoint.fingerprint == fingerprint && checkpoint.completed_scopes <= scopes.len()
+            if checkpoint.fingerprint == fingerprint
+                && checkpoint.completed_scopes <= selected.len()
             {
                 completed_scopes = checkpoint.completed_scopes;
                 fragments = checkpoint.fragments;
                 recovery_gaps = checkpoint.recovery_gaps;
                 outcomes = checkpoint.outcomes;
-                done_weight = scope_weights.iter().take(completed_scopes).sum();
+                done_weight = selected[..completed_scopes]
+                    .iter()
+                    .map(|&index| scope_weights[index])
+                    .sum();
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
+    let mut attempted = selected[..completed_scopes]
+        .iter()
+        .filter(|&&index| spans[index].text_units > 0)
+        .count();
+    let failed_count = |outcomes: &[sync_report::ScopeOutcome]| {
+        outcomes
+            .iter()
+            .filter(|outcome| outcome.error.is_some())
+            .count()
+    };
+    let mut last_error = None;
+    // Read only if a chapter fails: a long book's map runs to megabytes.
+    let previous_map = tokio::sync::OnceCell::new();
     pause_at_checkpoint(state, job_id).await?;
-    for (scope_number, scope) in scopes.iter().enumerate().skip(completed_scopes) {
+    for (position, &scope_number) in selected.iter().enumerate().skip(completed_scopes) {
+        let scope = &scopes[scope_number];
         let track = &tracks[scope.track_index];
         let progress = ScopeProgress {
             base: ALIGN_PROGRESS_START
                 + (ALIGN_PROGRESS_END - ALIGN_PROGRESS_START) * (done_weight / total_weight),
             span: (ALIGN_PROGRESS_END - ALIGN_PROGRESS_START)
                 * (scope_weights[scope_number] / total_weight),
-            step: if scopes.len() > 1 {
+            step: if rerun.is_some() {
+                format!(
+                    "Re-running {scope_unit} {} of {}: {}",
+                    scope_number + 1,
+                    scopes.len(),
+                    scope.label
+                )
+            } else if scopes.len() > 1 {
                 format!(
                     "Aligning {scope_unit} {} of {}: {}",
                     scope_number + 1,
@@ -1094,14 +1346,15 @@ pub(crate) async fn run_sync_generation(
             } else {
                 "Aligning the narration to the text".to_string()
             },
-            completed: scope_number,
-            total: scopes.len(),
+            completed: position,
+            total: selected.len(),
         };
         done_weight += scope_weights[scope_number];
         let transcript = scope_transcript(&epub, scope);
         if transcript.text.trim().is_empty() {
             continue;
         }
+        attempted += 1;
         update_job_progress(state, job_id, progress.at(0.0)).await;
         update_job_output(
             state,
@@ -1118,32 +1371,80 @@ pub(crate) async fn run_sync_generation(
         // Interrupt expensive work, but never a checkpoint write. Completed
         // sections remain durable; resuming repeats only the unfinished one.
         // Dropping alignment also stops its kill-on-drop child process.
-        let scope_fragments = tokio::select! {
+        let aligned = tokio::select! {
             biased;
             _ = wait_for_manual_pause(state, job_id) => None,
-            result = aligner.align_scope(scope, track, &transcript, scope_number, &progress) => Some(result?),
+            result = aligner.align_scope(scope, track, &transcript, scope_number, &progress) => Some(result),
         };
-        let Some(scope_fragments) = scope_fragments else {
+        let Some(aligned) = aligned else {
             update_job_progress(state, job_id, progress.at(0.0)).await;
             pause_at_checkpoint(state, job_id).await?;
             return Err(SyncPaused.into());
         };
-        update_job_output(
-            state,
-            job_id,
-            &format!("  Matched {} sentences.\n", scope_fragments.fragments.len()),
-        )
-        .await;
-        fragments.extend(scope_fragments.fragments);
-        recovery_gaps.extend(scope_fragments.recovery_gaps);
+        let outcome = match aligned {
+            Ok(aligned) => {
+                update_job_output(
+                    state,
+                    job_id,
+                    &format!("  Matched {} sentences.\n", aligned.fragments.len()),
+                )
+                .await;
+                fragments.extend(aligned.fragments);
+                recovery_gaps.extend(aligned.recovery_gaps);
+                sync_report::ScopeOutcome {
+                    skipped_text: aligned.skipped_text,
+                    error: None,
+                }
+            }
+            Err(error) => {
+                let detail = format!("{error:#}");
+                update_job_output(state, job_id, &format!("  Could not align: {detail}\n")).await;
+                // A re-run leaves the chapter as the map has it. A whole-book
+                // run keeps the previous map's sentences, or holds the
+                // reader's place through the chapter when there are none.
+                if rerun.is_none() {
+                    let range = spans[scope_number].range();
+                    let previous = previous_map
+                        .get_or_init(|| async {
+                            read_sync_map(&map_path).await.ok().map(|(map, _)| map)
+                        })
+                        .await;
+                    let (kept, kept_gaps) = previous
+                        .as_ref()
+                        .map(|map| sync_report::chapter_timing(map, &range))
+                        .unwrap_or_default();
+                    if !kept.is_empty() {
+                        fragments.extend(kept);
+                        recovery_gaps.extend(kept_gaps);
+                    } else if range.end.is_finite() {
+                        recovery_gaps.push(alignment::RecoveryGap {
+                            start_seconds: range.start,
+                            end_seconds: range.end,
+                        });
+                    }
+                }
+                last_error = Some(error);
+                sync_report::ScopeOutcome {
+                    skipped_text: 0,
+                    error: Some(detail),
+                }
+            }
+        };
         outcomes.resize_with(scope_number, Default::default);
-        outcomes.push(sync_report::ScopeOutcome {
-            skipped_text: scope_fragments.skipped_text,
-        });
+        outcomes.push(outcome);
+        if attempted >= FAIL_FAST_CHAPTERS && failed_count(&outcomes) == attempted {
+            update_job_output(
+                state,
+                job_id,
+                &format!("The first {attempted} chapters all failed; stopping.\n"),
+            )
+            .await;
+            break;
+        }
         fs::create_dir_all(checkpoint_path.parent().unwrap()).await?;
         let checkpoint = SyncCheckpoint {
             fingerprint: fingerprint.clone(),
-            completed_scopes: scope_number + 1,
+            completed_scopes: position + 1,
             fragments: std::mem::take(&mut fragments),
             recovery_gaps: std::mem::take(&mut recovery_gaps),
             outcomes: std::mem::take(&mut outcomes),
@@ -1157,49 +1458,102 @@ pub(crate) async fn run_sync_generation(
         pause_at_checkpoint(state, job_id).await?;
     }
 
-    anyhow::ensure!(
-        !fragments.is_empty(),
-        "Alignment produced no usable sentence fragments."
-    );
+    let failed = selected
+        .iter()
+        .filter(|&&index| outcomes.get(index).is_some_and(|o| o.error.is_some()))
+        .map(|&index| JobChapter {
+            index,
+            label: scopes[index].label.clone(),
+        })
+        .collect::<Vec<_>>();
+    // Nothing aligned: the runtime, not the book, is the likely problem.
+    let all_failed = !failed.is_empty() && failed.len() == attempted;
+    let failure = || {
+        last_error.unwrap_or_else(|| {
+            let detail = failed
+                .last()
+                .and_then(|chapter| outcomes[chapter.index].error.clone());
+            anyhow::anyhow!(detail.unwrap_or_default())
+        })
+    };
+    if all_failed && rerun.is_none() {
+        return Err(failure());
+    }
     update_job_progress(
         state,
         job_id,
         JobProgress::new("Saving the sync map").fraction(ALIGN_PROGRESS_END),
     )
     .await;
-    fragments.sort_by(|a, b| a.start_seconds.total_cmp(&b.start_seconds));
-    let fragment_count = fragments.len();
 
-    let sync_map = alignment::SyncMap {
-        version: alignment::SYNC_MAP_VERSION,
-        mapping_revision: alignment::MAPPING_REVISION,
-        generator: Some("echogarden".to_string()),
-        generated_at: Some(now_unix_string()),
-        precision: Some(alignment::PRECISION_SENTENCE.to_string()),
-        fragments,
-        recovery_gaps,
+    let sync_path = generated_map_path(state, book_id);
+    let (sync_map, identity) = match &rerun {
+        None => {
+            anyhow::ensure!(
+                !fragments.is_empty(),
+                "Alignment produced no usable sentence fragments."
+            );
+            fragments.sort_by(|a, b| a.start_seconds.total_cmp(&b.start_seconds));
+            let sync_map = alignment::SyncMap {
+                version: alignment::SYNC_MAP_VERSION,
+                mapping_revision: alignment::MAPPING_REVISION,
+                generator: Some("echogarden".to_string()),
+                generated_at: Some(now_unix_string()),
+                precision: Some(alignment::PRECISION_SENTENCE.to_string()),
+                fragments,
+                recovery_gaps,
+            };
+            fs::create_dir_all(&state.sync_dir).await?;
+            let identity = write_sync_map(&sync_path, &sync_map).await?;
+            (sync_map, identity)
+        }
+        Some(base) => {
+            let (mut sync_map, mut identity) = read_sync_map(&map_path).await?;
+            anyhow::ensure!(identity == base.map, sync_report::BOOK_CHANGED);
+            // With every chapter failed the map is left as it is, and only
+            // the report records the failures.
+            if !all_failed {
+                for &index in &selected {
+                    if outcomes.get(index).is_some_and(|o| o.error.is_none()) {
+                        sync_report::remove_chapter_timing(&mut sync_map, &spans[index].range());
+                    }
+                }
+                sync_map.fragments.extend(fragments);
+                sync_map.recovery_gaps.extend(recovery_gaps);
+                sync_map
+                    .fragments
+                    .sort_by(|a, b| a.start_seconds.total_cmp(&b.start_seconds));
+                sync_map.generated_at = Some(now_unix_string());
+                identity = write_sync_map(&sync_path, &sync_map).await?;
+            }
+            (sync_map, identity)
+        }
     };
-    fs::create_dir_all(&state.sync_dir).await?;
-    let sync_path = state
-        .sync_dir
-        .join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"));
-    let map_identity = write_sync_map(&sync_path, &sync_map)
-        .await
-        .map_err(|error| anyhow::anyhow!(error.message))?;
-    let report = sync_report::SyncReport::new(
-        map_identity,
-        sync_report::Graded::Run,
-        sync_report::grade_chapters(
-            &sync_report::chapter_spans(&epub, tracks, &scopes, &outcomes),
-            sync_map
-                .fragments
-                .iter()
-                .map(|f| (f.start_seconds, f.end_seconds, f.text.as_str())),
-            &sync_map.recovery_gaps,
-        ),
+    let graded = sync_report::grade_chapters(
+        &sync_report::chapter_spans(&epub, tracks, &scopes, &outcomes),
+        sync_map
+            .fragments
+            .iter()
+            .map(|f| (f.start_seconds, f.end_seconds, f.text.as_str())),
+        &sync_map.recovery_gaps,
     );
+    let report = match rerun {
+        None => sync_report::SyncReport::new(identity, sync_report::Graded::Run, graded),
+        // The other chapters' timing is unchanged, and so are their grades.
+        Some(base) => {
+            let mut chapters = base.report.chapters;
+            for (chapter, regraded) in chapters.iter_mut().zip(graded) {
+                if selected.binary_search(&chapter.index).is_ok()
+                    && outcomes.get(chapter.index).is_some()
+                {
+                    *chapter = regraded;
+                }
+            }
+            sync_report::SyncReport::new(identity, base.report.graded, chapters)
+        }
+    };
     // The map is already published; without a report it is graded later.
-    if let Err(error) = sync_report::write_report(&state.sync_dir, book_id, &report).await {
+    if let Err(error) = sync_report::publish_report(state, book_id, &report).await {
         update_job_output(
             state,
             job_id,
@@ -1207,21 +1561,41 @@ pub(crate) async fn run_sync_generation(
         )
         .await;
     }
+    if all_failed {
+        return Err(failure());
+    }
 
     let _ = fs::remove_file(checkpoint_path).await;
-    Ok(fragment_count)
+    Ok(SyncGenerated {
+        fragment_count: sync_map.fragments.len(),
+        failed,
+    })
+}
+
+/// "Chapter 3", or "Chapter 3, Chapter 5 and Chapter 7", for the job log.
+fn chapter_labels(chapters: &[JobChapter]) -> String {
+    let labels = chapters
+        .iter()
+        .map(|chapter| chapter.label.as_str())
+        .collect::<Vec<_>>();
+    match labels.split_last() {
+        Some((last, [])) => last.to_string(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    }
 }
 
 /// Sync maps name every sentence of a book, so they are written compactly:
 /// pretty-printing a long title's map adds a third to several megabytes
-/// that every reader downloads. Returns the identity its report describes.
+/// that every reader downloads. Returns the identity a report names it by.
 async fn write_sync_map(
     path: &FsPath,
     map: &alignment::SyncMap,
-) -> Result<sync_report::MapIdentity, ApiError> {
-    let bytes = serde_json::to_vec(map)
-        .map_err(|error| ApiError::internal(format!("Could not encode the sync map: {error}")))?;
-    write_bytes_atomic(path, &bytes).await?;
+) -> anyhow::Result<sync_report::MapIdentity> {
+    let bytes = serde_json::to_vec(map)?;
+    write_bytes_atomic(path, &bytes)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
     Ok(sync_report::MapIdentity::from_bytes(
         map.generated_at.clone(),
         &bytes,
@@ -1499,7 +1873,7 @@ impl Aligner<'_> {
             }
             _ => None,
         };
-        match windowed {
+        let aligned = match windowed {
             Some((ffmpeg, scope_end)) => {
                 self.align_windowed(
                     scope,
@@ -1520,7 +1894,13 @@ impl Aligner<'_> {
                 self.align_single_pass(scope, track, transcript, scope_number)
                     .await
             }
-        }
+        }?;
+        anyhow::ensure!(
+            !aligned.fragments.is_empty() || transcript.text.trim().is_empty(),
+            "Alignment of `{}` produced no usable sentence fragments.",
+            scope.label
+        );
+        Ok(aligned)
     }
 
     /// The established path: one aligner run over the scope's whole audio.
@@ -2721,7 +3101,8 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
         let (id, _) =
             create_queued_job(&state, SYNC_GENERATE_JOB_KIND, Some("fixture".into())).await;
         update_job_running(&state, &id).await;
-        let generation = run_sync_generation(&state, &id, "fixture", &runtime, &epub, &tracks);
+        let generation =
+            run_sync_generation(&state, &id, "fixture", &runtime, &epub, &tracks, None);
         let request_pause = async {
             tokio::time::timeout(Duration::from_secs(5), async {
                 while !fs::try_exists(cli.with_extension("started")).await.unwrap() {
@@ -2810,9 +3191,10 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
             .pause_requested = false;
         update_job_running(&state, &id).await;
         assert_eq!(
-            run_sync_generation(&state, &id, "fixture", &runtime, &epub, &tracks)
+            run_sync_generation(&state, &id, "fixture", &runtime, &epub, &tracks, None)
                 .await
-                .unwrap(),
+                .unwrap()
+                .fragment_count,
             2
         );
         let calls = fs::read_to_string(cli.with_extension("calls"))
@@ -2870,7 +3252,7 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
         )
         .await
         .unwrap();
-        run_sync_generation(&state, &id, "fixture", &runtime, &epub, &tracks)
+        run_sync_generation(&state, &id, "fixture", &runtime, &epub, &tracks, None)
             .await
             .unwrap();
         assert_eq!(
@@ -2917,7 +3299,7 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
             let job = create_job(&state, "sync-fixture").await;
             let result = tokio::time::timeout(
                 Duration::from_millis(500),
-                run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks),
+                run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks, None),
             )
             .await;
             if script.contains("sleep") {
@@ -2931,9 +3313,10 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
         std::fs::write(&cli, "#!/bin/sh\nprintf '%s' '[{\"type\":\"sentence\",\"text\":\"The meadow was quiet.\",\"startTime\":1,\"endTime\":3}]' > \"$4\"\n").unwrap();
         let job = create_job(&state, "sync-fixture-retry").await;
         assert_eq!(
-            run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks)
+            run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks, None)
                 .await
-                .unwrap(),
+                .unwrap()
+                .fragment_count,
             1
         );
         let published: alignment::SyncMap =
@@ -3754,8 +4137,19 @@ esac
                 completed: 0,
                 total: 1,
             };
+            // Window recovery can find no timing; scope generation rejects that
+            // result, while these tests inspect the gaps it recovered through.
             let result = aligner
-                .align_scope(&scope, &track, &transcript, 0, &progress)
+                .align_windowed(
+                    &scope,
+                    &track,
+                    &transcript,
+                    0,
+                    &ffmpeg,
+                    0.0,
+                    track.duration_seconds.unwrap(),
+                    &progress,
+                )
                 .await
                 .unwrap();
             // Masked edition-only text is reported so it does not lower the grade.
@@ -4082,6 +4476,480 @@ esac
                 assert_eq!(word.text, format!("word{index}"));
                 assert!((word.start_time - index as f64).abs() < 0.001);
             }
+        }
+    }
+
+    /// Whole-book runs that survive a failing chapter, and re-runs of chosen
+    /// chapters spliced into the served map. Each chapter is one hour-long
+    /// track holding a single sentence.
+    #[cfg(unix)]
+    mod chapters {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+        use sync_report::{ChapterStatus, Grade};
+
+        /// Times each chapter's sentence from `$0.start` seconds (1 unless
+        /// set), fails tracks listed in `$0.fail`, and holds tracks listed in
+        /// `$0.gate` until `$0.release` exists.
+        const FAKE_ALIGNER: &str = r#"#!/bin/sh
+[ "$1" = "align" ] || exit 2
+track=$(basename "$2")
+if [ -f "$0.gate" ] && grep -qxF "$track" "$0.gate" && [ ! -f "$0.release" ]; then
+  printf '%s' "$$" > "$0.started.tmp"
+  mv "$0.started.tmp" "$0.started"
+  exec sleep 60
+fi
+printf '%s\n' "$track" >> "$0.calls"
+if [ -f "$0.fail" ] && grep -qxF "$track" "$0.fail"; then
+  printf 'worker crashed\nsegfault in the recognizer\n' >&2
+  exit 3
+fi
+if [ -f "$0.empty" ] && grep -qxF "$track" "$0.empty"; then
+  printf '[]' > "$4"
+  exit 0
+fi
+start=1
+[ -f "$0.start" ] && start=$(cat "$0.start")
+printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$3")" "$start" "$((start + 2))" > "$4"
+"#;
+
+        struct ChapterBook {
+            _root: tempfile::TempDir,
+            state: AppState,
+            epub: PathBuf,
+            tracks: Vec<SyncTrackInput>,
+            runtime: SyncAddonRuntime,
+        }
+
+        impl ChapterBook {
+            fn new(count: usize) -> Self {
+                let root = tempfile::tempdir().unwrap();
+                let (state, _) = crate::unit_tests::fake_libation_state(root.path());
+                let titles = (1..=count)
+                    .map(|n| format!("Chapter {n}"))
+                    .collect::<Vec<_>>();
+                let bodies = (1..=count)
+                    .map(|n| format!("<p>Words of chapter {n}.</p>"))
+                    .collect::<Vec<_>>();
+                let chapters = titles
+                    .iter()
+                    .zip(&bodies)
+                    .map(|(title, body)| (title.as_str(), body.as_str()))
+                    .collect::<Vec<_>>();
+                let epub = root.path().join("book.epub");
+                std::fs::write(&epub, alignment::build_test_epub_with_chapters(&chapters)).unwrap();
+                let tracks = titles
+                    .iter()
+                    .enumerate()
+                    .map(|(index, title)| SyncTrackInput {
+                        path: root.path().join(format!("{}.wav", index + 1)),
+                        title: title.clone(),
+                        duration_seconds: Some(3600.0),
+                        chapters: Vec::new(),
+                    })
+                    .collect::<Vec<_>>();
+                for track in &tracks {
+                    std::fs::write(&track.path, b"fixture").unwrap();
+                }
+                let cli = root.path().join("aligner");
+                std::fs::write(&cli, FAKE_ALIGNER).unwrap();
+                std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+                std::fs::create_dir_all(&state.sync_dir).unwrap();
+                Self {
+                    _root: root,
+                    state,
+                    epub,
+                    tracks,
+                    runtime: SyncAddonRuntime {
+                        cli_path: cli,
+                        cli_args: Vec::new(),
+                        ffmpeg_path: None,
+                    },
+                }
+            }
+
+            fn control(&self, name: &str, value: &str) {
+                std::fs::write(self.runtime.cli_path.with_extension(name), value).unwrap();
+            }
+
+            fn calls(&self) -> Vec<String> {
+                std::fs::read_to_string(self.runtime.cli_path.with_extension("calls"))
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::to_string)
+                    .collect()
+            }
+
+            async fn run_job(
+                &self,
+                job: &str,
+                chapters: Option<&[usize]>,
+            ) -> anyhow::Result<SyncGenerated> {
+                run_sync_generation(
+                    &self.state,
+                    job,
+                    "fixture",
+                    &self.runtime,
+                    &self.epub,
+                    &self.tracks,
+                    chapters,
+                )
+                .await
+            }
+
+            async fn run(&self, chapters: Option<&[usize]>) -> anyhow::Result<SyncGenerated> {
+                let job = create_job(&self.state, SYNC_GENERATE_JOB_KIND).await;
+                self.run_job(&job, chapters).await
+            }
+
+            fn map_path(&self) -> PathBuf {
+                generated_map_path(&self.state, "fixture")
+            }
+
+            fn map(&self) -> alignment::SyncMap {
+                serde_json::from_slice(&std::fs::read(self.map_path()).unwrap()).unwrap()
+            }
+
+            fn report(&self) -> sync_report::SyncReport {
+                let identity = probe_sync_map(&self.map_path(), true).unwrap().identity;
+                sync_report::read_current_report(&self.state.sync_dir, "fixture", &identity)
+                    .expect("the report describes the served map")
+            }
+
+            /// A map from an earlier run: each chapter's sentence about 20 s
+            /// in, a second sentence in chapter 2, a gap across the end of
+            /// chapter 1 and one inside chapter 2. Graded as backfill would.
+            fn seed_previous_map(&self) -> Vec<u8> {
+                let mut fragments = (0..self.tracks.len())
+                    .map(|index| {
+                        // A sixth chapter starts at a time that only exact
+                        // float parsing writes back unchanged.
+                        let offset = if index == 5 { 2576.400999999998 } else { 20.0 };
+                        serde_json::json!({
+                            "startSeconds": index as f64 * 3600.0 + offset,
+                            "endSeconds": index as f64 * 3600.0 + 25.0,
+                            "href": format!("text/ch{}.xhtml", index + 1),
+                            "text": format!("Words of chapter {}.", index + 1),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                fragments.insert(
+                    2,
+                    serde_json::json!({"startSeconds": 3640.0, "endSeconds": 3645.0, "href": "text/ch2.xhtml", "text": "An earlier guess."}),
+                );
+                let bytes = serde_json::to_vec(&serde_json::json!({
+                    "version": alignment::SYNC_MAP_VERSION,
+                    "mappingRevision": alignment::MAPPING_REVISION,
+                    "generator": "echogarden",
+                    "generatedAt": "100",
+                    "precision": "sentence",
+                    "fragments": fragments,
+                    "recoveryGaps": [
+                        {"startSeconds": 3500.0, "endSeconds": 3700.0},
+                        {"startSeconds": 3800.0, "endSeconds": 3900.0},
+                    ],
+                }))
+                .unwrap();
+                std::fs::write(self.map_path(), &bytes).unwrap();
+                let report =
+                    sync_report::estimate_report(&self.epub, &self.tracks, &self.map_path())
+                        .unwrap();
+                std::fs::write(
+                    self.state.sync_dir.join("fixture.report.json"),
+                    serde_json::to_vec(&report).unwrap(),
+                )
+                .unwrap();
+                bytes
+            }
+        }
+
+        fn chapter(index: usize) -> JobChapter {
+            JobChapter {
+                index,
+                label: format!("Chapter {}", index + 1),
+            }
+        }
+
+        fn starts(map: &alignment::SyncMap) -> Vec<f64> {
+            map.fragments.iter().map(|f| f.start_seconds).collect()
+        }
+
+        fn gaps(map: &alignment::SyncMap) -> Vec<(f64, f64)> {
+            map.recovery_gaps
+                .iter()
+                .map(|gap| (gap.start_seconds, gap.end_seconds))
+                .collect()
+        }
+
+        fn in_chapter(map: &alignment::SyncMap, index: usize) -> serde_json::Value {
+            let range = index as f64 * 3600.0..(index + 1) as f64 * 3600.0;
+            serde_json::to_value(
+                map.fragments
+                    .iter()
+                    .filter(|f| range.contains(&f.start_seconds))
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap()
+        }
+
+        #[tokio::test]
+        async fn a_failed_chapter_keeps_its_earlier_timing_and_the_book_completes() {
+            let book = ChapterBook::new(4);
+            book.seed_previous_map();
+            book.control("fail", "2.wav\n");
+            let generated = book.run(None).await.unwrap();
+            assert_eq!(generated.failed, vec![chapter(1)]);
+            let map = book.map();
+            // Chapter 2 keeps both earlier sentences and its gaps, clipped to
+            // it; the gap's part in chapter 1 went with chapter 1's old timing.
+            assert_eq!(starts(&map), [1.0, 3620.0, 3640.0, 7201.0, 10801.0]);
+            assert_eq!(gaps(&map), [(3600.0, 3700.0), (3800.0, 3900.0)]);
+            let report = book.report();
+            let failed = &report.chapters[1];
+            assert_eq!(failed.status, ChapterStatus::KeptPrevious);
+            assert_eq!(failed.grade, Some(Grade::Failed));
+            let error = failed.error.as_deref().unwrap();
+            assert!(
+                error.starts_with("Alignment of `Chapter 2` failed"),
+                "{error}"
+            );
+            assert!(!error.contains('\n'));
+            assert!(
+                failed
+                    .error_detail
+                    .as_deref()
+                    .unwrap()
+                    .contains("segfault in the recognizer")
+            );
+            assert_eq!(report.chapters[0].status, ChapterStatus::Aligned);
+            assert_eq!(report.grade, Some(Grade::Failed));
+            assert_eq!(report.quality().unwrap().flagged, 1);
+
+            // Without an earlier map, readers hold their place through it.
+            std::fs::remove_file(book.map_path()).unwrap();
+            let generated = book.run(None).await.unwrap();
+            assert_eq!(generated.failed, vec![chapter(1)]);
+            let map = book.map();
+            assert_eq!(starts(&map), [1.0, 7201.0, 10801.0]);
+            assert_eq!(gaps(&map), [(3600.0, 7200.0)]);
+            let report = book.report();
+            assert_eq!(report.chapters[1].status, ChapterStatus::Failed);
+            assert_eq!(report.chapters[1].text_coverage, 0.0);
+            assert_eq!(report.chapters[1].grade, Some(Grade::Failed));
+        }
+
+        #[tokio::test]
+        async fn failing_from_the_start_fails_the_job_and_keeps_the_old_map() {
+            let book = ChapterBook::new(4);
+            let previous = book.seed_previous_map();
+            let report = std::fs::read(book.state.sync_dir.join("fixture.report.json")).unwrap();
+            book.control("fail", "1.wav\n2.wav\n3.wav\n");
+            let error = book.run(None).await.unwrap_err();
+            assert!(error.to_string().contains("`Chapter 3`"), "{error:#}");
+            assert_eq!(book.calls(), ["1.wav", "2.wav", "3.wav"]);
+            assert_eq!(std::fs::read(book.map_path()).unwrap(), previous);
+            assert_eq!(
+                std::fs::read(book.state.sync_dir.join("fixture.report.json")).unwrap(),
+                report
+            );
+
+            // However few chapters a book has, all of them failing fails it.
+            let book = ChapterBook::new(2);
+            let previous = book.seed_previous_map();
+            book.control("fail", "1.wav\n2.wav\n");
+            book.run(None).await.unwrap_err();
+            assert_eq!(std::fs::read(book.map_path()).unwrap(), previous);
+        }
+
+        #[tokio::test]
+        async fn a_resumed_run_keeps_the_chapters_that_failed_before_the_pause() {
+            let book = ChapterBook::new(3);
+            book.control("fail", "1.wav\n");
+            book.control("gate", "2.wav\n");
+            let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
+            let request_pause = async {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while !book.runtime.cli_path.with_extension("started").exists() {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                book.state
+                    .jobs
+                    .write()
+                    .await
+                    .get_mut(&job)
+                    .unwrap()
+                    .pause_requested = true;
+                book.state
+                    .update_manager
+                    .sync_queue_changed
+                    .notify_waiters();
+            };
+            let (result, _) = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(book.run_job(&job, None), request_pause)
+            })
+            .await
+            .unwrap();
+            assert!(result.unwrap_err().downcast_ref::<SyncPaused>().is_some());
+            let checkpoint: SyncCheckpoint = serde_json::from_slice(
+                &std::fs::read(sync_checkpoint_path(&book.state, &job)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(checkpoint.completed_scopes, 1);
+            assert!(checkpoint.outcomes[0].error.is_some());
+            assert_eq!(gaps_of(&checkpoint.recovery_gaps), [(0.0, 3600.0)]);
+
+            book.control("release", "");
+            {
+                let mut jobs = book.state.jobs.write().await;
+                let entry = jobs.get_mut(&job).unwrap();
+                entry.pause_requested = false;
+                entry.status = "running".into();
+            }
+            let generated = book.run_job(&job, None).await.unwrap();
+            assert_eq!(generated.failed, vec![chapter(0)]);
+            assert_eq!(book.calls(), ["1.wav", "2.wav", "3.wav"]);
+            let report = book.report();
+            assert_eq!(report.chapters[0].status, ChapterStatus::Failed);
+            assert!(report.chapters[0].error.is_some());
+            assert_eq!(report.chapters[1].status, ChapterStatus::Aligned);
+        }
+
+        fn gaps_of(gaps: &[alignment::RecoveryGap]) -> Vec<(f64, f64)> {
+            gaps.iter()
+                .map(|gap| (gap.start_seconds, gap.end_seconds))
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn a_chapter_rerun_replaces_only_that_chapter() {
+            let book = ChapterBook::new(6);
+            book.seed_previous_map();
+            let before = book.map();
+            let graded_before = serde_json::to_value(book.report()).unwrap();
+            book.control("start", "5");
+            let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
+            let generated = book.run_job(&job, Some(&[1])).await.unwrap();
+            assert!(generated.failed.is_empty());
+            assert_eq!(book.calls(), ["2.wav"]);
+            let after = book.map();
+            for index in [0, 2, 3, 4, 5] {
+                assert_eq!(in_chapter(&after, index), in_chapter(&before, index));
+            }
+            assert_eq!(
+                starts(&after),
+                [20.0, 3605.0, 7220.0, 10820.0, 14420.0, 20576.400999999998]
+            );
+            // Untouched timing is written back exactly as it was read.
+            assert!(
+                String::from_utf8(std::fs::read(book.map_path()).unwrap())
+                    .unwrap()
+                    .contains("20576.400999999998")
+            );
+            // Chapter 2's gap is gone; the part of the boundary gap in
+            // chapter 1 stays.
+            assert_eq!(gaps(&after), [(3500.0, 3600.0)]);
+            assert_ne!(after.generated_at, before.generated_at);
+            assert_eq!(after.mapping_revision, before.mapping_revision);
+
+            let report = book.report();
+            let report_json = serde_json::to_value(&report).unwrap();
+            assert_eq!(report_json["graded"], "estimate");
+            for index in [0, 2, 3, 4, 5] {
+                assert_eq!(
+                    report_json["chapters"][index],
+                    graded_before["chapters"][index]
+                );
+            }
+            assert_eq!(report.chapters[1].status, ChapterStatus::Aligned);
+            assert_eq!(report.chapters[1].text_coverage, 1.0);
+            assert_eq!(report.chapters[1].grade, Some(Grade::Good));
+            let output = book.state.jobs.read().await[&job].output.clone();
+            assert!(output.contains("Re-running Chapter 2;"), "{output}");
+        }
+
+        #[tokio::test]
+        async fn empty_results_preserve_previous_chapter_timing() {
+            let book = ChapterBook::new(3);
+            let previous = book.seed_previous_map();
+            let before = book.map();
+            book.control("empty", "2.wav\n");
+            book.run(Some(&[1])).await.unwrap_err();
+            assert_eq!(std::fs::read(book.map_path()).unwrap(), previous);
+            assert_eq!(
+                book.report().chapters[1].status,
+                ChapterStatus::KeptPrevious
+            );
+            assert!(book.report().chapters[1].error.is_some());
+
+            let generated = book.run(Some(&[0, 1])).await.unwrap();
+            assert_eq!(generated.failed, vec![chapter(1)]);
+            let after = book.map();
+            assert_eq!(in_chapter(&after, 0)[0]["startSeconds"], 1.0);
+            assert_eq!(in_chapter(&after, 1), in_chapter(&before, 1));
+            assert_eq!(in_chapter(&after, 2), in_chapter(&before, 2));
+
+            // A whole-book sync also keeps usable timing for an empty chapter.
+            let generated = book.run(None).await.unwrap();
+            assert_eq!(generated.failed, vec![chapter(1)]);
+            assert_eq!(in_chapter(&book.map(), 1), in_chapter(&before, 1));
+        }
+
+        #[tokio::test]
+        async fn early_failure_preserves_reports_for_unattempted_chapters() {
+            let book = ChapterBook::new(4);
+            let previous = book.seed_previous_map();
+            let mut report = book.report();
+            report.chapters[3].status = ChapterStatus::KeptPrevious;
+            report.chapters[3].error = Some("Earlier chapter failure".into());
+            report.chapters[3].error_detail =
+                Some("Earlier chapter failure: original details".into());
+            std::fs::write(
+                book.state.sync_dir.join("fixture.report.json"),
+                serde_json::to_vec(&report).unwrap(),
+            )
+            .unwrap();
+            let fourth = serde_json::to_value(&book.report().chapters[3]).unwrap();
+            book.control("fail", "1.wav\n2.wav\n3.wav\n");
+            book.run(Some(&[0, 1, 2, 3])).await.unwrap_err();
+            assert_eq!(book.calls(), ["1.wav", "2.wav", "3.wav"]);
+            assert_eq!(std::fs::read(book.map_path()).unwrap(), previous);
+            assert_eq!(
+                serde_json::to_value(&book.report().chapters[3]).unwrap(),
+                fourth
+            );
+        }
+
+        #[tokio::test]
+        async fn a_failed_rerun_leaves_the_chapter_as_it_was() {
+            let book = ChapterBook::new(3);
+            let previous = book.seed_previous_map();
+            let before = book.map();
+            book.control("fail", "2.wav\n");
+            book.run(Some(&[1])).await.unwrap_err();
+            assert_eq!(std::fs::read(book.map_path()).unwrap(), previous);
+            // The report still describes the unchanged map, now with the error.
+            let report = book.report();
+            assert_eq!(report.chapters[1].status, ChapterStatus::KeptPrevious);
+            assert!(report.chapters[1].error.is_some());
+            assert_eq!(report.chapters[0].status, ChapterStatus::Aligned);
+
+            // One of two chapters failing still replaces the other.
+            let generated = book.run(Some(&[0, 1])).await.unwrap();
+            assert_eq!(generated.failed, vec![chapter(1)]);
+            let after = book.map();
+            assert_eq!(in_chapter(&after, 0)[0]["startSeconds"], 1.0);
+            assert_eq!(in_chapter(&after, 1), in_chapter(&before, 1));
+            assert_eq!(in_chapter(&after, 2), in_chapter(&before, 2));
+            let report = book.report();
+            assert_eq!(report.chapters[0].status, ChapterStatus::Aligned);
+            assert_eq!(report.chapters[1].status, ChapterStatus::KeptPrevious);
+
+            // A chapter the book no longer has is refused before any work.
+            let error = book.run(Some(&[3])).await.unwrap_err();
+            assert_eq!(error.to_string(), sync_report::BOOK_CHANGED);
         }
     }
 }

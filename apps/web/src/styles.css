@@ -15911,12 +15911,18 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 .admin-sync-chapters { display: grid; gap: 8px; margin-bottom: 12px; padding: 10px 12px; border-radius: 8px; background: rgba(var(--ink-rgb), 0.04); }
 .admin-sync-monitor .admin-sync-chapters-note { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--ink-faded); font-size: 0.72rem; }
 .admin-sync-chapter-list { display: grid; margin: 0; padding: 0; list-style: none; max-height: 260px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
-.admin-sync-chapter-list > li { display: grid; grid-template-columns: minmax(0, 1fr) 3.4rem 4.6rem 4.4rem; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid rgba(var(--ink-rgb), 0.07); font-size: 0.74rem; font-variant-numeric: tabular-nums; }
+.admin-sync-chapter-list > li { display: grid; grid-template-columns: minmax(0, 1fr) 3.4rem 4.6rem 4.4rem; align-items: center; gap: 4px 8px; padding: 6px 0; border-bottom: 1px solid rgba(var(--ink-rgb), 0.07); font-size: 0.74rem; font-variant-numeric: tabular-nums; }
+.admin-sync-chapter-list-pick > li { grid-template-columns: 1rem minmax(0, 1fr) 3.4rem 4.6rem 4.4rem; }
 .admin-sync-chapter-list > li:last-child { border-bottom: 0; }
-.admin-sync-chapter-list > li > span:not(:first-child) { justify-self: end; }
+.admin-sync-chapter-label ~ span { justify-self: end; }
 .admin-sync-chapter-list > .admin-sync-chapter-head { padding-top: 0; color: var(--ink-faded); font-size: 0.64rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
 .admin-sync-chapter-label { overflow-wrap: anywhere; }
-.admin-sync-chapter-list > li > .admin-sync-chapter-empty { grid-column: 2 / -1; color: var(--ink-faded); }
+.admin-sync-chapter-list > li > .admin-sync-chapter-empty { grid-column: span 3; color: var(--ink-faded); }
+.admin-sync-chapter-list input[type="checkbox"] { margin: 0; accent-color: var(--sync-live); }
+/* The error runs under the label, across the numbers. */
+.admin-sync-chapter-list > li > .admin-sync-chapter-error { grid-column: -5 / -1; justify-self: start; color: var(--sync-fail); font-size: 0.7rem; overflow-wrap: anywhere; }
+.admin-sync-chapter-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.admin-sync-monitor .admin-sync-job-attention { display: flex; align-items: center; gap: 6px; color: var(--sync-fail); font-size: 0.75rem; }
 .admin-sync-book-list:has(.admin-sync-chapters) { max-height: none; }
 
 @media (max-width: 700px) {

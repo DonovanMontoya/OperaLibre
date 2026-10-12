@@ -28,6 +28,20 @@ pub(crate) struct JobStatus {
     /// What the job is doing right now, for a progress display. Only set
     /// while it runs; cleared when it reaches a result.
     pub(crate) progress: Option<JobProgress>,
+    /// A sync that re-runs only these chapters. Saved with the queue so a
+    /// recovered job re-runs the same ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) chapters: Vec<JobChapter>,
+    /// Chapters a completed sync could not align.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) failed_chapters: Vec<JobChapter>,
+}
+
+/// A chapter as a sync report numbers and names it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct JobChapter {
+    pub(crate) index: usize,
+    pub(crate) label: String,
 }
 
 /// A running job's own account of how far it has got. `step` is one short
@@ -182,6 +196,8 @@ pub(crate) async fn create_job_with_state(
         output: String::new(),
         error: None,
         progress: None,
+        chapters: Vec::new(),
+        failed_chapters: Vec::new(),
     };
     jobs.insert(id.clone(), job);
     prune_finished_jobs(&mut jobs);

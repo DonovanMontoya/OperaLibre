@@ -9,7 +9,7 @@ import {
   syncJobPollDelay,
   sortSyncJobs
 } from "./syncJobFeed";
-import { coveragePercent, gradeLabel, gradeTone, groupSyncedBooks, sortChapters } from "./syncQuality";
+import { canRerunChapter, chapterFailure, coveragePercent, gradeLabel, gradeTone, groupSyncedBooks, sortChapters, syncJobAttention, syncJobScope } from "./syncQuality";
 import type { Book, JobStatus, SyncReport } from "./types";
 
 type Feed = { jobs: JobStatus[]; now: number };
@@ -37,28 +37,72 @@ function relativeTime(runAt: number, now: number) {
   return RELATIVE.format(Math.round(hours / 24), "day");
 }
 
-/** A book's chapters, worst first, loaded when its grade is opened. */
-function SyncChapterGrades({ report }: { report: OpenReport }) {
+/**
+ * A book's chapters, worst first, loaded when its grade is opened. With
+ * `onRerun`, chapters below Good can be picked and aligned again on their own.
+ */
+function SyncChapterGrades({ report, onRerun }: { report: OpenReport; onRerun?: (chapters: number[]) => Promise<void> }) {
+  const [selected, setSelected] = useState<number[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<{ message: string; failed: boolean } | null>(null);
   if (report.error) return <p className="admin-sync-schedule-error" role="alert">{report.error}</p>;
   if (!report.data) return <p className="admin-sync-chapters-note"><LoaderCircle size={12} className="spin-icon" aria-hidden="true" />Loading chapters…</p>;
   const { data } = report;
+  const picking = !!onRerun && data.chapters.some(canRerunChapter);
+
+  async function rerun() {
+    if (!onRerun) return;
+    setBusy(true);
+    setOutcome(null);
+    try {
+      await onRerun(selected);
+      setOutcome({ message: `Queued ${selected.length} ${selected.length === 1 ? "chapter" : "chapters"} to re-run.`, failed: false });
+      setSelected([]);
+    } catch (err) {
+      setOutcome({ message: err instanceof Error ? err.message : "Could not re-run these chapters.", failed: true });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return <>
     {data.graded === "estimate" ? <p className="admin-sync-chapters-note">Estimated grade, measured from the existing map. Re-sync for a full grade.</p> : null}
     {data.chapters.length === 0 ? <p className="admin-sync-chapters-note">This book’s chapters could not be matched to its text, so they have no grades.</p> : (
-      <ol className="admin-sync-chapter-list">
-        <li className="admin-sync-chapter-head" aria-hidden="true"><span>Chapter</span><span>Text</span><span>Unmatched</span><span>Grade</span></li>
-        {sortChapters(data.chapters).map((chapter) => (
-          <li key={chapter.index}>
-            <span className="admin-sync-chapter-label">{chapter.label}</span>
-            {chapter.grade ? <>
-              <span title="Share of the chapter’s text that is highlighted">{coveragePercent(chapter)}</span>
-              <span title="Audio no sentence was matched to">{formatTime(chapter.gapSeconds)}</span>
-              <span className={`admin-sync-job-state admin-sync-job-state-${gradeTone(chapter.grade)}`}>{gradeLabel(chapter.grade)}</span>
-            </> : <span className="admin-sync-chapter-empty">No text to follow</span>}
-          </li>
-        ))}
+      <ol className={picking ? "admin-sync-chapter-list admin-sync-chapter-list-pick" : "admin-sync-chapter-list"}>
+        <li className="admin-sync-chapter-head" aria-hidden="true">{picking ? <span /> : null}<span className="admin-sync-chapter-label">Chapter</span><span>Text</span><span>Unmatched</span><span>Grade</span></li>
+        {sortChapters(data.chapters).map((chapter) => {
+          const failure = chapterFailure(chapter);
+          return (
+            <li key={chapter.index}>
+              {picking ? <span>{canRerunChapter(chapter) ? <input
+                type="checkbox"
+                aria-label={`Re-run ${chapter.label}`}
+                checked={selected.includes(chapter.index)}
+                disabled={busy}
+                onChange={(event) => {
+                  const { checked } = event.target;
+                  setSelected((current) => checked ? [...current, chapter.index] : current.filter((index) => index !== chapter.index));
+                }}
+              /> : null}</span> : null}
+              <span className="admin-sync-chapter-label">{chapter.label}</span>
+              {chapter.grade ? <>
+                <span title="Share of the chapter’s text that is highlighted">{coveragePercent(chapter)}</span>
+                <span title="Audio no sentence was matched to">{formatTime(chapter.gapSeconds)}</span>
+                <span className={`admin-sync-job-state admin-sync-job-state-${gradeTone(chapter.grade)}`}>{gradeLabel(chapter.grade)}</span>
+              </> : <span className="admin-sync-chapter-empty">No text to follow</span>}
+              {failure ? <span className="admin-sync-chapter-error">{failure}</span> : null}
+            </li>
+          );
+        })}
       </ol>
     )}
+    {picking ? <div className="admin-sync-chapter-actions">
+      <button type="button" className="quiet-button" disabled={busy || selected.length === 0} onClick={() => void rerun()}>
+        {busy ? <LoaderCircle size={12} className="spin-icon" /> : <RefreshCw size={12} />}Re-run selected chapters
+      </button>
+      <span className="admin-sync-chapters-note">Only these chapters are aligned again; the rest of the map stays as it is.</span>
+    </div> : null}
+    {outcome ? <p className={outcome.failed ? "admin-sync-schedule-error" : "admin-sync-sweep-outcome"} role={outcome.failed ? "alert" : "status"}>{outcome.message}</p> : null}
   </>;
 }
 
@@ -272,6 +316,11 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
     }
   }
 
+  async function rerunChapters(bookId: string, chapters: number[]) {
+    await generateSyncMap(bookId, chapters);
+    setRevision((value) => value + 1);
+  }
+
   async function changeJob(jobId: string, action: "remove" | "up" | "down" | "pause" | "resume") {
     setBusyJob(jobId);
     setQueueError(null);
@@ -440,7 +489,10 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
             const title = book?.title ?? (job.targetId ? `Unavailable book (${job.targetId})` : "Unknown book");
             const percent = syncJobPercent(job);
             const elapsed = jobElapsedMinutes(job, feed?.now ?? Date.now());
-            const state = jobState(job.status);
+            const attention = syncJobAttention(job);
+            const scope = syncJobScope(job, title);
+            // A finished sync with chapters it could not align is not all good news.
+            const state = attention ? { ...jobState(job.status), tone: "queued" } : jobState(job.status);
             return (
               <article className={`admin-sync-job admin-sync-job-${state.tone}`} key={job.id}>
                 <div className="admin-sync-job-heading">
@@ -459,6 +511,8 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                     {job.status === "queued" || job.status === "paused" ? <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null} aria-label={`Remove ${title} from sync queue`} title="Remove from queue" onClick={() => void changeJob(job.id, "remove")}><X size={14} /></button> : null}
                   </div>
                 </div>
+                {scope ? <p className="admin-sync-job-step">{scope}</p> : null}
+                {attention ? <p className="admin-sync-job-attention"><AlertTriangle size={13} aria-hidden="true" />{attention}</p> : null}
                 {job.status === "running" ? (
                   <div className="sync-progress">
                     <div className="sync-progress-head">
@@ -569,7 +623,14 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                   </span>
                   <button type="button" className="admin-sync-book-link" disabled={busyBook !== null} onClick={() => void act(book.id, "cancel")} aria-label={`Cancel scheduled sync for ${book.title}`}>Cancel</button>
                 </div> : null}
-                {reportOpen && openReport ? <div className="admin-sync-chapters"><SyncChapterGrades report={openReport} /></div> : null}
+                {reportOpen && openReport ? <div className="admin-sync-chapters">
+                  <SyncChapterGrades
+                    key={book.id}
+                    report={openReport}
+                    onRerun={syncEnabled && !job && book.syncFile?.source === "generated" && !book.syncFile.outdated
+                      ? (chapters) => rerunChapters(book.id, chapters) : undefined}
+                  />
+                </div> : null}
                 {actionError?.bookId === book.id ? <p role="alert" className="admin-sync-schedule-error">{actionError.message}</p> : null}
                 {schedule?.error ? <p className="admin-sync-schedule-error">{schedule.error}</p> : null}
                 {schedulingBook === book.id ? <form className="admin-sync-schedule-form" onSubmit={(event) => { event.preventDefault(); void act(book.id, "schedule"); }}>
