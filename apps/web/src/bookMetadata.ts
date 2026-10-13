@@ -28,7 +28,7 @@ export function displayBookDescription(book: Book) {
   return description && !descriptionEchoesBook(book, description) ? description : null;
 }
 
-function cleanCatalogDescription(value: string | null) {
+export function cleanCatalogDescription(value: string | null) {
   const description = cleanDescriptionSpaces(value)
     ?.replace(/<br\s*\/?>/gi, " ")
     .replace(/<[^>]+>/g, " ")

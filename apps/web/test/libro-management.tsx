@@ -11,7 +11,7 @@ if (params.has("dark")) document.documentElement.classList.add("dark-mode");
 const emails = ["personal@example.test", "family@example.test"];
 const fixtureBooks: LibroAccountStatus["books"] = emails.map((email, index) => ({
   accountEmail: email, isbn: index ? "9780000000002" : "9780000000001", title: index ? "Second Purchase" : "First Purchase",
-  authors: ["Fixture Author"], cover_url: null, audiobook_info: { narrators: ["Fixture Narrator"], duration: 240 }, description: "", localBookId: null
+  authors: ["Fixture Author"], cover_url: null, audiobook_info: { narrators: ["Fixture Narrator"], duration: 31_800 }, description: index ? "" : "<p>A fixture purchase whose summary runs long enough to wrap onto several lines, so the details page shows how a real description reads before the book is on the server.</p>", localBookId: null
 }));
 let status: LibroAccountStatus = {
   connected: !params.has("empty"), email: params.has("empty") ? null : emails[0], syncedAt: "2026-10-01T12:00:00Z",
