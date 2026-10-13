@@ -242,7 +242,7 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
       {detailsBook ? (() => {
         const { job, importing, action } = purchaseState(detailsBook);
         return <StoreBookDetails facts={libroBookFacts(detailsBook, accountLabel(detailsBook))} cover={<LibroCover book={detailsBook} device={device} />} action={action}
-          status={job && importing ? <p className="store-book-status" role="status">{job.progress?.step ?? "Queued for import…"}</p> : job?.status === "failed" ? <p className="libro-catalog-error" role="alert">{job.error ?? "Import failed. Try again."}</p> : null}
+          status={error ? <p className="store-book-error" role="alert">{error}</p> : job && importing ? <p className="store-book-status" role="status">{job.progress?.step ?? "Queued for import…"}</p> : job?.status === "failed" ? <p className="store-book-error" role="alert">{job.error ?? "Import failed. Try again."}</p> : null}
           hint={detailsBook.localBookId ? `This book is ${device ? "on this device" : "on your server"}. Open it to start listening.` : device ? "Download it from Libro.fm to listen on this device, even offline." : "Not on your server yet. Import it from Libro.fm to listen on every device and keep your place in sync."}
           onClose={() => setDetailsKey(null)} />;
       })() : null}

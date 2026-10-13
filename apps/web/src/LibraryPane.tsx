@@ -1034,6 +1034,7 @@ export function LibraryPane({
             facts={audibleBookFacts(audibleDetailsBook, id => audibleAccountLabels.get(id))}
             cover={<LibationCoverArt book={audibleDetailsBook} />}
             action={audibleAction(audibleDetailsBook)}
+            status={libationError ? <LibationError detail={libationError} /> : null}
             hint={audibleDetailsBook.localBookId ? "This book is on your server. Open it to start listening."
               : currentUser.libationAccess === "approval" ? "Not on your server yet. Request it and an administrator can add it from Audible."
               : "Not on your server yet. Add it from Audible to listen on every device and keep your place in sync."}

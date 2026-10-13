@@ -16136,9 +16136,9 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 .purchase-book-list--compact .purchase-book-row > :is(button, .audible-download-status) { width: 100px; }
 
 /* A purchase's title opens its details. Its hit area stretches over the whole
-   row, beneath the row's own action. The repeated class outranks the store
+   row, beneath the row's own action; the row isolates their stacking. The repeated class outranks the store
    lists' general button rules, including their native hover states. */
-.purchase-book-list .purchase-book-row { position: relative; }
+.purchase-book-list .purchase-book-row { position: relative; isolation: isolate; }
 .purchase-book-list .purchase-book-row > :is(button, .audible-download-status) { position: relative; z-index: 1; }
 .purchase-book-list .purchase-book-row .purchase-book-open.purchase-book-open.purchase-book-open {
   display: inline;
@@ -16156,7 +16156,9 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
   transform: none;
   cursor: pointer;
 }
-.purchase-book-list .purchase-book-row .purchase-book-open::after { content: ""; position: absolute; inset: 0; }
+/* Loaded Libro.fm cover art is raised to z-index 1; the hit area sits level
+   with it and later in the row, so it stays on top. */
+.purchase-book-list .purchase-book-row .purchase-book-open::after { content: ""; position: absolute; inset: 0; z-index: 1; }
 .purchase-book-list .purchase-book-row .purchase-book-open.purchase-book-open.purchase-book-open:hover { text-decoration: underline; text-underline-offset: 3px; }
 .purchase-book-list .purchase-book-row .purchase-book-open.purchase-book-open.purchase-book-open:focus-visible { outline: none; }
 .purchase-book-list .purchase-book-row:has(.purchase-book-open:focus-visible) { outline: 2px solid var(--gold-soft); outline-offset: 2px; }
@@ -16233,6 +16235,8 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 }
 .store-book-hint { margin: 0; color: var(--ink-faded); font: italic 0.95rem/1.4 "Fraunces", serif; }
 .store-book-status { margin: 0; color: var(--ink-soft); font: 500 0.66rem/1.4 "JetBrains Mono", monospace; letter-spacing: 0.04em; }
+.store-book-error { margin: 0; padding: 8px 10px; border-left: 3px solid var(--oxblood); color: var(--ink-soft); font: 400 0.85rem/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.store-book-cta .audible-error { color: var(--ink-soft); border-left-color: var(--oxblood); }
 .store-book-colophon {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
