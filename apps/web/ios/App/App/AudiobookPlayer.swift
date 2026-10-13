@@ -39,6 +39,9 @@ struct AudiobookLoadRequest {
     var recoveryTrackId: String?
     var recoveryBookOffsetSeconds: Double
     var queue: [NativeAudioQueuedTrack]
+    /// Set when the player rebuilds itself in place: a lock-screen seek the
+    /// web layer has not been told about yet is still owed to it.
+    var keepsPendingIntentionalSeek = false
 }
 
 struct AudiobookNowPlayingRequest {
@@ -295,7 +298,9 @@ public final class AudiobookPlayer {
             self.activeQueueIndex = 0
             self.initialSeekComplete = false
             self.positionEstablished = false
-            self.pendingRemoteIntentionalSeek = false
+            if !request.keepsPendingIntentionalSeek {
+                self.pendingRemoteIntentionalSeek = false
+            }
             self.finishedWhileInactive = false
             self.finishedPositionSeconds = nil
             self.finishedDurationSeconds = nil
@@ -1249,11 +1254,20 @@ public final class AudiobookPlayer {
     /// had reached, and keep playing only if it was. A book that already
     /// finished has nothing to rebuild and still owes its `ended` event.
     private func handleMediaServicesReset() {
-        guard
-            let player,
-            !finishedWhileInactive,
-            queuedTracks.indices.contains(activeQueueIndex)
-        else { return }
+        guard let player, !finishedWhileInactive else { return }
+        // The queue can move to its next file a moment before that track is
+        // adopted here. Adopt it first: rebuilding the previous track at the
+        // new file's clock would send the listener backwards.
+        if let item = player.currentItem,
+           let index = queuedItems.firstIndex(where: { $0 === item }),
+           index != activeQueueIndex {
+            activateQueuedTrack(at: index)
+            initialSeekComplete = true
+            positionEstablished = true
+            pendingRemoteIntentionalSeek = false
+            if UIApplication.shared.applicationState == .active { emitTrackChanged() }
+        }
+        guard queuedTracks.indices.contains(activeQueueIndex) else { return }
         NSLog("Audio services were reset; rebuilding the player")
         let remaining = Array(queuedTracks[activeQueueIndex...])
         load(AudiobookLoadRequest(
@@ -1266,7 +1280,8 @@ public final class AudiobookPlayer {
             recoveryScopeKey: recoveryScopeKey,
             recoveryTrackId: recoveryTrackId,
             recoveryBookOffsetSeconds: recoveryBookOffset,
-            queue: remaining
+            queue: remaining,
+            keepsPendingIntentionalSeek: true
         ))
     }
 
