@@ -39,6 +39,9 @@ struct AudiobookLoadRequest {
     var recoveryTrackId: String?
     var recoveryBookOffsetSeconds: Double
     var queue: [NativeAudioQueuedTrack]
+    /// Set when the player rebuilds itself in place: a lock-screen seek the
+    /// web layer has not been told about yet is still owed to it.
+    var keepsPendingIntentionalSeek = false
 }
 
 struct AudiobookNowPlayingRequest {
@@ -128,6 +131,7 @@ public final class AudiobookPlayer {
     private var rateChangeObserver: NSObjectProtocol?
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
+    private var mediaServicesResetObserver: NSObjectProtocol?
     private var becameActiveObserver: NSObjectProtocol?
     private var willEnterForegroundObserver: NSObjectProtocol?
     private var enteredBackgroundObserver: NSObjectProtocol?
@@ -218,6 +222,7 @@ public final class AudiobookPlayer {
         for observer in [
             interruptionObserver,
             routeChangeObserver,
+            mediaServicesResetObserver,
             becameActiveObserver,
             willEnterForegroundObserver,
             enteredBackgroundObserver
@@ -293,7 +298,9 @@ public final class AudiobookPlayer {
             self.activeQueueIndex = 0
             self.initialSeekComplete = false
             self.positionEstablished = false
-            self.pendingRemoteIntentionalSeek = false
+            if !request.keepsPendingIntentionalSeek {
+                self.pendingRemoteIntentionalSeek = false
+            }
             self.finishedWhileInactive = false
             self.finishedPositionSeconds = nil
             self.finishedDurationSeconds = nil
@@ -1034,6 +1041,13 @@ public final class AudiobookPlayer {
         ) { [weak self] notification in
             self?.handleAudioRouteChange(notification)
         }
+        mediaServicesResetObserver = center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleMediaServicesReset()
+        }
         willEnterForegroundObserver = center.addObserver(
             forName: UIApplication.willEnterForegroundNotification,
             object: nil,
@@ -1233,6 +1247,42 @@ public final class AudiobookPlayer {
         default:
             break
         }
+    }
+
+    /// iOS restarted its audio services, which leaves the existing AVPlayer
+    /// silent for good. Rebuild it from the queue it held, at the position it
+    /// had reached, and keep playing only if it was. A book that already
+    /// finished has nothing to rebuild and still owes its `ended` event.
+    private func handleMediaServicesReset() {
+        guard let player, !finishedWhileInactive else { return }
+        // The queue can move to its next file a moment before that track is
+        // adopted here. Adopt it first: rebuilding the previous track at the
+        // new file's clock would send the listener backwards.
+        if let item = player.currentItem,
+           let index = queuedItems.firstIndex(where: { $0 === item }),
+           index != activeQueueIndex {
+            activateQueuedTrack(at: index)
+            initialSeekComplete = true
+            positionEstablished = true
+            pendingRemoteIntentionalSeek = false
+            if UIApplication.shared.applicationState == .active { emitTrackChanged() }
+        }
+        guard queuedTracks.indices.contains(activeQueueIndex) else { return }
+        NSLog("Audio services were reset; rebuilding the player")
+        let remaining = Array(queuedTracks[activeQueueIndex...])
+        load(AudiobookLoadRequest(
+            url: remaining[0].url,
+            positionSeconds: stablePlayerPosition(),
+            rate: Double(desiredRate),
+            volume: Double(player.volume),
+            gain: Double(boostGain),
+            autoplay: shouldAutoplay,
+            recoveryScopeKey: recoveryScopeKey,
+            recoveryTrackId: recoveryTrackId,
+            recoveryBookOffsetSeconds: recoveryBookOffset,
+            queue: remaining,
+            keepsPendingIntentionalSeek: true
+        ))
     }
 
     /// Removing wired headphones or disconnecting AirPods is not reliably
