@@ -204,6 +204,10 @@ public final class AudiobookPlayer {
     /// moment after iOS reports the interruption over, and activation fails
     /// until it lets go. A resume waits these out before giving up.
     private static let interruptionResumeRetryDelays: [TimeInterval] = [0.5, 1, 2]
+    /// A resume that has not started by then is abandoned. iOS can refuse
+    /// the background task below and suspend the app with a retry queued;
+    /// it would otherwise start playback whenever the app next ran.
+    private static let interruptionResumeWindowSeconds = 10.0
     /// Identifies the newest resume, so a superseded one stops retrying.
     private var interruptionResumeSerial = 0
     /// Keeps a backgrounded app running through those retries; a paused app
@@ -1308,20 +1312,32 @@ public final class AudiobookPlayer {
                 self?.endInterruptionResumeTask()
             }
         }
-        attemptResumeAfterInterruption(player, resume: resume, retry: 0)
+        let deadline = Date.timeIntervalSinceReferenceDate + Self.interruptionResumeWindowSeconds
+        attemptResumeAfterInterruption(player, resume: resume, deadline: deadline, retry: 0)
     }
 
-    private func attemptResumeAfterInterruption(_ player: AVPlayer, resume: Int, retry: Int) {
+    private func attemptResumeAfterInterruption(
+        _ player: AVPlayer,
+        resume: Int,
+        deadline: TimeInterval,
+        retry: Int
+    ) {
+        guard Date.timeIntervalSinceReferenceDate <= deadline else {
+            finishResumeAfterInterruption(givingUp: true)
+            return
+        }
         let interruption = interruptionSerial
         // A failure here is the interrupter still letting go of the session,
         // not a broken player, so it is retried rather than reported.
         activateAudioSession(reportingFailure: false) { [weak self] activated in
             guard let self, player === self.player, resume == self.interruptionResumeSerial else { return }
             let wanted = self.shouldAutoplay && !self.interruptionIsActive
-            if activated && wanted {
+            let expired = Date.timeIntervalSinceReferenceDate > deadline
+            var givingUp = false
+            if activated && wanted && !expired {
                 player.playImmediately(atRate: self.desiredRate)
-            } else if !activated && wanted && interruption == self.interruptionSerial {
-                if retry < Self.interruptionResumeRetryDelays.count {
+            } else if wanted && interruption == self.interruptionSerial {
+                if !expired && retry < Self.interruptionResumeRetryDelays.count {
                     let delay = Self.interruptionResumeRetryDelays[retry]
                     DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                         guard let self, player === self.player,
@@ -1331,21 +1347,33 @@ public final class AudiobookPlayer {
                             self.endInterruptionResumeTask()
                             return
                         }
-                        self.attemptResumeAfterInterruption(player, resume: resume, retry: retry + 1)
+                        self.attemptResumeAfterInterruption(
+                            player,
+                            resume: resume,
+                            deadline: deadline,
+                            retry: retry + 1
+                        )
                     }
                     return
                 }
-                // Something else kept the session. Stay paused where the
-                // listener can press play, instead of resuming unprompted
-                // whenever the session next frees up.
-                NSLog("Audio session stayed unavailable after an interruption; leaving playback paused")
-                self.shouldAutoplay = false
+                givingUp = true
             }
-            self.endInterruptionResumeTask()
-            self.persistCheckpoint(force: true)
-            self.updateNowPlayingInfo()
-            if UIApplication.shared.applicationState == .active { self.emitState() }
+            self.finishResumeAfterInterruption(givingUp: givingUp)
         }
+    }
+
+    private func finishResumeAfterInterruption(givingUp: Bool) {
+        if givingUp {
+            // Something else kept the session. Stay paused where the listener
+            // can press play, instead of resuming unprompted whenever the
+            // session next frees up.
+            NSLog("Audio session stayed unavailable after an interruption; leaving playback paused")
+            shouldAutoplay = false
+        }
+        endInterruptionResumeTask()
+        persistCheckpoint(force: true)
+        updateNowPlayingInfo()
+        if UIApplication.shared.applicationState == .active { emitState() }
     }
 
     private func endInterruptionResumeTask() {
