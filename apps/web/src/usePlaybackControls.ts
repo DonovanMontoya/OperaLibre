@@ -19,6 +19,7 @@ import { getFreshProgress, getServerStorageKey } from "./api";
 import { progressSeekStorage, recordProgressSeekIntent } from "./progressSeekIntent";
 import { normalizePlaybackSpeed } from "./playbackSpeed";
 import { writeStoredBookGains, writeStoredSpeed } from "./appStorage";
+import type { PreviewPosition } from "./BookPreviewBar";
 import type { PendingSeek } from "./playbackTypes";
 import type { NativeTab } from "./nativeTabs";
 import type { NativePlayerSheet } from "./PlayerSheets";
@@ -499,10 +500,10 @@ export function usePlaybackControls({
     void persistProgress();
   }
 
-  function seekBookPositionInBook(book: Book, value: number, autoPlay = false) {
+  function seekBookPositionInBook(book: Book, value: number, autoPlay = false, preview?: PreviewPosition) {
     const targetBookDuration = book.durationSeconds ?? durationFromTracks(book);
     const clampedValue = Math.max(0, Math.min(value, targetBookDuration || value));
-    const location = resolveBookPosition(book.tracks, clampedValue);
+    const location = preview ?? resolveBookPosition(book.tracks, clampedValue);
     if (!location) return;
     const targetTrack = book.tracks.find((track) => track.id === location.trackId)!;
     const trackPosition = location.positionSeconds;
@@ -641,7 +642,7 @@ export function usePlaybackControls({
    * resume instead hands the book to that effect, which reconciles the native,
    * checkpoint, cached, listed and server copies before seeking.
    */
-  async function playSelectedBook(book: Book) {
+  async function playSelectedBook(book: Book, preview?: PreviewPosition) {
     haptic("medium");
     if (playPendingRef.current) {
       const pendingBookId = playPendingBookIdRef.current;
@@ -663,6 +664,15 @@ export function usePlaybackControls({
       if (inProgressElsewhere) {
         updateBookProgress(book.id, inProgressElsewhere);
         resumeSelectedBook(book);
+        return;
+      }
+      if (preview) {
+        // A sample has no progress of its own. Only this explicit handoff starts
+        // a reading, after the usual check for a newer position on the server.
+        void persistProgress();
+        seekBookPositionInBook(book, preview.bookPositionSeconds, true, preview);
+        setNativePlayerView("now");
+        if (native) setNativeTab("reading");
         return;
       }
       // "Read it again" on a finished book, or one never opened: track one.
