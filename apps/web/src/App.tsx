@@ -627,6 +627,8 @@ function MainApp({
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [previewBook, setPreviewBook] = useState<Book | null>(null);
+  const previewBookRef = useRef<Book | null>(null);
+  previewBookRef.current = previewBook;
   // Lock-screen and native controls can resume the main book while a sample is open.
   useEffect(() => { if (isPlaying) setPreviewBook(null); }, [isPlaying]);
   // Play was asked for but no audio is coming out yet — a streamed book can
@@ -1249,6 +1251,7 @@ function MainApp({
   const {
     applyPlaybackVolume,
     cancelPendingPlayback,
+    continuePreview,
     clearPlayPendingForBook,
     engageGainChain,
     gainChain,
@@ -1288,6 +1291,9 @@ function MainApp({
     explicitSessionStartBookIdRef,
     gainChainRef,
     gainSyncRef,
+    flushProgressSaveQueue,
+    lastKnownProgressFor,
+    storeCanonicalServerProgress,
     intentionalSeekGenerationRef,
     intentionalSeekTargetRef,
     isOffline,
@@ -2215,9 +2221,10 @@ function MainApp({
         openPlaybackView={openPlaybackView}
         previewBookId={previewBook?.id ?? null}
         stopBookPreview={() => setPreviewBook(null)}
-        continueBookPreview={(book, position) => {
-          setPreviewBook(null);
-          void playSelectedBook(book, position);
+        continueBookPreview={async (book, position) => {
+          const started = await continuePreview(book, position, () => previewBookRef.current?.id === book.id);
+          if (started) setPreviewBook(current => current?.id === book.id ? null : current);
+          return started;
         }}
         openBookPreview={isOperaLibre && !demoMode && !localMode && !isOffline ? (book) => {
           cancelPendingPlayback(audioRef.current);

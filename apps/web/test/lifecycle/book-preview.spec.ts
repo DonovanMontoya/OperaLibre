@@ -172,8 +172,11 @@ test('a failed inline sample can retry and resetting it releases the stream', as
   })).toBe(true);
 });
 
-async function finishFiveMinutePreview(page: Page) {
-  const preview = await openPreview(page);
+async function finishFiveMinutePreview(page: Page, alreadyOpen = false) {
+  const preview = alreadyOpen
+    ? page.getByRole('region', { name: 'Audio preview of Second Book', exact: true })
+    : await openPreview(page);
+  if (alreadyOpen) await preview.getByRole('button', { name: 'Listen to a preview of Second Book', exact: true }).click();
   const audio = preview.locator('audio');
   await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThan(0);
   const firstSource = await audio.evaluate((a: HTMLAudioElement) => a.currentSrc);
@@ -243,4 +246,77 @@ test('refreshing the library does not restart an inline preview', async ({ page,
   await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeCloseTo(paused, 1);
   expect(await audio.evaluate((a: HTMLAudioElement) => a.paused)).toBe(true);
   expect(await server.progress((await server.books()).find(b => b.title === 'Second Book')!.id)).toBeNull();
+});
+
+for (const failure of ['error', 'timeout'] as const) {
+  test(`a ${failure} checking progress leaves continuation retryable without saving a seek`, async ({ page, server }) => {
+    const books = await setup(page, server);
+    const book = books.find(b => b.title === 'Second Book')!;
+    const preview = await finishFiveMinutePreview(page);
+    await server.json(`/api/books/${book.id}/progress`, 'PUT', {
+      trackId: book.tracks[1].id, positionSeconds: 140, bookPositionSeconds: 320,
+      durationSeconds: 180, intentionalSeek: true
+    });
+    const saved = await server.progress(book.id);
+    const writes: string[] = [];
+    page.on('request', r => {
+      if (r.method() === 'PUT' && r.url().includes(`/api/books/${book.id}/progress`)) writes.push(r.url());
+    });
+    let failures = 0;
+    await page.route(`**/api/books/${book.id}/progress`, async route => {
+      if (route.request().method() !== 'GET' || failures++ > 0) return route.continue();
+      if (failure === 'error') return route.fulfill({ status: 503, json: { message: 'Temporarily unavailable' } });
+      // Hold the request until the client's timeout aborts it.
+    });
+    await preview.getByRole('button', { name: 'Continue listening', exact: true }).click();
+    await expect(preview.getByRole('alert')).toContainText('Could not check your saved position');
+    await expect(preview.getByRole('button', { name: 'Continue listening', exact: true })).toBeEnabled();
+    expect(await page.locator('audio').first().evaluate((a: HTMLAudioElement) => a.paused)).toBe(true);
+    expect(await server.progress(book.id)).toEqual(saved);
+    expect(writes).toEqual([]);
+    await preview.getByRole('button', { name: 'Continue listening', exact: true }).click();
+    await expect.poll(() => page.locator('audio').first().evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThanOrEqual(140);
+    expect((await server.progress(book.id))!.bookPositionSeconds).toBeGreaterThanOrEqual(320);
+  });
+}
+
+test('continuing the loaded book adopts progress saved on another device during the preview', async ({ page, server }) => {
+  const books = await setup(page, server);
+  const book = books.find(b => b.title === 'Second Book')!;
+  await page.locator('.book-row').filter({ hasText: 'Second Book' }).click();
+  await page.getByRole('button', { name: 'Play Second Book', exact: true }).first().click();
+  const main = page.locator('audio').first();
+  await expect.poll(() => main.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThan(0);
+  await page.getByRole('button', { name: 'Forward 30 seconds', exact: true }).first().click();
+  await expect.poll(() => main.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThan(30);
+  await page.getByRole('button', { name: 'View details', exact: true }).click();
+  await page.getByRole('button', { name: 'Full book page', exact: true }).click();
+  const preview = await finishFiveMinutePreview(page, true);
+  await server.json(`/api/books/${book.id}/progress`, 'PUT', {
+    trackId: book.tracks[1].id, positionSeconds: 140, bookPositionSeconds: 320,
+    durationSeconds: 180, intentionalSeek: true
+  });
+  await preview.getByRole('button', { name: 'Continue listening', exact: true }).click();
+  await expect.poll(() => main.evaluate((a: HTMLAudioElement) => a.currentSrc)).toContain(book.tracks[1].id);
+  await expect.poll(() => main.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThanOrEqual(140);
+  await expect.poll(() => main.evaluate((a: HTMLAudioElement) => a.paused)).toBe(false);
+  expect((await server.progress(book.id))!.bookPositionSeconds).toBeGreaterThanOrEqual(320);
+});
+
+test('leaving the page while continuation checks progress cancels the pending handoff', async ({ page, server }) => {
+  const books = await setup(page, server);
+  const book = books.find(b => b.title === 'Second Book')!;
+  const preview = await finishFiveMinutePreview(page);
+  let held: import('@playwright/test').Route | undefined;
+  await page.route(`**/api/books/${book.id}/progress`, route => {
+    if (route.request().method() === 'GET') held = route;
+    else void route.continue();
+  });
+  await preview.getByRole('button', { name: 'Continue listening', exact: true }).click();
+  await expect.poll(() => !!held).toBe(true);
+  await page.locator('.book-row').filter({ hasText: 'First Book' }).click();
+  await held!.fulfill({ json: null });
+  await expect(preview).toHaveCount(0);
+  expect(await page.locator('audio').first().evaluate((a: HTMLAudioElement) => a.paused)).toBe(true);
+  expect(await server.progress(book.id)).toBeNull();
 });

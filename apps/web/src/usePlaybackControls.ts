@@ -10,6 +10,9 @@ import type { AuthUser, Book, Chapter, Progress, Track } from "./types";
 import { hasPlaybackSource } from "./nativeAudioStartup";
 import {
   endedShortOfTrack,
+  freshestProgress,
+  progressNeedsSync,
+  resolveProgressLocation,
   PROGRESS_RESET_GUARD_SECONDS,
   resolveBookPosition,
   shouldResumeSavedPosition,
@@ -60,6 +63,9 @@ export function usePlaybackControls({
   explicitSessionStartBookIdRef,
   gainChainRef,
   gainSyncRef,
+  flushProgressSaveQueue,
+  lastKnownProgressFor,
+  storeCanonicalServerProgress,
   intentionalSeekGenerationRef,
   intentionalSeekTargetRef,
   isOffline,
@@ -129,6 +135,9 @@ export function usePlaybackControls({
   explicitSessionStartBookIdRef: RefObject<string | null>;
   gainChainRef: RefObject<PlaybackGainChain | null>;
   gainSyncRef: RefObject<ReturnType<typeof createBookGainSync> | null>;
+  flushProgressSaveQueue: () => Promise<void>;
+  lastKnownProgressFor: (book: Book) => Progress | null;
+  storeCanonicalServerProgress: (book: Book, saved: Progress) => void;
   intentionalSeekGenerationRef: RefObject<Map<string, number>>;
   intentionalSeekTargetRef: RefObject<Map<string, number>>;
   isOffline: boolean;
@@ -500,14 +509,14 @@ export function usePlaybackControls({
     void persistProgress();
   }
 
-  function seekBookPositionInBook(book: Book, value: number, autoPlay = false, preview?: PreviewPosition) {
+  function seekBookPositionInBook(book: Book, value: number, autoPlay = false, preview?: PreviewPosition, deliberateSeek = true) {
     const targetBookDuration = book.durationSeconds ?? durationFromTracks(book);
     const clampedValue = Math.max(0, Math.min(value, targetBookDuration || value));
     const location = preview ?? resolveBookPosition(book.tracks, clampedValue);
     if (!location) return;
     const targetTrack = book.tracks.find((track) => track.id === location.trackId)!;
     const trackPosition = location.positionSeconds;
-    markPlaybackTouched(true, book.id, true, clampedValue);
+    markPlaybackTouched(deliberateSeek, book.id, true, clampedValue);
     if (playbackBook?.id !== book.id) explicitSessionStartBookIdRef.current = book.id;
     setPlaybackBookId(book.id);
 
@@ -642,7 +651,7 @@ export function usePlaybackControls({
    * resume instead hands the book to that effect, which reconciles the native,
    * checkpoint, cached, listed and server copies before seeking.
    */
-  async function playSelectedBook(book: Book, preview?: PreviewPosition) {
+  async function playSelectedBook(book: Book) {
     haptic("medium");
     if (playPendingRef.current) {
       const pendingBookId = playPendingBookIdRef.current;
@@ -666,21 +675,66 @@ export function usePlaybackControls({
         resumeSelectedBook(book);
         return;
       }
-      if (preview) {
-        // A sample has no progress of its own. Only this explicit handoff starts
-        // a reading, after the usual check for a newer position on the server.
-        void persistProgress();
-        seekBookPositionInBook(book, preview.bookPositionSeconds, true, preview);
-        setNativePlayerView("now");
-        if (native) setNativeTab("reading");
-        return;
-      }
       // "Read it again" on a finished book, or one never opened: track one.
       if (book.tracks[0]) selectTrack(book.tracks[0]);
       else setPlayPending(false);
       return;
     }
     resumeSelectedBook(book);
+  }
+
+  async function continuePreview(book: Book, preview: PreviewPosition | undefined, isCurrent: () => boolean): Promise<boolean> {
+    haptic("medium");
+    cancelPendingPlayback(audioRef.current);
+    const cancelGeneration = playCancelGenerationRef.current;
+    const actionVersion = playbackActionVersionRef.current;
+    const ownsRequest = () => isCurrent() && playCancelGenerationRef.current === cancelGeneration
+      && playbackActionVersionRef.current === actionVersion;
+    setPlayPending(true, book.id);
+    let started = false;
+    try {
+      // A sample does not own a listening checkpoint. Finish any prior pause
+      // save, then require a successful fresh read before authorizing a seek.
+      await flushProgressSaveQueue();
+      if (!ownsRequest()) return false;
+      const server = await getFreshProgress(book, START_OVER_PROGRESS_CHECK_MS);
+      if (!ownsRequest()) return false;
+      const local = lastKnownProgressFor(book);
+      const saved = freshestProgress(local, server);
+      if (shouldResumeSavedPosition(summarizeBookProgress(book, saved))) {
+        if (server && saved === server && !progressNeedsSync(local, server)) {
+          storeCanonicalServerProgress(book, server);
+        }
+        if (playbackBook?.id === book.id && saved) {
+          const location = resolveProgressLocation(book.tracks, saved);
+          if (!location) return false;
+          // Reconcile even when the loaded book would otherwise take the
+          // same-book resume shortcut. Adoption is not a deliberate rewind.
+          seekBookPositionInBook(book, saved.bookPositionSeconds, true,
+            { ...location, bookPositionSeconds: saved.bookPositionSeconds }, false);
+        } else {
+          if (server) updateBookProgress(book.id, server);
+          resumeSelectedBook(book);
+        }
+      } else {
+        if (server) storeCanonicalServerProgress(book, server);
+        if (playbackBook?.id !== book.id) void persistProgress();
+        if (preview) seekBookPositionInBook(book, preview.bookPositionSeconds, true, preview);
+        else if (book.tracks[0]) selectTrack(book.tracks[0]);
+        else return false;
+      }
+      setPlaybackError(null);
+      setNativePlayerView("now");
+      if (native) setNativeTab("reading");
+      started = true;
+      return true;
+    } catch {
+      // Keep the finished sample available: another Continue tap retries the
+      // read, without ever journaling an unverified preview seek.
+      return false;
+    } finally {
+      if (!started && playCancelGenerationRef.current === cancelGeneration) setPlayPending(false);
+    }
   }
 
   async function freshProgressBeforeStartingOver(book: Book): Promise<Progress | null> {
@@ -869,6 +923,7 @@ export function usePlaybackControls({
   return {
     applyPlaybackVolume,
     cancelPendingPlayback,
+    continuePreview,
     clearPlayPendingForBook,
     engageGainChain,
     gainChain,

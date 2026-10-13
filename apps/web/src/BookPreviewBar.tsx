@@ -14,7 +14,7 @@ export function BookPreviewBar({ book, active, onStart, onStop, onContinue }: {
   active: boolean;
   onStart: () => void;
   onStop: () => void;
-  onContinue: (position?: PreviewPosition) => void;
+  onContinue: (position?: PreviewPosition) => Promise<boolean>;
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [trackIndex, setTrackIndex] = useState(0);
@@ -23,6 +23,7 @@ export function BookPreviewBar({ book, active, onStart, onStop, onContinue }: {
   const [playing, setPlaying] = useState(false);
   const [pending, setPending] = useState(false);
   const [finished, setFinished] = useState(false);
+  const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const playGeneration = useRef(0);
   const track = book.tracks[trackIndex];
@@ -136,17 +137,21 @@ export function BookPreviewBar({ book, active, onStart, onStop, onContinue }: {
     }
   }
 
-  function continueListening() {
+  async function continueListening() {
     const audio = audioRef.current;
     const position = Math.max(0, elapsed - consumedRef.current);
     const hasMore = trackIndex + 1 < book.tracks.length
       || (!!audio && Number.isFinite(audio.duration) && position < audio.duration - 0.5);
     stop();
-    onContinue(hasMore && track ? {
+    setContinuing(true);
+    setError(null);
+    const started = await onContinue(hasMore && track ? {
       trackId: track.id,
       positionSeconds: position,
       bookPositionSeconds: elapsed
     } : undefined);
+    setContinuing(false);
+    if (!started) setError("Could not check your saved position. Try Continue listening again.");
   }
 
   return (
@@ -157,7 +162,7 @@ export function BookPreviewBar({ book, active, onStart, onStop, onContinue }: {
           setError("Preview unavailable. Check your connection and try again.");
         }} /> : null}
       <div className={`book-sample-bar ${playing ? "is-playing" : ""}`}>
-        <button type="button" className="book-sample-play"
+        <button type="button" className="book-sample-play" disabled={continuing}
           aria-label={finished ? "Replay preview" : playing || pending ? "Pause preview" : `Listen to a preview of ${book.title}`}
           onClick={() => {
             if (!active) onStart();
@@ -176,8 +181,8 @@ export function BookPreviewBar({ book, active, onStart, onStop, onContinue }: {
       {finished ? (
         <div className="book-sample-finished">
           <span className="sr-only" role="status">Preview finished</span>
-          <button type="button" className="book-sample-continue" onClick={continueListening}>
-            Continue listening <ArrowRight size={13} />
+          <button type="button" className="book-sample-continue" disabled={continuing} aria-busy={continuing} onClick={() => void continueListening()}>
+            {continuing ? "Checking progress…" : "Continue listening"} <ArrowRight size={13} />
           </button>
         </div>
       ) : null}

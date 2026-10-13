@@ -205,7 +205,7 @@ export function PlayerPane({
   openBookPreview: ((book: Book) => void) | null;
   previewBookId: string | null;
   stopBookPreview: () => void;
-  continueBookPreview: (book: Book, position?: PreviewPosition) => void;
+  continueBookPreview: (book: Book, position?: PreviewPosition) => Promise<boolean>;
   playPending: boolean;
   playSelectedBook: (book: Book) => Promise<void>;
   playbackBook: Book | null;
