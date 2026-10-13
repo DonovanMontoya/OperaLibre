@@ -23,6 +23,12 @@ OperaLibre remembers a reader’s position automatically. Each reader has separa
 
 The small **Preview** bar beneath a server book’s cover plays its opening five minutes (or the whole book if it is shorter). Previews pause your current reading and leave your listening progress and Up Next queue unchanged. When the sample ends, choose **Continue listening** to start a reading where the sample stopped. Books already in progress resume your saved position; if the preview covered the entire book, listening starts from the beginning. Previews need a connection to an OperaLibre server and pause when you leave the app or book page. To hide the Preview bar on a device, turn off **Audio previews** in the native app’s **Settings → Behavior**, or under **Behavior** in the browser’s reader menu.
 
+Tap the car icon in the upper-right corner of the player for larger playback
+controls. When clips are enabled, **Save moment** keeps a passage with one tap.
+Tap the same car icon again to return to the normal player without interrupting
+your book. Car mode is a manual choice for the current app session; it does not
+detect Driving Focus.
+
 ### Fix a book that is too quiet
 
 Audiobooks are mastered at very different levels, so a device volume that suits one book leaves the next one hard to hear. **Book Volume**, in the player’s playback sheet (the speed pill) and on the book’s own page, trims or lifts that single book by up to 24 dB without touching anything else. It is saved per reader on the server, so a book you turned up on your phone is already turned up on every other device you sign in from.
