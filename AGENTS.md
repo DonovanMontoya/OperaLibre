@@ -277,11 +277,13 @@ worktrees may have no `.jj`; use Git there and do not initialize a new JJ store.
 - Visible changes need before/after screenshots; motion, gestures, and playback
   timing need a short recording. Upload them to the PR, not the repository. If
   you cannot capture them, say so in the PR.
-- Disclose AI assistance. Every commit written with AI help ends with a
-  `Co-Authored-By:` trailer naming the model used, for example
-  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` or
-  `Co-Authored-By: GPT-5 <noreply@openai.com>`, and the PR's "AI assistance"
-  section lists the models and tools used. Do not add session links.
+- Disclose AI assistance in every PR's "AI assistance" section. Name the tools
+  and models used when known and briefly describe their role, or write "None"
+  if no AI tools were used. Do not add session links. Human contributors remain
+  responsible for reviewing and testing every change they submit.
+- Reserve `Co-Authored-By:` trailers for real human collaborators. AI agents,
+  tools, models, and providers must not be listed as commit authors, committers,
+  coauthors, or repository contributors.
 - Never disable commit signing or change the configured author to get past a
   prompt; report the blocker instead.
 - When addressing review: verify each finding against the source, fix real ones,
