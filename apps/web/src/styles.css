@@ -19421,3 +19421,375 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
   margin-top: 6px;
   text-align: center;
 }
+
+/* --------- Up Next: the device-local reading plan ---------
+   Shares the Continue Reading card language, but a planned book is not a
+   listening session: no meter, and its actions sit in a ruled footer so Start
+   reads as the one primary move beside two quiet housekeeping controls. The
+   section is its own size container because the shelf pane, not the viewport,
+   decides how much room a row has (phone, either Duo leaf, desktop spine). */
+.reading-queue {
+  container: reading-queue / inline-size;
+}
+
+.reading-queue .continue-reading-heading {
+  justify-content: flex-start;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.reading-queue .continue-reading-heading > span {
+  padding-top: 5px;
+  color: rgba(217, 181, 116, 0.75);
+  font-variant-numeric: tabular-nums;
+}
+
+.reading-queue .queue-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  min-height: 44px;
+  margin-left: auto;
+  padding: 0 13px;
+  border: 1px solid rgba(217, 181, 116, 0.3);
+  border-radius: 3px;
+  color: var(--gold-soft);
+  font: 500 0.6rem "JetBrains Mono", monospace;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.reading-queue .queue-add[aria-expanded="true"] {
+  border-color: var(--gold-soft);
+  background: rgba(217, 181, 116, 0.14);
+  color: var(--paper);
+}
+
+.queue-description {
+  margin: 0 0 14px;
+  color: rgba(241, 231, 208, 0.58);
+  font: 0.8rem/1.45 "Fraunces", serif;
+}
+
+/* Picker */
+.queue-picker {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid rgba(217, 181, 116, 0.24);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.24);
+  color: var(--paper);
+}
+
+.queue-picker label {
+  color: rgba(241, 231, 208, 0.6);
+  font: 0.58rem "JetBrains Mono", monospace;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.queue-picker input {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid rgba(217, 181, 116, 0.3);
+  border-radius: 3px;
+  background: rgba(241, 231, 208, 0.05);
+  color: var(--paper);
+  /* 16px keeps iOS from zooming the page when the field takes focus. */
+  font: 1rem "Fraunces", serif;
+  color-scheme: dark;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.queue-picker input::placeholder {
+  color: rgba(241, 231, 208, 0.42);
+  font-style: italic;
+}
+
+.queue-picker input:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  outline-offset: 2px;
+  border-color: var(--gold-soft);
+}
+
+.queue-candidates {
+  max-height: min(264px, 45vh);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.queue-candidates:empty {
+  display: none;
+}
+
+.queue-candidates li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 6px 0;
+}
+
+.queue-candidates li + li {
+  border-top: 1px solid rgba(217, 181, 116, 0.12);
+}
+
+.queue-candidates li > span {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.queue-candidates strong,
+.queue-candidates small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.queue-candidates strong {
+  font: 500 0.9rem/1.25 "Fraunces", serif;
+}
+
+.queue-candidates small {
+  color: rgba(241, 231, 208, 0.62);
+  font: italic 0.85rem/1.2 "Instrument Serif", serif;
+}
+
+.queue-candidate-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid rgba(217, 181, 116, 0.3);
+  border-radius: 3px;
+  color: var(--gold-soft);
+  font: 500 0.6rem "JetBrains Mono", monospace;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.queue-picker-empty {
+  margin: 0;
+  color: rgba(241, 231, 208, 0.62);
+  font: italic 0.95rem/1.35 "Instrument Serif", serif;
+}
+
+/* Empty plan: a dashed slot, the shape of the card that will fill it. */
+.queue-empty {
+  display: grid;
+  gap: 4px;
+  padding: 16px 14px;
+  border: 1px dashed rgba(217, 181, 116, 0.3);
+  border-radius: 3px;
+}
+
+.queue-empty strong {
+  color: var(--paper);
+  font: 400 1.15rem/1.2 "Instrument Serif", serif;
+}
+
+.queue-empty p {
+  margin: 0;
+  color: rgba(241, 231, 208, 0.58);
+  font: 0.8rem/1.45 "Fraunces", serif;
+}
+
+/* Planned book */
+.queue-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  border: 1px solid rgba(217, 181, 116, 0.24);
+  border-radius: 3px;
+  background: rgba(217, 181, 116, 0.06);
+}
+
+/* The head of the plan carries the same gold edge a book's spine does. */
+.queue-row.is-next {
+  border-color: rgba(217, 181, 116, 0.42);
+  box-shadow: inset 2px 0 0 var(--gold-soft);
+}
+
+.queue-row .continue-reading-book {
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.queue-row .continue-reading-book:focus-visible,
+.queue-actions button:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  outline-offset: -3px;
+}
+
+.reading-queue :is(.queue-add, .queue-candidate-add):focus-visible {
+  outline: 2px solid var(--gold-soft);
+  outline-offset: 3px;
+}
+
+.queue-details-cue {
+  flex: 0 0 auto;
+  color: rgba(217, 181, 116, 0.5);
+  transition: color 160ms ease, transform 160ms ease;
+}
+
+.queue-row .continue-reading-progress {
+  justify-content: flex-start;
+  color: rgba(241, 231, 208, 0.5);
+  letter-spacing: 0.04em;
+}
+
+.queue-row.is-next .continue-reading-progress {
+  color: var(--gold-soft);
+}
+
+.queue-actions {
+  display: flex;
+  align-items: stretch;
+  border-top: 1px solid rgba(217, 181, 116, 0.16);
+}
+
+.queue-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 44px;
+  color: rgba(241, 231, 208, 0.66);
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.queue-actions button + button {
+  border-left: 1px solid rgba(217, 181, 116, 0.16);
+}
+
+.queue-actions .queue-start {
+  flex: 1 1 auto;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 0 14px 0 12px;
+  color: var(--paper);
+  font: 500 0.88rem "Fraunces", serif;
+}
+
+.queue-start-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--gold-soft);
+  color: var(--spine);
+}
+
+.queue-start-mark svg {
+  margin-left: 1px;
+}
+
+.queue-actions button:disabled {
+  color: rgba(241, 231, 208, 0.2);
+  cursor: default;
+}
+
+.queue-unavailable {
+  margin: 10px 0 0;
+  color: rgba(241, 231, 208, 0.5);
+  font: 0.58rem/1.6 "JetBrains Mono", monospace;
+  letter-spacing: 0.04em;
+}
+
+.queue-notice {
+  margin: 12px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--gold-soft);
+  color: var(--gold-soft);
+  font: italic 0.95rem/1.35 "Instrument Serif", serif;
+  overflow-wrap: anywhere;
+}
+
+.queue-notice:empty {
+  display: none;
+}
+
+@media (hover: hover) {
+  .reading-queue :is(.queue-add, .queue-candidate-add):hover {
+    border-color: var(--gold-soft);
+    background: rgba(217, 181, 116, 0.12);
+  }
+
+  .queue-row .continue-reading-book:hover {
+    background: rgba(217, 181, 116, 0.08);
+  }
+
+  .queue-row .continue-reading-book:hover .queue-details-cue {
+    color: var(--gold-soft);
+    transform: translateX(2px);
+  }
+
+  .queue-actions button:not(:disabled):hover {
+    background: rgba(217, 181, 116, 0.1);
+    color: var(--paper);
+  }
+
+  .queue-actions .queue-remove:hover {
+    color: #e8a99a;
+  }
+}
+
+.queue-actions button:not(:disabled):active {
+  background: rgba(217, 181, 116, 0.16);
+}
+
+/* A roomy shelf (tablet, wide leaf): the actions move beside the book. */
+@container reading-queue (min-width: 520px) {
+  .queue-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .queue-actions {
+    border-top: 0;
+    border-left: 1px solid rgba(217, 181, 116, 0.16);
+  }
+
+  .queue-actions .queue-start {
+    flex: 0 0 auto;
+    padding: 0 16px;
+  }
+}
+
+/* The narrowest shelves: tighten the Add control so the title keeps its line. */
+@container reading-queue (max-width: 300px) {
+  .reading-queue .queue-add {
+    padding: 0 10px;
+    letter-spacing: 0.1em;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reading-queue :is(.queue-add, .queue-candidate-add, .queue-details-cue),
+  .queue-actions button {
+    transition: none;
+  }
+}
