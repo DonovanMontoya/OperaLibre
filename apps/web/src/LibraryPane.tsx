@@ -43,12 +43,13 @@ import { SHELF_VIEW_MODE_OPTIONS } from "./shelfView";
 import { SHELF_STATUS_OPTIONS, SHELF_READING_OPTIONS, toggleShelfFacet } from "./shelfFilters";
 import { ShelfBookList, ShelfFacetGroup } from "./ShelfBookList";
 import { DeviceImportNotice } from "./DeviceImportNotice";
+import { readingQueueKey } from "./readingQueue";
 import { ContinueReading } from "./ContinueReading";
 import { isPendingJob, jobDetailLines, jobStateLabel, jobSummary, jobTitle } from "./jobLabels";
 import { formatElapsed, formatMinutes } from "./formatting";
 import { LibroCatalog, StoreHeading } from "./LibroCatalog";
 import { getDeviceBooks, mergeDeviceAndServerBooks } from "./localLibrary";
-import { hasUserConfiguredServer, SERVER_SETUP_GUIDE_URL } from "./api";
+import { getServerStorageKey, hasUserConfiguredServer, SERVER_SETUP_GUIDE_URL } from "./api";
 import { CONNECT_PROMPT_DISMISSED_KEY, writeStoredValue } from "./appStorage";
 import { LibationError } from "./AudibleManagement";
 import { isLibationAdding } from "./libationState";
@@ -862,7 +863,19 @@ export function LibraryPane({
 
           {!isLoading ? (
             <ContinueReading
+              key={readingQueueKey(getServerStorageKey(), currentUser.id)}
+              storageKey={readingQueueKey(getServerStorageKey(), currentUser.id)}
               books={isOffline ? visibleBooks.filter(book => book.source === "device" || !!book.deviceBookId || downloadedBookIds.has(book.id)) : visibleBooks}
+              queueBooks={isOffline ? books.filter(book => book.source === "device" || !!book.deviceBookId || downloadedBookIds.has(book.id)) : books}
+              onStart={book => {
+                selectBook(book);
+                resumeSelectedBook(book);
+                setLibraryOpen(false);
+              }}
+              onOpenBook={id => {
+                openBookDetails(id);
+                setLibraryOpen(false);
+              }}
               onContinue={continueReadingBook}
             />
           ) : null}

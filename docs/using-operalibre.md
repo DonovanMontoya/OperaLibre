@@ -55,6 +55,19 @@ or reading order: keep its normal series as **Mistborn**, then add **Cosmere**
 with the appropriate Cosmere book number. Tags survive library rescans, appear
 on the book, participate in search, and can be selected as the library sort.
 
+### Plan your next read
+
+**Continue Reading** shows books you have already started. Use **Up Next → Add
+books** on your library shelf to plan what to read next without starting a book
+or changing its listening position. New entries go at the end; use the up arrow
+to move a book earlier, or remove it with the × button. Select a title to open
+it without playing, or choose **Start** to listen. Once listening begins, the
+book leaves Up Next and appears in Continue Reading.
+
+Your queue is saved on this device, separately for each server and account.
+When offline, only available device books and downloads are shown; other queued
+books return when you reconnect.
+
 ### Sort and filter your shelf
 
 Use **Sort by** to choose the order and the arrow beside it to reverse that
