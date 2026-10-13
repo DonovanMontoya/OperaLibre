@@ -22409,6 +22409,38 @@ html:not(.native-app) .web-shell.player-view-now > .player-pane.has-native-playe
 .car-player-state { margin: 6px 0 0; text-align: center; color: var(--car-muted); font-size: 0.85rem; }
 .car-player-notices { flex: none; text-align: center; color: var(--car-muted); }
 .car-player-notices p { margin: 0 0 12px; }
+@media (orientation: portrait) {
+  .car-player-body { padding-block: 8px; }
+  .car-player-book { flex-direction: column; gap: 18px; text-align: center; }
+  .car-player-book .cover-mark {
+    flex: none;
+    width: clamp(112px, 20dvh, 192px);
+    height: clamp(112px, 20dvh, 192px);
+    border-radius: 10px;
+    box-shadow: 0 12px 28px #0004;
+  }
+  .car-player-copy p { margin-top: 8px; }
+  .car-player-chapter { margin-top: 24px; }
+  .car-player-chapter > p { text-align: center; margin-bottom: 14px; }
+  .car-player-transport { margin-top: 20px; }
+  .car-player-transport > button { min-height: 104px; }
+  .car-player-skip-icon > svg { width: 52px; height: 52px; }
+  .car-player-skip-icon strong { font-size: 1rem; }
+  .car-player-play > svg { width: 82px; height: 82px; }
+  .car-player-bookmark { min-height: 64px; font-size: 1rem; }
+  .car-player-bookmark > svg { width: 30px; height: 30px; }
+  .car-player-secondary { margin-top: 12px; }
+}
+@media (orientation: portrait) and (max-height: 740px) {
+  .car-player { padding-top: 40px; }
+  .car-player-book { gap: 12px; }
+  .car-player-book .cover-mark { width: 104px; height: 104px; }
+  .car-player-copy h2 { font-size: 1.15rem; }
+  .car-player-copy p { margin-top: 6px; }
+  .car-player-chapter { margin-top: 18px; }
+  .car-player-transport { margin-top: 12px; }
+  .car-player-secondary { margin-top: 4px; }
+}
 @media (max-height: 500px) and (min-width: 600px) {
   .car-player { padding: 38px 16px 8px; }
   .car-player-body {
