@@ -112,6 +112,24 @@ async function slots(page: Page) {
 }
 
 for (const platform of ['ios', 'android', 'web'] as const) {
+  test(`${platform} readers can preview server books without writing listening progress`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const { books, writes } = await setup(page, platform, false);
+    await page.route('**/fixture.wav*', route => route.fulfill({ contentType: 'audio/wav', body: wav() }));
+    await openBook(page, 1);
+    const preview = page.getByRole('button', { name: `Listen to a preview of ${books[1].title}`, exact: true });
+    await preview.click();
+    const dialog = page.getByRole('region', { name: `Audio preview of ${books[1].title}`, exact: true });
+    await expect(dialog).toBeVisible();
+    await expect.poll(() => dialog.locator('audio').evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThan(0);
+    await dialog.getByRole('button', { name: 'Reset preview', exact: true }).click();
+    await expect(dialog.locator('audio')).toHaveCount(0);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(writes).toEqual([]);
+  });
+}
+
+for (const platform of ['ios', 'android', 'web'] as const) {
   for (const width of [320, 390, 430]) {
     for (const admin of [false, true]) {
       test(`${platform} ${width}px ${admin ? 'owner' : 'reader'} keeps actions in place across book variants`, async ({ page }) => {

@@ -626,6 +626,11 @@ function MainApp({
   const [scrubPreview, setScrubPreview] = useState<number | null>(null);
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [previewBook, setPreviewBook] = useState<Book | null>(null);
+  const previewBookRef = useRef<Book | null>(null);
+  previewBookRef.current = previewBook;
+  // Lock-screen and native controls can resume the main book while a sample is open.
+  useEffect(() => { if (isPlaying) setPreviewBook(null); }, [isPlaying]);
   // Play was asked for but no audio is coming out yet — a streamed book can
   // take seconds to buffer. The buttons show it so a tap never looks ignored,
   // and a second tap cancels instead of queueing another start.
@@ -695,6 +700,7 @@ function MainApp({
     if (librarySource !== "local") lastPurchaseSource.current = librarySource;
   }, [librarySource]);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  useEffect(() => { setPreviewBook(null); }, [selectedBookId, nativePlayerView, nativeTab, libraryOpen]);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [usersModalOpen, setUsersModalOpen] = useState(false);
   const uploads = useUploads({
@@ -1245,6 +1251,7 @@ function MainApp({
   const {
     applyPlaybackVolume,
     cancelPendingPlayback,
+    continuePreview,
     clearPlayPendingForBook,
     engageGainChain,
     gainChain,
@@ -1284,6 +1291,9 @@ function MainApp({
     explicitSessionStartBookIdRef,
     gainChainRef,
     gainSyncRef,
+    flushProgressSaveQueue,
+    lastKnownProgressFor,
+    storeCanonicalServerProgress,
     intentionalSeekGenerationRef,
     intentionalSeekTargetRef,
     isOffline,
@@ -2209,6 +2219,18 @@ function MainApp({
         offlineDownloads={offlineDownloads}
         openNativePlayerSheet={openNativePlayerSheet}
         openPlaybackView={openPlaybackView}
+        previewBookId={previewBook?.id ?? null}
+        stopBookPreview={() => setPreviewBook(null)}
+        continueBookPreview={async (book, position) => {
+          const started = await continuePreview(book, position, () => previewBookRef.current?.id === book.id);
+          if (started) setPreviewBook(current => current?.id === book.id ? null : current);
+          return started;
+        }}
+        openBookPreview={isOperaLibre && !demoMode && !localMode && !isOffline ? (book) => {
+          cancelPendingPlayback(audioRef.current);
+          pausePlayback(audioRef.current);
+          setPreviewBook(book);
+        } : null}
         playPending={playPending}
         playSelectedBook={playSelectedBook}
         playbackBook={playbackBook}

@@ -1,4 +1,5 @@
 import { DemoMediaCredits } from "./DemoMediaCredits";
+import { BookPreviewBar, type PreviewPosition } from "./BookPreviewBar";
 import { BookCredits } from "./BookCredits";
 import type { useBookCompletion } from "./useBookCompletion";
 import type { useMetadataEditor } from "./useMetadataEditor";
@@ -111,6 +112,10 @@ export function PlayerPane({
   offlineDownloads,
   openNativePlayerSheet,
   openPlaybackView,
+  openBookPreview,
+  previewBookId,
+  stopBookPreview,
+  continueBookPreview,
   playPending,
   playSelectedBook,
   playbackBook,
@@ -197,6 +202,10 @@ export function PlayerPane({
   offlineDownloads: ReturnType<typeof useOfflineDownloads>;
   openNativePlayerSheet: (sheet: Exclude<NativePlayerSheet, null>) => void;
   openPlaybackView: (view: "now" | "details" | "chapters") => void;
+  openBookPreview: ((book: Book) => void) | null;
+  previewBookId: string | null;
+  stopBookPreview: () => void;
+  continueBookPreview: (book: Book, position?: PreviewPosition) => Promise<boolean>;
   playPending: boolean;
   playSelectedBook: (book: Book) => Promise<void>;
   playbackBook: Book | null;
@@ -847,7 +856,14 @@ export function PlayerPane({
           {native ? bookPageMasthead : <div className="book-page-masthead">{bookPageMasthead}</div>}
 
           <div className="book-heading">
-            <CoverArt book={selectedBook} size="large" />
+            <div className="book-cover-column">
+              <CoverArt book={selectedBook} size="large" />
+              {openBookPreview && selectedBook.source !== "device" && selectedBook.tracks.length > 0 ? (
+                <BookPreviewBar key={selectedBook.id} book={selectedBook} active={previewBookId === selectedBook.id}
+                  onStart={() => openBookPreview(selectedBook)} onStop={stopBookPreview}
+                  onContinue={position => continueBookPreview(selectedBook, position)} />
+              ) : null}
+            </div>
             <div className="meta">
               <div className="heading-top">
                 <span className="eyebrow">
