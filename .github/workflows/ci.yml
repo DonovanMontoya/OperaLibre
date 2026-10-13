@@ -181,10 +181,10 @@ jobs:
       - name: Build web app
         run: npm run build -w @operalibre/web
 
-      - name: Test playback progress and reconnect
+      - name: Test playback progress, queue, and reconnect
         run: |
           npx playwright install --with-deps chromium
-          npm run test:lifecycle -w @operalibre/web -- playback.spec.ts
+          npm run test:lifecycle -w @operalibre/web -- playback.spec.ts reading-queue.spec.ts
 
       - name: Upload lifecycle output
         if: failure()
