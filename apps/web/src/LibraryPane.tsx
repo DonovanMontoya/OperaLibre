@@ -1019,7 +1019,7 @@ export function LibraryPane({
                 <div key={book.catalogId} className={`audible-row purchase-book-row ${isLocal ? "is-local" : ""}`}>
                   <LibationCoverArt book={book} />
                   <div className="audible-copy">
-                    <strong><button type="button" className="purchase-book-open" aria-label={`Details for ${book.title}`} onClick={() => setAudibleDetailsId(book.catalogId)}>{book.title}</button></strong>
+                    <strong><button type="button" className="purchase-book-open" aria-haspopup="dialog" onClick={() => setAudibleDetailsId(book.catalogId)}>{book.title}</button></strong>
                     <span>{metaParts.join(" · ")}</span>
                     <div className="audible-account-tags"><span className="purchase-provider-tag">Audible</span>{book.accounts.map(account => (
                       <small className="audible-account-badge" key={account.profileId}><KeyRound size={10} /> {audibleAccountLabels.get(account.profileId) ?? account.profileName}</small>

@@ -232,7 +232,7 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
         const { job, importing, action } = purchaseState(book);
         return <li className="purchase-book-row" key={purchaseKey(book)}>
           <LibroCover book={book} device={device} />
-          <div className="libro-purchase-copy"><h3><button type="button" className="purchase-book-open" aria-label={`Details for ${book.title}`} onClick={() => setDetailsKey(purchaseKey(book))}>{book.title}</button></h3><small className="libro-purchase-account"><span className="purchase-provider-tag">Libro.fm</span> {accountLabel(book)}</small><p>{book.authors.join(", ")}</p><small>{book.audiobook_info.narrators.length ? `Narrated by ${book.audiobook_info.narrators.join(", ")}` : book.isbn}</small>
+          <div className="libro-purchase-copy"><h3><button type="button" className="purchase-book-open" aria-haspopup="dialog" onClick={() => setDetailsKey(purchaseKey(book))}>{book.title}</button></h3><small className="libro-purchase-account"><span className="purchase-provider-tag">Libro.fm</span> {accountLabel(book)}</small><p>{book.authors.join(", ")}</p><small>{book.audiobook_info.narrators.length ? `Narrated by ${book.audiobook_info.narrators.join(", ")}` : book.isbn}</small>
             {book.localBookId ? <span className="libro-owned-status">In library</span> : null}
             {job && importing ? <p role="status">{job.progress?.step ?? "Queued for import…"}</p> : job?.status === "failed" ? <p className="libro-catalog-error">{job.error ?? "Import failed. Try again."}</p> : null}
           </div>
