@@ -1381,6 +1381,60 @@ for (const store of ["none", "legacy"] as const) {
   });
 }
 
+test("web pause keeps its listening position after an untouched phone restores the same book", async () => {
+  const web = fixture();
+  const phone = fixture();
+  let server = web.server;
+  const save = async (_book: string, progress: Progress) => {
+    if (progress.baseUpdatedAt !== server.updatedAt) return { ...server, accepted: false };
+    server = { ...server, ...progress, updatedAt: String(Number(server.updatedAt) + 1), accepted: true };
+    return server;
+  };
+  for (const f of [web, phone]) {
+    f.write(reliability.syncedProgress(server, "2026-09-30T11:55:00Z"));
+    Object.assign(f.dependencies["./api"], {
+      getProgress: async () => server, getFreshProgress: async () => server, saveProgress: save
+    });
+  }
+  web.options.restoredProgressBookId.current = "book";
+  web.options.playbackTouchedRef.current = true;
+  web.options.audioRef.current.currentTime = 1800;
+  phone.options.nativeAudio = true;
+  phone.dependencies["./nativeAudio"].getNativeAudioRecovery = async () => ({
+    trackId: "track", positionSeconds: 1000, bookPositionSeconds: 1000,
+    durationSeconds: 7200, updatedAt: Date.parse("2026-09-30T12:05:00Z")
+  });
+  await phone.restore();
+  window.localStorage = web.storage as unknown as Storage;
+  Object.assign(document, { visibilityState: "visible" });
+  const sync = loadHook("useProgressSync", web.dependencies)(web.options);
+  await sync.persistProgress();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(server.positionSeconds, 1800);
+  assert.equal(web.checkpoint().positionSeconds, 1800);
+  assert.deepEqual(web.seeks, [], "pausing must not adopt the untouched phone's old position");
+});
+
+for (const serverAdvanced of [false, true]) {
+  test(`opening a paused phone does not replay an unchanged native checkpoint${serverAdvanced ? " over newer web listening" : " with a fresh native timestamp"}`, async () => {
+    const f = fixture();
+    f.write(reliability.syncedProgress(f.server, "2026-09-30T11:55:00Z"));
+    const remote = serverAdvanced
+      ? { ...f.server, positionSeconds: 1800, bookPositionSeconds: 1800, updatedAt: "1790769660000" }
+      : f.server;
+    Object.assign(f.book.progress, remote);
+    f.options.nativeAudio = true;
+    f.dependencies["./api"].getProgress = async () => remote;
+    f.dependencies["./nativeAudio"].getNativeAudioRecovery = async () => ({
+      trackId: "track", positionSeconds: 1000, bookPositionSeconds: 1000,
+      durationSeconds: 7200, updatedAt: Date.parse("2026-09-30T12:05:00Z")
+    });
+    await f.restore();
+    assert.deepEqual(f.writes, [], "restamping a restored position is not listening");
+    assert.equal(f.seeks.at(-1)!.positionSeconds, remote.positionSeconds);
+  });
+}
+
 test("acknowledged native recovery is not uploaded again on the next cold start", async () => {
   const f = fixture();
   f.write(f.local);

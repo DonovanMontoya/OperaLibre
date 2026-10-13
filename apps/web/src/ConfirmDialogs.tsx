@@ -1,4 +1,4 @@
-import { LoaderCircle, RotateCcw, Sparkles, X } from "lucide-react";
+import { CircleCheck, LoaderCircle, RotateCcw, Sparkles, X } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 import { useModalFocus } from "./useModalFocus";
 import { haptic } from "./native";
@@ -161,6 +161,54 @@ export function UnplayedConfirmationDialog({
             ) : (
               <><RotateCcw size={15} /> Mark unplayed</>
             )}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+export function CompletionConfirmationDialog({
+  book,
+  finished,
+  pending,
+  error,
+  onCancel,
+  onConfirm
+}: {
+  book: Book;
+  finished: boolean;
+  pending: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const dialogRef = useModalFocus<HTMLElement>(onCancel);
+  const label = finished ? "Mark finished" : "Mark unfinished";
+  return (
+    <div className="modal-scrim unplayed-confirm-scrim" role="presentation">
+      <section ref={dialogRef} tabIndex={-1} className="modal-card unplayed-confirm-card"
+        role="dialog" aria-modal="true" aria-labelledby="completion-confirm-title"
+        aria-describedby="completion-confirm-description" aria-busy={pending}>
+        <div className="modal-head">
+          <div>
+            <span className="eyebrow"><CircleCheck size={13} /> Reading status</span>
+            <h2 id="completion-confirm-title">{label}?</h2>
+          </div>
+          <button type="button" className="icon-button" aria-label="Cancel changing reading status"
+            disabled={pending} onClick={onCancel}><X size={18} /></button>
+        </div>
+        <p id="completion-confirm-description" className="unplayed-confirm-copy">
+          <strong>{book.title}</strong> will be marked {finished ? "finished" : "unfinished"}.
+          {finished ? " If this book is playing, playback will stop and it will leave Now Playing." : " Your listening position will be kept."}
+        </p>
+        {error ? <p className="auth-error" role="alert">{error}</p> : null}
+        <div className="unplayed-confirm-actions">
+          <button type="button" className="unplayed-confirm-cancel" data-modal-initial-focus
+            disabled={pending} onClick={onCancel}>Cancel</button>
+          <button type="button" className="unplayed-confirm-submit" disabled={pending}
+            onClick={() => void onConfirm()}>
+            {pending ? <><LoaderCircle size={15} className="spin-icon" /> Saving…</> : <><CircleCheck size={15} /> {label}</>}
           </button>
         </div>
       </section>

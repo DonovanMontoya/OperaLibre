@@ -123,6 +123,80 @@ export type SyncFile = {
   /** `sidecar` and `generated` are both forced alignments. */
   source: "sidecar" | "generated" | string;
   url: string;
+  /** Absent until the server has graded this map. */
+  quality?: SyncQuality;
+};
+
+/** Worst first is `failed`; a book takes its worst chapter's grade. */
+export type SyncGrade = "good" | "review" | "poor" | "failed";
+
+export type SyncQuality = {
+  grade: SyncGrade;
+  /** Chapters graded below good. */
+  flagged: number;
+};
+
+export type SyncChapterReport = {
+  index: number;
+  label: string;
+  startSeconds: number;
+  endSeconds: number;
+  /** Share of the chapter's text that is highlighted, 0 to 1. */
+  textCoverage: number;
+  /** Audio in the chapter that no sentence was matched to. */
+  gapSeconds: number;
+  skippedText: number;
+  /** `failed` and `kept-previous` chapters could not be aligned on their last run; `kept-previous` still has an earlier map's sentences. */
+  status: "aligned" | "empty" | "failed" | "kept-previous" | string;
+  /** First line of why the chapter could not be aligned. */
+  error?: string | null;
+  /** The whole error, when it runs past the first line. */
+  errorDetail?: string | null;
+  /** Why a Poor or Failed chapter went wrong, or which automatic fix its timing came from. */
+  diagnosis?: SyncDiagnosis | null;
+  /** Null for a chapter with no text to align. */
+  grade: SyncGrade | null;
+};
+
+/** Stable codes for why a sync or a chapter went wrong; newer servers may add more. */
+export type SyncCause =
+  | "runtime-crash" | "noisy-audio" | "chapter-mismatch" | "language-mismatch" | "edition-mismatch"
+  | "runtime-missing" | "audio-unreadable" | "timeout" | "language-guess" | "unknown";
+
+export type SyncDiagnosis = {
+  cause: SyncCause | string;
+  /** Only the measures that informed the diagnosis are present. */
+  evidence: {
+    heardLanguage?: string;
+    /** The language recognition was told to expect: the EPUB's, or the book's override. */
+    labelledLanguage?: string;
+    matchingChapter?: JobChapter;
+    recognizedWords?: number;
+    /** Share of recognized three-word runs found in the chapter's text, 0 to 1. */
+    wordsInText?: number;
+    windows?: number;
+    unanchoredWindows?: number;
+    recognitionRetries?: number;
+  };
+  fix: {
+    /** `auto` fixes are tried by the run itself; `suggested` ones wait for an administrator. */
+    kind: "auto" | "suggested" | "none";
+    action?: "retry-other-model" | "larger-model" | "match-other-chapter" | "resync-language" | string;
+    attempted: boolean;
+    /** The chapter's timing came from that fix. */
+    applied?: boolean;
+  };
+};
+
+export type SyncReport = {
+  mapGeneratedAt: string | null;
+  mapSize: number;
+  /** `estimate` grades an existing map without re-running alignment. */
+  graded: "run" | "estimate";
+  grade: SyncGrade | null;
+  chapters: SyncChapterReport[];
+  /** The language this book's narration is recognized in instead of the EPUB's label. */
+  languageOverride?: string | null;
 };
 
 /** `[startSeconds, endSeconds, offsetUtf16, lengthUtf16]` inside the fragment text. */
@@ -394,6 +468,22 @@ export type JobStatus = {
   error: string | null;
   /** Only set while the job runs; cleared once it has a result. */
   progress?: JobProgress | null;
+  /** Sync jobs that re-run only some chapters. Absent for a whole-book sync. */
+  chapters?: JobChapter[];
+  /** Chapters a completed sync could not align. */
+  failedChapters?: JobChapter[];
+  /** Why a failed sync stopped. */
+  cause?: SyncCause | string | null;
+  /** For a `language-mismatch` failure, the language the narration was heard in. */
+  heardLanguage?: string | null;
+};
+
+export type JobChapter = {
+  /** The chapter's `index` in the sync report. */
+  index: number;
+  label: string;
+  /** Why a chapter in `failedChapters` could not be aligned. */
+  cause?: SyncCause | string | null;
 };
 
 export type JobCreated = {

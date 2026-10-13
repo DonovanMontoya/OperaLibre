@@ -8,8 +8,10 @@ import { libroDeviceBackend, cancelLibroDevice } from "./libroDevice";
 import { libroCoverURL } from "./libroDevicePolicy";
 import { getDeviceBooks } from "./localLibrary";
 import { getOfflineCoverUrl } from "./offline";
+import { StoreBookDetails } from "./StoreBookDetails";
+import { libroBookFacts, type LibroPurchase } from "./storeBookFacts";
 
-function LibroCover({ book, device }: { book: LibroAccountStatus["books"][number]; device: boolean }) {
+function LibroCover({ book, device }: { book: LibroPurchase; device: boolean }) {
   const [local, setLocal] = useState<string | null>(null);
   const [failed, setFailed] = useState<string[]>([]);
   useEffect(() => {
@@ -48,11 +50,11 @@ function LibroNickname({ account, busy, onSave, onCancel }: { account: LibroAcco
   </form>;
 }
 
-/** A store's heading in Get books, with the way to Settings while it has no account. */
+/** A store's heading in Get books, with the way to its Settings beside it. */
 export function StoreHeading({ store, connected, onOpenSettings }: { store: string; connected: boolean; onOpenSettings?: () => void; }) {
   return <>
     <div><h2>{store}</h2>{!connected ? <p>Connect your account in Settings to browse your purchases.</p> : null}</div>
-    {onOpenSettings ? <button type="button" className="purchase-settings-link" onClick={onOpenSettings}>Open Settings <ChevronRight size={14} /></button> : null}
+    {onOpenSettings ? <button type="button" className="purchase-settings-link" aria-label={connected ? `${store} accounts & settings` : "Open Settings"} onClick={onOpenSettings}>{connected ? "Accounts & settings" : "Open Settings"} <ChevronRight size={14} /></button> : null}
   </>;
 }
 
@@ -80,6 +82,7 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
   const [reconnect, setReconnect] = useState(false);
   const [managing, setManaging] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
+  const [detailsKey, setDetailsKey] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
@@ -157,6 +160,18 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
       : sortMode === "author" ? a.authors.join(", ").localeCompare(b.authors.join(", ")) : a.title.localeCompare(b.title);
     return reversed ? -comparison : comparison;
   });
+  const purchaseKey = (book: LibroPurchase) => `${book.accountEmail ?? ""}:${book.isbn}`;
+  const accountLabel = (book: LibroPurchase) => { const email = book.accountEmail ?? account?.email ?? null; return accounts.find(item => item.email === email)?.nickname || email; };
+  const detailsBook = detailsKey ? account?.books.find(book => purchaseKey(book) === detailsKey) ?? null : null;
+  // The list row and the details page share one action, so either shows the same import state.
+  function purchaseState(book: LibroPurchase) {
+    const job = account?.jobs.find(job => job.kind === "libro-download" && job.targetId?.endsWith(`:${book.isbn}`));
+    const importing = !!job && active(job);
+    const action = book.localBookId ? <button type="button" aria-label={`Open ${book.title}`} onClick={() => { setDetailsKey(null); onOpenBook?.(book.localBookId!); }} disabled={!onOpenBook}><BookOpen size={15} /> Open</button>
+      : device && importing ? <button type="button" aria-label={`Cancel download of ${book.title}`} disabled={!!busy} onClick={() => void act("cancel", () => cancelLibroDevice(book.isbn))}>Cancel</button>
+      : <button type="button" aria-label={`${device ? "Download" : "Import"} ${book.title}`} disabled={!!busy || importing} onClick={() => void act(book.isbn, () => backend.import(book.isbn, book.accountEmail))}>{importing || busy === book.isbn ? <LoaderCircle size={15} className="spin-icon" /> : <CloudDownload size={15} />} {importing ? "Adding…" : device ? "Download" : "Import"}</button>;
+    return { job, importing, action };
+  }
   const refreshJob = account?.jobs.find(job => job.kind === "libro-refresh");
   const loadingLibrary = !!refreshJob && active(refreshJob);
   const feedback = <>
@@ -196,7 +211,7 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
         <div className="libro-connection-copy"><KeyRound size={16} /><div><strong>Libro.fm</strong><small>{busy === "connect" ? "Connecting…" : !account ? "Loading connection…" : !account.connected ? "Connect your account" : refreshJob?.status === "failed" ? "Connection needs attention" : accounts.length === 1 && accounts[0].nickname ? `${accounts[0].nickname} · Connected` : `${accounts.length} connected account${accounts.length === 1 ? "" : "s"}`}</small></div></div>
         <div className="libro-sidebar-actions"><button type="button" className={account?.connected ? undefined : "libro-primary-action"} aria-label={account?.connected ? "Manage Libro.fm" : "Connect Libro.fm"} disabled={!account || !!busy} onClick={() => setManaging(true)}>{account?.connected ? "Manage" : "Connect"}</button>{account?.connected ? refreshButton : null}</div>
       </div> : <>
-        <StoreHeading store="Libro.fm" onOpenSettings={account?.connected ? undefined : onOpenSettings} connected={!!account?.connected} />
+        <StoreHeading store="Libro.fm" onOpenSettings={onOpenSettings} connected={!!account?.connected} />
       </>}
     </header>
     {!account && !pollError && mode === "catalog" ? <p role="status">Loading your connection…</p> : null}
@@ -205,28 +220,32 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
     {account?.connected ? <>
       {filterEmail === undefined && accounts.length > 1 ? <label className="libro-account-filter">Account<select aria-label="Libro.fm account" value={accountFilter} onChange={event => setAccountFilter(event.target.value)}><option value="all">All Libro.fm accounts</option>{accounts.map(item => <option key={item.email} value={item.email}>{item.nickname || item.email}</option>)}</select></label> : null}
       {searchQuery === undefined ? <label className="libro-catalog-search"><Search size={15} /><input type="search" aria-label="Search Libro.fm purchases" placeholder="Search your purchases…" value={query} onChange={event => setQuery(event.target.value)} /></label> : null}
-      <div className="libro-view-toolbar">
+      {mode !== "catalog" || loadingLibrary ? <div className="libro-view-toolbar">
         <p className="libro-catalog-summary" role="status">{loadingLibrary ? "Loading your Libro.fm library…" : `${books.length} of ${account.books.length} purchases`}</p>
         {viewMode === undefined ? <div className="libro-view-toggle" role="group" aria-label="Purchase layout">
           <button type="button" aria-label="Cover grid" aria-pressed={view === "grid"} onClick={() => setView("grid")}><LayoutGrid size={18} /></button>
           <button type="button" aria-label="Compact list" aria-pressed={view === "list"} onClick={() => setView("list")}><List size={18} /></button>
         </div> : null}
-      </div>
+      </div> : null}
       {!books.length && !loadingLibrary ? <p className="libro-catalog-empty">{needle ? "No purchases match your search." : account.syncedAt ? "No audiobooks found in this account." : "Refresh your library to load your purchases."}</p> : null}
       <ul className={`libro-purchases purchase-book-list purchase-book-list--${activeView} libro-purchases--${activeView}`}>{books.map(book => {
-        const job = account.jobs.find(job => job.kind === "libro-download" && job.targetId?.endsWith(`:${book.isbn}`));
-        const importing = !!job && active(job);
-        return <li className="purchase-book-row" key={`${book.accountEmail ?? ""}:${book.isbn}`}>
+        const { job, importing, action } = purchaseState(book);
+        return <li className="purchase-book-row" key={purchaseKey(book)}>
           <LibroCover book={book} device={device} />
-          <div className="libro-purchase-copy"><h3>{book.title}</h3><small className="libro-purchase-account"><span className="purchase-provider-tag">Libro.fm</span> {accounts.find(item => item.email === (book.accountEmail ?? account.email))?.nickname || book.accountEmail || account.email}</small><p>{book.authors.join(", ")}</p><small>{book.audiobook_info.narrators.length ? `Narrated by ${book.audiobook_info.narrators.join(", ")}` : book.isbn}</small>
+          <div className="libro-purchase-copy"><h3><button type="button" className="purchase-book-open" aria-haspopup="dialog" onClick={() => setDetailsKey(purchaseKey(book))}>{book.title}</button></h3><small className="libro-purchase-account"><span className="purchase-provider-tag">Libro.fm</span> {accountLabel(book)}</small><p>{book.authors.join(", ")}</p><small>{book.audiobook_info.narrators.length ? `Narrated by ${book.audiobook_info.narrators.join(", ")}` : book.isbn}</small>
             {book.localBookId ? <span className="libro-owned-status">In library</span> : null}
-            {importing ? <p role="status">{job.progress?.step ?? "Queued for import…"}</p> : job?.status === "failed" ? <p className="libro-catalog-error">{job.error ?? "Import failed. Try again."}</p> : null}
+            {job && importing ? <p role="status">{job.progress?.step ?? "Queued for import…"}</p> : job?.status === "failed" ? <p className="libro-catalog-error">{job.error ?? "Import failed. Try again."}</p> : null}
           </div>
-          {book.localBookId ? <button type="button" aria-label={`Open ${book.title}`} onClick={() => onOpenBook?.(book.localBookId!)} disabled={!onOpenBook}><BookOpen size={15} /> Open</button>
-            : device && importing ? <button type="button" aria-label={`Cancel download of ${book.title}`} disabled={!!busy} onClick={() => void act("cancel", () => cancelLibroDevice(book.isbn))}>Cancel</button>
-            : <button type="button" aria-label={`${device ? "Download" : "Import"} ${book.title}`} disabled={!!busy || importing} onClick={() => void act(book.isbn, () => backend.import(book.isbn, book.accountEmail))}>{importing || busy === book.isbn ? <LoaderCircle size={15} className="spin-icon" /> : <CloudDownload size={15} />} {importing ? "Adding…" : device ? "Download" : "Import"}</button>}
+          {action}
         </li>;
       })}</ul>
+      {detailsBook ? (() => {
+        const { job, importing, action } = purchaseState(detailsBook);
+        return <StoreBookDetails facts={libroBookFacts(detailsBook, accountLabel(detailsBook))} cover={<LibroCover book={detailsBook} device={device} />} action={action}
+          status={error ? <p className="store-book-error" role="alert">{error}</p> : job && importing ? <p className="store-book-status" role="status">{job.progress?.step ?? "Queued for import…"}</p> : job?.status === "failed" ? <p className="store-book-error" role="alert">{job.error ?? "Import failed. Try again."}</p> : null}
+          hint={detailsBook.localBookId ? `This book is ${device ? "on this device" : "on your server"}. Open it to start listening.` : device ? "Download it from Libro.fm to listen on this device, even offline." : "Not on your server yet. Import it from Libro.fm to listen on every device and keep your place in sync."}
+          onClose={() => setDetailsKey(null)} />;
+      })() : null}
     </> : null}
   </section>;
 }

@@ -57,6 +57,20 @@ export function fullShelfMustYield(tab: NativeTab, playerView: string, layout: S
   return layout === "library" && (tab === "reading" || playerView !== "now");
 }
 
+/**
+ * Tapping Shelf while its list is already showing asks for the top of the
+ * list. With a book's details open, the tap closes them instead.
+ */
+export function shelfRetapped(
+  tapped: NativeTab,
+  tab: NativeTab,
+  spread: boolean,
+  layout: ShelfLayout,
+  playerView: string
+): boolean {
+  return tapped === "shelf" && spreadTab(tab, spread, layout) === "shelf" && playerView === "now";
+}
+
 export function nativeTabSelection(tab: NativeTab, tabs: NativeTabItem[]): NativeTab {
   if (tab === "admin") return "settings";
   return tabs.some((item) => item.id === tab) ? tab : "shelf";

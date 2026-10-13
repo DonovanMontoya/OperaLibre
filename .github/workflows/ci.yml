@@ -110,7 +110,7 @@ jobs:
           node --test script/release_signing.test.mjs
           node --test script/resolve_release.test.mjs
           node --test script/publish_release.test.mjs
-          python3 script/test_installer_login.py
+          python3 script/test_installer_libation.py
 
       - name: Install dependencies
         run: npm ci
@@ -127,7 +127,7 @@ jobs:
       - name: Test Duo layouts, offline shelf, modal interactions, and sign-in
         run: |
           npx playwright install --with-deps chromium
-          npm run test:lifecycle -w @operalibre/web -- modal-focus.spec.ts duo-review.spec.ts duo-layout.spec.ts duo-reader-rail.spec.ts native-viewport.spec.ts address-sign-in.spec.ts audible-management.spec.ts libro-management.spec.ts book-store-settings.spec.ts cover-editor.spec.ts book-details-actions.spec.ts
+          npm run test:lifecycle -w @operalibre/web -- modal-focus.spec.ts duo-review.spec.ts duo-layout.spec.ts duo-reader-rail.spec.ts native-viewport.spec.ts address-sign-in.spec.ts audible-management.spec.ts libro-management.spec.ts book-store-settings.spec.ts cover-editor.spec.ts book-details-actions.spec.ts shelf-groups.spec.ts
 
       - name: Upload cover editor screenshot
         if: always()
@@ -181,10 +181,10 @@ jobs:
       - name: Build web app
         run: npm run build -w @operalibre/web
 
-      - name: Test playback progress and reconnect
+      - name: Test playback progress, queue, and reconnect
         run: |
           npx playwright install --with-deps chromium
-          npm run test:lifecycle -w @operalibre/web -- playback.spec.ts
+          npm run test:lifecycle -w @operalibre/web -- playback.spec.ts reading-queue.spec.ts
 
       - name: Upload lifecycle output
         if: failure()
@@ -271,8 +271,20 @@ jobs:
           swiftc apps/web/ios/App/App/CarLibrary.swift apps/web/ios/Tests/CarLibraryTests.swift -o "$RUNNER_TEMP/car-library-tests"
           "$RUNNER_TEMP/car-library-tests"
 
+      - name: Test simulator runtime selection
+        run: python3 script/test_simulator_runtime.py
+
       - name: Test iOS CarPlay cover cache
+        id: car_artwork
         run: python3 script/test_car_artwork.py
+
+      - name: Upload failed CarPlay cover test results
+        if: failure() && steps.car_artwork.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: operalibre-carplay-cover-test-results
+          path: output/car-artwork-tests/*.xcresult
+          if-no-files-found: warn
 
       - name: Install Rust for BookPlayer contract test
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable

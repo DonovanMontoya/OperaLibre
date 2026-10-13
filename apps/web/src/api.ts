@@ -29,6 +29,7 @@ import type {
   ServerType,
   SyncAddonStatus,
   SyncMap,
+  SyncReport,
   UpdateInstallStarted,
   FrontendUpdateStatus,
   UpdateStatus,
@@ -1333,9 +1334,23 @@ export async function getSyncMap(bookId: string, signal?: AbortSignal) {
   return request<SyncMap>(`/api/books/${encodeURIComponent(bookId)}/sync`, { signal });
 }
 
-export async function generateSyncMap(bookId: string) {
+/** Syncs the whole book, or with `chapters` (report indices), re-runs just those. */
+export async function generateSyncMap(bookId: string, chapters?: number[]) {
   return request<JobCreated>(`/api/books/${encodeURIComponent(bookId)}/sync/generate`, {
-    method: "POST"
+    method: "POST",
+    ...(chapters ? { body: JSON.stringify({ chapters }) } : {})
+  });
+}
+
+export async function getSyncReport(bookId: string) {
+  return request<SyncReport>(`/api/books/${encodeURIComponent(bookId)}/sync/report`);
+}
+
+/** Recognizes a book's narration in `language` from its next sync on; null goes back to the EPUB's label. */
+export async function setSyncLanguage(bookId: string, language: string | null, expectedLanguage?: string) {
+  return request<{ languageOverride: string | null; previousLanguageOverride: string | null }>(`/api/books/${encodeURIComponent(bookId)}/sync/language`, {
+    method: "PUT",
+    body: JSON.stringify({ language, ...(expectedLanguage ? { expectedLanguage } : {}) }),
   });
 }
 

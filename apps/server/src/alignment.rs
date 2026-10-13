@@ -1691,6 +1691,22 @@ pub fn recognition_needs_retry(recognized: &[RecognizedWord], text: &str) -> boo
     })
 }
 
+/// How many of the recognized three-word runs there are, and how many of them
+/// appear anywhere in `text`. Order is ignored, so this measures whether the
+/// narrator is reading this text at all rather than how well it lines up.
+pub fn recognized_runs_in_text(recognized: &[RecognizedWord], text: &str) -> (usize, usize) {
+    let words = transcript_words(text, 0, text.encode_utf16().count() as u64);
+    let runs = words
+        .windows(3)
+        .map(|run| [&run[0].text, &run[1].text, &run[2].text])
+        .collect::<std::collections::HashSet<_>>();
+    let heard = recognized
+        .windows(3)
+        .map(|run| [&run[0].text, &run[1].text, &run[2].text]);
+    let total = recognized.len().saturating_sub(2);
+    (total, heard.filter(|run| runs.contains(run)).count())
+}
+
 /// Comparable evidence when retrying the same audio with shorter windows.
 pub fn recognition_anchor_count(recognized: &[RecognizedWord], text: &str) -> usize {
     recognition_anchor_chain(recognized, text).len()
@@ -3296,6 +3312,25 @@ pub(crate) fn build_test_epub() -> Vec<u8> {
 
 #[cfg(test)]
 pub(crate) fn build_test_epub_with_text(chapter_one: &str, chapter_two: &str) -> Vec<u8> {
+    build_test_epub_with_chapters(&[
+        ("Chapter 1: The Meadow", chapter_one),
+        ("Chapter 2: The River", chapter_two),
+    ])
+}
+
+/// An EPUB of `(table-of-contents title, body HTML)` chapters, one spine
+/// document each. The first carries a head the parser must ignore.
+#[cfg(test)]
+pub(crate) fn build_test_epub_with_chapters(chapters: &[(&str, &str)]) -> Vec<u8> {
+    build_test_epub_in_language(chapters, None)
+}
+
+/// As `build_test_epub_with_chapters`, labelled with a `dc:language`.
+#[cfg(test)]
+pub(crate) fn build_test_epub_in_language(
+    chapters: &[(&str, &str)],
+    language: Option<&str>,
+) -> Vec<u8> {
     use std::io::Write;
     let mut buffer = std::io::Cursor::new(Vec::new());
     {
@@ -3313,42 +3348,59 @@ pub(crate) fn build_test_epub_with_text(chapter_one: &str, chapter_two: &str) ->
                 </rootfiles></container>"#,
             )
             .unwrap();
+        let items = (1..=chapters.len())
+            .map(|n| format!(r#"<item id="c{n}" href="text/ch{n}.xhtml" media-type="application/xhtml+xml"/>"#))
+            .collect::<String>();
+        let spine = (1..=chapters.len())
+            .map(|n| format!(r#"<itemref idref="c{n}"/>"#))
+            .collect::<String>();
+        let metadata = language
+            .map(|language| format!("<metadata><dc:language>{language}</dc:language></metadata>"))
+            .unwrap_or_default();
         writer.start_file("OEBPS/content.opf", options).unwrap();
         writer
             .write_all(
-                br#"<?xml version="1.0"?><package><manifest>
+                format!(
+                    r#"<?xml version="1.0"?><package>{metadata}<manifest>
                 <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
-                <item id="c1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>
-                <item id="c2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/>
+                {items}
                 <item id="css" href="style.css" media-type="text/css"/>
                 <item id="map" href="images/map.png" media-type="image/png"/>
-                </manifest><spine>
-                <itemref idref="c1"/><itemref idref="c2"/>
-                </spine></package>"#,
-            )
-            .unwrap();
-        writer.start_file("OEBPS/nav.xhtml", options).unwrap();
-        writer
-            .write_all(
-                br#"<html><body><nav epub:type="toc"><ol>
-                <li><a href="text/ch1.xhtml">Chapter 1: The Meadow</a></li>
-                <li><a href="text/ch2.xhtml">Chapter 2: The River</a></li>
-                </ol></nav></body></html>"#,
-            )
-            .unwrap();
-        writer.start_file("OEBPS/text/ch1.xhtml", options).unwrap();
-        writer
-            .write_all(
-                format!(
-                    "<html><head><title>Ignored</title><style>p{{}}</style></head><body>{chapter_one}</body></html>"
+                </manifest><spine>{spine}</spine></package>"#
                 )
                 .as_bytes(),
             )
             .unwrap();
-        writer.start_file("OEBPS/text/ch2.xhtml", options).unwrap();
+        let toc = chapters
+            .iter()
+            .enumerate()
+            .map(|(index, (title, _))| {
+                format!(
+                    r#"<li><a href="text/ch{}.xhtml">{title}</a></li>"#,
+                    index + 1
+                )
+            })
+            .collect::<String>();
+        writer.start_file("OEBPS/nav.xhtml", options).unwrap();
         writer
-            .write_all(format!("<html><body>{chapter_two}</body></html>").as_bytes())
+            .write_all(
+                format!(r#"<html><body><nav epub:type="toc"><ol>{toc}</ol></nav></body></html>"#)
+                    .as_bytes(),
+            )
             .unwrap();
+        for (index, (_, body)) in chapters.iter().enumerate() {
+            let head = if index == 0 {
+                "<head><title>Ignored</title><style>p{}</style></head>"
+            } else {
+                ""
+            };
+            writer
+                .start_file(format!("OEBPS/text/ch{}.xhtml", index + 1), options)
+                .unwrap();
+            writer
+                .write_all(format!("<html>{head}<body>{body}</body></html>").as_bytes())
+                .unwrap();
+        }
         writer.finish().unwrap();
     }
     buffer.into_inner()
@@ -5320,6 +5372,22 @@ The dog barked loudly at the cat. Go away said the cat.",
                     section_range: 2..4
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn recognized_runs_are_counted_against_the_text_in_any_order() {
+        let text = "“Kaladin,” she said. The storm broke over the plateau at dawn.";
+        let heard = spoken("the storm broke over the plateau kaladin she said", 0.0);
+        // The two runs that span the reordering are not in the text.
+        assert_eq!(recognized_runs_in_text(&heard, text), (7, 5));
+        assert_eq!(
+            recognized_runs_in_text(&spoken("one two", 0.0), text),
+            (0, 0)
+        );
+        assert_eq!(
+            recognized_runs_in_text(&spoken("de het een van de", 0.0), text),
+            (3, 0)
         );
     }
 }

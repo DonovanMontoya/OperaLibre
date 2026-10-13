@@ -112,7 +112,9 @@ The archive includes accounts, permissions, progress, per-book settings, reading
 | `GET` | `/api/books/{book_id}/companions/{companion_id}/entries/{path}` | One EPUB archive member, such as `META-INF/container.xml` or `OEBPS/chapter1.xhtml`. Supports media tokens, private ETag revalidation, and compression. Members are limited to 32 MiB uncompressed. The server sends eight members at a time, at most four of them to one account: further requests wait their turn, and a transfer the client leaves unread for 30 seconds is closed. |
 | `GET` | `/api/books/{book_id}/sync` | The readalong sync map (`.sync.json`). Serves an aligned sidecar or generated map when one exists; otherwise returns 404. Outdated maps remain available until replaced. |
 | `GET` | `/api/books/{book_id}/tracks/{track_id}/stream` | Stream one track in its original format, with HTTP byte-range support for seeking. Accepts the scoped media token. |
-| `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sentence- and word-level sync map. Admin only; requires an enabled add-on or manually configured alignment CLI. Jobs are durably queued and deduplicated by book; queued and interrupted jobs resume after restart with the same job IDs. Interrupted books resume from the last completed chapter or track; unfinished sections are repeated. Changed inputs, alignment runtime, or server alignment code invalidate saved sections. Paused jobs remain paused across restarts. Returns `{ "jobId": "..." }`. |
+| `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sentence- and word-level sync map. Admin only; requires an enabled add-on or manually configured alignment CLI. With no body the whole book is synced; the optional body `{ "chapters": [index, ...] }` re-runs only those chapters (see [Re-running chapters](#re-running-chapters)). Jobs are durably queued and deduplicated by book; queued and interrupted jobs resume after restart with the same job IDs. Interrupted books resume from the last completed chapter or track; unfinished sections are repeated. Changed inputs, alignment runtime, or server alignment code invalidate saved sections. Paused jobs remain paused across restarts. Returns `{ "jobId": "..." }`. |
+| `GET` | `/api/books/{book_id}/sync/report` | Chapter-by-chapter grades for the served sync map. Admin only. Returns 404 until the current map has been graded. See [Sync grades](#sync-grades). |
+| `PUT` | `/api/books/{book_id}/sync/language` | Set the language sync recognizes this book's narration in, overriding the EPUB's label, with `{ "language": "en" }`; `{ "language": null }` goes back to the EPUB's label. Admin only. Takes effect at the book's next sync. Returns `{ "languageOverride": "en", "previousLanguageOverride": null }`. Optional `expectedLanguage` applies the change only if the saved override still matches; otherwise returns 409. See [Diagnoses](#diagnoses). |
 | `GET` | `/api/alignment/status` | Whether sync generation is enabled: `{ "enabled": bool, "cliPath": string \| null }`. Admin only. |
 | `GET` | `/api/experimental-features/readalong-sync` | Installed, enabled, version, package availability, size, and management status for the optional generator. Admin only. Add `?refresh=true` to refresh release metadata. |
 | `POST` | `/api/experimental-features/readalong-sync/install` | Download, verify, and install or update the official platform package. Owner only; managed release installations only. |
@@ -191,16 +193,16 @@ Sync administration endpoints (administrator only):
 | --- | --- | --- |
 | `GET` | `/api/sync-schedules` | List persisted individual schedules and their outcomes. |
 | `PUT` | `/api/sync-schedules/{book_id}` | Schedule with `{ "runAt": <Unix milliseconds> }`. |
-| `DELETE` | `/api/sync-jobs/{job_id}` | Remove a queued or paused sync and its saved sections. Returns 204; running or finished jobs return 409. Admin only. |
+| `DELETE` | `/api/sync-jobs/{job_id}` | Remove a queued or paused sync and its saved sections, or dismiss a completed, failed, or cancelled result. Returns 204; running jobs return 409. Dismissal persists across restarts and leaves maps, chapter reports, and listening progress unchanged. Admin only. |
 | `PATCH` | `/api/sync-jobs/{job_id}` | Send `{ "action": "up" }`, `down`, `pause`, or `resume`. Up/down moves a queued job one place. Pause interrupts the current section and retains completed chapters or tracks; queued jobs pause immediately. Resume appends a paused job to the queue and repeats the unfinished section. Returns the job; incompatible states return 409. Admin only. |
-| `DELETE` | `/api/sync-schedules/{book_id}` | Cancel a schedule before it joins the queue. |
+| `DELETE` | `/api/sync-schedules/{book_id}` | Cancel a schedule before it joins the queue, or dismiss a finished schedule result. |
 | `GET` | `/api/sync-sweep` | Nightly rule, `pendingCount` (missing or outdated maps), and `eligibleCount`. |
 | `PUT` | `/api/sync-sweep` | Save `{ "enabled": true, "localTime": "01:00", "timeZone": "America/New_York", "booksPerNight": 2 }`. Limit: 1–100, default 2 when omitted. |
 | `POST` | `/api/sync-sweep/run` | Queue all missing and outdated maps immediately; skips active jobs and individual schedules. Returns `queued`, `skipped`, and `error`. |
 
-Nightly sweeps queue at most `booksPerNight` missing or outdated maps per run; the immediate run endpoint is not limited by that setting. Changing the rule to `enabled: false` stops future batches without cancelling queued work. Scheduled starts more than 15 minutes late are skipped; nightly rules advance to their next local occurrence. Job summaries include optional `queuePosition` (ascending queue order) and `pauseRequested`. The status `paused` retains saved sections; a running job with `pauseRequested: true` is stopping its current section. Completed sections remain saved; resuming repeats the unfinished section. Accepted jobs and recent outcomes survive restarts, and interrupted books resume from the last completed section after the library and generator become available. Paused books remain paused. Before a server update launches its updater, sync workers stop and the queue is saved for automatic recovery. Updates repeat unfinished sections rather than waiting for them to finish; manually paused jobs are left paused. Failed or cancelled update preparation releases the queue on the current server.
+Nightly sweeps queue at most `booksPerNight` missing or outdated maps per run; the immediate run endpoint is not limited by that setting. Changing the rule to `enabled: false` stops future batches without cancelling queued work. Scheduled starts more than 15 minutes late are skipped; nightly rules advance to their next local occurrence. Job summaries include optional `queuePosition` (ascending queue order) and `pauseRequested`. The status `paused` retains saved sections; a running job with `pauseRequested: true` is stopping its current section. Completed sections remain saved; resuming repeats the unfinished section. Accepted jobs and the latest finished result per book survive restarts. A new finished sync replaces older completed, failed, or cancelled results for that book; queued, running, paused, and other job kinds are retained. Previously saved duplicate results are consolidated during startup. Dismissing a result does not change book eligibility or its saved grade. Submitted schedules record their completed, failed, or cancelled outcome before the job result is removed. Interrupted books resume from the last completed section after the library and generator become available. Paused books remain paused. Before a server update launches its updater, sync workers stop and the queue is saved for automatic recovery. Updates repeat unfinished sections rather than waiting for them to finish; manually paused jobs are left paused. Failed or cancelled update preparation releases the queue on the current server.
 
-Books that can be followed expose a `syncFile` object (`fileName`, `source`, `url`, and `outdated`). `source` is `sidecar` for an aligned `.sync.json` beside the book or `generated` for one produced by the alignment job. Books without an aligned map have `syncFile: null`. `outdated` recommends remapping an older OperaLibre-generated map but does not prevent playback. Generated maps include `mappingRevision`, advanced only for improvements that warrant remapping, independently of the map schema or application release. A missing `mappingRevision` is treated as 0; a lower revision marks a generated map outdated, while equal or higher revisions remain current. Third-party maps without this provenance are not marked outdated. The sync map itself is JSON:
+Books that can be followed expose a `syncFile` object (`fileName`, `source`, `url`, `outdated`, and, once graded, `quality`). `source` is `sidecar` for an aligned `.sync.json` beside the book or `generated` for one produced by the alignment job. Books without an aligned map have `syncFile: null`. `outdated` recommends remapping an older OperaLibre-generated map but does not prevent playback. Generated maps include `mappingRevision`, advanced only for improvements that warrant remapping, independently of the map schema or application release. A missing `mappingRevision` is treated as 0; a lower revision marks a generated map outdated, while equal or higher revisions remain current. Third-party maps without this provenance are not marked outdated. The sync map itself is JSON:
 
 ```json
 {
@@ -221,6 +223,67 @@ Books that can be followed expose a `syncFile` object (`fileName`, `source`, `ur
 ```
 
 `startSeconds`/`endSeconds` are book-absolute positions (across all tracks), `href` is the EPUB spine document as written in the OPF manifest, and `text` is the sentence to locate and highlight inside that document. `words` (optional) times each word as `[startSeconds, endSeconds, offsetUtf16, lengthUtf16]` inside `text`. `precision` is `sentence` for a forced alignment. Legacy estimated maps are not served as sentence alignments. Version 1 maps, which carried sentences only, are still accepted.
+
+#### Sync grades
+
+`quality` summarizes the served map's grade as `{ "grade": "poor", "flagged": 2 }`, where `grade` is `good`, `review`, `poor`, or `failed` and `flagged` counts chapters graded below `good`. It is absent until the map is graded: maps written by the alignment job are graded as they are saved, and other maps are graded in the background after a library scan. Grading never changes the map. Administrators can fetch the chapter detail from `/api/books/{book_id}/sync/report`:
+
+```json
+{
+  "mapGeneratedAt": "1791504810",
+  "mapSize": 4937055,
+  "graded": "run",
+  "grade": "poor",
+  "chapters": [
+    {
+      "index": 7,
+      "label": "Chapter 7",
+      "startSeconds": 10500.0,
+      "endSeconds": 12000.0,
+      "textCoverage": 0.62,
+      "gapSeconds": 412.0,
+      "skippedText": 0,
+      "status": "aligned",
+      "diagnosis": {
+        "cause": "noisy-audio",
+        "evidence": { "recognizedWords": 1210, "wordsInText": 0.57, "windows": 9, "unanchoredWindows": 5, "recognitionRetries": 7 },
+        "fix": { "kind": "auto", "action": "larger-model", "attempted": true }
+      },
+      "grade": "poor"
+    }
+  ],
+  "languageOverride": null
+}
+```
+
+`graded` is `run` when the alignment job graded its own result and `estimate` when an existing map was graded without realigning. Chapters are the stretches the book is aligned in, in book order, with book-absolute times. `textCoverage` is the share of the chapter's text (ignoring whitespace) covered by sentences, not counting `skippedText`, the UTF-16 units of edition-only text a run deliberately left unmatched. `gapSeconds` is the audio in the chapter that holds the reader's place without a sentence. A chapter is `good` with at least 95% coverage and no more than 5% of its audio unmatched, `review` with at least 80% and no more than 20%, and `poor` otherwise. A chapter with `status: "empty"` has no text and `grade: null`. A chapter whose last run could not align it has `status: "kept-previous"` when it kept an earlier map's sentences or `"failed"` when it has none (the map holds the reader's place with a recovery gap instead); both are graded `failed`, the worst grade, and carry `error`, the error's first line, and, when the error runs longer, the whole text as `errorDetail`. The book's `grade` is the worst grade among chapters of at least two minutes, or among all chapters when none is that long. `languageOverride` is the language set with `PUT /api/books/{book_id}/sync/language`, or null.
+
+A whole-book sync whose chapters partly fail still completes and publishes its map; it fails, leaving the served map untouched, only when its first three chapters or all of its chapters fail, or when no chapter produced a single sentence. Sync jobs listed by `/api/jobs` add `failedChapters`, `[{ "index": 12, "label": "Chapter 12", "cause": "runtime-crash" }]`, when a completed sync could not align some chapters, and `chapters` in the same shape, without `cause`, for a job that re-runs only those chapters. Both are omitted when empty. A failed sync job adds `cause`, and for `language-mismatch`, `heardLanguage`, the language its narration was heard in.
+
+#### Diagnoses
+
+Chapters graded `poor` or `failed` by a run carry a `diagnosis`, as does any chapter whose timing came from an automatic fix. Estimated reports have none. `cause` is a stable code, also used for a failed job's `cause` and a failed chapter's `cause` in `failedChapters`; clients should treat an unrecognized code like `unknown`:
+
+| `cause` | Meaning | `fix.kind` / `fix.action` |
+| --- | --- | --- |
+| `runtime-crash` | The alignment runtime exited without a result or was killed. | `auto` / `retry-other-model` |
+| `noisy-audio` | Recognition heard little speech, or windows found no clear match in the text. | `auto` / `larger-model` |
+| `chapter-mismatch` | The chapter's opening speech matches another chapter's text clearly better than its own. | `auto` / `match-other-chapter` |
+| `language-mismatch` | A sample of the audio was detected as a language other than the one recognition used. | `suggested` / `resync-language` |
+| `edition-mismatch` | Plenty of clear speech, but few of its three-word runs are in the chapter's text. | `none` |
+| `runtime-missing` | The alignment runtime or ffmpeg could not be started. | `none` |
+| `audio-unreadable` | ffmpeg could not extract the audio. | `none` |
+| `timeout` | A step exceeded its time limit. | `none` |
+| `language-guess` | The aligner guessed an unsupported language for the text. | `none` |
+| `unknown` | Anything else; see `error` and `errorDetail`. | `none` |
+
+`evidence` holds only the measures that informed the diagnosis: `heardLanguage` and `labelledLanguage` (the language recognition used, from the EPUB or `languageOverride`), `matchingChapter` (`{ "index", "label" }`), `recognizedWords`, `wordsInText` (the share, 0 to 1, of recognized three-word runs found in the chapter's text), `windows`, `unanchoredWindows`, and `recognitionRetries`. An `auto` fix runs in the same job, after the first pass over the chapters, at most once per chapter and cause; `attempted` says it ran, and `applied` that the chapter's timing now comes from it, which happens only when it improved the chapter's grade. A `suggested` fix is never applied by the server: for `resync-language`, set the book's language to `evidence.heardLanguage` with `PUT /api/books/{book_id}/sync/language` and sync again.
+
+#### Re-running chapters
+
+`POST /api/books/{book_id}/sync/generate` with `{ "chapters": [12, 13] }` aligns only those chapters, by their report `index`, then splices them into the served map: their old sentences and the recovery gaps inside them are replaced, the rest of the map is unchanged, the map gets a new `generatedAt`, and those report entries are regraded. A re-run chapter that fails keeps its previous sentences and records the new error; if every requested chapter fails, the map is unchanged and the job fails. The request needs a generated map that is not outdated, a report that is current for it, and a book that still divides into the same chapters (same labels and times) as the report; otherwise it returns 409 with a message saying to re-sync the whole book. An empty list returns 400. A request already covered by a queued whole-book sync, or by a queued re-run of the same chapters, returns that job; any other request for a book with a queued re-run returns 409.
+
+Reports include `mapDigest`, the SHA-256 digest of the map they describe. Replacing a map invalidates its report even when its size and generation time stay the same. Estimated coverage only credits sentences whose document and text match the chapter's EPUB sections.
 
 #### Playback progress
 

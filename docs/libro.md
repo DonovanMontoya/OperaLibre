@@ -142,7 +142,9 @@ personal home directories may be inaccessible. See
 
 In **Get books**, choose **All accounts** to browse Audible and Libro.fm purchases
 on the same screen. Search applies to both store sections. You can still select
-an individual store and filter purchases by account.
+an individual store and filter purchases by account. Choose a purchase to see its
+details, such as the description, runtime, and owning accounts, and to add it to
+your server or open the copy already there.
 
 In a browser, choose **Manage** beside Libro.fm in Get books. In the native apps, open **Settings → Book stores → Libro.fm**. Choose **Add Libro.fm account** to connect another account. Existing connections
 and cached purchases are preserved, including connections saved by older versions.

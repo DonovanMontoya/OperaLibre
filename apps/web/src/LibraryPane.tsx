@@ -1,3 +1,4 @@
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { useCarPlay } from "./useCarPlay";
 import type { useFinishFeed } from "./useFinishFeed";
 import type { useOfflineDownloads } from "./useOfflineDownloads";
@@ -13,6 +14,7 @@ import {
   Bell,
   ChevronDown,
   ChevronRight,
+  ChevronsUpDown,
   CircleCheck,
   Cloud,
   CloudDownload,
@@ -42,16 +44,20 @@ import { SHELF_VIEW_MODE_OPTIONS } from "./shelfView";
 import { SHELF_STATUS_OPTIONS, SHELF_READING_OPTIONS, toggleShelfFacet } from "./shelfFilters";
 import { ShelfBookList, ShelfFacetGroup } from "./ShelfBookList";
 import { DeviceImportNotice } from "./DeviceImportNotice";
+import { readingQueueKey } from "./readingQueue";
 import { ContinueReading } from "./ContinueReading";
 import { isPendingJob, jobDetailLines, jobStateLabel, jobSummary, jobTitle } from "./jobLabels";
 import { formatElapsed, formatMinutes } from "./formatting";
 import { LibroCatalog, StoreHeading } from "./LibroCatalog";
 import { getDeviceBooks, mergeDeviceAndServerBooks } from "./localLibrary";
-import { hasUserConfiguredServer, SERVER_SETUP_GUIDE_URL } from "./api";
+import { getServerStorageKey, hasUserConfiguredServer, SERVER_SETUP_GUIDE_URL } from "./api";
 import { CONNECT_PROMPT_DISMISSED_KEY, writeStoredValue } from "./appStorage";
 import { LibationError } from "./AudibleManagement";
 import { isLibationAdding } from "./libationState";
 import { LibationCoverArt } from "./CoverArt";
+import { StoreBookDetails } from "./StoreBookDetails";
+import { audibleBookFacts } from "./storeBookFacts";
+import type { AudibleBook } from "./audibleBooks";
 import type { AuthUser, Book } from "./types";
 import type { NativeTab, StoreSettingsTarget } from "./nativeTabs";
 import type { Dispatch, ReactNode, RefObject, SetStateAction, TouchEvent } from "react";
@@ -78,6 +84,7 @@ export function LibraryPane({
   isOperaLibre,
   lastPurchaseSource,
   libraryOpen,
+  libraryPaneRef,
   librarySource,
   localMode,
   native,
@@ -127,6 +134,7 @@ export function LibraryPane({
   isOperaLibre: boolean;
   lastPurchaseSource: RefObject<"audible" | "libro" | "all">;
   libraryOpen: boolean;
+  libraryPaneRef: RefObject<HTMLElement | null>;
   librarySource: LibrarySource;
   localMode: boolean;
   native: boolean;
@@ -162,8 +170,10 @@ export function LibraryPane({
     changeShelfLayout,
     clearShelfFilters,
     closeShelfFilters,
+    expandAllShelfGroups,
     filterToggleRef,
     filtersOpen,
+    hasCollapsedShelfGroups,
     purchaseViewMode,
     reverseSort,
     searchQuery,
@@ -181,6 +191,7 @@ export function LibraryPane({
     sortMode,
     sortOrderLabel,
     sortReversed,
+    toggleShelfGroup,
     viewMode,
     visibleBookColumns,
     visibleBooks
@@ -244,8 +255,104 @@ export function LibraryPane({
   // Known only once the status has loaded, so the prompt does not flash first.
   const audibleNeedsAccount = native && !!libationStatus && allAudibleAccounts.length === 0;
 
+  const queueActionsRef = useRef({ selectBook, resumeSelectedBook, openBookDetails, setLibraryOpen });
+  queueActionsRef.current = { selectBook, resumeSelectedBook, openBookDetails, setLibraryOpen };
+  const startQueuedBook = useCallback((book: Book) => {
+    const actions = queueActionsRef.current;
+    actions.selectBook(book);
+    actions.resumeSelectedBook(book);
+    actions.setLibraryOpen(false);
+  }, []);
+  const openQueuedBook = useCallback((id: string) => {
+    queueActionsRef.current.openBookDetails(id);
+    queueActionsRef.current.setLibraryOpen(false);
+  }, []);
+  const readingBooks = useMemo(() => isOffline
+    ? visibleBooks.filter(book => book.source === "device" || !!book.deviceBookId || downloadedBookIds.has(book.id))
+    : visibleBooks, [isOffline, visibleBooks, downloadedBookIds]);
+  const queueBooks = useMemo(() => isOffline
+    ? books.filter(book => book.source === "device" || !!book.deviceBookId || downloadedBookIds.has(book.id))
+    : books, [isOffline, books, downloadedBookIds]);
+
+  const [audibleDetailsId, setAudibleDetailsId] = useState<string | null>(null);
+  const audibleDetailsBook = audibleDetailsId ? visibleLibationBooks.find(book => book.catalogId === audibleDetailsId) ?? null : null;
+  // The list row and the details page share one action, so either shows the same download state.
+  function audibleAction(book: AudibleBook) {
+    const isLocal = !!book.localBookId;
+    const catalogIds = new Set(book.accounts.map(account => account.catalogId));
+    const downloadRequest = libationDownloadRequests.find(
+      (request) => (request.catalogId ? catalogIds.has(request.catalogId) : request.profileId ? catalogIds.has(`${request.profileId}:${request.asin}`) : request.asin === book.asin) && request.status !== "rejected"
+    );
+    const isAwaitingApproval = downloadRequest?.status === "pending";
+    const isApprovedRequest = downloadRequest?.status === "approved" && !!downloadRequest.jobId;
+    const pendingDownloadJob =
+      pendingLibationJobs.find(
+        (job) => job.kind === "libation-liberate" && !!job.targetId && catalogIds.has(job.targetId)
+      ) ?? downloadAllLibationJob;
+    const latestBookJob = libationJobs.find(
+      (job) => job.kind === "libation-liberate" && !!job.targetId && catalogIds.has(job.targetId)
+    );
+    const isStarting = libationAllPending || book.accounts.some(account => libationRequests.has(account.catalogId));
+    const isQueued = pendingDownloadJob?.status === "queued";
+    const isDownloading = pendingDownloadJob?.status === "running";
+    const finalizationFailed = book.accounts.some(account => libationFinalizationFailures.has(account.catalogId));
+    const isFinalizing = isLibationAdding({
+      isLocal,
+      confirmationPending: book.accounts.some(account => libationFinalizingAsins.has(account.catalogId)),
+      confirmationFailed: finalizationFailed
+    });
+    const didFail = downloadRequest?.status === "failed" || latestBookJob?.status === "failed" || finalizationFailed;
+    return isLocal ? (
+      <button
+        type="button"
+        className="local-marker"
+        aria-label={`Open ${book.title} from your server library`}
+        onClick={() => {
+          if (!book.localBookId) {
+            return;
+          }
+          setAudibleDetailsId(null);
+          openBookDetails(book.localBookId);
+          setLibrarySource("local");
+          setLibraryOpen(false);
+        }}
+      >
+        <CircleCheck size={14} />
+        <span>On server</span>
+      </button>
+    ) : isAwaitingApproval ? (
+      <span className="audible-download-status queued" role="status" aria-label={`Requested ${book.title}`}>
+        <List size={14} />
+        <span>Requested</span>
+      </span>
+    ) : isStarting || isQueued || isDownloading || isFinalizing || (isApprovedRequest && !finalizationFailed) ? (
+      <span
+        className={`audible-download-status ${
+          isQueued ? "queued" : isDownloading ? "downloading" : isFinalizing || isApprovedRequest ? "finalizing" : "starting"
+        }`}
+        role="status"
+        aria-label={`${
+          isQueued ? "Queued" : isDownloading ? "Downloading" : isFinalizing || isApprovedRequest ? "Adding to library" : "Starting download"
+        } ${book.title}`}
+      >
+        {isQueued ? <List size={14} /> : <LoaderCircle size={14} className="spin-icon" />}
+        <span>{isQueued ? "Queued" : isDownloading ? "Downloading" : isFinalizing || isApprovedRequest ? "Adding" : "Starting"}</span>
+      </span>
+    ) : (
+      <button
+        type="button"
+        className={`audible-download-action ${didFail ? "retry" : ""}`}
+        aria-label={`${didFail ? "Retry" : currentUser.libationAccess === "approval" ? "Request" : "Add to server"} ${book.title}`}
+        onClick={() => void startLiberation(book)}
+      >
+        <CloudDownload size={14} />
+        <span>{didFail ? "Retry" : currentUser.libationAccess === "approval" ? "Request" : "Add to server"}</span>
+      </button>
+    );
+  }
+
   return (
-    <aside className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource !== "local" ? "purchase-browsing" : ""}`} {...shelfPull.handlers}>
+    <aside ref={libraryPaneRef} className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource !== "local" ? "purchase-browsing" : ""}`} {...shelfPull.handlers}>
       {native ? (
         <div
           className={`pull-indicator ${shelfPull.refreshing ? "refreshing" : ""}`}
@@ -264,7 +371,6 @@ export function LibraryPane({
       ) : null}
       <div className="pane-title">
         <div>
-          <span className="eyebrow"><Library size={13} /> The Collection</span>
           <h1>OperaLibre</h1>
         </div>
         {native && ipad && shelfLayout !== "library" ? (
@@ -659,13 +765,19 @@ export function LibraryPane({
           </div>
         ) : null}
 
-        {librarySource !== "libro" && librarySource !== "all" ? <div className="library-results-summary" role="status" aria-live="polite" aria-atomic="true">
-          <span>
+        {librarySource !== "libro" && librarySource !== "all" ? <div className="library-results-summary">
+          <span role="status" aria-live="polite" aria-atomic="true">
             {librarySource === "local"
               ? isLoading ? "Loading books…" : `${visibleBooks.length} of ${books.length} books`
               : libationLoading ? "Loading books…" : `${visibleLibationBooks.length} of ${audibleBookCount} books`}
           </span>
           <span>{sortOrderLabel}</span>
+          {librarySource === "local" && hasCollapsedShelfGroups ? (
+            <button type="button" className="library-expand-all" onClick={expandAllShelfGroups}>
+              <ChevronsUpDown size={14} aria-hidden="true" />
+              Expand all
+            </button>
+          ) : null}
         </div> : null}
 
       </div>
@@ -851,7 +963,12 @@ export function LibraryPane({
 
           {!isLoading ? (
             <ContinueReading
-              books={isOffline ? visibleBooks.filter(book => book.source === "device" || !!book.deviceBookId || downloadedBookIds.has(book.id)) : visibleBooks}
+              key={readingQueueKey(getServerStorageKey(), currentUser.id)}
+              storageKey={readingQueueKey(getServerStorageKey(), currentUser.id)}
+              books={readingBooks}
+              queueBooks={queueBooks}
+              onStart={startQueuedBook}
+              onOpenBook={openQueuedBook}
               onContinue={continueReadingBook}
             />
           ) : null}
@@ -874,18 +991,14 @@ export function LibraryPane({
             readalongEnabled={readalongEnabled}
             sentenceFollowAvailable={shelf.sentenceFollowAvailable}
             onSelectBook={selectFromShelf}
+            onToggleGroup={toggleShelfGroup}
           />
         </>
       ) : showAudiblePurchases ? (
         <>
-          {audibleNeedsAccount ? <section className="libro-catalog" aria-label="Audible library">
-            <header className="libro-catalog-head"><StoreHeading store="Audible" connected={false} onOpenSettings={() => openStoreSettings("audible")} /></header>
-          </section> : <>
-            {librarySource === "all" ? <h2 className="purchase-provider-heading">Audible</h2> : null}
-            {native ? <button type="button" className="purchase-settings-link" onClick={() => openStoreSettings("audible")}>
-              Audible accounts &amp; settings <ChevronRight size={14} />
-            </button> : null}
-          </>}
+          {audibleNeedsAccount || native ? <section className="libro-catalog" aria-label="Audible library">
+            <header className="libro-catalog-head"><StoreHeading store="Audible" connected={!audibleNeedsAccount} onOpenSettings={() => openStoreSettings("audible")} /></header>
+          </section> : librarySource === "all" ? <h2 className="purchase-provider-heading">Audible</h2> : null}
           {libationLoading || (libationStatus?.enabled && !libationBooksLoaded) ? (
             <div className="empty-state">Loading Audible library…</div>
           ) : null}
@@ -897,29 +1010,6 @@ export function LibraryPane({
           <div className={`audible-list purchase-book-list purchase-book-list--${purchaseViewMode} audible-list--${purchaseViewMode}`}>
             {visibleLibationBooks.map((book) => {
               const isLocal = !!book.localBookId;
-              const catalogIds = new Set(book.accounts.map(account => account.catalogId));
-              const downloadRequest = libationDownloadRequests.find(
-                (request) => (request.catalogId ? catalogIds.has(request.catalogId) : request.profileId ? catalogIds.has(`${request.profileId}:${request.asin}`) : request.asin === book.asin) && request.status !== "rejected"
-              );
-              const isAwaitingApproval = downloadRequest?.status === "pending";
-              const isApprovedRequest = downloadRequest?.status === "approved" && !!downloadRequest.jobId;
-              const pendingDownloadJob =
-                pendingLibationJobs.find(
-                  (job) => job.kind === "libation-liberate" && !!job.targetId && catalogIds.has(job.targetId)
-                ) ?? downloadAllLibationJob;
-              const latestBookJob = libationJobs.find(
-                (job) => job.kind === "libation-liberate" && !!job.targetId && catalogIds.has(job.targetId)
-              );
-              const isStarting = libationAllPending || book.accounts.some(account => libationRequests.has(account.catalogId));
-              const isQueued = pendingDownloadJob?.status === "queued";
-              const isDownloading = pendingDownloadJob?.status === "running";
-              const finalizationFailed = book.accounts.some(account => libationFinalizationFailures.has(account.catalogId));
-              const isFinalizing = isLibationAdding({
-                isLocal,
-                confirmationPending: book.accounts.some(account => libationFinalizingAsins.has(account.catalogId)),
-                confirmationFailed: finalizationFailed
-              });
-              const didFail = downloadRequest?.status === "failed" || latestBookJob?.status === "failed" || finalizationFailed;
               const metaParts = [
                 book.authors,
                 formatMinutes(book.lengthMinutes),
@@ -929,62 +1019,26 @@ export function LibraryPane({
                 <div key={book.catalogId} className={`audible-row purchase-book-row ${isLocal ? "is-local" : ""}`}>
                   <LibationCoverArt book={book} />
                   <div className="audible-copy">
-                    <strong>{book.title}</strong>
+                    <strong><button type="button" className="purchase-book-open" aria-haspopup="dialog" onClick={() => setAudibleDetailsId(book.catalogId)}>{book.title}</button></strong>
                     <span>{metaParts.join(" · ")}</span>
                     <div className="audible-account-tags"><span className="purchase-provider-tag">Audible</span>{book.accounts.map(account => (
                       <small className="audible-account-badge" key={account.profileId}><KeyRound size={10} /> {audibleAccountLabels.get(account.profileId) ?? account.profileName}</small>
                     ))}</div>
                   </div>
-                  {isLocal ? (
-                    <button
-                      type="button"
-                      className="local-marker"
-                      aria-label={`Open ${book.title} from your server library`}
-                      onClick={() => {
-                        if (!book.localBookId) {
-                          return;
-                        }
-                        openBookDetails(book.localBookId);
-                        setLibrarySource("local");
-                        setLibraryOpen(false);
-                      }}
-                    >
-                      <CircleCheck size={14} />
-                      <span>On server</span>
-                    </button>
-                  ) : isAwaitingApproval ? (
-                    <span className="audible-download-status queued" role="status" aria-label={`Requested ${book.title}`}>
-                      <List size={14} />
-                      <span>Requested</span>
-                    </span>
-                  ) : isStarting || isQueued || isDownloading || isFinalizing || (isApprovedRequest && !finalizationFailed) ? (
-                    <span
-                      className={`audible-download-status ${
-                        isQueued ? "queued" : isDownloading ? "downloading" : isFinalizing || isApprovedRequest ? "finalizing" : "starting"
-                      }`}
-                      role="status"
-                      aria-label={`${
-                        isQueued ? "Queued" : isDownloading ? "Downloading" : isFinalizing || isApprovedRequest ? "Adding to library" : "Starting download"
-                      } ${book.title}`}
-                    >
-                      {isQueued ? <List size={14} /> : <LoaderCircle size={14} className="spin-icon" />}
-                      <span>{isQueued ? "Queued" : isDownloading ? "Downloading" : isFinalizing || isApprovedRequest ? "Adding" : "Starting"}</span>
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      className={`audible-download-action ${didFail ? "retry" : ""}`}
-                      aria-label={`${didFail ? "Retry" : currentUser.libationAccess === "approval" ? "Request" : "Add to server"} ${book.title}`}
-                      onClick={() => void startLiberation(book)}
-                    >
-                      <CloudDownload size={14} />
-                      <span>{didFail ? "Retry" : currentUser.libationAccess === "approval" ? "Request" : "Add to server"}</span>
-                    </button>
-                  )}
+                  {audibleAction(book)}
                 </div>
               );
             })}
           </div>
+          {audibleDetailsBook ? <StoreBookDetails
+            facts={audibleBookFacts(audibleDetailsBook, id => audibleAccountLabels.get(id))}
+            cover={<LibationCoverArt book={audibleDetailsBook} />}
+            action={audibleAction(audibleDetailsBook)}
+            status={libationError ? <LibationError detail={libationError} /> : null}
+            hint={audibleDetailsBook.localBookId ? "This book is on your server. Open it to start listening."
+              : currentUser.libationAccess === "approval" ? "Not on your server yet. Request it and an administrator can add it from Audible."
+              : "Not on your server yet. Add it from Audible to listen on every device and keep your place in sync."}
+            onClose={() => setAudibleDetailsId(null)} /> : null}
         </>
       ) : null}
       </div>

@@ -94,6 +94,7 @@ mod reading;
 mod reading_log;
 mod storage;
 mod sync;
+mod sync_report;
 mod sync_schedule;
 #[cfg(test)]
 mod unit_tests;
@@ -586,6 +587,7 @@ fn build_app_state(
         )?,
         sync_dir: config.data_dir.join("sync"),
         sync_schedule_lock: Arc::new(Mutex::new(())),
+        sync_report_backfill: Arc::default(),
         covers_dir: config.data_dir.join("covers"),
         database: database.clone(),
         database_path,

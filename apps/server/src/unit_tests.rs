@@ -1796,6 +1796,7 @@ exit 0
         update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
         sync_dir: data_dir.join("sync"),
         sync_schedule_lock: super::Arc::new(super::Mutex::new(())),
+        sync_report_backfill: super::Arc::default(),
         covers_dir: data_dir.join("covers"),
         database: database.clone(),
         database_path: data_dir.join("operalibre.db"),
@@ -2706,6 +2707,10 @@ fn prune_finished_jobs_keeps_active_and_newest() {
                 output: String::new(),
                 error: None,
                 progress: None,
+                chapters: Vec::new(),
+                failed_chapters: Vec::new(),
+                cause: None,
+                heard_language: None,
             },
         );
     }
@@ -2737,6 +2742,10 @@ fn job_list_summaries_bound_output_without_breaking_unicode() {
         output: output.clone(),
         error: Some(output),
         progress: None,
+        chapters: Vec::new(),
+        failed_chapters: Vec::new(),
+        cause: None,
+        heard_language: None,
     };
 
     let summary = super::job_for_list(&job);
@@ -2766,6 +2775,10 @@ fn job_timestamps_advance_when_the_clock_value_is_already_used() {
             output: String::new(),
             error: None,
             progress: None,
+            chapters: Vec::new(),
+            failed_chapters: Vec::new(),
+            cause: None,
+            heard_language: None,
         },
     );
 

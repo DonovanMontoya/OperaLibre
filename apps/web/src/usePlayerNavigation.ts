@@ -3,7 +3,7 @@ import type { Book } from "./types";
 import { haptic } from "./native";
 import type { NativePlayerSheet } from "./PlayerSheets";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
-import { type NativeTab, spreadTab } from "./nativeTabs";
+import { type NativeTab, shelfRetapped, spreadTab } from "./nativeTabs";
 import { writeGamesEnabled } from "./gamePreferences";
 import type { LibrarySource, ShelfLayout } from "./shelfSort";
 import type { Dispatch, RefObject, SetStateAction } from "react";
@@ -16,6 +16,7 @@ export function usePlayerNavigation({
   chaptersOpen,
   gamesEnabled,
   isViewingPlayingBook,
+  libraryPaneRef,
   librarySource,
   native,
   nativePlayerView,
@@ -41,6 +42,7 @@ export function usePlayerNavigation({
   chaptersOpen: boolean;
   gamesEnabled: boolean;
   isViewingPlayingBook: boolean;
+  libraryPaneRef: RefObject<HTMLElement | null>;
   librarySource: LibrarySource;
   native: boolean;
   nativePlayerView: "details" | "now" | "chapters";
@@ -236,6 +238,9 @@ export function usePlayerNavigation({
     // catalogue back to the listener's own library.
     if (tab === "shelf" && spreadTab(nativeTab, shelfSpread, shelfLayout) === "shelf" && librarySource !== "local") {
       showYourLibrary();
+    }
+    if (shelfRetapped(tab, nativeTab, shelfSpread, shelfLayout, nativePlayerView)) {
+      libraryPaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     }
     // Reading belongs to the playing book. A book browsed from the shelf stays
     // selected after its details page closes and must not follow into the tab.

@@ -248,7 +248,7 @@ test('native phone Continue Reading opens paused, plays explicitly, and remember
   await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(false);
   await page.getByRole('button', { name: 'Shelf', exact: true }).click();
   await resume.click();
-  await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
+  await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(false);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.locator('.settings-shell').getByText('Cadence', { exact: true })).toBeVisible();
   await expect(page.getByRole('switch', { name: 'Games tab', exact: true })).toBeHidden();
@@ -317,6 +317,54 @@ test('browser Continue Reading keeps listed progress when the server fails and e
 });
 
 for (const native of [false, true]) {
+  test(`${native ? 'native' : 'web'} Continue Reading preserves the current book's playback state`, async ({ page }) => {
+    const fixtureBooks = library(2);
+    for (const book of fixtureBooks) {
+      book.tracks.forEach(track => { track.streamUrl = `/fixture-${book.id}-${track.index}.wav`; });
+      book.progress = { status: 'inProgress', bookPositionSeconds: 60, durationSeconds: 240,
+        remainingSeconds: 180, percentComplete: 25, updatedAt: '2026-09-30T12:00:00Z' };
+    }
+    await openShell(page, native, false, false, fixtureBooks);
+    await serveFixtureAudio(page);
+    await page.route('**/api/books/*/progress', route =>
+      route.fulfill({ status: 503, json: { error: 'Server unavailable' } }));
+    const [book, otherBook] = fixtureBooks;
+    const audio = page.locator('audio');
+    const openFromShelf = async (title: string) => {
+      if (native) await page.getByRole('button', { name: 'Shelf', exact: true }).click();
+      await page.getByRole('button', { name: `Continue reading ${title}`, exact: true }).click();
+    };
+    await openFromShelf(book.title);
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBe(60);
+    await page.locator('.native-now-play').click();
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThan(61);
+    await audio.evaluate(element => {
+      element.dataset.pauseCount = '0';
+      element.addEventListener('pause', () => {
+        element.dataset.pauseCount = String(Number(element.dataset.pauseCount) + 1);
+      });
+    });
+    const before = await audio.evaluate((element: HTMLAudioElement) => element.currentTime);
+    await openFromShelf(book.title);
+    await expect(page.locator('.native-now-play')).toHaveAttribute('aria-label', 'Pause');
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThan(before + 1);
+    await expect(audio).toHaveAttribute('data-pause-count', '0');
+
+    await page.locator('.native-now-play').click();
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true);
+    const paused = await audio.evaluate((element: HTMLAudioElement) => element.currentTime);
+    await openFromShelf(book.title);
+    expect(await audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true);
+    expect(await audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBe(paused);
+
+    await page.locator('.native-now-play').click();
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(false);
+    await openFromShelf(otherBook.title);
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBe(60);
+    expect(await audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true);
+    await expect(audio).toHaveAttribute('src', new RegExp(otherBook.tracks[0].streamUrl));
+  });
+
   test(`${native ? 'native' : 'web'} Play after paused Continue Reading accepts delayed server progress`, async ({ page }) => {
     const fixtureBooks = library(2);
     const book = fixtureBooks[1];
@@ -409,6 +457,7 @@ test('web readers can connect Libro.fm without native Settings', async ({ page }
   await page.getByRole('button', { name: 'Connect Libro.fm', exact: true }).press('Enter');
   await page.getByRole('button', { name: 'Close Libro.fm management' }).press('Enter');
   await expect(page.getByRole('button', { name: 'Manage Libro.fm', exact: true })).toBeVisible();
+  await expect(page.getByText('0 of 0 purchases', { exact: true })).toBeVisible();
   expect(writes).toContain('/api/me/libro');
 });
 
@@ -517,6 +566,27 @@ test('native Audible settings show failed refresh requests', async ({ page }) =>
   await page.locator('.store-settings-group > summary').filter({ hasText: 'Audible' }).click();
   await page.getByRole('button', { name: 'Refresh purchases', exact: true }).click();
   await expect(page.getByRole('alert').filter({ hasText: 'Refresh limit reached. Try again later.' })).toBeVisible();
+});
+
+test('native Get books keeps a way to each connected store\'s Settings', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openShell(page, true, true);
+  await page.route('**/api/me/libro', route => route.fulfill({ json: {
+    connected: true, email: 'reader@example.com', syncedAt: '2026-10-01T12:00:00Z',
+    accounts: [{ email: 'reader@example.com', syncedAt: '2026-10-01T12:00:00Z' }], books: [], jobs: []
+  } }));
+  await page.getByRole('button', { name: 'Get books', exact: true }).press('Enter');
+  const libro = page.getByRole('button', { name: 'Libro.fm accounts & settings', exact: true });
+  const audible = page.getByRole('button', { name: 'Audible accounts & settings', exact: true });
+  await expect(libro).toBeVisible();
+  await expect(audible).toBeVisible();
+  await expect(page.getByText('0 of 0 purchases', { exact: true })).toHaveCount(0);
+  const [libroBox, audibleBox] = [(await libro.boundingBox())!, (await audible.boundingBox())!];
+  expect(Math.abs(libroBox.x + libroBox.width - audibleBox.x - audibleBox.width)).toBeLessThan(1);
+  const heading = (await page.getByRole('heading', { name: 'Libro.fm', exact: true }).boundingBox())!;
+  expect(libroBox.y).toBeLessThan(heading.y + heading.height);
+  await libro.press('Enter');
+  await expect(page.locator('details.store-settings-group[open]')).toContainText('Libro.fm');
 });
 
 test('native Libro.fm settings show failed background refreshes', async ({ page }) => {

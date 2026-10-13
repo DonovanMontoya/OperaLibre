@@ -1,6 +1,7 @@
 import { AlertTriangle, ArrowDown, ArrowUp, Pause, Play, X, ArrowUpRight, BookOpen, Check, ChevronDown, Clock, LoaderCircle, Moon, PlayCircle, RefreshCw, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { cancelBookSyncSchedule, controlSyncJob, removeSyncJob, generateSyncMap, getBooks, getSyncSweep, listJobs, listSyncSchedules, runSyncSweep, scheduleBookSync, setSyncSweep, type SyncSchedule, type SyncSweep } from "./api";
+import { cancelBookSyncSchedule, controlSyncJob, removeSyncJob, generateSyncMap, getBooks, getSyncReport, getSyncSweep, listJobs, listSyncSchedules, runSyncSweep, scheduleBookSync, setSyncLanguage, setSyncSweep, type SyncSchedule, type SyncSweep } from "./api";
+import { formatTime } from "./formatting";
 import { jobElapsedMinutes } from "./jobTiming";
 import {
   syncFeedChanged,
@@ -8,9 +9,13 @@ import {
   syncJobPollDelay,
   sortSyncJobs
 } from "./syncJobFeed";
-import type { Book, JobStatus } from "./types";
+import { canRerunChapter, chapterProblem, coveragePercent, gradeLabel, gradeTone, groupSyncedBooks, jobProblem, languageName, sortChapters, syncJobAttention, syncJobScope } from "./syncQuality";
+import { SyncProblem } from "./SyncProblem";
+import type { Book, JobStatus, SyncReport } from "./types";
 
 type Feed = { jobs: JobStatus[]; now: number };
+/** The book whose chapter grades are open, and what loading them returned. */
+type OpenReport = { bookId: string; data?: SyncReport; error?: string };
 
 /** The label and colour a job's state carries in the activity list. */
 function jobState(status: string) {
@@ -19,6 +24,7 @@ function jobState(status: string) {
   if (status === "paused") return { label: "Paused", tone: "queued" };
   if (status === "completed") return { label: "Completed", tone: "done" };
   if (status === "failed") return { label: "Failed", tone: "failed" };
+  if (status === "cancelled") return { label: "Cancelled", tone: "queued" };
   return { label: status, tone: "queued" };
 }
 
@@ -31,6 +37,107 @@ function relativeTime(runAt: number, now: number) {
   const hours = Math.round(minutes / 60);
   if (Math.abs(hours) < 24) return RELATIVE.format(hours, "hour");
   return RELATIVE.format(Math.round(hours / 24), "day");
+}
+
+/**
+ * A book's chapters, worst first, loaded when its grade is opened. With
+ * `onRerun`, chapters below Good can be picked and aligned again on their own.
+ * `onLanguage` sets the language the book's narration is recognized in and
+ * re-syncs the chapters it affects, or with null, clears it.
+ */
+function SyncChapterGrades({ report, onRerun, onLanguage, canSync }: {
+  report: OpenReport;
+  onRerun?: (chapters: number[]) => Promise<void>;
+  onLanguage: (language: string | null, chapters: number[]) => Promise<void>;
+  /** Whether a sync of this book can start now. */
+  canSync: boolean;
+}) {
+  const [selected, setSelected] = useState<number[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<{ message: string; failed: boolean } | null>(null);
+  if (report.error) return <p className="admin-sync-schedule-error" role="alert">{report.error}</p>;
+  if (!report.data) return <p className="admin-sync-chapters-note"><LoaderCircle size={12} className="spin-icon" aria-hidden="true" />Loading chapters…</p>;
+  const { data } = report;
+  const picking = !!onRerun && data.chapters.some(canRerunChapter);
+  // The language is the book's, so one suggestion covers every chapter it explains.
+  const misheard = data.chapters.filter((chapter) => chapterProblem(chapter)?.resyncLanguage);
+  const heard = misheard.length ? chapterProblem(misheard[0])!.resyncLanguage! : null;
+
+  async function act(work: () => Promise<void>, done: string, failure: string) {
+    setBusy(true);
+    setOutcome(null);
+    try {
+      await work();
+      setOutcome({ message: done, failed: false });
+      setSelected([]);
+    } catch (err) {
+      setOutcome({ message: err instanceof Error ? err.message : failure, failed: true });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const rerun = () => act(() => onRerun!(selected),
+    `Queued ${selected.length} ${selected.length === 1 ? "chapter" : "chapters"} to re-run.`, "Could not re-run these chapters.");
+
+  return <>
+    {data.graded === "estimate" ? <p className="admin-sync-chapters-note">Estimated grade, measured from the existing map. Re-sync for a full grade.</p> : null}
+    {data.languageOverride ? <div className="admin-sync-chapter-actions">
+      <button type="button" className="quiet-button" disabled={busy}
+        onClick={() => void act(() => onLanguage(null, []), "Using the EPUB’s language from the next sync.", "Could not change the language.")}>
+        <X size={12} />Use the EPUB’s language
+      </button>
+      <span className="admin-sync-chapters-note">Narration is recognized as {languageName(data.languageOverride)} for this book, not in the EPUB’s language.</span>
+    </div> : null}
+    {heard ? <div className="admin-sync-chapter-actions">
+      <button type="button" className="quiet-button" disabled={busy || !canSync}
+        onClick={() => void act(() => onLanguage(heard, misheard.map((chapter) => chapter.index)),
+          `Re-syncing as ${languageName(heard)}.`, "Could not re-sync in that language.")}>
+        {busy ? <LoaderCircle size={12} className="spin-icon" /> : <RefreshCw size={12} />}Re-sync as {languageName(heard)}
+      </button>
+      <span className="admin-sync-chapters-note">The narration sounds like {languageName(heard)}. This sets the book’s language and re-syncs {misheard.length === 1 ? "that chapter" : `those ${misheard.length} chapters`}; you can change it back here.</span>
+    </div> : null}
+    {data.chapters.length === 0 ? <p className="admin-sync-chapters-note">This book’s chapters could not be matched to its text, so they have no grades.</p> : (
+      <ol className={picking ? "admin-sync-chapter-list admin-sync-chapter-list-pick" : "admin-sync-chapter-list"}>
+        <li className="admin-sync-chapter-head" aria-hidden="true">{picking ? <span /> : null}<span className="admin-sync-chapter-label">Chapter</span><span>Text</span><span>Unmatched</span><span>Grade</span></li>
+        {sortChapters(data.chapters).map((chapter) => {
+          const problem = chapterProblem(chapter);
+          return (
+            <li key={chapter.index}>
+              {picking ? <span>{canRerunChapter(chapter) ? <input
+                type="checkbox"
+                aria-label={`Re-run ${chapter.label}`}
+                checked={selected.includes(chapter.index)}
+                disabled={busy}
+                onChange={(event) => {
+                  const { checked } = event.target;
+                  setSelected((current) => checked ? [...current, chapter.index] : current.filter((index) => index !== chapter.index));
+                }}
+              /> : null}</span> : null}
+              <span className="admin-sync-chapter-label">{chapter.label}</span>
+              {chapter.grade ? <>
+                <span title="Share of the chapter’s text that is highlighted">{coveragePercent(chapter)}</span>
+                <span title="Audio no sentence was matched to">{formatTime(chapter.gapSeconds)}</span>
+                <span className={`admin-sync-job-state admin-sync-job-state-${gradeTone(chapter.grade)}`}>{gradeLabel(chapter.grade)}</span>
+              </> : <span className="admin-sync-chapter-empty">No text to follow</span>}
+              {problem ? <SyncProblem
+                problem={problem}
+                className={canRerunChapter(chapter) ? "admin-sync-chapter-error" : "admin-sync-chapter-error admin-sync-chapter-fixed"}
+                brief={!!problem.resyncLanguage}
+              /> : null}
+            </li>
+          );
+        })}
+      </ol>
+    )}
+    {picking ? <div className="admin-sync-chapter-actions">
+      <button type="button" className="quiet-button" disabled={busy || selected.length === 0} onClick={() => void rerun()}>
+        {busy ? <LoaderCircle size={12} className="spin-icon" /> : <RefreshCw size={12} />}Re-run selected chapters
+      </button>
+      <span className="admin-sync-chapters-note">Only these chapters are aligned again; the rest of the map stays as it is.</span>
+    </div> : null}
+    {outcome ? <p className={outcome.failed ? "admin-sync-schedule-error" : "admin-sync-sweep-outcome"} role={outcome.failed ? "alert" : "status"}>{outcome.message}</p> : null}
+  </>;
 }
 
 /** One nightly rule and one "do it now" button for the whole library. */
@@ -193,7 +300,25 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
   const [libraryBooks, setLibraryBooks] = useState(books);
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [openReport, setOpenReport] = useState<OpenReport | null>(null);
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  async function toggleReport(bookId: string) {
+    if (openReport?.bookId === bookId) { setOpenReport(null); return; }
+    setOpenReport({ bookId });
+    await loadReport(bookId);
+  }
+
+  async function loadReport(bookId: string) {
+    let next: OpenReport;
+    try {
+      next = { bookId, data: await getSyncReport(bookId) };
+    } catch (err) {
+      next = { bookId, error: err instanceof Error ? err.message : "Could not load this book’s chapter grades." };
+    }
+    // Drop an answer for a book that was closed or switched away from meanwhile.
+    setOpenReport((current) => current?.bookId === bookId ? next : current);
+  }
 
   function openSchedule(bookId: string) {
     const next = new Date();
@@ -205,11 +330,13 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
     setActionError(null);
   }
 
-  async function act(bookId: string, action: "sync" | "schedule" | "cancel") {
+  /** `language`, with a sync, first sets the language the book's narration is recognized in. */
+  async function act(bookId: string, action: "sync" | "schedule" | "cancel", language?: string) {
     setBusyBook(bookId);
     setActionError(null);
     try {
-      if (action === "sync") await generateSyncMap(bookId);
+      if (language) await changeLanguage(bookId, language);
+      else if (action === "sync") await generateSyncMap(bookId);
       else if (action === "cancel") {
         await cancelBookSyncSchedule(bookId);
         setSchedules((entries) => entries?.filter((entry) => entry.bookId !== bookId) ?? null);
@@ -226,6 +353,33 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
       setActionError({ bookId, message: err instanceof Error ? err.message : "Could not update this book’s sync." });
     } finally {
       setBusyBook(null);
+    }
+  }
+
+  async function rerunChapters(bookId: string, chapters: number[]) {
+    await generateSyncMap(bookId, chapters);
+    setRevision((value) => value + 1);
+  }
+
+  /**
+   * Sets the language a book's narration is recognized in, or clears it with
+   * null, then syncs the given chapters in it, or the whole book with none.
+   */
+  async function changeLanguage(bookId: string, language: string | null, chapters?: number[]) {
+    const saved = await setSyncLanguage(bookId, language);
+    try {
+      if (language) await generateSyncMap(bookId, chapters?.length ? chapters : undefined);
+    } catch (err) {
+      try {
+        await setSyncLanguage(bookId, saved.previousLanguageOverride, saved.languageOverride ?? undefined);
+      } catch {
+        const reason = err instanceof Error ? err.message : "Could not queue the sync.";
+        throw new Error(`${reason} The language could not be restored. Check the book’s language setting before retrying.`);
+      }
+      throw err;
+    } finally {
+      setRevision((value) => value + 1);
+      if (openReport?.bookId === bookId) await loadReport(bookId);
     }
   }
 
@@ -342,6 +496,12 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
     || book.title.toLowerCase().includes(needle)
     || (book.author?.toLowerCase().includes(needle) ?? false);
   const visibleBooks = eligibleBooks.filter(matches);
+  const { attention, synced } = groupSyncedBooks(visibleBooks.filter(isSynced));
+  const groups = [
+    ...(attention.length ? [{ title: "Needs attention", kind: "attention", items: attention, empty: "" }] : []),
+    { title: "Ready to optimize", kind: "ready", items: visibleBooks.filter((book) => !isSynced(book)), empty: needle ? "No matches." : "Every eligible book has been synced." },
+    { title: "Already synced", kind: "synced", items: synced, empty: needle ? "No matches." : "Synced books will appear here." },
+  ];
 
   const syncedTotal = eligibleBooks.filter(isSynced).length;
   const pendingSchedules = schedules?.filter((entry) => entry.status === "scheduled" || entry.status === "dispatching").length ?? 0;
@@ -391,7 +551,12 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
             const title = book?.title ?? (job.targetId ? `Unavailable book (${job.targetId})` : "Unknown book");
             const percent = syncJobPercent(job);
             const elapsed = jobElapsedMinutes(job, feed?.now ?? Date.now());
-            const state = jobState(job.status);
+            const attention = syncJobAttention(job);
+            const scope = syncJobScope(job, title);
+            const problem = jobProblem(job);
+            const finished = ["completed", "failed", "cancelled"].includes(job.status);
+            // A finished sync with chapters it could not align is not all good news.
+            const state = attention ? { ...jobState(job.status), tone: "queued" } : jobState(job.status);
             return (
               <article className={`admin-sync-job admin-sync-job-${state.tone}`} key={job.id}>
                 <div className="admin-sync-job-heading">
@@ -408,8 +573,11 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                     {job.pauseRequested && job.status === "running" ? "Pausing…" : state.label}
                     </span>
                     {job.status === "queued" || job.status === "paused" ? <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null} aria-label={`Remove ${title} from sync queue`} title="Remove from queue" onClick={() => void changeJob(job.id, "remove")}><X size={14} /></button> : null}
+                    {finished ? <button type="button" className="admin-sync-icon-button" disabled={busyJob !== null} aria-label={`Dismiss sync result for ${title}`} title="Dismiss result" onClick={() => void changeJob(job.id, "remove")}><X size={14} /></button> : null}
                   </div>
                 </div>
+                {scope ? <p className="admin-sync-job-step">{scope}</p> : null}
+                {attention ? <p className="admin-sync-job-attention"><AlertTriangle size={13} aria-hidden="true" />{attention}</p> : null}
                 {job.status === "running" ? (
                   <div className="sync-progress">
                     <div className="sync-progress-head">
@@ -437,14 +605,19 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                 ) : job.status === "queued" ? <p className="admin-sync-job-step">{job.progress?.step ?? "Waiting for another sync to finish."}</p> : null}
                 {job.status === "running" && job.pauseRequested ? <p className="admin-sync-job-step">Stopping the current section; completed chapters or tracks stay saved.</p> : null}
                 {job.status === "paused" ? <p className="admin-sync-job-step">{percent !== null ? `${percent}% saved. ` : "Completed sections are saved. "}Resume when ready; this sync stays paused across server restarts.</p> : null}
-                {job.status === "failed" ? (
+                {problem ? (
                   <div className="admin-sync-job-failure">
-                    <p className="admin-sync-job-error">{job.error ?? "Sync generation failed."}</p>
-                    {book ? (
+                    <SyncProblem problem={problem} />
+                    {book ? <div className="admin-sync-job-failure-actions">
+                      {problem.resyncLanguage ? (
+                        <button type="button" className="quiet-button" disabled={!syncEnabled || busyBook !== null || activeJobs.has(book.id)} onClick={() => void act(book.id, "sync", problem.resyncLanguage!)}>
+                          <RefreshCw size={12} />Re-sync as {languageName(problem.resyncLanguage)}
+                        </button>
+                      ) : null}
                       <button type="button" className="quiet-button" disabled={!syncEnabled || busyBook !== null || activeJobs.has(book.id)} onClick={() => void act(book.id, "sync")}>
                         {busyBook === book.id ? <LoaderCircle size={12} className="spin-icon" /> : <RefreshCw size={12} />}Try again
                       </button>
-                    ) : null}
+                    </div> : null}
                   </div>
                 ) : null}
                 {job.finishedAt && Number(job.finishedAt) > 0 ? <p className="admin-experiment-detail">Finished {new Date(Number(job.finishedAt)).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</p> : null}
@@ -464,11 +637,10 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
         </div>
         <p className="admin-experiment-detail">Sync a book now or schedule it for later. Books need audio and an EPUB companion.</p>
         <div className="admin-sync-library">
-        {[{ title: "Ready to optimize", synced: false, items: visibleBooks.filter((book) => !isSynced(book)), empty: needle ? "No matches." : "Every eligible book has been synced." },
-          { title: "Already synced", synced: true, items: visibleBooks.filter(isSynced), empty: needle ? "No matches." : "Synced books will appear here." }].map((group) => (
-          <details key={group.title} className="admin-sync-book-group" open>
+        {groups.map((group) => (
+          <details key={group.title} className={`admin-sync-book-group admin-sync-book-group-${group.kind}`} open>
             <summary>
-              {group.synced ? <Check size={16} /> : <BookOpen size={16} />}
+              {group.kind === "attention" ? <AlertTriangle size={16} /> : group.kind === "synced" ? <Check size={16} /> : <BookOpen size={16} />}
               <span>{group.title}</span><span className="admin-sync-count">{group.items.length}</span><ChevronDown className="admin-sync-chevron" size={15} />
             </summary>
             <div className="admin-sync-book-list">
@@ -477,12 +649,28 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                 const pending = schedule?.status === "scheduled" || schedule?.status === "dispatching";
                 const job = activeJobs.get(book.id);
                 const percent = job ? syncJobPercent(job) : null;
+                const quality = book.syncFile?.quality;
+                const reportOpen = openReport?.bookId === book.id;
+                const rerunnable = syncEnabled && !job && book.syncFile?.source === "generated" && !book.syncFile.outdated;
                 return (
                 <div className="admin-sync-book-entry" key={book.id}>
                 <div className="admin-sync-book-row">
                   <div className="admin-sync-book-info">
                     {onOpenBook ? <button type="button" className="admin-sync-book-link" onClick={() => onOpenBook(book.id)}>{book.title}<ArrowUpRight size={13} aria-hidden="true" /></button> : <strong>{book.title}</strong>}
-                    {book.syncFile?.outdated ? <span className="admin-sync-job-state admin-sync-job-state-queued" title="A mapping update is available. The existing map remains usable until you remap it.">Outdated map</span> : null}
+                    {book.syncFile?.outdated || quality ? <span className="admin-sync-book-badges">
+                      {book.syncFile?.outdated ? <span className="admin-sync-job-state admin-sync-job-state-queued" title="A mapping update is available. The existing map remains usable until you remap it.">Outdated map</span> : null}
+                      {quality ? <button
+                        type="button"
+                        className={`admin-sync-job-state admin-sync-grade admin-sync-job-state-${gradeTone(quality.grade)}`}
+                        aria-expanded={reportOpen}
+                        aria-label={`${gradeLabel(quality.grade)} sync. ${reportOpen ? "Hide" : "Show"} chapter grades for ${book.title}`}
+                        title={quality.flagged ? `${quality.flagged} ${quality.flagged === 1 ? "chapter is" : "chapters are"} below Good` : "Every chapter is Good"}
+                        onClick={() => void toggleReport(book.id)}
+                      >
+                        {gradeLabel(quality.grade)}{quality.flagged ? ` · ${quality.flagged}` : ""}
+                        <ChevronDown size={11} aria-hidden="true" />
+                      </button> : null}
+                    </span> : null}
                     {book.author ? <span className="admin-sync-author">{book.author}</span> : null}
                   </div>
                   <div className="admin-sync-book-actions">
@@ -506,8 +694,32 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                   </span>
                   <button type="button" className="admin-sync-book-link" disabled={busyBook !== null} onClick={() => void act(book.id, "cancel")} aria-label={`Cancel scheduled sync for ${book.title}`}>Cancel</button>
                 </div> : null}
+                {reportOpen && openReport ? <div className="admin-sync-chapters">
+                  <SyncChapterGrades
+                    key={book.id}
+                    report={openReport}
+                    onRerun={rerunnable ? (chapters) => rerunChapters(book.id, chapters) : undefined}
+                    onLanguage={(language, chapters) => changeLanguage(book.id, language, rerunnable ? chapters : undefined)}
+                    canSync={syncEnabled && !job}
+                  />
+                </div> : null}
                 {actionError?.bookId === book.id ? <p role="alert" className="admin-sync-schedule-error">{actionError.message}</p> : null}
-                {schedule?.error ? <p className="admin-sync-schedule-error">{schedule.error}</p> : null}
+                {schedule?.error ? (() => {
+                  // A schedule whose job failed says why in the job's words.
+                  const failed = jobs?.find((entry) => entry.id === schedule.jobId);
+                  // Dismissing or replacing its activity result also clears
+                  // this copy of the notice; the saved book grade remains.
+                  if (jobs && schedule.jobId && !failed) return null;
+                  const problem = failed ? jobProblem(failed) : null;
+                  return <div className="admin-sync-scheduled">
+                    {problem
+                      ? <SyncProblem problem={problem} className="admin-sync-schedule-problem" />
+                      : <p className="admin-sync-schedule-error">{schedule.error}</p>}
+                    <button type="button" className="admin-sync-icon-button" disabled={busyBook !== null || busyJob !== null}
+                      aria-label={`Dismiss scheduled sync result for ${book.title}`} title="Dismiss result"
+                      onClick={() => void (failed ? changeJob(failed.id, "remove") : act(book.id, "cancel"))}><X size={14} /></button>
+                  </div>;
+                })() : null}
                 {schedulingBook === book.id ? <form className="admin-sync-schedule-form" onSubmit={(event) => { event.preventDefault(); void act(book.id, "schedule"); }}>
                   <label htmlFor={`sync-time-${book.id}`}>Start time · {timeZone}</label>
                   <input id={`sync-time-${book.id}`} type="datetime-local" required value={scheduledTime} onChange={(event) => setScheduledTime(event.target.value)} />
@@ -522,7 +734,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
         </div>
       </section>
 
-      <p className="admin-experiment-detail">Jobs run one at a time and continue when you close this view. The queue and recent results survive server restarts. Interrupted books resume from the last completed chapter or track when Follow along is enabled. Pause finishes the current section before saving; books without matched chapters may need to finish the whole track. Paused jobs stay paused across restarts. Existing maps remain available.</p>
+      <p className="admin-experiment-detail">Jobs run one at a time and continue when you close this view. The queue and latest result for each book survive server restarts. A new result replaces older results for that book. Dismiss a finished result with ×; books still needing a sync remain in the book list. Interrupted books resume from the last completed chapter or track when Follow along is enabled. Pause finishes the current section before saving; books without matched chapters may need to finish the whole track. Paused jobs stay paused across restarts. Existing maps remain available.</p>
     </div>
   );
 }
