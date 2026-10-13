@@ -16,7 +16,12 @@ Confirm before opening:
 - New `server.config` options have safe defaults for existing installs.
 - Playback, progress, or sync changes: opening and closing a book doesn't reset
   another device's position.
-- AI-assisted commits carry a `Co-Authored-By:` trailer naming the model.
+- The "AI assistance" section names tools and models when known and briefly
+  describes their role, or says "None" if no AI tools were used. No session links.
+- Human contributors have reviewed and tested the changes they submit.
+- Co-Authored-By trailers credit only real human collaborators. AI agents,
+  tools, models, and providers are not commit authors, committers, coauthors,
+  or repository contributors.
 -->
 
 ## What changed
@@ -48,8 +53,11 @@ phones, CarPlay, Jellyfin, third-party clients). -->
 
 ## AI assistance
 
-<!-- Required. List the models and tools used and what they helped with, e.g.
+<!-- Required for every PR. Name the tools and models used when known and briefly
+describe their role, e.g.
 "Claude Opus 5.5 in Claude Code: drafted the migration and tests". Write "None"
-if no AI tools were used. AI-assisted commits must also carry a
-Co-Authored-By trailer naming the model. -->
+if no AI tools were used. Do not include session links. Human contributors remain
+responsible for reviewing and testing the changes. Reserve Co-Authored-By
+trailers for real human collaborators; AI agents, tools, models, and providers
+must not be commit authors, committers, coauthors, or repository contributors. -->
 

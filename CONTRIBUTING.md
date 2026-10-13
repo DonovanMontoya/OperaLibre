@@ -109,24 +109,20 @@ PRs are merged with merge commits once CI passes and review is complete.
 ## AI-assisted contributions
 
 You're welcome to use AI coding tools. [AGENTS.md](AGENTS.md) holds project
-guidance for them. You are responsible for every line you submit: review it,
-run the checks, and make sure the screenshots and testing notes reflect what
-you actually ran.
+guidance for them. Human contributors are responsible for every line they
+submit: review it, run the checks, and make sure the screenshots and testing
+notes reflect what they actually ran.
 
 AI assistance must be disclosed:
 
-- **Commits:** end each commit written with AI help with a `Co-Authored-By:`
-  trailer naming the specific model, for example:
-
-  ```
-  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-  Co-Authored-By: GPT-5 <noreply@openai.com>
-  ```
-
-- **Pull requests:** fill in the template's "AI assistance" section with the
-  models and tools you used and what they helped with (for example, "Claude
-  Opus 5.5 in Claude Code: drafted the migration and tests"). Write "None" if
-  you didn't use any.
+- **Pull requests:** every PR must include the template's "AI assistance"
+  section. Name the tools and models used when known and briefly describe
+  their role (for example, "Claude Opus 5.5 in Claude Code: drafted the
+  migration and tests"). Write "None" if no AI tools were used. Do not include
+  session links.
+- **Attribution:** reserve `Co-Authored-By:` trailers for real human
+  collaborators. AI agents, tools, models, and providers must not be listed as
+  commit authors, committers, coauthors, or repository contributors.
 
 ## License
 
