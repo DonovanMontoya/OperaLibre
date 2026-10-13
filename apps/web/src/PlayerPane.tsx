@@ -1,6 +1,7 @@
 import { BookClips } from "./BookClips";
 import type { Clip } from "./clips";
 import { DemoMediaCredits } from "./DemoMediaCredits";
+import { CarPlayer } from "./CarPlayer";
 import { BookCredits } from "./BookCredits";
 import type { useBookCompletion } from "./useBookCompletion";
 import type { useClips } from "./useClips";
@@ -15,6 +16,7 @@ import {
   ArrowUp,
   Bookmark,
   BookOpen,
+  Car,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -299,6 +301,8 @@ export function PlayerPane({
     setEbookUploadFile
   } = uploads;
 
+  const [carMode, setCarMode] = useState(false);
+  const carModeButtonRef = useRef<HTMLButtonElement>(null);
   const nowArtworkRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const artwork = nowArtworkRef.current;
@@ -318,7 +322,7 @@ export function PlayerPane({
     observer.observe(cover);
     window.addEventListener("resize", positionRibbon);
     return () => { observer.disconnect(); window.removeEventListener("resize", positionRibbon); };
-  }, [playbackBook?.id, nativePlayerView, isViewingPlayingBook]);
+  }, [playbackBook?.id, nativePlayerView, isViewingPlayingBook, carMode]);
   const [contentsTab, setContentsTab] = useState<"chapters" | "clips">("chapters");
   const contentsId = useId();
   useEffect(() => setContentsTab("chapters"), [selectedBook?.id]);
@@ -609,7 +613,7 @@ export function PlayerPane({
 
   return (
     <section
-      className={`player-pane native-player-view-${nativePlayerView} ${
+      className={`player-pane native-player-view-${nativePlayerView} ${carMode && nativePlayerView === "now" ? "has-car-mode" : ""} ${
         isViewingPlayingBook && currentTrack ? "has-native-player" : ""
       } ${
         nativeTab === "reading" && usesFoldLayout(playbackFold) && playbackFold.fold?.axis === "horizontal"
@@ -617,6 +621,13 @@ export function PlayerPane({
       }`}
       ref={playerPaneRef}
       onScroll={handlePlayerPaneScroll}
+      onKeyDown={event => {
+        if (carMode && event.key === "Escape") {
+          event.stopPropagation();
+          setCarMode(false);
+          carModeButtonRef.current?.focus();
+        }
+      }}
       onTouchStart={beginBookDetailsBackSwipe}
       onTouchEnd={finishBookDetailsBackSwipe}
       onTouchCancel={() => { bookDetailsSwipeStartRef.current = null; }}
@@ -630,6 +641,17 @@ export function PlayerPane({
         <Library size={16} />
         <span>Library</span>
       </button>
+      {isViewingPlayingBook && nativePlayerView === "now" && currentTrack ? (
+        <button type="button" className="car-mode-toggle" ref={carModeButtonRef}
+          aria-label={carMode ? "Exit car mode" : "Car mode"} aria-pressed={carMode}
+          title={carMode ? "Exit car mode" : "Car mode"}
+          onClick={event => {
+            event.currentTarget.focus();
+            setCarMode(value => !value);
+          }}>
+          <Car size={23} strokeWidth={1.6} aria-hidden="true" />
+        </button>
+      ) : null}
       {/* The details view stands on its own: every block that needs a live
           track is already gated on `isViewingPlayingBook`, so a book opened
           from the shelf with nothing playing renders its preview + "Begin
@@ -640,6 +662,24 @@ export function PlayerPane({
         <>
           {isViewingPlayingBook && nativePlayerView === "now" && playbackBook && currentTrack ? (
             <section className="native-now-playing" aria-label="Now playing">
+              {carMode ? (
+                <CarPlayer
+                  book={playbackBook}
+                  elapsed={activeChapter ? chapterElapsed : position}
+                  duration={activeChapter ? chapterDuration : sliderMax}
+                  chapterTitle={activeChapter?.title ?? currentTrack.title}
+                  isPlaying={isPlaying}
+                  playPending={playPending}
+                  playbackError={playbackError}
+                  sleepStatus={sleepAtChapterEnd ? "Stops at the end of this chapter" : sleepRemaining > 0 ? `Sleep timer: ${Math.ceil(sleepRemaining / 60)}m left` : null}
+                  seekBy={seekBy}
+                  togglePlayback={togglePlayback}
+                  onSaveClip={clips.visible ? clips.saveMoment : undefined}
+                  clipSaved={Boolean(clips.lastSavedId)}
+                  clipError={clips.visible ? clips.error : null}
+                />
+              ) : (
+              <>
               {/* The halves group the stack for a foldable phone, which sets
                   them either side of its fold. Everywhere else they take no
                   box and their children lay out in the card's grid. */}
@@ -890,6 +930,8 @@ export function PlayerPane({
                   </section>
                 </div>
               ) : null}
+              </>
+              )}
             </section>
           ) : null}
           {native ? bookPageMasthead : <div className="book-page-masthead">{bookPageMasthead}</div>}

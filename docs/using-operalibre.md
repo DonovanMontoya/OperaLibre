@@ -21,6 +21,12 @@ Tapping a book in **Continue Reading** loads your saved position in the player w
 
 OperaLibre remembers a reader’s position automatically. Each reader has separate progress, so two people can listen to the same book independently.
 
+Tap the car icon in the upper-right corner of the player for larger playback
+controls. When clips are enabled, **Save moment** keeps a passage with one tap.
+Tap the same car icon again to return to the normal player without interrupting
+your book. Car mode is a manual choice for the current app session; it does not
+detect Driving Focus.
+
 ### Fix a book that is too quiet
 
 Audiobooks are mastered at very different levels, so a device volume that suits one book leaves the next one hard to hear. **Book Volume**, in the player’s playback sheet (the speed pill) and on the book’s own page, trims or lifts that single book by up to 24 dB without touching anything else. It is saved per reader on the server, so a book you turned up on your phone is already turned up on every other device you sign in from.
