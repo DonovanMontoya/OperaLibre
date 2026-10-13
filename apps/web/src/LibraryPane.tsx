@@ -1,3 +1,4 @@
+import { useCallback, useMemo, useRef } from "react";
 import type { useCarPlay } from "./useCarPlay";
 import type { useFinishFeed } from "./useFinishFeed";
 import type { useOfflineDownloads } from "./useOfflineDownloads";
@@ -250,6 +251,25 @@ export function LibraryPane({
   } = uploads;
   // Known only once the status has loaded, so the prompt does not flash first.
   const audibleNeedsAccount = native && !!libationStatus && allAudibleAccounts.length === 0;
+
+  const queueActionsRef = useRef({ selectBook, resumeSelectedBook, openBookDetails, setLibraryOpen });
+  queueActionsRef.current = { selectBook, resumeSelectedBook, openBookDetails, setLibraryOpen };
+  const startQueuedBook = useCallback((book: Book) => {
+    const actions = queueActionsRef.current;
+    actions.selectBook(book);
+    actions.resumeSelectedBook(book);
+    actions.setLibraryOpen(false);
+  }, []);
+  const openQueuedBook = useCallback((id: string) => {
+    queueActionsRef.current.openBookDetails(id);
+    queueActionsRef.current.setLibraryOpen(false);
+  }, []);
+  const readingBooks = useMemo(() => isOffline
+    ? visibleBooks.filter(book => book.source === "device" || !!book.deviceBookId || downloadedBookIds.has(book.id))
+    : visibleBooks, [isOffline, visibleBooks, downloadedBookIds]);
+  const queueBooks = useMemo(() => isOffline
+    ? books.filter(book => book.source === "device" || !!book.deviceBookId || downloadedBookIds.has(book.id))
+    : books, [isOffline, books, downloadedBookIds]);
 
   return (
     <aside ref={libraryPaneRef} className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource !== "local" ? "purchase-browsing" : ""}`} {...shelfPull.handlers}>
@@ -865,17 +885,10 @@ export function LibraryPane({
             <ContinueReading
               key={readingQueueKey(getServerStorageKey(), currentUser.id)}
               storageKey={readingQueueKey(getServerStorageKey(), currentUser.id)}
-              books={isOffline ? visibleBooks.filter(book => book.source === "device" || !!book.deviceBookId || downloadedBookIds.has(book.id)) : visibleBooks}
-              queueBooks={isOffline ? books.filter(book => book.source === "device" || !!book.deviceBookId || downloadedBookIds.has(book.id)) : books}
-              onStart={book => {
-                selectBook(book);
-                resumeSelectedBook(book);
-                setLibraryOpen(false);
-              }}
-              onOpenBook={id => {
-                openBookDetails(id);
-                setLibraryOpen(false);
-              }}
+              books={readingBooks}
+              queueBooks={queueBooks}
+              onStart={startQueuedBook}
+              onOpenBook={openQueuedBook}
               onContinue={continueReadingBook}
             />
           ) : null}
