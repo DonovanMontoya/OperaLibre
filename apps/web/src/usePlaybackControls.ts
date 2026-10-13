@@ -696,19 +696,19 @@ export function usePlaybackControls({
   }
 
   function resumeSelectedBook(book: Book, autoPlay = true) {
-    if (!autoPlay) {
-      void persistProgress();
-      cancelPendingPlayback(audioRef.current);
-      pausePlayback(audioRef.current);
-    }
     setNativePlayerView("now");
     if (native) {
       setNativeTab("reading");
     }
     if (playbackBook?.id === book.id) {
-      // Already restored in this session — its live position is authoritative.
+      // Opening the current book preserves its live position and playback state.
       if (autoPlay) playWhenReady();
       return;
+    }
+    if (!autoPlay) {
+      void persistProgress();
+      cancelPendingPlayback(audioRef.current);
+      pausePlayback(audioRef.current);
     }
     if (autoPlay) void persistProgress();
     // Deliberately no explicit session start, no pending seek, and no autoplay
