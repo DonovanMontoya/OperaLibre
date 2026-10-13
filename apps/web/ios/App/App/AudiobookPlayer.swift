@@ -128,6 +128,7 @@ public final class AudiobookPlayer {
     private var rateChangeObserver: NSObjectProtocol?
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
+    private var mediaServicesResetObserver: NSObjectProtocol?
     private var becameActiveObserver: NSObjectProtocol?
     private var willEnterForegroundObserver: NSObjectProtocol?
     private var enteredBackgroundObserver: NSObjectProtocol?
@@ -214,6 +215,7 @@ public final class AudiobookPlayer {
         for observer in [
             interruptionObserver,
             routeChangeObserver,
+            mediaServicesResetObserver,
             becameActiveObserver,
             willEnterForegroundObserver,
             enteredBackgroundObserver
@@ -1030,6 +1032,13 @@ public final class AudiobookPlayer {
         ) { [weak self] notification in
             self?.handleAudioRouteChange(notification)
         }
+        mediaServicesResetObserver = center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleMediaServicesReset()
+        }
         willEnterForegroundObserver = center.addObserver(
             forName: UIApplication.willEnterForegroundNotification,
             object: nil,
@@ -1229,6 +1238,32 @@ public final class AudiobookPlayer {
         default:
             break
         }
+    }
+
+    /// iOS restarted its audio services, which leaves the existing AVPlayer
+    /// silent for good. Rebuild it from the queue it held, at the position it
+    /// had reached, and keep playing only if it was. A book that already
+    /// finished has nothing to rebuild and still owes its `ended` event.
+    private func handleMediaServicesReset() {
+        guard
+            let player,
+            !finishedWhileInactive,
+            queuedTracks.indices.contains(activeQueueIndex)
+        else { return }
+        NSLog("Audio services were reset; rebuilding the player")
+        let remaining = Array(queuedTracks[activeQueueIndex...])
+        load(AudiobookLoadRequest(
+            url: remaining[0].url,
+            positionSeconds: stablePlayerPosition(),
+            rate: Double(desiredRate),
+            volume: Double(player.volume),
+            gain: Double(boostGain),
+            autoplay: shouldAutoplay,
+            recoveryScopeKey: recoveryScopeKey,
+            recoveryTrackId: recoveryTrackId,
+            recoveryBookOffsetSeconds: recoveryBookOffset,
+            queue: remaining
+        ))
     }
 
     /// Removing wired headphones or disconnecting AirPods is not reliably
