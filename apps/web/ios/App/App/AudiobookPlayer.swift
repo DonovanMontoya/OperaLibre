@@ -199,6 +199,19 @@ public final class AudiobookPlayer {
     /// hint — another app owns the audio session now.
     private static let interruptionResumeGraceSeconds = 30.0
     private var interruptionEndedWhileInactiveAt: TimeInterval?
+    /// Whatever interrupted playback can still hold the audio session for a
+    /// moment after iOS reports the interruption over, and activation fails
+    /// until it lets go. A resume waits these out before giving up.
+    private static let interruptionResumeRetryDelays: [TimeInterval] = [0.5, 1, 2]
+    /// A resume that has not started by then is abandoned. iOS can refuse
+    /// the background task below and suspend the app with a retry queued;
+    /// it would otherwise start playback whenever the app next ran.
+    private static let interruptionResumeWindowSeconds = 10.0
+    /// Identifies the newest resume, so a superseded one stops retrying.
+    private var interruptionResumeSerial = 0
+    /// Keeps a backgrounded app running through those retries; a paused app
+    /// is otherwise suspended before they fire.
+    private var interruptionResumeTask: UIBackgroundTaskIdentifier = .invalid
 
     deinit {
         tearDownPlayer()
@@ -1124,6 +1137,16 @@ public final class AudiobookPlayer {
 
         switch type {
         case .began:
+            let rawReason = notification.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt
+            NSLog("Audio interruption began (reason %@)", rawReason.map(String.init) ?? "unknown")
+            // Since iOS 17 a disconnected route also arrives as an
+            // interruption, and that one never ends. It is a route loss, not
+            // something to resume from.
+            if #available(iOS 17.0, *),
+               rawReason == AVAudioSession.InterruptionReason.routeDisconnected.rawValue {
+                pauseForLostRoute()
+                return
+            }
             interruptionIsActive = true
             interruptionSerial += 1
             interruptionEndedWhileInactiveAt = nil
@@ -1141,6 +1164,11 @@ public final class AudiobookPlayer {
             interruptionIsActive = false
             let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
+            NSLog(
+                "Audio interruption ended (should resume: %@, was playing: %@)",
+                options.contains(.shouldResume) ? "yes" : "no",
+                wasPlayingBeforeInterruption && shouldAutoplay ? "yes" : "no"
+            )
             if wasPlayingBeforeInterruption && shouldAutoplay && options.contains(.shouldResume) {
                 resumeAfterInterruption()
             } else {
@@ -1170,25 +1198,13 @@ public final class AudiobookPlayer {
         guard
             let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
             let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason),
-            let player
+            player != nil
         else { return }
 
+        NSLog("Audio route changed (reason %lu)", rawReason)
         switch reason {
         case .oldDeviceUnavailable:
-            // Removing wired headphones or disconnecting AirPods is not
-            // reliably delivered as an audio interruption. Treat the route
-            // loss as an explicit pause so playback never spills onto the
-            // speaker, and record AVPlayer's clock before a suspended WebView
-            // can lose the position.
-            shouldAutoplay = false
-            wasPlayingBeforeInterruption = false
-            interruptionIsActive = false
-            pendingPosition = stablePlayerPosition()
-            lastKnownPosition = pendingPosition
-            player.pause()
-            persistCheckpoint(force: true, positionSeconds: pendingPosition)
-            updateNowPlayingInfo()
-            if UIApplication.shared.applicationState == .active { emitState() }
+            pauseForLostRoute()
         case .newDeviceAvailable:
             // Putting in AirPods can play a connection chime that begins an
             // interruption without a useful matching `.ended` notification.
@@ -1219,6 +1235,23 @@ public final class AudiobookPlayer {
         }
     }
 
+    /// Removing wired headphones or disconnecting AirPods is not reliably
+    /// delivered as an audio interruption. Treat the route loss as an explicit
+    /// pause so playback never spills onto the speaker, and record AVPlayer's
+    /// clock before a suspended WebView can lose the position.
+    private func pauseForLostRoute() {
+        guard let player else { return }
+        shouldAutoplay = false
+        wasPlayingBeforeInterruption = false
+        interruptionIsActive = false
+        pendingPosition = stablePlayerPosition()
+        lastKnownPosition = pendingPosition
+        player.pause()
+        persistCheckpoint(force: true, positionSeconds: pendingPosition)
+        updateNowPlayingInfo()
+        if UIApplication.shared.applicationState == .active { emitState() }
+    }
+
     private func interruptionResumeIsFresh() -> Bool {
         guard let endedAt = interruptionEndedWhileInactiveAt else { return true }
         return Date.timeIntervalSinceReferenceDate - endedAt <= Self.interruptionResumeGraceSeconds
@@ -1232,22 +1265,98 @@ public final class AudiobookPlayer {
         // starts playback once it lands, and playing now would start from
         // the top of the file until then.
         guard initialSeekComplete else { return }
-        activateAudioSession { [weak self] activated in
-            guard let self, player === self.player else { return }
-            if activated && self.shouldAutoplay && !self.interruptionIsActive {
-                player.playImmediately(atRate: self.desiredRate)
+        interruptionResumeSerial += 1
+        let resume = interruptionResumeSerial
+        if interruptionResumeTask == .invalid {
+            interruptionResumeTask = UIApplication.shared.beginBackgroundTask(
+                withName: "Resume after interruption"
+            ) { [weak self] in
+                // Out of background time: a retry that fired after the app
+                // was suspended would start playback long after the fact.
+                self?.interruptionResumeSerial += 1
+                self?.endInterruptionResumeTask()
             }
-            self.persistCheckpoint(force: true)
-            self.updateNowPlayingInfo()
-            if UIApplication.shared.applicationState == .active { self.emitState() }
         }
+        let deadline = Date.timeIntervalSinceReferenceDate + Self.interruptionResumeWindowSeconds
+        attemptResumeAfterInterruption(player, resume: resume, deadline: deadline, retry: 0)
+    }
+
+    private func attemptResumeAfterInterruption(
+        _ player: AVPlayer,
+        resume: Int,
+        deadline: TimeInterval,
+        retry: Int
+    ) {
+        guard Date.timeIntervalSinceReferenceDate <= deadline else {
+            finishResumeAfterInterruption(givingUp: true)
+            return
+        }
+        let interruption = interruptionSerial
+        // A failure here is the interrupter still letting go of the session,
+        // not a broken player, so it is retried rather than reported.
+        activateAudioSession(reportingFailure: false) { [weak self] activated in
+            guard let self, player === self.player, resume == self.interruptionResumeSerial else { return }
+            let wanted = self.shouldAutoplay && !self.interruptionIsActive
+            let expired = Date.timeIntervalSinceReferenceDate > deadline
+            var givingUp = false
+            if activated && wanted && !expired {
+                player.playImmediately(atRate: self.desiredRate)
+            } else if wanted && interruption == self.interruptionSerial {
+                if !expired && retry < Self.interruptionResumeRetryDelays.count {
+                    let delay = Self.interruptionResumeRetryDelays[retry]
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                        guard let self, player === self.player,
+                              resume == self.interruptionResumeSerial else { return }
+                        // A pause or a newer interruption in the meantime wins.
+                        guard self.shouldAutoplay, !self.interruptionIsActive else {
+                            self.endInterruptionResumeTask()
+                            return
+                        }
+                        self.attemptResumeAfterInterruption(
+                            player,
+                            resume: resume,
+                            deadline: deadline,
+                            retry: retry + 1
+                        )
+                    }
+                    return
+                }
+                givingUp = true
+            }
+            self.finishResumeAfterInterruption(givingUp: givingUp)
+        }
+    }
+
+    private func finishResumeAfterInterruption(givingUp: Bool) {
+        if givingUp {
+            // Something else kept the session. Stay paused where the listener
+            // can press play, instead of resuming unprompted whenever the
+            // session next frees up.
+            NSLog("Audio session stayed unavailable after an interruption; leaving playback paused")
+            shouldAutoplay = false
+        }
+        endInterruptionResumeTask()
+        persistCheckpoint(force: true)
+        updateNowPlayingInfo()
+        if UIApplication.shared.applicationState == .active { emitState() }
+    }
+
+    private func endInterruptionResumeTask() {
+        guard interruptionResumeTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(interruptionResumeTask)
+        interruptionResumeTask = .invalid
     }
 
     /// Activates the session on `sessionQueue` and calls `completion` on main
     /// with whether playback may start. It reports false for a failure and
     /// for an activation overtaken by a newer interruption. A teardown in the
-    /// meantime drops the completion: that player is gone.
-    private func activateAudioSession(then completion: @escaping (Bool) -> Void) {
+    /// meantime drops the completion: that player is gone. A caller that
+    /// retries passes `reportingFailure: false` to keep a failure from
+    /// reaching the web layer, which answers one by leaving native audio.
+    private func activateAudioSession(
+        reportingFailure: Bool = true,
+        then completion: @escaping (Bool) -> Void
+    ) {
         let requestGeneration = generation
         let requestInterruption = interruptionSerial
         let interruptedAtRequest = interruptionIsActive
@@ -1272,7 +1381,7 @@ public final class AudiobookPlayer {
                 // native player: keep the play intent and let the
                 // interruption's end resume playback instead of failing over
                 // to web audio for good.
-                if interruptedAtRequest || overtaken || self.interruptionIsActive {
+                if !reportingFailure || interruptedAtRequest || overtaken || self.interruptionIsActive {
                     NSLog("Audio session activation deferred during an interruption: %@", failure.localizedDescription)
                 } else {
                     self.emitError("Unable to activate background audio: \(failure.localizedDescription)")
@@ -1580,6 +1689,8 @@ public final class AudiobookPlayer {
         wasPlayingBeforeInterruption = false
         interruptionEndedWhileInactiveAt = nil
         interruptionIsActive = false
+        interruptionResumeSerial += 1
+        endInterruptionResumeTask()
         recoveryScopeKey = nil
         recoveryTrackId = nil
         recoveryBookOffset = 0
