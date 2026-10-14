@@ -28,9 +28,8 @@ async function openPreview(page: Page, title = 'Second Book') {
 test('a sample crosses tracks, stops at five minutes, and never starts a reading', async ({ page, server }, testInfo) => {
   const books = await setup(page, server);
   const book = books.find(b => b.title === 'Second Book')!;
-  await page.getByRole('button', { name: 'Add books', exact: true }).click();
+  await page.locator('.book-row').filter({ hasText: 'Second Book' }).click();
   await page.getByRole('button', { name: 'Add Second Book to Up Next', exact: true }).click();
-  await page.getByRole('button', { name: 'Close', exact: true }).click();
   const writes: string[] = [];
   page.on('request', request => {
     if (request.method() !== 'GET' && /\/(progress|playback|completion)(\/|$)/.test(new URL(request.url()).pathname)) {
@@ -59,7 +58,7 @@ test('a sample crosses tracks, stops at five minutes, and never starts a reading
   await expect(preview.locator('audio')).toHaveCount(0);
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect(page.locator('.queue-row')).toHaveCount(1);
-  await expect(page.getByRole('heading', { name: 'Continue Reading', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Continue reading/ })).toHaveCount(0);
   expect(await server.progress(book.id)).toBeNull();
   expect(writes).toEqual([]);
 });

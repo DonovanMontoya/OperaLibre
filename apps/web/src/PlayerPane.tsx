@@ -961,7 +961,7 @@ export function PlayerPane({
                     </span>
                   </button>
                   {/* A book in progress is already in Up Next. */}
-                  {!isViewingPlayingBook && selectedBook.progress?.status !== "inProgress" ? (
+                  {selectedBook.progress?.status !== "inProgress" ? (
                     <button
                       type="button"
                       className="book-quick-return book-quick-queue"

@@ -18,6 +18,13 @@ test("a title files under its first letter, without accents or case", () => {
   assert.equal(titleInitial("Über uns"), "U");
 });
 
+test("a letter the reader's language sorts on its own keeps its own heading", () => {
+  const swedish = new Intl.Collator("sv", { sensitivity: "base" });
+  assert.equal(titleInitial("Ångest", swedish), "Å");
+  assert.equal(titleInitial("Émile", swedish), "E");
+  assert.equal(titleInitial("Ångest", new Intl.Collator("en", { sensitivity: "base" })), "A");
+});
+
 test("a title that opens with a digit or symbol files under #", () => {
   assert.equal(titleInitial("1984"), "#");
   assert.equal(titleInitial("'Salem's Lot"), "#");

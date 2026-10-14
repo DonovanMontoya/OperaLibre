@@ -862,12 +862,13 @@ function MainApp({
   const readingQueueStorageKey = readingQueueKey(getServerStorageKey(), currentUser.id);
   const [queueIds, saveQueueIds] = useReadingQueue(readingQueueStorageKey);
   useEffect(() => {
-    // A planned book leaves Up Next once it is actually playing, whatever its
-    // progress was when it was added.
-    if (isPlaying && playbackBookId && queueIds.includes(playbackBookId)) {
-      saveQueueIds(queueIds.filter(id => id !== playbackBookId));
+    // A planned book leaves the plan once it has listening progress of its
+    // own, which lists it in Up Next anyway. Pressing play is not enough: a
+    // stream that never starts must leave the plan as it was.
+    if (playbackBook?.progress?.status === "inProgress" && queueIds.includes(playbackBook.id)) {
+      saveQueueIds(queueIds.filter(id => id !== playbackBook.id));
     }
-  }, [isPlaying, playbackBookId, queueIds, saveQueueIds]);
+  }, [playbackBook, queueIds, saveQueueIds]);
   const unplayedConfirmationBook = unplayedConfirmationBookId
     ? books.find((book) => book.id === unplayedConfirmationBookId) ?? null
     : null;
