@@ -9466,6 +9466,15 @@ html.native-app .native-now-utility button {
   white-space: nowrap;
 }
 
+/* The sleep label changes length ("End of chapter") and a fifth tile narrows
+   the row, so it wraps to a second line rather than spilling past the tile. */
+html.native-app .native-now-utility button > span {
+  max-width: 100%;
+  line-height: 1.2;
+  text-align: center;
+  white-space: normal;
+}
+
 @media (max-height: 740px) {
   html.native-app .native-player-view-now .native-now-playing {
     min-height: calc(var(--native-viewport-height) - var(--tabs-h) - var(--status-h) - 46px);
