@@ -43,6 +43,14 @@ export function avatarFor(user: Pictured): Avatar | null {
   return AVATARS.find((avatar) => avatar.id === user.avatar) ?? null;
 }
 
+/**
+ * Whether the account has a picture saved at all, including one this build
+ * cannot draw: it shows as the initial here, but it is still there to clear.
+ */
+export function hasChosenAvatar(user: Pick<AuthUser, "avatar">): boolean {
+  return user.avatar != null;
+}
+
 export function initialOf(username: string): string {
   return username.slice(0, 1).toUpperCase();
 }

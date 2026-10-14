@@ -8,7 +8,7 @@ import { FOLLOW_AGGRESSIVENESS_LABELS, type FollowAggressiveness } from "./reada
 import { useState, type CSSProperties, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { updateAvatar } from "./api";
 import { AvatarFace } from "./Avatar";
-import { AVATARS, avatarFor, supportsAvatars, type AvatarId } from "./avatars";
+import { AVATARS, avatarFor, hasChosenAvatar, supportsAvatars, type AvatarId } from "./avatars";
 import type { AuthUser } from "./types";
 import type { NativeTab } from "./nativeTabs";
 import type { LibrarySource } from "./shelfSort";
@@ -29,9 +29,10 @@ function AccountHead({ user, role, onUserChanged }: {
   const [error, setError] = useState<string | null>(null);
   const saved = avatarFor(user)?.id ?? null;
   const shown = pending ? pending.id : saved;
+  const chosen = pending ? pending.id !== null : hasChosenAvatar(user);
 
   async function choose(id: AvatarId | null) {
-    if (pending || id === saved) return;
+    if (pending || id === (user.avatar ?? null)) return;
     setPending({ id });
     setError(null);
     try {
@@ -86,7 +87,7 @@ function AccountHead({ user, role, onUserChanged }: {
               </button>
             ))}
           </div>
-          {shown ? (
+          {chosen ? (
             <button type="button" className="avatar-picker-reset" onClick={() => void choose(null)}>
               Use my initial instead
             </button>
