@@ -13,12 +13,11 @@ test("queue isolates users and servers and safely reads malformed storage", () =
   assert.deepEqual(parseReadingQueue('["a",null,"a",4,"b",""]'), ["a", "b"]);
 });
 
-test("queue preserves order and listening progress, hiding started and finished books", () => {
+test("queue preserves order and listening progress for books at any stage", () => {
   const books = [book("a"), book("b", "notStarted"), book("c", "inProgress"), book("d", "finished")];
   const before = structuredClone(books);
-  assert.deepEqual(queuedBooks(["b", "missing", "c", "a", "d"], books).map(b => b.id), ["b", "a"]);
+  assert.deepEqual(queuedBooks(["b", "missing", "c", "a", "d"], books).map(b => b.id), ["b", "c", "a", "d"]);
   assert.deepEqual(books, before);
-  assert.deepEqual(queuedBooks(["c"], [book("c")]).map(b => b.id), ["c"]);
 });
 
 test("move earlier is bounded, stable and does not mutate persisted input", () => {

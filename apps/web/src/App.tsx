@@ -60,6 +60,8 @@ import {
   setStoredToken,
   setUnauthorizedHandler
 } from "./api";
+import { readingQueueKey } from "./readingQueue";
+import { useReadingQueue } from "./useReadingQueue";
 import {
   cacheLibrary,
   cacheOfflineUser,
@@ -857,6 +859,16 @@ function MainApp({
     [books, playbackBookId]
   );
   const playbackDescription = playbackBook ? displayBookDescription(playbackBook) : null;
+  const readingQueueStorageKey = readingQueueKey(getServerStorageKey(), currentUser.id);
+  const [queueIds, saveQueueIds] = useReadingQueue(readingQueueStorageKey);
+  useEffect(() => {
+    // A planned book leaves the plan once it has listening progress of its
+    // own, which lists it in Up Next anyway. Pressing play is not enough: a
+    // stream that never starts must leave the plan as it was.
+    if (playbackBook?.progress?.status === "inProgress" && queueIds.includes(playbackBook.id)) {
+      saveQueueIds(queueIds.filter(id => id !== playbackBook.id));
+    }
+  }, [playbackBook, queueIds, saveQueueIds]);
   const unplayedConfirmationBook = unplayedConfirmationBookId
     ? books.find((book) => book.id === unplayedConfirmationBookId) ?? null
     : null;
@@ -2251,6 +2263,7 @@ function MainApp({
         position={position}
         readalong={readalong}
         readalongPanelElement={native ? readalongPanelElement : null}
+        readingQueueStorageKey={readingQueueStorageKey}
         readerPreferences={readerPreferences}
         restartOrPreviousChapter={restartOrPreviousChapter}
         returnToLibrary={returnToLibrary}

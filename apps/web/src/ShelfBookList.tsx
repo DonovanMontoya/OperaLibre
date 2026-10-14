@@ -1,12 +1,12 @@
 import { BookHeadphones, BookOpen, Check, ChevronDown, Cloud, Images, Search, Smartphone, Timer, TriangleAlert, Users } from "lucide-react";
 import { hasExtras } from "./readalong";
-import { memo, useState } from "react";
+import { memo, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { compactProgressLabel } from "./bookProgress";
 import type { ShelfViewMode } from "./shelfView";
 import { bookReadingAvailability, SHELF_FACET_PREVIEW_COUNT, type ShelfFacetOption, type ShelfFilters, tagForShelfSort } from "./shelfFilters";
 import type { Book } from "./types";
 import { summarizeSharedProgress } from "./sharedProgress";
-import { bookSortGroupCaption, type SortMode } from "./shelfSort";
+import { bookSortGroupCaption, shelfLetterIndex, type SortMode } from "./shelfSort";
 import { bookProgressLabel, bookSubtitle, durationFromTracks, formatDurationLabel } from "./formatting";
 import { CoverArt } from "./CoverArt";
 import type { OfflineReadiness } from "./offlineReadiness";
@@ -99,6 +99,94 @@ export function ShelfFacetGroup({
 
 type ShelfRun = { label: string | null; collapsed: boolean; items: Array<{ book: Book; index: number }> };
 
+const letterName = (letter: string) => letter === "#" ? "Numbers and symbols" : letter;
+
+/**
+ * The A–Z strip beside a lettered shelf. Tapping or dragging along it brings
+ * that letter's books to the top, and the letter being read is marked.
+ */
+const ShelfLetterIndex = memo(function ShelfLetterIndex({ headings, reversed }: { headings: string[]; reversed: boolean }) {
+  const navRef = useRef<HTMLElement>(null);
+  const lastJump = useRef("");
+  const strip = useRef<{ top: number; height: number } | null>(null);
+  const [reading, setReading] = useState<string | null>(null);
+  const letters = useMemo(() => shelfLetterIndex(headings, reversed), [headings, reversed]);
+  const current = reading !== null && headings.includes(reading) ? reading : headings[0];
+
+  const section = (letter: string) => navRef.current?.parentElement
+    ?.querySelector<HTMLElement>(`[data-letter="${CSS.escape(letter)}"]`);
+
+  useEffect(() => {
+    // The letter being read is the first with books still below the top of
+    // the page, so the opening letter is marked before anything has moved.
+    const inView = new Set<string>();
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const letter = (entry.target as HTMLElement).dataset.letter!;
+        if (entry.isIntersecting) inView.add(letter);
+        else inView.delete(letter);
+      }
+      setReading(headings.find(letter => inView.has(letter)) ?? null);
+    }, { rootMargin: "-80px 0px 0px 0px" });
+    for (const letter of headings) {
+      const target = section(letter);
+      if (target) observer.observe(target);
+    }
+    return () => observer.disconnect();
+  }, [headings]);
+
+  function jump(letter: string) {
+    if (letter === lastJump.current || !headings.includes(letter)) return;
+    lastJump.current = letter;
+    section(letter)?.scrollIntoView({ block: "start" });
+  }
+
+  // A finger drawn down the strip moves through the letters. The strip is
+  // measured once as the finger lands: the page moving under a jump can carry
+  // the strip with it, and the letters must not slide out from under the hand.
+  function scrub(event: PointerEvent<HTMLElement>) {
+    if (event.type === "pointerdown") {
+      const { top, height } = event.currentTarget.getBoundingClientRect();
+      strip.current = { top, height };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    if (!strip.current) return;
+    const row = Math.floor((event.clientY - strip.current.top) / strip.current.height * letters.length);
+    jump(letters[Math.min(letters.length - 1, Math.max(0, row))]);
+  }
+
+  function lift() {
+    strip.current = null;
+    lastJump.current = "";
+  }
+
+  return (
+    <nav
+      ref={navRef}
+      className="book-letter-index"
+      aria-label="Jump to a letter"
+      onPointerDown={scrub}
+      onPointerMove={scrub}
+      onPointerUp={lift}
+      onPointerCancel={lift}
+    >
+      {letters.map(letter => (
+        <button
+          type="button"
+          key={letter}
+          data-jump={letter}
+          aria-label={letterName(letter)}
+          aria-current={letter === current ? "true" : undefined}
+          disabled={!headings.includes(letter)}
+          onClick={() => { lastJump.current = ""; jump(letter); }}
+        >
+          {letter}
+        </button>
+      ))}
+    </nav>
+  );
+});
+
 /**
  * The shelf's book rows. Memoized because the rest of MainApp re-renders on
  * every media clock tick, and a large library's rows (covers, icons, labels)
@@ -109,6 +197,8 @@ export const ShelfBookList = memo(function ShelfBookList({
   columns,
   viewMode,
   sortMode,
+  lettered,
+  sortReversed,
   shelfTags,
   selectedBookId,
   playbackBookId,
@@ -126,6 +216,8 @@ export const ShelfBookList = memo(function ShelfBookList({
   columns: ShelfRun[][];
   viewMode: ShelfViewMode;
   sortMode: SortMode;
+  lettered: boolean;
+  sortReversed: boolean;
   shelfTags: ShelfFilters["tags"];
   selectedBookId: string | null;
   playbackBookId: string | null;
@@ -141,13 +233,29 @@ export const ShelfBookList = memo(function ShelfBookList({
   onToggleGroup: (label: string) => void;
 }) {
   const isCompactView = viewMode === "compact";
+  // A tile keeps one line for its facts, so what a row spells out is a glyph
+  // there; the wording stays on the tooltip.
+  const isGridView = viewMode === "grid";
+  const glyphTags = isCompactView || isGridView;
+  const letterHeadings = useMemo(() => lettered
+    ? [...new Set(columns.flat().map(run => run.label ?? "#"))]
+    : [], [columns, lettered]);
+  // A series or a tag's reading order is a sequence; the books left over
+  // under "Standalone" or "Untagged", and every genre or status, are not.
+  const isSequence = (book: Book) => sortMode === "series" ? !!book.metadata.series?.trim()
+    : sortMode === "tag" && !!tagForShelfSort(book, shelfTags);
   return (
-    <div className={`book-list ${viewMode === "grid" ? "is-grid" : viewMode === "compact" ? "is-list is-compact" : "is-list"}`}>
+    <div className={`book-list ${viewMode === "grid" ? "is-grid" : viewMode === "compact" ? "is-list is-compact" : "is-list"} ${lettered ? "is-lettered" : ""}`}>
       {columns.map((column, columnIndex) => (
         <div className="book-leaf" key={`leaf-${columnIndex}`}>
         {column.map((run) => (
-        <section className={`book-sort-run ${run.collapsed ? "is-collapsed" : ""}`} key={`${run.label ?? "book"}-${run.items[0].book.id}`}>
-          {run.label ? (
+        <section className={`book-sort-run ${run.collapsed ? "is-collapsed" : ""} ${isSequence(run.items[0].book) ? "is-sequence" : ""}`} key={`${run.label ?? "book"}-${run.items[0].book.id}`} data-letter={lettered ? run.label ?? undefined : undefined}>
+          {lettered ? (
+            <div className="book-letter" role="heading" aria-level={2} aria-label={`${letterName(run.label!)}, ${run.items.length} ${run.items.length === 1 ? "book" : "books"}`}>
+              <strong>{run.label}</strong>
+              <em>{run.items.length}</em>
+            </div>
+          ) : run.label ? (
             <div className="book-sort-group" role="heading" aria-level={2}>
               <button
                 type="button"
@@ -162,7 +270,7 @@ export const ShelfBookList = memo(function ShelfBookList({
               </button>
             </div>
           ) : null}
-          {run.collapsed ? null : run.items.map(({ book, index }) => {
+          {run.collapsed ? null : <div className="book-run-books">{run.items.map(({ book, index }) => {
         const progressPercent = book.progress?.percentComplete ?? 0;
         const availableOnDevice =
           demoMode
@@ -226,11 +334,11 @@ export const ShelfBookList = memo(function ShelfBookList({
                 <strong>{book.title}</strong>
                 <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
                 {!isCompactView && sortMode === "series" && book.metadata.seriesPosition ? (
-                  <span className="book-sort-context">Book {book.metadata.seriesPosition} in series</span>
+                  <span className="book-sort-context">Book {book.metadata.seriesPosition}{isGridView ? null : " in series"}</span>
                 ) : null}
                 {!isCompactView && sortMode === "tag" && sortTag?.position ? (
                   <span className="book-sort-context">
-                    Book {sortTag.position} in {sortTag.name}
+                    Book {sortTag.position}{isGridView ? null : ` in ${sortTag.name}`}
                   </span>
                 ) : null}
                 {!isCompactView && formatDurationLabel(book.durationSeconds ?? durationFromTracks(book)) ? (
@@ -241,21 +349,21 @@ export const ShelfBookList = memo(function ShelfBookList({
                 ) : null}
                 {readalongEnabled && book.readingFile ? (
                   <span
-                    className={`book-readalong-tag ${isCompactView ? "is-glyph" : ""}`}
+                    className={`book-readalong-tag ${glyphTags ? "is-glyph" : ""}`}
                     title={readingTitle}
-                    aria-label={isCompactView ? readingTitle : undefined}
+                    aria-label={glyphTags ? readingTitle : undefined}
                   >
                     {followAlong ? <BookHeadphones size={11} strokeWidth={1.6} /> : <BookOpen size={11} strokeWidth={1.6} />}
-                    {isCompactView ? null : readingLabel}
+                    {glyphTags ? null : readingLabel}
                   </span>
                 ) : readalongEnabled && hasExtras(book) ? (
                   <span
-                    className={`book-readalong-tag extras ${isCompactView ? "is-glyph" : ""}`}
+                    className={`book-readalong-tag extras ${glyphTags ? "is-glyph" : ""}`}
                     title="Pictures or a supplement are included"
-                    aria-label={isCompactView ? "Pictures or a supplement are included" : undefined}
+                    aria-label={glyphTags ? "Pictures or a supplement are included" : undefined}
                   >
                     <Images size={11} strokeWidth={1.6} />
-                    {isCompactView ? null : "Extras"}
+                    {glyphTags ? null : "Extras"}
                   </span>
                 ) : null}
                 {progressLabel ? (
@@ -277,17 +385,18 @@ export const ShelfBookList = memo(function ShelfBookList({
                     aria-label={shared.detail}
                   >
                     <Users size={11} strokeWidth={1.6} aria-hidden="true" />
-                    {shared.label}
+                    {isGridView ? shared.finished + shared.reading : shared.label}
                   </span>
                 ) : null}
               </span>
             </button>
         );
-          })}
+          })}</div>}
         </section>
         ))}
         </div>
       ))}
+      {lettered && letterHeadings.length > 0 ? <ShelfLetterIndex headings={letterHeadings} reversed={sortReversed} /> : null}
     </div>
   );
 });
