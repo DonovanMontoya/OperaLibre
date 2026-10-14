@@ -16360,6 +16360,14 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 }
 .purchase-book-list .purchase-book-row > .audible-download-action > svg { display: none; }
 
+/* "Downloading" is the longest status. It keeps its spinner, the only sign the
+   download is moving, and tightens its spacing instead. */
+.purchase-book-list .purchase-book-row > .audible-download-status.downloading {
+  gap: 5px;
+  padding-inline: 4px;
+  letter-spacing: 0.02em;
+}
+
 /* "On server" opens the book, so it reads as a quiet action rather than a
    disabled one: the ink colour it inherits is meant for light paper. */
 .purchase-book-list .purchase-book-row > .local-marker { color: var(--gold-soft); }
