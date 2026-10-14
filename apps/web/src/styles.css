@@ -9468,7 +9468,7 @@ html.native-app .native-now-utility button {
 
 /* The sleep label changes length ("End of chapter") and a fifth tile narrows
    the row, so it wraps to a second line rather than spilling past the tile. */
-html.native-app .native-now-utility button > span {
+.native-now-utility button > span {
   max-width: 100%;
   line-height: 1.2;
   text-align: center;
