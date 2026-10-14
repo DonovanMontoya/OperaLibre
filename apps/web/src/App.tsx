@@ -1,4 +1,4 @@
-import { readContinueReadingAutoplay, writeContinueReadingAutoplay } from "./playbackPreferences";
+import { readBookPreviewsEnabled, readContinueReadingAutoplay, writeBookPreviewsEnabled, writeContinueReadingAutoplay } from "./playbackPreferences";
 import { useDeviceFold } from "./deviceFold";
 import { progressSeekOptions, progressSeekStorage, readProgressSeekIntent } from "./progressSeekIntent";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
@@ -479,6 +479,13 @@ function MainApp({
     const enabled = !continueReadingAutoplay;
     setContinueReadingAutoplay(enabled);
     writeContinueReadingAutoplay(enabled);
+  }
+  const [bookPreviewsEnabled, setBookPreviewsEnabled] = useState(readBookPreviewsEnabled);
+  function toggleBookPreviewsEnabled() {
+    const enabled = !bookPreviewsEnabled;
+    setBookPreviewsEnabled(enabled);
+    writeBookPreviewsEnabled(enabled);
+    if (!enabled) setPreviewBook(null);
   }
 
   const displaySettings = useDisplaySettings({
@@ -1900,6 +1907,8 @@ function MainApp({
   const userMenu = renderUserMenu({
     continueReadingAutoplay,
     toggleContinueReadingAutoplay,
+    bookPreviewsEnabled,
+    toggleBookPreviewsEnabled,
     audioRef,
     capabilities,
     currentUser,
@@ -2227,7 +2236,7 @@ function MainApp({
           if (started) setPreviewBook(current => current?.id === book.id ? null : current);
           return started;
         }}
-        openBookPreview={isOperaLibre && !demoMode && !localMode && !isOffline ? (book) => {
+        openBookPreview={bookPreviewsEnabled && isOperaLibre && !demoMode && !localMode && !isOffline ? (book) => {
           cancelPendingPlayback(audioRef.current);
           pausePlayback(audioRef.current);
           setPreviewBook(book);
@@ -2491,6 +2500,8 @@ function MainApp({
         <SettingsPage
           continueReadingAutoplay={continueReadingAutoplay}
           toggleContinueReadingAutoplay={toggleContinueReadingAutoplay}
+          bookPreviewsEnabled={bookPreviewsEnabled}
+          toggleBookPreviewsEnabled={toggleBookPreviewsEnabled}
           applyAdminLibraryChange={applyAdminLibraryChange}
           audibleManagement={audibleManagement}
           audioRef={audioRef}

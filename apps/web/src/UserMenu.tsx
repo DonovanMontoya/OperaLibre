@@ -1,4 +1,5 @@
 import { BehaviorSection } from "./BehaviorSection";
+import { BookPreviewSetting } from "./BookPreviewSetting";
 import { ContinueReadingSetting } from "./ContinueReadingSetting";
 import type { usePurchases } from "./usePurchases";
 import type { useReadalong } from "./useReadalong";
@@ -102,6 +103,8 @@ function AccountHead({ user, role, onUserChanged }: {
 export function renderUserMenu({
   continueReadingAutoplay,
   toggleContinueReadingAutoplay,
+  bookPreviewsEnabled,
+  toggleBookPreviewsEnabled,
   audioRef,
   capabilities,
   currentUser,
@@ -124,6 +127,8 @@ export function renderUserMenu({
 }: {
   continueReadingAutoplay: boolean;
   toggleContinueReadingAutoplay: () => void;
+  bookPreviewsEnabled: boolean;
+  toggleBookPreviewsEnabled: () => void;
   audioRef: RefObject<HTMLAudioElement | null>;
   capabilities: ServerCapabilities;
   currentUser: AuthUser;
@@ -212,6 +217,7 @@ export function renderUserMenu({
       ) : null}
       {!native ? <BehaviorSection>
         <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
+        {isOperaLibre && !demoMode && !localMode ? <BookPreviewSetting enabled={bookPreviewsEnabled} onToggle={toggleBookPreviewsEnabled} /> : null}
         {sentenceFollowAvailable ? (
           <div className="user-menu-follow-aggressiveness" role="group" aria-labelledby="menu-follow-aggressiveness-label">
             <div>
