@@ -86,7 +86,7 @@ export function readStoredSortMode(source: LibrarySource): SortMode {
   return isValid ? (stored as SortMode) : "title";
 }
 
-export { compareShelfLabels } from "./shelfLabels";
+export { compareShelfLabels, shelfLetterIndex, titleInitial } from "./shelfLabels";
 export const SHELF_TEXT_COLLATOR = new Intl.Collator();
 
 export function bookSortGroupLabel(book: Book, sortMode: SortMode, selectedTags: string[]) {

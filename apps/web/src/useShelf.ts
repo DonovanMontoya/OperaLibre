@@ -9,7 +9,8 @@ import {
   readStoredSortMode,
   SHELF_TEXT_COLLATOR,
   type SortMode,
-  sortModeStorageKey
+  sortModeStorageKey,
+  titleInitial
 } from "./shelfSort";
 import { readStoredValue, writeStoredValue } from "./appStorage";
 import {
@@ -377,6 +378,10 @@ export function useShelf({
     return sortReversed ? sorted.reverse() : sorted;
   }, [shelfMatches, shelfFilters.tags, sortMode, sortReversed]);
 
+  const splitShelfIntoLeaves = native && playbackFold.posture !== "closed" && playbackFold.fold?.axis === "vertical";
+  // The open Duo has room to set covers sorted by title out under their
+  // letters, with an index to jump between them.
+  const letteredShelf = splitShelfIntoLeaves && viewMode === "grid" && sortMode === "title";
   const visibleBookRuns = useMemo(() => {
     const runs: Array<{
       label: string | null;
@@ -386,7 +391,7 @@ export function useShelf({
     // A search opens folded groups: a match hidden behind a heading reads as no match.
     const searching = searchQuery.trim().length > 0;
     visibleBooks.forEach((book, index) => {
-      const label = bookSortGroupLabel(book, sortMode, shelfFilters.tags);
+      const label = letteredShelf ? titleInitial(book.title) : bookSortGroupLabel(book, sortMode, shelfFilters.tags);
       const previous = runs[runs.length - 1];
       if (label && previous?.label && compareShelfLabels(label, previous.label) === 0) {
         previous.items.push({ book, index });
@@ -396,11 +401,12 @@ export function useShelf({
       }
     });
     return runs;
-  }, [collapsedGroups, searchQuery, shelfFilters.tags, sortMode, visibleBooks]);
+  }, [collapsedGroups, letteredShelf, searchQuery, shelfFilters.tags, sortMode, visibleBooks]);
 
-  const splitShelfIntoLeaves = native && playbackFold.posture !== "closed" && playbackFold.fold?.axis === "vertical";
   const visibleBookColumns = useMemo(() => {
-    if (!splitShelfIntoLeaves) return [visibleBookRuns];
+    // Covers read across the whole spread in order, so only rows are dealt
+    // out between the two leaves.
+    if (!splitShelfIntoLeaves || viewMode === "grid") return [visibleBookRuns];
     const columns: typeof visibleBookRuns[] = [[], []];
     const weights = [0, 0];
     for (const run of visibleBookRuns) {
@@ -409,7 +415,7 @@ export function useShelf({
       weights[column] += (run.collapsed ? 0 : run.items.length) + 0.5;
     }
     return columns;
-  }, [splitShelfIntoLeaves, visibleBookRuns]);
+  }, [splitShelfIntoLeaves, viewMode, visibleBookRuns]);
 
   return {
     activeShelfFilterChips,
@@ -421,6 +427,7 @@ export function useShelf({
     filterToggleRef,
     filtersOpen,
     hasCollapsedShelfGroups: (collapsedGroups[sortMode]?.length ?? 0) > 0,
+    letteredShelf,
     purchaseViewMode,
     reverseSort,
     searchQuery,

@@ -30,6 +30,7 @@ import {
   Pause,
   Pencil,
   Play,
+  Plus,
   RotateCcw,
   RotateCw,
   ScrollText,
@@ -62,6 +63,7 @@ import type { Dispatch, ReactNode, RefObject, SetStateAction, TouchEvent, UIEven
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ServerCapabilities } from "./serverCapabilities";
 import { usePhoneWidthWindow } from "./useOrientation";
+import { useReadingQueue } from "./useReadingQueue";
 
 // Beyond this the segments are too thin to read or tap, and their fixed
 // borders/gaps overflow a phone screen; fall back to one continuous bar.
@@ -126,6 +128,7 @@ export function PlayerPane({
   position,
   readalong,
   readalongPanelElement,
+  readingQueueStorageKey,
   readerPreferences,
   restartOrPreviousChapter,
   returnToLibrary,
@@ -216,6 +219,7 @@ export function PlayerPane({
   position: number;
   readalong: ReturnType<typeof useReadalong>;
   readalongPanelElement: ReactNode;
+  readingQueueStorageKey: string;
   readerPreferences: ReturnType<typeof useReaderPreferences>;
   restartOrPreviousChapter: () => void;
   returnToLibrary: () => void;
@@ -299,6 +303,10 @@ export function PlayerPane({
   const [bookActionsAbove, setBookActionsAbove] = useState(false);
   const bookActionsRef = useRef<HTMLDivElement>(null);
   const bookActionsId = useId();
+  const [queueIds, saveQueueIds] = useReadingQueue(readingQueueStorageKey);
+  const selectedBookQueued = !!selectedBook && queueIds.includes(selectedBook.id);
+  const [queueSaveFailed, setQueueSaveFailed] = useState(false);
+  useEffect(() => setQueueSaveFailed(false), [selectedBook?.id]);
   useEffect(() => setBookActionsOpen(false), [selectedBook?.id, compactActions]);
   useLayoutEffect(() => {
     if (!bookActionsOpen) return;
@@ -952,6 +960,27 @@ export function PlayerPane({
                       </small>
                     </span>
                   </button>
+                  {/* A book in progress is already in Up Next. */}
+                  {!isViewingPlayingBook && selectedBook.progress?.status !== "inProgress" ? (
+                    <button
+                      type="button"
+                      className="book-quick-return book-quick-queue"
+                      aria-pressed={selectedBookQueued}
+                      aria-label={selectedBookQueued ? `Remove ${selectedBook.title} from Up Next` : `Add ${selectedBook.title} to Up Next`}
+                      onClick={() => {
+                        haptic("light");
+                        setQueueSaveFailed(!saveQueueIds(selectedBookQueued
+                          ? queueIds.filter(id => id !== selectedBook.id)
+                          : [...queueIds, selectedBook.id]));
+                      }}
+                    >
+                      {selectedBookQueued ? <Check size={14} /> : <Plus size={14} />}
+                      <span>{selectedBookQueued ? "In Up Next · Remove" : "Add to Up Next"}</span>
+                    </button>
+                  ) : null}
+                  {queueSaveFailed ? (
+                    <span className="download-status" role="alert">Up Next could not be saved. Check available device storage and try again.</span>
+                  ) : null}
                   {playbackBook && playbackBook.id !== selectedBook.id ? (
                     <button type="button" className="book-quick-return" onClick={scrollToPlayer}>
                       <Headphones size={14} />

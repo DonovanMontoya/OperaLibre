@@ -17,7 +17,7 @@ Choose **Explore the on-device demo** on the server connection screen to try Ope
 2. Sign in with your own reader name and password.
 3. Select a book, then use **Play**, the speed control, 15-second rewind, 30-second skip, and the sleep timer as needed.
 
-Tapping a book in **Continue Reading** loads your saved position in the player without starting playback. Its play button resumes immediately. To start playback from either tap, enable **Play when opening Continue Reading** in the native app’s **Settings → Behavior**, or under **Behavior** in the browser’s reader menu. This choice is remembered on the device.
+Tapping a book you have started in **Up Next** loads your saved position in the player without starting playback. Its play button resumes immediately. To start playback from either tap, enable **Play when opening a book in progress** in the native app’s **Settings → Behavior**, or under **Behavior** in the browser’s reader menu. This choice is remembered on the device.
 
 OperaLibre remembers a reader’s position automatically. Each reader has separate progress, so two people can listen to the same book independently.
 
@@ -59,12 +59,13 @@ on the book, participate in search, and can be selected as the library sort.
 
 ### Plan your next read
 
-**Continue Reading** shows books you have already started. Use **Up Next → Add
-books** on your library shelf to plan what to read next without starting a book
-or changing its listening position. New entries go at the end; use the up arrow
-to move a book earlier, or remove it with the × button. Select a title to open
-it without playing, or choose **Start** to listen. Once listening begins, the
-book leaves Up Next and appears in Continue Reading.
+**Up Next** on your library shelf lists the books you have already started,
+most recent first, followed by the books you plan to listen to after them. To
+plan a book, open it and choose **Add to Up Next**; this does not start the
+book or change its listening position, and works for a finished book you want
+to hear again. Use the up arrow to move a planned book earlier, and remove one
+with the × button or from its own page. Select a planned title to open it
+without playing, or use its play button to start listening.
 
 Your queue is saved on this device, separately for each server and account.
 When offline, only available device books and downloads are shown; other queued

@@ -106,7 +106,10 @@ async function slots(page: Page) {
       const element = grid.querySelector(`.book-action-${slot}`);
       if (!element) return [slot, null];
       const box = element.getBoundingClientRect();
-      return [slot, { x: box.x - origin.x, y: box.y - origin.y, width: box.width, height: box.height }];
+      // A slot further down the page can measure a few hundred-thousandths
+      // of a pixel off; only a shift someone could see counts as moving.
+      const px = (value: number) => Math.round(value * 100) / 100;
+      return [slot, { x: px(box.x - origin.x), y: px(box.y - origin.y), width: px(box.width), height: px(box.height) }];
     }));
   });
 }

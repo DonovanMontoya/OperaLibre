@@ -60,6 +60,8 @@ import {
   setStoredToken,
   setUnauthorizedHandler
 } from "./api";
+import { readingQueueKey } from "./readingQueue";
+import { useReadingQueue } from "./useReadingQueue";
 import {
   cacheLibrary,
   cacheOfflineUser,
@@ -857,6 +859,15 @@ function MainApp({
     [books, playbackBookId]
   );
   const playbackDescription = playbackBook ? displayBookDescription(playbackBook) : null;
+  const readingQueueStorageKey = readingQueueKey(getServerStorageKey(), currentUser.id);
+  const [queueIds, saveQueueIds] = useReadingQueue(readingQueueStorageKey);
+  useEffect(() => {
+    // A planned book leaves Up Next once it is actually playing, whatever its
+    // progress was when it was added.
+    if (isPlaying && playbackBookId && queueIds.includes(playbackBookId)) {
+      saveQueueIds(queueIds.filter(id => id !== playbackBookId));
+    }
+  }, [isPlaying, playbackBookId, queueIds, saveQueueIds]);
   const unplayedConfirmationBook = unplayedConfirmationBookId
     ? books.find((book) => book.id === unplayedConfirmationBookId) ?? null
     : null;
@@ -2251,6 +2262,7 @@ function MainApp({
         position={position}
         readalong={readalong}
         readalongPanelElement={native ? readalongPanelElement : null}
+        readingQueueStorageKey={readingQueueStorageKey}
         readerPreferences={readerPreferences}
         restartOrPreviousChapter={restartOrPreviousChapter}
         returnToLibrary={returnToLibrary}

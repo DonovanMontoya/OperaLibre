@@ -230,7 +230,7 @@ test('native phone Continue Reading opens paused, plays explicitly, and remember
       updatedAt: '2026-09-30T12:00:00Z' } });
   });
   await page.reload();
-  const shelf = page.getByRole('region', { name: 'Continue Reading' });
+  const shelf = page.getByRole('region', { name: 'Up Next' });
   const resume = shelf.getByRole('button', { name: `Continue reading ${book.title}` });
   const play = shelf.getByRole('button', { name: `Play ${book.title}`, exact: true });
   await expect(resume).toBeVisible();
@@ -254,7 +254,7 @@ test('native phone Continue Reading opens paused, plays explicitly, and remember
   await expect(page.getByRole('switch', { name: 'Games tab', exact: true })).toBeHidden();
   await page.locator('.behavior-settings > summary').scrollIntoViewIfNeeded();
   await page.locator('.behavior-settings > summary').click();
-  const toggle = page.getByRole('switch', { name: 'Play when opening Continue Reading' });
+  const toggle = page.getByRole('switch', { name: 'Play when opening a book in progress' });
   await expect(toggle).toBeVisible();
   await page.locator('.behavior-settings > summary').click();
   await expect(toggle).toBeHidden();
@@ -300,7 +300,7 @@ test('browser Continue Reading keeps listed progress when the server fails and e
   expect(progressWrites).toEqual([]);
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
   await page.locator('.behavior-settings > summary').click();
-  const toggle = page.getByRole('switch', { name: 'Play when opening Continue Reading' });
+  const toggle = page.getByRole('switch', { name: 'Play when opening a book in progress' });
   await expect(toggle).toBeVisible();
   await page.locator('.behavior-settings > summary').click();
   await expect(toggle).toBeHidden();
@@ -500,6 +500,224 @@ test('closing with retained hinge geometry restores the sorted single shelf', as
   await expect(page.locator('html')).toHaveAttribute('data-fold-posture', 'closed');
   await expect(page.locator('.book-row strong')).toHaveText(books.map(book => book.title));
   await expect(page.locator('.book-leaf')).toHaveCount(1);
+});
+
+test('the half-open Duo Shelf is one page: Up Next in a band off the hinge, progress filter above the books', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 951, height: 669 });
+  const { books } = await openShell(page, true, false, true, library(12));
+  await page.evaluate(async ids => {
+    const queuePath = '/src/readingQueue.ts', apiPath = '/src/api.ts';
+    const { readingQueueKey } = await import(queuePath);
+    const { getServerStorageKey } = await import(apiPath);
+    localStorage.setItem(readingQueueKey(getServerStorageKey(), 'review-reader'), JSON.stringify(ids));
+  }, books.slice(1, 5).map(book => book.id));
+  await page.reload();
+  await expect(page.locator('.book-row')).toHaveCount(books.length);
+  await page.evaluate(async () => {
+    const path = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(path);
+    applyDeviceFold(document.documentElement, { posture: 'half-open', angle: 110,
+      fold: { x: 455, y: 0, width: 41, height: 669, axis: 'vertical', active: true } });
+  });
+  await expect(page.locator('.book-leaf')).toHaveCount(2);
+
+  const upNext = page.getByRole('region', { name: 'Up Next', exact: true });
+  const entries = upNext.getByRole('listitem');
+  await expect(entries).toHaveCount(5);
+  const lead = (await entries.first().boundingBox())!;
+  expect(lead.x + lead.width).toBeLessThanOrEqual(455);
+  const row = (await upNext.getByRole('list').last().boundingBox())!;
+  expect(row.x).toBeGreaterThanOrEqual(496);
+  for (const entry of (await entries.all()).slice(1)) {
+    const box = (await entry.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(496);
+    expect(Math.abs(box.y - lead.y)).toBeLessThanOrEqual(1);
+  }
+  for (const book of await page.locator('.book-row').all()) {
+    const box = (await book.boundingBox())!;
+    expect(box.x + box.width <= 455 || box.x >= 496).toBe(true);
+  }
+
+  // Nothing is pinned: the band leaves with the books it sits above.
+  const firstBook = page.locator('.book-row').first();
+  const before = { band: (await upNext.boundingBox())!.y, book: (await firstBook.boundingBox())!.y };
+  await page.locator('.library-pane').evaluate(pane => pane.scrollTo(0, 150));
+  expect((await upNext.boundingBox())!.y).toBeCloseTo(before.band - 150, 0);
+  expect((await firstBook.boundingBox())!.y).toBeCloseTo(before.book - 150, 0);
+  await page.locator('.library-pane').evaluate(pane => pane.scrollTo(0, 0));
+
+  const progress = page.getByRole('group', { name: 'Filter by reading progress' });
+  const filters = (await progress.boundingBox())!;
+  expect(filters.x + filters.width).toBeLessThanOrEqual(455);
+  await progress.getByRole('button', { name: /^Reading/ }).click();
+  await expect(page.locator('.book-row')).toHaveCount(1);
+  // The selected word is the only sign of the choice: no count on Filters,
+  // and no summary of filters that are on.
+  await expect(progress.getByRole('button', { name: /^Reading/ })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.library-active-filters')).toBeHidden();
+  await expect(page.locator('.library-filter-toggle em:visible')).toHaveCount(0);
+  // Up Next is the reader's plan: narrowing the shelf to books that leave out
+  // the one in progress must not drop it and promote the next into its place.
+  const leadTitle = await entries.first().locator('strong').innerText();
+  await progress.getByRole('button', { name: /^Not started/ }).click();
+  await expect(progress.getByRole('button', { name: /^Not started/ })).toHaveAttribute('aria-pressed', 'true');
+  await expect(entries).toHaveCount(5);
+  await expect(entries.first().locator('strong')).toHaveText(leadTitle);
+  expect((await entries.first().boundingBox())!).toEqual(lead);
+  await page.getByRole('button', { name: /^Filters/ }).click();
+  await expect(page.getByRole('group', { name: 'Filter by reading progress' })).toHaveCount(1);
+  await expect(page.getByRole('group', { name: 'Filter by availability' })).toBeVisible();
+});
+
+test('a fully open Duo sets the Shelf as one slab, with no gap kept for the hinge', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 951, height: 669 });
+  const fixtureBooks = library(14);
+  fixtureBooks.forEach((book, index) => {
+    book.metadata = { ...book.metadata, series: index < 8 ? 'Long Series' : null, seriesPosition: index < 8 ? String(index + 1) : null };
+  });
+  await openShell(page, true, false, false, fixtureBooks);
+  await page.evaluate(async () => {
+    const path = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(path);
+    applyDeviceFold(document.documentElement, { posture: 'flat', angle: 180,
+      fold: { x: 455, y: 0, width: 41, height: 669, axis: 'vertical', active: false } });
+  });
+  await page.getByRole('button', { name: 'Grid view', exact: true }).click();
+  const edges = async () => Promise.all((await page.locator('.book-row').all()).slice(0, 7).map(async book => (await book.boundingBox())!));
+  const even = (boxes: { x: number; y: number; width: number }[]) => {
+    const steps = boxes.slice(1).map((box, index) => box.x - boxes[index].x);
+    return steps.every(step => Math.abs(step - steps[0]) < 1);
+  };
+  // Six covers to a row at one even pitch: the step over the hinge is the same as any other.
+  let covers = await edges();
+  expect(covers.slice(0, 6).every(box => Math.abs(box.y - covers[0].y) < 1)).toBe(true);
+  expect(even(covers.slice(0, 6))).toBe(true);
+  expect(covers[3].x).toBeLessThan(455 + 41);
+  expect(covers[6].y).toBeGreaterThan(covers[0].y);
+
+  // A long series is one row that carries on to the right instead of wrapping.
+  await page.getByLabel('Sort library by').selectOption({ label: 'Series' });
+  const series = page.locator('.book-sort-run', { hasText: 'Long Series' });
+  await expect(series.locator('.book-row')).toHaveCount(8);
+  covers = await Promise.all((await series.locator('.book-row').all()).map(async book => (await book.boundingBox())!));
+  expect(covers.every(box => Math.abs(box.y - covers[0].y) < 1)).toBe(true);
+  expect(even(covers)).toBe(true);
+  const row = series.locator('.book-run-books');
+  expect(await row.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+  // Part of the seventh cover stands in view, so the row is seen to go on.
+  const edge = (await row.boundingBox())!;
+  expect(covers[6].x).toBeLessThan(edge.x + edge.width - 30);
+  expect(covers[6].x + covers[6].width).toBeGreaterThan(edge.x + edge.width + 30);
+  expect(await row.evaluate(element => getComputedStyle(element).overflowY)).toBe('hidden');
+});
+
+test('sorted by title, the open Duo files covers under their letters with an index to jump between them', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 951, height: 669 });
+  const shelf = { A: 8, B: 3, D: 7, M: 5, S: 6, T: 9 };
+  const titles = ['1984', 'Émile', ...Object.entries(shelf).flatMap(([letter, count]) =>
+    Array.from({ length: count }, (_, index) => `${letter}${letter.toLowerCase()} volume ${index + 1}`))];
+  const fixtureBooks = library(titles.length);
+  fixtureBooks.forEach((book, index) => { book.title = titles[index]; });
+  await openShell(page, true, false, false, fixtureBooks);
+  const fold = (posture: 'flat' | 'half-open') => page.evaluate(async state => {
+    const path = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(path);
+    applyDeviceFold(document.documentElement, { posture: state, angle: state === 'flat' ? 180 : 110,
+      fold: { x: 455, y: 0, width: 41, height: 669, axis: 'vertical', active: state !== 'flat' } });
+  }, posture);
+  await fold('flat');
+  await page.getByRole('button', { name: 'Grid view', exact: true }).click();
+
+  // A digit files under "#", and an accented letter with the plain one.
+  const letters = page.locator('.book-letter');
+  await expect(letters.locator('strong')).toHaveText(['#', 'A', 'B', 'D', 'E', 'M', 'S', 'T']);
+  await expect(page.getByRole('heading', { name: 'A, 8 books' })).toBeVisible();
+  const section = (letter: string) => page.locator(`.book-sort-run[data-letter="${letter}"]`);
+  const covers = await Promise.all((await section('A').locator('.book-row').all()).map(async book => (await book.boundingBox())!));
+  // The letter stands in the margin; its books run six to a row beside it.
+  const letter = (await section('A').locator('.book-letter').boundingBox())!;
+  expect(letter.x + letter.width).toBeLessThanOrEqual(covers[0].x);
+  expect(covers.slice(0, 6).every(box => Math.abs(box.y - covers[0].y) < 1)).toBe(true);
+  expect(covers[6].y).toBeGreaterThan(covers[0].y);
+  expect(Math.abs(covers[6].x - covers[0].x)).toBeLessThan(1);
+
+  const index = page.getByRole('navigation', { name: 'Jump to a letter' });
+  await expect(index.getByRole('button', { name: 'Numbers and symbols', exact: true })).toHaveAttribute('aria-current', 'true');
+  await expect(index.getByRole('button', { name: 'Q', exact: true })).toBeDisabled();
+  const strip = (await index.boundingBox())!;
+  expect(strip.y + strip.height).toBeLessThanOrEqual(669);
+  expect(strip.x).toBeGreaterThanOrEqual(covers[5].x + covers[5].width);
+
+  await index.getByRole('button', { name: 'S', exact: true }).click();
+  await expect.poll(async () => (await section('S').boundingBox())!.y).toBeLessThan(40);
+  await expect(index.getByRole('button', { name: 'S', exact: true })).toHaveAttribute('aria-current', 'true');
+  // Its heading holds level with the first row of its books.
+  const held = (await section('S').locator('.book-letter').boundingBox())!;
+  expect(Math.abs(held.y - (await section('S').locator('.book-row').first().boundingBox())!.y)).toBeLessThan(3);
+  // The index stays put while the page moves under it.
+  expect((await index.boundingBox())!.y).toBeGreaterThanOrEqual(0);
+  expect((await index.boundingBox())!.y + strip.height).toBeLessThanOrEqual(669);
+
+  // Drawing along the strip moves through the letters under the pointer.
+  const key = async (name: string) => {
+    const box = (await index.getByRole('button', { name, exact: true }).boundingBox())!;
+    return [box.x + box.width / 2, box.y + box.height / 2] as const;
+  };
+  await page.mouse.move(...await key('M'));
+  await page.mouse.down();
+  await page.mouse.move(...await key('B'), { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(async () => (await section('B').boundingBox())!.y).toBeLessThan(40);
+  await expect(index.getByRole('button', { name: 'B', exact: true })).toHaveAttribute('aria-current', 'true');
+  await page.locator('.library-pane').evaluate(pane => pane.scrollTo(0, 0));
+  await expect(index.getByRole('button', { name: 'Numbers and symbols', exact: true })).toHaveAttribute('aria-current', 'true');
+
+  // Half open, each row still breaks at the hinge.
+  await fold('half-open');
+  await expect(letters).toHaveCount(8);
+  for (const book of await page.locator('.book-row').all()) {
+    const box = (await book.boundingBox())!;
+    expect(box.x + box.width <= 455 || box.x >= 496).toBe(true);
+  }
+  await fold('flat');
+
+  // Only covers sorted by title are filed this way.
+  await page.getByLabel('Sort library by').selectOption({ label: 'Author' });
+  await expect(letters).toHaveCount(0);
+  await expect(index).toHaveCount(0);
+  await page.getByLabel('Sort library by').selectOption({ label: 'Title' });
+  await expect(letters).toHaveCount(8);
+  await page.getByRole('button', { name: 'List view', exact: true }).click();
+  await expect(letters).toHaveCount(0);
+});
+
+test('grid tiles keep their title, facts and reading state in the same places whatever a book carries', async ({ page }) => {
+  await page.setViewportSize({ width: 393, height: 852 });
+  const fixtureBooks = library(4);
+  fixtureBooks[0].title = 'A Title Long Enough That It Has To Wrap Onto A Second Line';
+  fixtureBooks[0].sharedProgress = [
+    { userId: 'other', username: 'Victoria', status: 'finished', percentComplete: 100, updatedAt: '2026-09-26T12:00:00Z' }
+  ];
+  fixtureBooks[1].title = 'Short';
+  await openShell(page, true, false, false, fixtureBooks);
+  await page.getByRole('button', { name: 'Grid view', exact: true }).click();
+  const tiles = page.locator('.book-row');
+  const offsets = async (index: number) => {
+    const tile = tiles.nth(index);
+    const top = (await tile.boundingBox())!.y;
+    const part = async (selector: string) => Math.round((await tile.locator(selector).boundingBox())!.y - top);
+    return { byline: await part('.book-text > strong + span'), facts: await part('.book-runtime-tag'), state: await part('.book-progress') };
+  };
+  expect(await offsets(1)).toEqual(await offsets(0));
+  // Who else has read it sits on the facts line, not on a line of its own.
+  const readers = (await tiles.first().locator('.book-shared-readers').boundingBox())!;
+  const runtime = (await tiles.first().locator('.book-runtime-tag').boundingBox())!;
+  expect(Math.abs(readers.y + readers.height / 2 - (runtime.y + runtime.height / 2))).toBeLessThanOrEqual(2);
+  await expect(tiles.first().locator('.book-shared-readers')).toHaveText('1');
+  await expect(tiles.first().locator('.book-shared-readers')).toHaveAttribute('aria-label', /Victoria/);
 });
 
 test('web book details offer one primary playback action', async ({ page }) => {
@@ -784,7 +1002,7 @@ test('a cached in-progress shelf stays resumable when its server disappears', as
   await page.route('**/api/books', route => route.abort('failed'));
   await page.reload();
   await expect(page.getByText('Offline mode — showing downloaded books and cached library.')).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Continue Reading' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Up Next' })).toBeVisible();
   await expect(page.getByRole('button', { name: `Continue reading ${books[0].title}` })).toBeVisible();
 });
 
