@@ -1,5 +1,6 @@
 import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BehaviorSection } from "./BehaviorSection";
+import { BookPreviewSetting } from "./BookPreviewSetting";
 import { ContinueReadingSetting } from "./ContinueReadingSetting";
 import { DeviceImportNotice } from "./DeviceImportNotice";
 import {
@@ -226,6 +227,9 @@ export function BookStoreSettings({
 }
 
 export function BehaviorSettings({
+  bookPreviewsAvailable,
+  bookPreviewsEnabled,
+  toggleBookPreviewsEnabled,
   continueReadingAutoplay,
   toggleContinueReadingAutoplay,
   followAggressiveness,
@@ -236,6 +240,9 @@ export function BehaviorSettings({
   togglePageTurnAnimation,
   updateFollowAggressiveness
 }: {
+  bookPreviewsAvailable: boolean;
+  bookPreviewsEnabled: boolean;
+  toggleBookPreviewsEnabled: () => void;
   continueReadingAutoplay: boolean;
   toggleContinueReadingAutoplay: () => void;
   followAggressiveness: FollowAggressiveness;
@@ -250,6 +257,7 @@ export function BehaviorSettings({
     <section className="settings-card">
       <BehaviorSection>
         <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
+        {bookPreviewsAvailable ? <BookPreviewSetting enabled={bookPreviewsEnabled} onToggle={toggleBookPreviewsEnabled} /> : null}
         <div className="settings-toggle-row">
           <span>
             <strong>Games tab</strong>

@@ -320,3 +320,25 @@ test('leaving the page while continuation checks progress cancels the pending ha
   expect(await page.locator('audio').first().evaluate((a: HTMLAudioElement) => a.paused)).toBe(true);
   expect(await server.progress(book.id)).toBeNull();
 });
+
+test('turning audio previews off stops a sample and hides the bar until turned back on', async ({ page, server }) => {
+  await setup(page, server);
+  const preview = await openPreview(page);
+  const start = page.getByRole('button', { name: 'Listen to a preview of Second Book', exact: true });
+  const setting = page.getByRole('switch', { name: 'Audio previews', exact: true });
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await page.getByText('Behavior', { exact: true }).click();
+  await expect(setting).toHaveAttribute('aria-checked', 'true');
+  await setting.click();
+  await expect(preview).toHaveCount(0);
+  await expect(start).toHaveCount(0);
+  await page.reload();
+  await page.locator('.book-row').filter({ hasText: 'Second Book' }).click();
+  await expect(page.getByRole('button', { name: 'Play Second Book', exact: true }).first()).toBeVisible();
+  await expect(start).toHaveCount(0);
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await page.getByText('Behavior', { exact: true }).click();
+  await expect(setting).toHaveAttribute('aria-checked', 'false');
+  await setting.click();
+  await expect(start).toBeVisible();
+});
