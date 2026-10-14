@@ -47,6 +47,10 @@ Under **Users & access**, administrators can also give a reader the full library
 
 Each reader has independent progress, so a household can share one server without stepping on each other's bookmarks.
 
+## Your picture
+
+Open the account menu and select your picture to choose one of the built-in ones, or go back to your initial. It is saved with your account, so it follows you to every device, and administrators see it beside your name under **Users & access**.
+
 ## How authentication is wired
 
 The web app exchanges a username + password for a session token and a separate, read-only media token:

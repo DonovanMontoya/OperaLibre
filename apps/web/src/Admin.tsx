@@ -21,6 +21,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AvatarFace } from "./Avatar";
 import {
   changePassword,
   createUser,
@@ -1077,7 +1078,7 @@ export function AdminPanel({
                   return (
                     <article className="admin-user" key={user.id}>
                       <div className="admin-user-head">
-                        <div className="admin-avatar">{user.username.slice(0, 1).toUpperCase()}</div>
+                        <div className="admin-avatar"><AvatarFace user={user} /></div>
                         <div><strong>{user.username}</strong><span>{user.isOwner ? "Owner" : user.isAdmin ? "Administrator" : allBooks ? "Reader · all books" : `Reader · ${user.allowedBookIds?.length ?? 0} of ${books.length} books`}{user.id === currentUser.id ? " · you" : ""}</span></div>
                         <div className="admin-row-actions">
                           {user.id !== currentUser.id ? <button type="button" disabled={busyKey !== null || !canManageTarget || (!currentUser.isOwner && user.libationAccess === "direct")} onClick={() => void handleResetPassword(user)}><KeyRound size={13} /> Reset</button> : null}

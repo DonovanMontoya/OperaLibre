@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { useCarPlay } from "./useCarPlay";
 import type { useFinishFeed } from "./useFinishFeed";
 import type { useOfflineDownloads } from "./useOfflineDownloads";
@@ -46,6 +46,7 @@ import { ShelfBookList, ShelfFacetGroup } from "./ShelfBookList";
 import { DeviceImportNotice } from "./DeviceImportNotice";
 import { readingQueueKey } from "./readingQueue";
 import { ContinueReading } from "./ContinueReading";
+import { AvatarFace } from "./Avatar";
 import { isPendingJob, jobDetailLines, jobStateLabel, jobSummary, jobTitle } from "./jobLabels";
 import { formatElapsed, formatMinutes } from "./formatting";
 import { LibroCatalog, StoreHeading } from "./LibroCatalog";
@@ -255,6 +256,27 @@ export function LibraryPane({
   // Known only once the status has loaded, so the prompt does not flash first.
   const audibleNeedsAccount = native && !!libationStatus && allAudibleAccounts.length === 0;
 
+  const userMenuWrapRef = useRef<HTMLDivElement>(null);
+  // The native sheet has its own scrim; the web dropdown closes on a click
+  // anywhere else or on Escape, which hands focus back to its button.
+  useEffect(() => {
+    if (!userMenuOpen || native) return;
+    const wrap = userMenuWrapRef.current;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!wrap?.contains(event.target as Node)) setUserMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setUserMenuOpen(false);
+      wrap?.querySelector<HTMLButtonElement>(".account-button")?.focus();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [native, setUserMenuOpen, userMenuOpen]);
   const queueActionsRef = useRef({ selectBook, resumeSelectedBook, openBookDetails, setLibraryOpen });
   queueActionsRef.current = { selectBook, resumeSelectedBook, openBookDetails, setLibraryOpen };
   const startQueuedBook = useCallback((book: Book) => {
@@ -483,14 +505,15 @@ export function LibraryPane({
           >
             <RefreshCcw size={16} />
           </button>
-          <div className="user-menu-wrap">
+          <div className="user-menu-wrap" ref={userMenuWrapRef}>
             <button
-              className="icon-button"
+              className="icon-button account-button"
               aria-label="Account menu"
+              aria-haspopup="menu"
               aria-expanded={userMenuOpen}
               onClick={() => setUserMenuOpen((open) => !open)}
             >
-              <span className="user-avatar">{currentUser.username.slice(0, 1).toUpperCase()}</span>
+              <span className="user-avatar"><AvatarFace user={currentUser} /></span>
             </button>
             {userMenuOpen
               ? native

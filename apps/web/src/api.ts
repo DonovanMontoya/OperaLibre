@@ -944,6 +944,14 @@ export async function updateProgressSharing(
   });
 }
 
+/** `null` goes back to the account's initial. */
+export async function updateAvatar(avatar: string | null) {
+  return request<AuthUser>("/api/me/avatar", {
+    method: "PUT",
+    body: JSON.stringify({ avatar })
+  });
+}
+
 /**
  * The shared "who finished what" feed.
  *

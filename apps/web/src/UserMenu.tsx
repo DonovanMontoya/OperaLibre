@@ -3,13 +3,100 @@ import { ContinueReadingSetting } from "./ContinueReadingSetting";
 import type { usePurchases } from "./usePurchases";
 import type { useReadalong } from "./useReadalong";
 import type { useReaderPreferences } from "./useReaderPreferences";
-import { AlertCircle, LogOut, ScrollText, UserCog } from "lucide-react";
+import { AlertCircle, LogOut, Pencil, ScrollText, UserCog } from "lucide-react";
 import { FOLLOW_AGGRESSIVENESS_LABELS, type FollowAggressiveness } from "./readalongPreferences";
-import type { CSSProperties, Dispatch, RefObject, SetStateAction } from "react";
+import { useState, type CSSProperties, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { updateAvatar } from "./api";
+import { AvatarFace } from "./Avatar";
+import { AVATARS, avatarFor, supportsAvatars, type AvatarId } from "./avatars";
 import type { AuthUser } from "./types";
 import type { NativeTab } from "./nativeTabs";
 import type { LibrarySource } from "./shelfSort";
 import type { ServerCapabilities } from "./serverCapabilities";
+
+/**
+ * The top of the account menu: who is signed in, and — where the server can
+ * save one — the pictures they can choose from.
+ */
+function AccountHead({ user, role, onUserChanged }: {
+  user: AuthUser;
+  role: string;
+  onUserChanged: (user: AuthUser) => void;
+}) {
+  const [choosing, setChoosing] = useState(false);
+  // The picture being saved, shown at once so the choice does not lag the tap.
+  const [pending, setPending] = useState<{ id: AvatarId | null } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const saved = avatarFor(user)?.id ?? null;
+  const shown = pending ? pending.id : saved;
+
+  async function choose(id: AvatarId | null) {
+    if (pending || id === saved) return;
+    setPending({ id });
+    setError(null);
+    try {
+      onUserChanged(await updateAvatar(id));
+    } catch {
+      setError("Your picture wasn’t saved. Check the connection to your server and try again.");
+    } finally {
+      setPending(null);
+    }
+  }
+
+  const portrait = <AvatarFace user={user} choice={shown} />;
+
+  return (
+    <div className="user-menu-account">
+      <div className="user-menu-head">
+        {supportsAvatars(user) ? (
+          <button
+            type="button"
+            className="user-menu-portrait"
+            aria-label="Change picture"
+            aria-expanded={choosing}
+            aria-controls="user-menu-pictures"
+            onClick={() => setChoosing((open) => !open)}
+          >
+            {portrait}
+            <span className="user-menu-portrait-edit" aria-hidden="true"><Pencil size={10} /></span>
+          </button>
+        ) : (
+          <span className="user-menu-portrait" aria-hidden="true">{portrait}</span>
+        )}
+        <div className="user-menu-id">
+          <strong>{user.username}</strong>
+          <span>{role}</span>
+        </div>
+      </div>
+      {choosing ? (
+        <div className="avatar-picker" id="user-menu-pictures">
+          <div className="avatar-picker-grid" role="radiogroup" aria-label="Picture">
+            {AVATARS.map((avatar) => (
+              <button
+                key={avatar.id}
+                type="button"
+                className="avatar-tile"
+                role="radio"
+                aria-checked={shown === avatar.id}
+                aria-label={avatar.label}
+                title={avatar.label}
+                onClick={() => void choose(avatar.id)}
+              >
+                <AvatarFace user={user} choice={avatar.id} />
+              </button>
+            ))}
+          </div>
+          {shown ? (
+            <button type="button" className="avatar-picker-reset" onClick={() => void choose(null)}>
+              Use my initial instead
+            </button>
+          ) : null}
+          {error ? <p className="avatar-picker-error" role="alert">{error}</p> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export function renderUserMenu({
   continueReadingAutoplay,
@@ -21,6 +108,7 @@ export function renderUserMenu({
   isOperaLibre,
   localMode,
   native,
+  onCurrentUserChanged,
   onLogout,
   openNativeTab,
   pausePlayback,
@@ -42,6 +130,7 @@ export function renderUserMenu({
   isOperaLibre: boolean;
   localMode: boolean;
   native: boolean;
+  onCurrentUserChanged: (user: AuthUser) => void;
   onLogout: () => void | Promise<void>;
   openNativeTab: (tab: NativeTab) => void;
   pausePlayback: (audio: HTMLAudioElement | null | undefined) => void;
@@ -67,14 +156,13 @@ export function renderUserMenu({
 
   return (
     <div className="user-menu" role="menu">
-      <div className="user-menu-head">
-        <strong>{currentUser.username}</strong>
-        <span>
-          {isOperaLibre
-            ? localMode ? "On-device library" : demoMode ? "On-device demo" : currentUser.isOwner ? "Owner" : currentUser.isAdmin ? "Administrator" : "Reader"
-            : currentUser.isAdmin ? "Jellyfin administrator" : "Jellyfin account"}
-        </span>
-      </div>
+      <AccountHead
+        user={currentUser}
+        role={isOperaLibre
+          ? localMode ? "On-device library" : demoMode ? "On-device demo" : currentUser.isOwner ? "Owner" : currentUser.isAdmin ? "Administrator" : "Reader"
+          : currentUser.isAdmin ? "Jellyfin administrator" : "Jellyfin account"}
+        onUserChanged={onCurrentUserChanged}
+      />
       {capabilities.statistics ? (
         <button
           type="button"
@@ -88,7 +176,7 @@ export function renderUserMenu({
             }
           }}
         >
-          <ScrollText size={14} /> Reader's ledger
+          <ScrollText size={16} /> Reader's ledger
         </button>
       ) : null}
       {capabilities.administration ? (
@@ -104,7 +192,7 @@ export function renderUserMenu({
             }
           }}
         >
-          <UserCog size={14} /> Administration
+          <UserCog size={16} /> Administration
         </button>
       ) : null}
       {capabilities.administration && brokenLibationAccounts.length > 0 ? (
@@ -118,7 +206,7 @@ export function renderUserMenu({
             if (native) openNativeTab("shelf");
           }}
         >
-          <AlertCircle size={14} /> Audible accounts ({brokenLibationAccounts.length})
+          <AlertCircle size={16} /> Audible accounts ({brokenLibationAccounts.length})
         </button>
       ) : null}
       {!native ? <BehaviorSection>
@@ -151,13 +239,14 @@ export function renderUserMenu({
       <button
         type="button"
         role="menuitem"
+        className="user-menu-leave"
         onClick={() => {
           setUserMenuOpen(false);
           if (localMode) pausePlayback(audioRef.current);
           void onLogout();
         }}
       >
-        <LogOut size={14} /> {localMode ? "Leave local mode" : "Sign out"}
+        <LogOut size={16} /> {localMode ? "Leave local mode" : "Sign out"}
       </button>
     </div>
   );
