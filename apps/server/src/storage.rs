@@ -770,6 +770,11 @@ pub(crate) const WORKS_DOCUMENT: &str = "works";
 /// The account permission migration's watermark. It belongs with the accounts
 /// but is not a property of any one of them, so it rides alongside the rows.
 pub(crate) const USERS_PERMISSIONS_VERSION_DOCUMENT: &str = "users-permissions-version";
+/// Each account's chosen picture, by user id. Kept beside the rows instead of
+/// in a column so the schema, and with it the data compatibility a release
+/// declares, stays as it was: an older build rewriting the accounts leaves
+/// this alone, and the pictures are still there when the newer one returns.
+pub(crate) const USERS_AVATARS_DOCUMENT: &str = "users-avatars";
 
 /// Accounts are rewritten wholesale. There are tens of them, they change only
 /// when an administrator acts, and doing it in one transaction keeps the
@@ -786,6 +791,16 @@ pub(crate) fn write_users_rows(
         transaction,
         USERS_PERMISSIONS_VERSION_DOCUMENT,
         &store.permissions_version.to_string(),
+    )?;
+    let avatars: HashMap<&str, &str> = store
+        .users
+        .iter()
+        .filter_map(|user| Some((user.id.as_str(), user.avatar.as_deref()?)))
+        .collect();
+    db::write_document(
+        transaction,
+        USERS_AVATARS_DOCUMENT,
+        &serde_json::to_string(&avatars).unwrap_or_default(),
     )?;
     for user in &store.users {
         transaction.execute(
@@ -1036,11 +1051,18 @@ pub(crate) fn read_users_rows(connection: &rusqlite::Connection) -> anyhow::Resu
         }
     }
 
+    // A picture is never worth refusing to load the accounts over, so one
+    // that cannot be read is treated as not chosen.
+    let mut avatars: HashMap<String, String> =
+        db::read_document(connection, USERS_AVATARS_DOCUMENT)?
+            .and_then(|payload| serde_json::from_str(&payload).ok())
+            .unwrap_or_default();
     let mut statement = connection.prepare("SELECT * FROM users")?;
     let rows = statement.query_map([], |row| {
         let id: String = row.get("id")?;
         let restricted: bool = row.get("restricted")?;
         let libation_access: String = row.get("libation_access")?;
+        let avatar = avatars.remove(&id);
         Ok(User {
             allowed_book_ids: restricted.then(|| grants.get(&id).cloned().unwrap_or_default()),
             id,
@@ -1054,6 +1076,7 @@ pub(crate) fn read_users_rows(connection: &rusqlite::Connection) -> anyhow::Resu
             share_progress: row.get("share_progress")?,
             announce_finishes: row.get("announce_finishes")?,
             notify_finishes: row.get("notify_finishes")?,
+            avatar,
             created_at: row.get("created_at")?,
         })
     })?;

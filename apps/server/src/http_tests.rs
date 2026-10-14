@@ -1194,6 +1194,76 @@ async fn unknown_api_paths_return_json_not_the_spa_fallback() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn a_listener_chooses_and_clears_their_own_picture() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "reader").await;
+
+    // The key is always sent, so a client can tell this server stores pictures.
+    let before = server.get("/api/auth/me", &reader).await.json();
+    assert!(before.get("avatar").is_some_and(|value| value.is_null()));
+
+    let chosen = server
+        .send_json(
+            "PUT",
+            "/api/me/avatar",
+            &reader,
+            serde_json::json!({ "avatar": "owl" }),
+        )
+        .await;
+    assert_eq!(chosen.status, StatusCode::OK, "{}", chosen.text());
+    assert_eq!(chosen.json()["avatar"], "owl");
+
+    // Anything that is not a plain identifier is refused, and so is a body
+    // without the key; neither disturbs the picture already chosen.
+    for body in [
+        serde_json::json!({ "avatar": "" }),
+        serde_json::json!({ "avatar": "Owl" }),
+        serde_json::json!({ "avatar": "../owl" }),
+        serde_json::json!({ "avatar": "a".repeat(AVATAR_MAX_LENGTH + 1) }),
+        serde_json::json!({ "picture": "fox" }),
+    ] {
+        let refused = server
+            .send_json("PUT", "/api/me/avatar", &reader, body.clone())
+            .await;
+        assert!(
+            refused.status.is_client_error(),
+            "{body}: {}",
+            refused.status
+        );
+    }
+    assert_eq!(
+        server.get("/api/auth/me", &reader).await.json()["avatar"],
+        "owl"
+    );
+
+    // It changes only the caller's account, and administrators see it.
+    let listed = server.get("/api/users", &owner).await.json();
+    let avatar_of = |name: &str| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|user| user["username"] == name)
+            .unwrap()["avatar"]
+            .clone()
+    };
+    assert_eq!(avatar_of("reader"), "owl");
+    assert!(avatar_of("owner").is_null());
+
+    let cleared = server
+        .send_json(
+            "PUT",
+            "/api/me/avatar",
+            &reader,
+            serde_json::json!({ "avatar": null }),
+        )
+        .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text());
+    assert!(server.get("/api/auth/me", &reader).await.json()["avatar"].is_null());
+}
+
+#[tokio::test]
 async fn a_reader_cannot_reach_admin_routes() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;

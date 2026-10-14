@@ -6668,74 +6668,245 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   position: relative;
 }
 
+/* A chosen picture fills whichever badge holds it and takes that badge's
+   shape; an initial sits on the badge's own colour instead. */
+.avatar-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
 .user-avatar {
   display: inline-grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   background: var(--oxblood);
   color: var(--paper);
-  font-size: 0.75rem;
-  font-weight: 600;
+  font: 1.05rem/1 "Instrument Serif", serif;
+}
+
+/* The round buttons beside this one spin their icon on hover. A face should
+   stay upright, so this one answers with its ring instead. */
+.icon-button.account-button {
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.icon-button.account-button:hover {
+  transform: none;
+}
+
+.icon-button.account-button[aria-expanded="true"] {
+  border-color: var(--gold-soft);
+  box-shadow: 0 0 0 3px rgba(217, 181, 116, 0.2);
 }
 
 .user-menu {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 10px);
   right: 0;
   z-index: 30;
-  min-width: 200px;
-  background: rgba(var(--sheet-rgb), 0.98);
+  width: min(316px, calc(100vw - 32px));
+  /* Opaque: over the dark pane, even a little translucency lets the shelf's
+     pale lettering ghost through the sheet. */
+  background: rgb(var(--sheet-rgb));
   border: 1px solid rgba(var(--ink-rgb), 0.18);
-  border-radius: 10px;
-  box-shadow: 0 18px 36px rgba(26, 20, 16, 0.18);
-  padding: 0.5rem;
+  border-radius: 14px;
+  box-shadow: 0 22px 44px -14px rgba(10, 6, 4, 0.55);
+  padding: 6px;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 2px;
+  animation: user-menu-in 0.14s ease-out both;
+}
+
+@keyframes user-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .user-menu {
+    animation: none;
+  }
+}
+
+.user-menu-account {
+  margin-bottom: 4px;
+  border-radius: 10px;
+  background: rgba(var(--ink-rgb), 0.05);
 }
 
 .user-menu-head {
   display: flex;
-  flex-direction: column;
-  padding: 0.4rem 0.6rem;
-  border-bottom: 1px solid rgba(var(--ink-rgb), 0.1);
-  margin-bottom: 0.25rem;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
 }
 
-.user-menu-head strong {
-  font-size: 0.95rem;
+.user-menu .user-menu-portrait {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--oxblood);
+  color: var(--paper);
+  font: 1.7rem/1 "Instrument Serif", serif;
+}
+
+.user-menu button.user-menu-portrait {
+  cursor: pointer;
+}
+
+.user-menu-portrait:focus-visible,
+.avatar-tile:focus-visible,
+.avatar-picker-reset:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.user-menu-portrait-edit {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgb(var(--sheet-rgb));
+  color: var(--ink-soft);
+  box-shadow: 0 0 0 1px rgba(var(--ink-rgb), 0.2);
+}
+
+.user-menu-id {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.user-menu-id strong {
+  overflow: hidden;
+  color: var(--ink);
+  font: 500 1.15rem/1.2 "Fraunces", serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-menu-id span {
+  color: var(--ink-faded);
+  font: italic 0.85rem/1.3 "Fraunces", serif;
+}
+
+.avatar-picker {
+  display: grid;
+  gap: 12px;
+  padding: 4px 12px 14px;
+}
+
+.avatar-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+}
+
+.user-menu .avatar-tile {
+  display: block;
+  aspect-ratio: 1;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.avatar-tile:hover {
+  transform: scale(1.08);
+}
+
+.avatar-tile[aria-checked="true"] {
+  box-shadow: 0 0 0 2px rgb(var(--sheet-rgb)), 0 0 0 4px var(--ink);
+}
+
+.user-menu .avatar-picker-reset {
+  justify-self: start;
+  margin: -4px 0 -6px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--ink-faded);
+  font: italic 0.85rem/1.3 "Fraunces", serif;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.avatar-picker-reset:hover {
   color: var(--ink);
 }
 
-.user-menu-head span {
-  font-size: 0.78rem;
-  color: var(--ink-faded);
+.avatar-picker-error {
+  margin: 0;
+  color: var(--oxblood);
+  font-size: 0.82rem;
+  line-height: 1.35;
 }
 
-.user-menu button:not(.settings-switch) {
+.user-menu button[role="menuitem"] {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 12px;
   background: transparent;
   border: none;
-  padding: 0.5rem 0.6rem;
-  border-radius: 6px;
+  padding: 9px 12px;
+  border-radius: 8px;
   font: inherit;
   cursor: pointer;
   color: var(--ink);
   text-align: left;
 }
 
-.user-menu button:not(.settings-switch):hover,
-.user-menu button:not(.settings-switch):focus-visible {
+.user-menu button[role="menuitem"] svg {
+  flex: none;
+  color: var(--ink-faded);
+}
+
+.user-menu button[role="menuitem"]:hover,
+.user-menu button[role="menuitem"]:focus-visible {
   background: rgba(184, 137, 58, 0.18);
 }
 
+/* Leaving is set apart from the places the menu can take you. */
+.user-menu button.user-menu-leave {
+  position: relative;
+  margin-top: 9px;
+}
+
+.user-menu-leave::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  right: 0;
+  left: 0;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
+}
+
 .user-menu .behavior-settings {
-  width: min(300px, calc(100vw - 48px));
-  padding: 0.45rem 0.6rem;
+  width: auto;
+  margin-top: 4px;
+  padding: 4px 12px;
   border-top: 1px solid rgba(var(--ink-rgb), 0.1);
 }
 
@@ -11322,6 +11493,7 @@ html.native-app .user-menu {
   left: calc(env(safe-area-inset-left) + 10px);
   right: calc(env(safe-area-inset-right) + 10px);
   bottom: calc(env(safe-area-inset-bottom) + 12px);
+  width: auto;
   min-width: 0;
   padding: 8px;
   border-radius: 20px;
@@ -11339,8 +11511,12 @@ html.native-app .user-menu::before {
   margin-bottom: 4px;
 }
 
-html.native-app .user-menu-head {
-  padding: 8px 12px 12px;
+html.native-app .user-menu-account {
+  border-radius: 14px;
+}
+
+html.native-app .user-menu .avatar-picker-reset {
+  min-height: 44px;
 }
 
 html.native-app .user-menu button[role="menuitem"] {

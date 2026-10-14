@@ -1267,6 +1267,7 @@ mod tests {
             share_progress: false,
             announce_finishes: false,
             notify_finishes: false,
+            avatar: None,
         };
         let stored = Account {
             nickname: String::new(),

@@ -374,6 +374,7 @@ fn book_access_defaults_to_full_library_and_honors_restrictions() {
         share_progress: true,
         announce_finishes: true,
         notify_finishes: true,
+        avatar: None,
     };
     assert!(can_access_book(&unrestricted, "book-a"));
 
@@ -422,6 +423,7 @@ fn sharing_user(id: &str, share_progress: bool) -> super::User {
         share_progress,
         announce_finishes: true,
         notify_finishes: true,
+        avatar: None,
         created_at: "0".to_string(),
     }
 }
@@ -439,6 +441,7 @@ fn viewer(id: &str, share_progress: bool) -> AuthUser {
         share_progress,
         announce_finishes: true,
         notify_finishes: true,
+        avatar: None,
     }
 }
 
@@ -1892,6 +1895,7 @@ fn admin_user() -> super::AuthUser {
         share_progress: true,
         announce_finishes: true,
         notify_finishes: true,
+        avatar: None,
     }
 }
 
@@ -1912,6 +1916,7 @@ fn stored_user(id: &str, is_admin: bool, is_owner: bool) -> super::User {
         share_progress: true,
         announce_finishes: true,
         notify_finishes: true,
+        avatar: None,
         created_at: "0".to_string(),
     }
 }
@@ -1929,6 +1934,7 @@ fn approval_reader() -> super::AuthUser {
         share_progress: true,
         announce_finishes: true,
         notify_finishes: true,
+        avatar: None,
     }
 }
 
@@ -2515,6 +2521,7 @@ async fn a_reader_download_grants_only_books_the_audible_account_owns() {
         share_progress: true,
         announce_finishes: true,
         notify_finishes: true,
+        avatar: None,
     };
     let granted = || async {
         state.users.read().await.users[1]
@@ -4174,6 +4181,59 @@ async fn a_rejected_account_change_touches_neither_the_cache_nor_the_database() 
         1,
         "a rejected change reached the database"
     );
+}
+
+#[tokio::test]
+async fn a_chosen_picture_is_stored_with_the_account() {
+    let root = tempfile::tempdir().unwrap();
+    let database = super::Database::open(&root.path().join("operalibre.db")).unwrap();
+    let store = super::UserStore::new(
+        database.clone(),
+        super::StoreShape::Users,
+        super::UsersStore::default(),
+    );
+
+    store
+        .mutate(|users| {
+            let mut reader = stored_user("reader", false, false);
+            reader.avatar = Some("owl".to_string());
+            users.users = vec![stored_user("owner", true, true), reader];
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let stored = database
+        .call(|connection| {
+            super::read_users_rows(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+    let avatars: Vec<_> = stored
+        .users
+        .iter()
+        .map(|user| (user.id.as_str(), user.avatar.as_deref()))
+        .collect();
+    assert!(avatars.contains(&("reader", Some("owl"))), "{avatars:?}");
+    assert!(avatars.contains(&("owner", None)), "{avatars:?}");
+
+    // Going back to the initial has to reach the database too.
+    store
+        .mutate(|users| {
+            users.users[1].avatar = None;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let stored = database
+        .call(|connection| {
+            super::read_users_rows(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+    assert!(stored.users.iter().all(|user| user.avatar.is_none()));
 }
 
 // ---------------------------------------------------------------------------

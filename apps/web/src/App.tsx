@@ -1907,6 +1907,7 @@ function MainApp({
     isOperaLibre,
     localMode,
     native,
+    onCurrentUserChanged,
     onLogout,
     openNativeTab,
     pausePlayback,
