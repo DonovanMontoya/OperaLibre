@@ -738,7 +738,7 @@ export function PlayerPane({
                     setSleepCustomDraft("");
                     openNativePlayerSheet("sleep");
                   }}>
-                    <Timer size={16} /> {sleepAtChapterEnd ? "End of chapter" : sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
+                    <Timer size={16} /> <span>{sleepAtChapterEnd ? "End of chapter" : sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}</span>
                   </button>
                   <button
                     type="button"
