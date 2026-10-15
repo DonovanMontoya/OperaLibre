@@ -4021,16 +4021,25 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
             std::fs::write(&cli, script).unwrap();
             std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
             let job = create_job(&state, "sync-fixture").await;
-            let result = tokio::time::timeout(
-                Duration::from_millis(500),
-                run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks, None),
-            )
-            .await;
+            let generation =
+                run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks, None);
             if script.contains("sleep") {
-                assert!(result.is_err());
-                assert!(root.path().join("aligner.started").exists());
+                // Interrupted once the aligner is running, as by a shutdown.
+                let started = cli.with_extension("started");
+                tokio::time::timeout(Duration::from_secs(30), async {
+                    tokio::select! {
+                        _ = generation => panic!("generation ended before it was interrupted"),
+                        () = async {
+                            while !fs::try_exists(&started).await.unwrap() {
+                                tokio::task::yield_now().await;
+                            }
+                        } => {}
+                    }
+                })
+                .await
+                .unwrap();
             } else {
-                assert!(result.unwrap().is_err());
+                assert!(generation.await.is_err());
             }
             assert_eq!(fs::read(&destination).await.unwrap(), original);
         }
