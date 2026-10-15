@@ -3,6 +3,8 @@ import type { FixtureControls } from './reader';
 
 type TestReader = { rendition: {
   currentLocation(): { start: { cfi: string; href: string } };
+  location?: { start: { cfi: string } };
+  q: { enqueue(task: () => void): Promise<void> };
   annotations: { _annotations: Record<string, { cfiRange: string }> };
   getContents(): Array<{ range(cfi: string): Range }>;
 } };
@@ -25,6 +27,22 @@ async function open(page: Page, recovery = true) {
   await expect(page.locator('.epub-loading')).toHaveCount(0);
   await expect.poll(async () => (await state(page)).count).toBe(1);
 }
+// The reader has finished turning to the seek's page: the position has
+// rendered, nothing more is queued in epub.js, and the page it last reported
+// is the one on screen.
+async function settled(page: Page, time: number) {
+  await expect.poll(() => page.evaluate(async time => {
+    const r = (window as unknown as { __operalibreReader: TestReader }).__operalibreReader.rendition;
+    if (window.followFixture.position !== time) return false;
+    await new Promise(requestAnimationFrame);
+    const shown = r.currentLocation()?.start?.cfi;
+    // The follow display, then the location report it queues, which lands a frame later.
+    await r.q.enqueue(() => undefined);
+    await r.q.enqueue(() => undefined);
+    await new Promise(requestAnimationFrame);
+    return !!shown && r.currentLocation()?.start?.cfi === shown && r.location?.start?.cfi === shown;
+  }, time)).toBe(true);
+}
 async function matched(page: Page, needle: string) {
   await expect.poll(async () => (await state(page)).text).toContain(needle);
   await expect(page.locator('.readalong-highlight').first()).toBeVisible();
@@ -36,8 +54,7 @@ for (const lead of [0, .15, .5]) {
     await page.evaluate(lead => window.followFixture.setLead(lead), lead);
     for (const [before, outage, recovered, text] of [[25, 35, 60, 'lantern keeper'], [70, 85, 90, 'northern mountains']] as const) {
       await seek(page, before); await expect.poll(async () => (await state(page)).count).toBe(1);
-      // Allow the pending relocation to settle before checking the hold.
-      await page.waitForTimeout(200);
+      await settled(page, before);
       const cfi = (await state(page)).cfi;
       for (const time of [outage, recovered - .01]) {
         await seek(page, time);
@@ -125,9 +142,9 @@ test('real media clock continues through recovery with pause and speed changes',
   await expect.poll(async () => (await state(page)).count).toBe(0);
   const cfi = (await state(page)).cfi;
   await page.evaluate(() => window.followFixture.audio!.pause());
-  const stopped = await page.evaluate(() => window.followFixture.position);
-  await page.waitForTimeout(300);
-  expect(await page.evaluate(() => window.followFixture.position)).toBe(stopped);
+  // The fixture's clock comes to rest on the paused media element.
+  await expect.poll(() => page.evaluate(() =>
+    window.followFixture.audio!.paused && window.followFixture.position === window.followFixture.audio!.currentTime)).toBe(true);
   await page.evaluate(async () => { window.followFixture.audio!.playbackRate = 3; await window.followFixture.audio!.play(); });
   expect((await state(page)).cfi).toBe(cfi);
   await expect.poll(() => page.evaluate(() => window.followFixture.position), { timeout: 20_000 }).toBeGreaterThan(60);
