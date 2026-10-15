@@ -101,6 +101,27 @@ export function writePendingClips(storage: ClipStorage, key: string, clips: read
 }
 
 /**
+ * What became of one attempt to send a queued clip: delivered, stuck behind a
+ * server that is out of reach, held because the server cannot find its book
+ * right now, or an error message for a save the server refused for good.
+ */
+export type ClipDelivery = "saved" | "waiting" | "held" | (string & {});
+
+/**
+ * Send queued clips oldest first. An unreachable server ends the run, since
+ * every later clip would fail the same way. A clip whose book is missing or no
+ * longer shared stays queued without holding back clips for other books.
+ */
+export async function deliverQueuedClips(
+  queue: readonly Clip[],
+  deliver: (clip: Clip) => Promise<ClipDelivery>
+): Promise<void> {
+  for (const clip of queue) {
+    if (await deliver(clip) === "waiting") return;
+  }
+}
+
+/**
  * One book's clips in listening order: what the server holds, plus what this
  * device has not delivered yet. A clip the server already has wins over its
  * pending copy, which is a save whose reply was lost.

@@ -5,6 +5,7 @@ import {
   clipAround,
   clipFileName,
   clipsForBook,
+  deliverQueuedClips,
   newClipId,
   pendingClipStorageKey,
   readPendingClips,
@@ -146,4 +147,15 @@ test("queued deletions survive restart and hide any server copy", () => {
   const restored = readPendingClips(storage, "queue");
   assert.equal(restored[0].deleted, true);
   assert.deepEqual(clipsForBook([clip("removed", "book", 10), clip("kept", "book", 20)], restored, "book").map(entry => entry.id), ["kept"]);
+});
+
+test("a clip whose book is gone does not hold back the rest of the queue", async () => {
+  const queue = [clip("gone", "removed-book", 10), clip("next", "book-a", 20), clip("offline", "book-b", 30), clip("later", "book-b", 40)];
+  const outcomes = new Map([["gone", "held"], ["next", "saved"], ["offline", "waiting"]]);
+  const attempted: string[] = [];
+  await deliverQueuedClips(queue, async (candidate) => {
+    attempted.push(candidate.id);
+    return outcomes.get(candidate.id) ?? "saved";
+  });
+  assert.deepEqual(attempted, ["gone", "next", "offline"]);
 });
