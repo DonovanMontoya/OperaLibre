@@ -8,7 +8,6 @@ import UIKit
 /// the process and creates this scene alone, with no window scene, no WebView
 /// and no React. Everything the car screen shows therefore comes from the
 /// snapshot on disk, and everything it plays goes straight to `AudiobookPlayer`.
-@available(iOS 14.0, *)
 final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
     private var controller: CarPlayLibraryController?
 
@@ -31,7 +30,6 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 }
 
 /// Builds and maintains the templates on the car screen.
-@available(iOS 14.0, *)
 final class CarPlayLibraryController: NSObject, CPNowPlayingTemplateObserver, CPInterfaceControllerDelegate {
     private let interfaceController: CPInterfaceController
     private let coordinator = CarPlayCoordinator.shared
