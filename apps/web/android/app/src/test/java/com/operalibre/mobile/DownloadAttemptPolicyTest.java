@@ -12,6 +12,13 @@ import static org.junit.Assert.*;
 public class DownloadAttemptPolicyTest {
     @Rule public TemporaryFolder folder = new TemporaryFolder();
 
+    @Test public void cancelledAttemptCannotWriteIntoRestartedBook() {
+        assertTrue(DownloadAttemptPolicy.sameAttempt("first", "first"));
+        assertFalse(DownloadAttemptPolicy.sameAttempt("second", "first"));
+        assertFalse(DownloadAttemptPolicy.sameAttempt("second", ""));
+        assertTrue(DownloadAttemptPolicy.sameAttempt("", ""));
+    }
+
     @Test public void oldPartialCleanupCannotDeleteReplacementPartial() throws Exception {
         File destination = new File(folder.getRoot(), "audio.m4b");
         File first = DownloadAttemptPolicy.partialFile(destination, "first");
