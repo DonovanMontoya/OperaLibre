@@ -57,8 +57,10 @@ struct BackupData {
     progress: Vec<BackupProgress>,
     progress_backups: Vec<BackupProgressBackup>,
     book_settings: Vec<BackupBookSettings>,
-    /// Absent from backups written before clips existed.
-    #[serde(default)]
+    /// Absent from backups written before clips existed. Left out when empty
+    /// too: older servers reject unknown fields, so a backup without clips
+    /// stays restorable on them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     clips: Vec<BackupClip>,
     activity: ActivityStore,
     documents: BTreeMap<String, serde_json::Value>,

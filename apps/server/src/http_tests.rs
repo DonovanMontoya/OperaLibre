@@ -7681,11 +7681,14 @@ async fn clips_leave_with_their_listener_and_return_with_a_backup() {
 }
 
 #[tokio::test]
-async fn a_backup_from_before_clips_still_restores() {
+async fn a_backup_without_clips_keeps_the_format_older_servers_restore() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;
-    let mut backup = server.get("/api/admin/backup", &owner).await.json();
-    backup["data"].as_object_mut().unwrap().remove("clips");
+    let backup = server.get("/api/admin/backup", &owner).await.json();
+    assert!(
+        backup["data"].get("clips").is_none(),
+        "servers from before clips reject a backup that names them"
+    );
 
     let restored = server
         .send_json("POST", "/api/admin/backup", &owner, backup)
