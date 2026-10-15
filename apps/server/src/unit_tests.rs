@@ -3968,6 +3968,21 @@ fn reading_log_metadata_is_parsed_and_sanitized() {
     assert_eq!(super::sanitized_client_name(Some("\nnot-a-client")), None);
 }
 
+// The wire name is the contract: serde ignores an unknown key, so a renamed
+// field would silently record completions on the UTC day.
+#[test]
+fn playback_completion_timezone_is_parsed() {
+    let update: super::CompletionUpdate = serde_json::from_value(serde_json::json!({
+        "finished": true,
+        "tzOffsetMinutes": -240
+    }))
+    .unwrap();
+    assert_eq!(
+        super::sanitized_tz_offset_minutes(update.tz_offset_minutes),
+        -240
+    );
+}
+
 fn stored_at(book_position_seconds: f64, age_ms: u64) -> super::Progress {
     super::Progress {
         recording: None,
