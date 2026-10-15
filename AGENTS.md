@@ -219,7 +219,7 @@ explicit; a release or dependency version bump alone is not a reason to remap.
 
 New `server.config` keys need safe defaults so existing installs keep working.
 Document them in `docs/configuration.md` and update the packaged defaults in
-`release/combined.config` and `release/server-only.config` when relevant.
+`release/combined.config` when relevant.
 
 ### API compatibility
 
