@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import type { BrowserContext, Page } from '@playwright/test';
 import { test, expect, type AppServer } from './server';
 
 async function setup(page: Page, server: AppServer) {
@@ -212,6 +212,8 @@ for (const resumedBeforeResponse of [false, true]) {
 }
 
 test('a paused player returning to the foreground adopts a rewind from another device', async ({ page, server }) => {
+  // Time flows normally; the clock only lets the away period below be skipped.
+  await page.clock.install();
   const book = await setup(page, server);
   const progressWritesSettled = trackProgressWrites(page);
   await play(page);
@@ -225,7 +227,7 @@ test('a paused player returning to the foreground adopts a rewind from another d
   // This device's pause and backgrounding saves must land before the rewind:
   // the server keeps whichever write arrives last.
   await progressWritesSettled();
-  // Another device rewinds while this one is away, for longer than the
+  // Another device rewinds while this one is away, for longer than the 2 s
   // periodic save interval: a resume that saved would stamp the stale spot.
   await server.json(`/api/books/${book.id}/progress`, 'PUT', {
     trackId: book.tracks[0].id,
@@ -234,7 +236,7 @@ test('a paused player returning to the foreground adopts a rewind from another d
     durationSeconds: 180,
     intentionalRegression: true
   });
-  await page.waitForTimeout(2500);
+  await page.clock.fastForward(2500);
   const staleWrites: number[] = [];
   await page.route(`**/api/books/${book.id}/progress`, route => {
     const body = route.request().method() === 'GET' ? null : route.request().postDataJSON();
@@ -331,17 +333,18 @@ test('signing out stops audio and keeps listening progress scoped to the account
 });
 
 test('six listeners can play and save independent positions', async ({ page, browser, server }) => {
-  test.setTimeout(90_000);
   const book = await setup(page, server);
   await play(page);
   await seekAndPause(page);
   await page.getByRole('button', { name: 'Play', exact: true }).first().click();
-  const listeners = [{ page, token: server.token }];
-  const contexts = [];
+  const usernames = [1, 2, 3, 4, 5].map(index => `reader-${index}`);
+  for (const username of usernames) {
+    await server.json('/api/users', 'POST', { username, password: 'fixture-password-456', isAdmin: false });
+  }
+  const contexts: BrowserContext[] = [];
   try {
-    for (let index = 1; index < 6; index++) {
-      const username = `reader-${index}`;
-      await server.json('/api/users', 'POST', { username, password: 'fixture-password-456', isAdmin: false });
+    // The readers sign in and start listening at the same time.
+    const readers = await Promise.all(usernames.map(async username => {
       const context = await browser.newContext();
       contexts.push(context);
       const listener = await context.newPage();
@@ -353,8 +356,9 @@ test('six listeners can play and save independent positions', async ({ page, bro
       await listener.getByRole('button', { name: 'Sign in', exact: true }).click();
       const token = (await (await response).json()).token as string;
       await play(listener);
-      listeners.push({ page: listener, token });
-    }
+      return { page: listener, token };
+    }));
+    const listeners = [{ page, token: server.token }, ...readers];
     const before = await Promise.all(listeners.map(listener => position(listener.page)));
     // All six real media elements must advance together; no throughput target.
     await expect.poll(async () => (await Promise.all(listeners.map(listener => position(listener.page))))
