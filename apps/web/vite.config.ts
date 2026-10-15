@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import { devProxyTarget } from "../../script/dev_proxy.mjs";
 
@@ -8,6 +8,9 @@ const frontendVersion = (process.env.OPERALIBRE_VERSION ?? "dev")
 
 export default defineConfig(({ command }) => {
   const proxyTarget = command === "serve" ? devProxyTarget() : undefined;
+  // Set by `npm run testenv` to sign every request in as a test account
+  // instead of the browser's own session.
+  const sessionToken = command === "serve" ? process.env.OPERALIBRE_DEV_SESSION_TOKEN : undefined;
   return {
     // Relative asset URLs let this production bundle run inside the macOS app.
     base: "./",
@@ -30,7 +33,17 @@ export default defineConfig(({ command }) => {
             source: `${frontendVersion}\n`
           });
         }
-      }
+      },
+      ...(sessionToken ? [{
+        name: "operalibre-testenv-session",
+        configureServer(server: ViteDevServer) {
+          // Signing out would end the shared test session, so it does nothing.
+          server.middlewares.use("/api/auth/logout", (_request, response) => {
+            response.statusCode = 204;
+            response.end();
+          });
+        }
+      }] : [])
     ],
     server: {
       proxy: {
@@ -48,6 +61,10 @@ export default defineConfig(({ command }) => {
               }
               if (proxyRequest.getHeader("referer")) {
                 proxyRequest.setHeader("referer", `${proxyTarget}/`);
+              }
+              if (sessionToken) {
+                proxyRequest.removeHeader("cookie");
+                proxyRequest.setHeader("authorization", `Bearer ${sessionToken}`);
               }
             });
           }
