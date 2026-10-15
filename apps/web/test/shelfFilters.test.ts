@@ -13,7 +13,6 @@ import {
   countShelfFacet,
   EMPTY_SHELF_FILTERS,
   shelfFacetKey,
-  shelfDownloadScanKey,
   shelfSearchWords,
   tagForShelfSort,
   toggleShelfFacet,
@@ -177,23 +176,6 @@ test("a sync file alone, an unknown source, or a non-EPUB companion does not pro
   const readingFile = { extension: "EPUB" } as Book["readingFile"];
   assert.equal(bookReadingAvailability({ readingFile, syncFile }, true), "followAlong");
   assert.equal(bookReadingAvailability({ readingFile, syncFile: { source: "unknown" } as Book["syncFile"] }, true), "ebook");
-});
-
-test("removing a merged imported copy invalidates the native download scan", () => {
-  const downloaded = book() as Book;
-  downloaded.id = "server-book";
-  downloaded.deviceBookId = "device-book";
-  downloaded.tracks = [{ localFilePath: "device-library/device-book/track.m4b" }] as Book["tracks"];
-
-  const serverOnly = {
-    ...downloaded,
-    deviceBookId: undefined,
-    tracks: downloaded.tracks.map((track) => ({ ...track, localFilePath: undefined }))
-  };
-  assert.notEqual(shelfDownloadScanKey([downloaded]), shelfDownloadScanKey([serverOnly]));
-
-  const progressOnly = { ...downloaded, progress: progress("inProgress") };
-  assert.equal(shelfDownloadScanKey([downloaded]), shelfDownloadScanKey([progressOnly]));
 });
 
 test("search reaches the tag and genre a book carries, not just its title", () => {

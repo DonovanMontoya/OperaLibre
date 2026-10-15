@@ -174,7 +174,7 @@ function toBase64(data: ArrayBuffer) {
   return btoa(binary);
 }
 
-export const backgroundDownloadJobId = (book: Pick<Book, "id">, retryMissing = false) =>
+const backgroundDownloadJobId = (book: Pick<Book, "id">, retryMissing = false) =>
   `${sanitizeSegment(getServerStorageKey())}-${sanitizeSegment(book.id)}${retryMissing ? "-missing" : ""}`;
 
 export function getBookBackgroundDownloadStatus(book: Pick<Book, "id">, retryMissing = false) {
