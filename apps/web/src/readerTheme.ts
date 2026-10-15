@@ -1,3 +1,5 @@
+import { prefersDarkQuery } from "./appearance.ts";
+
 /**
  * The reader's page colours. Besides the three fixed looks, `auto` follows
  * the app: on iOS that is the appearance chosen in Settings (which itself can
@@ -52,12 +54,6 @@ export function appPrefersDark(root: ClassRoot, systemPrefersDark: boolean): boo
     return root.classList.contains("dark-mode");
   }
   return systemPrefersDark;
-}
-
-function prefersDarkQuery(): MediaQueryList | null {
-  return typeof window.matchMedia === "function"
-    ? window.matchMedia("(prefers-color-scheme: dark)")
-    : null;
 }
 
 export function currentAppPrefersDark(): boolean {

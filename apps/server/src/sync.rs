@@ -2250,10 +2250,8 @@ struct RecognitionSettings {
 impl RecognitionSettings {
     fn for_language(language: Option<&str>) -> Self {
         let code = language
-            .and_then(|value| value.split(['-', '_']).next())
-            .map(|value| value.trim().to_ascii_lowercase())
-            .filter(|value| !value.is_empty())
-            .map(|value| if value == "eng" { "en".into() } else { value });
+            .map(sync_report::two_letter_language)
+            .filter(|value| !value.is_empty());
         let english = code.as_deref() == Some("en");
         Self {
             model: if english { "tiny.en" } else { "tiny" },
@@ -3707,6 +3705,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn recognition_language_is_a_code_the_recognizer_accepts() {
+        // Echogarden rejects bibliographic codes such as `ger`, failing the
+        // book, and only a two-letter `en` picks the English models.
+        for (label, language) in [
+            ("ger", "de"),
+            ("fre", "fr"),
+            ("fra", "fr"),
+            ("fr-FR", "fr"),
+            ("dut", "nl"),
+            ("eng", "en"),
+            ("haw", "haw"),
+        ] {
+            let recognition = RecognitionSettings::for_language(Some(label));
+            assert_eq!(recognition.language.as_deref(), Some(language), "{label}");
+        }
+        assert_eq!(
+            RecognitionSettings::for_language(Some("eng")).model,
+            "tiny.en"
+        );
+        assert_eq!(RecognitionSettings::for_language(Some(" ")).language, None);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn a_books_language_override_replaces_the_epub_label_for_recognition() {
@@ -4010,16 +4031,25 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
             std::fs::write(&cli, script).unwrap();
             std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
             let job = create_job(&state, "sync-fixture").await;
-            let result = tokio::time::timeout(
-                Duration::from_millis(500),
-                run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks, None),
-            )
-            .await;
+            let generation =
+                run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks, None);
             if script.contains("sleep") {
-                assert!(result.is_err());
-                assert!(root.path().join("aligner.started").exists());
+                // Interrupted once the aligner is running, as by a shutdown.
+                let started = cli.with_extension("started");
+                tokio::time::timeout(Duration::from_secs(30), async {
+                    tokio::select! {
+                        _ = generation => panic!("generation ended before it was interrupted"),
+                        () = async {
+                            while !fs::try_exists(&started).await.unwrap() {
+                                tokio::task::yield_now().await;
+                            }
+                        } => {}
+                    }
+                })
+                .await
+                .unwrap();
             } else {
-                assert!(result.unwrap().is_err());
+                assert!(generation.await.is_err());
             }
             assert_eq!(fs::read(&destination).await.unwrap(), original);
         }
