@@ -6,23 +6,15 @@ import {
   writeShelfViewMode
 } from "../src/shelfView.ts";
 import type { ShelfViewMode } from "../src/shelfView.ts";
-
-function memoryStorage(initialValue: string | null = null) {
-  const values = new Map<string, string>();
-  if (initialValue !== null) values.set(SHELF_VIEW_MODE_STORAGE_KEY, initialValue);
-  return {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { values.set(key, value); }
-  };
-}
+import { memoryStorage } from "./memoryStorage.ts";
 
 test("a shelf nobody has set a density on opens roomy", () => {
   assert.equal(readShelfViewMode(memoryStorage()), "list");
 });
 
 test("a density nothing writes any more does not survive as one", () => {
-  assert.equal(readShelfViewMode(memoryStorage("cozy")), "list");
-  assert.equal(readShelfViewMode(memoryStorage("")), "list");
+  assert.equal(readShelfViewMode(memoryStorage(SHELF_VIEW_MODE_STORAGE_KEY, "cozy")), "list");
+  assert.equal(readShelfViewMode(memoryStorage(SHELF_VIEW_MODE_STORAGE_KEY, "")), "list");
 });
 
 test("each density round-trips, so the choice outlives the session", () => {

@@ -18,17 +18,9 @@ import {
   writeBookGains,
   writeUnsyncedBookGains
 } from "../src/bookVolume.ts";
+import { memoryStorage } from "./memoryStorage.ts";
 
 const KEY = bookVolumeStorageKey("books.local", "reader");
-
-function memoryStorage(initialValue: string | null = null) {
-  const values = new Map<string, string>();
-  if (initialValue !== null) values.set(KEY, initialValue);
-  return {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { values.set(key, value); }
-  };
-}
 
 test("a decibel slider position maps to the gain the engine is given", () => {
   assert.equal(bookGainFromDb(0), 1);
@@ -82,11 +74,11 @@ test("the unsynced record keeps unity entries where the mirror drops them", () =
 });
 
 test("a corrupt or hand-edited record never leaks a bad gain into playback", () => {
-  assert.deepEqual(readBookGains(memoryStorage("not json"), KEY), {});
-  assert.deepEqual(readBookGains(memoryStorage("[1,2,3]"), KEY), {});
-  assert.deepEqual(readBookGains(memoryStorage(null), KEY), {});
+  assert.deepEqual(readBookGains(memoryStorage(KEY, "not json"), KEY), {});
+  assert.deepEqual(readBookGains(memoryStorage(KEY, "[1,2,3]"), KEY), {});
+  assert.deepEqual(readBookGains(memoryStorage(KEY, null), KEY), {});
   assert.deepEqual(
-    readBookGains(memoryStorage('{"a":900,"b":"loud","c":1,"d":2}'), KEY),
+    readBookGains(memoryStorage(KEY, '{"a":900,"b":"loud","c":1,"d":2}'), KEY),
     { a: BOOK_GAIN_MAX, d: 2 }
   );
 });

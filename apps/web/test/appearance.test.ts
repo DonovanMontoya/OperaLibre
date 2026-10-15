@@ -6,24 +6,16 @@ import {
   resolveDarkMode,
   writeAppearanceMode
 } from "../src/appearance.ts";
-
-function memoryStorage(initialValue: string | null = null) {
-  const values = new Map<string, string>();
-  if (initialValue !== null) values.set(APPEARANCE_STORAGE_KEY, initialValue);
-  return {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { values.set(key, value); }
-  };
-}
+import { memoryStorage } from "./memoryStorage.ts";
 
 test("an untouched install follows the system theme", () => {
   assert.equal(readAppearanceMode(memoryStorage()), "system");
-  assert.equal(readAppearanceMode(memoryStorage("garbage")), "system");
+  assert.equal(readAppearanceMode(memoryStorage(APPEARANCE_STORAGE_KEY, "garbage")), "system");
 });
 
 test("the boolean values written by the old switch stay explicit choices", () => {
-  assert.equal(readAppearanceMode(memoryStorage("true")), "dark");
-  assert.equal(readAppearanceMode(memoryStorage("false")), "light");
+  assert.equal(readAppearanceMode(memoryStorage(APPEARANCE_STORAGE_KEY, "true")), "dark");
+  assert.equal(readAppearanceMode(memoryStorage(APPEARANCE_STORAGE_KEY, "false")), "light");
 });
 
 test("each mode round-trips through storage", () => {

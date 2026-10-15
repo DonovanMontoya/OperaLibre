@@ -29,6 +29,7 @@ import {
   writeProgressCheckpoint
 } from "../src/reliability.ts";
 import type { Progress } from "../src/types.ts";
+import { memoryStorage } from "./memoryStorage.ts";
 
 function progress(overrides: Partial<Progress> = {}): Progress {
   return {
@@ -49,14 +50,6 @@ function seededRandom(seed: number) {
     state = Math.imul(state ^ (state >>> 15), 1 | state);
     state ^= state + Math.imul(state ^ (state >>> 7), 61 | state);
     return ((state ^ (state >>> 14)) >>> 0) / 4_294_967_296;
-  };
-}
-
-function memoryStorage() {
-  const values = new Map<string, string>();
-  return {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { values.set(key, value); }
   };
 }
 
