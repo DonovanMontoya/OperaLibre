@@ -87,7 +87,7 @@ Frontend installation is available when the server directly serves a versioned w
 | `GET` | `/api/admin/backup` | Export a portable JSON backup of database state and stable library identities. |
 | `POST` | `/api/admin/backup` | Restore the exported JSON body, up to 256 MiB. Replaces server-owned state after validating the format and creating a safety backup. |
 
-The archive includes accounts, permissions, progress, per-book settings, reading history, metadata, work links, and Libation records. It excludes audio, companion and cover files, generated sync maps, sync queue/schedule files, import credentials, and `server.config`; back up those separately. Restoring does not revive sessions from the archive. The requesting owner's live session is retained only when its user ID exists in the restored accounts; other clients must sign in again. The response reports `safetyBackup`, counts, `sessionRetained`, and any warning. See [Backups](deployment.md#backups) for the complete workflow.
+The archive includes accounts, permissions, progress, per-book settings, saved clips, reading history, metadata, work links, and Libation records. `data.clips` is omitted when no clips exist, so such archives still restore on servers from before clips. It excludes audio, companion and cover files, generated sync maps, sync queue/schedule files, import credentials, and `server.config`; back up those separately. Restoring does not revive sessions from the archive. The requesting owner's live session is retained only when its user ID exists in the restored accounts; other clients must sign in again. The response reports `safetyBackup`, counts, `sessionRetained`, and any warning. See [Backups](deployment.md#backups) for the complete workflow.
 
 #### Account settings
 
