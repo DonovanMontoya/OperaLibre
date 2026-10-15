@@ -254,9 +254,10 @@ fn primary_language(code: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// Whether two language tags name the same language. EPUBs may use
-/// three-letter codes where the recognizer reports two, as `eng` for `en`.
-pub(crate) fn same_language(a: &str, b: &str) -> bool {
+/// A language tag's primary language, as the two-letter code the recognizer
+/// reports. EPUBs may use three-letter codes, as `eng` for `en`, and the
+/// recognizer rejects the bibliographic ones such as `fre` and `ger`.
+pub(crate) fn two_letter_language(code: &str) -> String {
     const THREE_LETTER: [(&str, &str); 22] = [
         ("eng", "en"),
         ("nld", "nl"),
@@ -281,14 +282,16 @@ pub(crate) fn same_language(a: &str, b: &str) -> bool {
         ("tur", "tr"),
         ("ukr", "uk"),
     ];
-    let two_letter = |code: &str| {
-        let code = primary_language(code);
-        THREE_LETTER
-            .iter()
-            .find(|(three, _)| *three == code)
-            .map_or(code, |(_, two)| two.to_string())
-    };
-    two_letter(a) == two_letter(b)
+    let code = primary_language(code);
+    THREE_LETTER
+        .iter()
+        .find(|(three, _)| *three == code)
+        .map_or(code, |(_, two)| two.to_string())
+}
+
+/// Whether two language tags name the same language.
+pub(crate) fn same_language(a: &str, b: &str) -> bool {
+    two_letter_language(a) == two_letter_language(b)
 }
 
 /// Says why a Poor or Failed chapter went wrong, or which automatic fix a

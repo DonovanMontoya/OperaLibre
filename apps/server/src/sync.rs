@@ -2252,10 +2252,8 @@ struct RecognitionSettings {
 impl RecognitionSettings {
     fn for_language(language: Option<&str>) -> Self {
         let code = language
-            .and_then(|value| value.split(['-', '_']).next())
-            .map(|value| value.trim().to_ascii_lowercase())
-            .filter(|value| !value.is_empty())
-            .map(|value| if value == "eng" { "en".into() } else { value });
+            .map(sync_report::two_letter_language)
+            .filter(|value| !value.is_empty());
         let english = code.as_deref() == Some("en");
         Self {
             model: if english { "tiny.en" } else { "tiny" },
@@ -3716,6 +3714,29 @@ mod tests {
             state.jobs.read().await[&id].cause,
             Some(sync_report::Cause::EditionMismatch)
         );
+    }
+
+    #[test]
+    fn recognition_language_is_a_code_the_recognizer_accepts() {
+        // Echogarden rejects bibliographic codes such as `ger`, failing the
+        // book, and only a two-letter `en` picks the English models.
+        for (label, language) in [
+            ("ger", "de"),
+            ("fre", "fr"),
+            ("fra", "fr"),
+            ("fr-FR", "fr"),
+            ("dut", "nl"),
+            ("eng", "en"),
+            ("haw", "haw"),
+        ] {
+            let recognition = RecognitionSettings::for_language(Some(label));
+            assert_eq!(recognition.language.as_deref(), Some(language), "{label}");
+        }
+        assert_eq!(
+            RecognitionSettings::for_language(Some("eng")).model,
+            "tiny.en"
+        );
+        assert_eq!(RecognitionSettings::for_language(Some(" ")).language, None);
     }
 
     #[cfg(unix)]
