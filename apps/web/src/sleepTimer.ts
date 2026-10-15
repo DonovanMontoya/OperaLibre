@@ -7,7 +7,7 @@
  * should find 22 waiting the next night rather than typing it again.
  */
 
-export const SLEEP_TIMER_PRESETS: readonly number[] = [5, 15, 30, 45, 60];
+const SLEEP_TIMER_PRESETS: readonly number[] = [5, 15, 30, 45, 60];
 export const SLEEP_TIMER_MIN_MINUTES = 1;
 export const SLEEP_TIMER_MAX_MINUTES = 600;
 /** Enough to keep a listener's habits without turning the menu into a list. */

@@ -15,7 +15,7 @@ export function offlineCompanions(book: Pick<Book, "companions" | "readingFile">
   return [...companions, { ...book.readingFile, kind: "book", sizeBytes: 0 }];
 }
 
-export function hasSentenceTimings(map: SyncMap | null) {
+function hasSentenceTimings(map: SyncMap | null) {
   return !!map && (map.precision ?? "sentence") === "sentence"
     && Array.isArray(map.fragments) && map.fragments.length > 0;
 }
