@@ -426,13 +426,11 @@ pub(crate) async fn start_libation_account_login(
         let profile = find_libation_profile(&state, id)
             .await
             .ok_or(ApiError::not_found("Audible account not found."))?;
-        let listed = run_libation(
-            &profile.config,
-            vec!["list-accounts".to_string(), "--bare".to_string()],
-        )
-        .await
-        .map_err(ApiError::from)?;
-        let accounts = parse_libation_accounts(&String::from_utf8_lossy(&listed.stdout));
+        let accounts = match list_libation_accounts(&profile.config).await {
+            Ok(accounts) => accounts,
+            Err(LibationAccountListError::Run(error)) => return Err(ApiError::from(error)),
+            Err(error) => return Err(ApiError::bad_gateway(error.to_string())),
+        };
         if !accounts.iter().any(|account| {
             account.id == id
                 && account.account_id.eq_ignore_ascii_case(account_id)
@@ -447,24 +445,15 @@ pub(crate) async fn start_libation_account_login(
     } else {
         None
     };
-    if payload.profile_id.is_none() {
-        let listed = run_libation(
-            &state.libation_config,
-            vec!["list-accounts".to_string(), "--bare".to_string()],
-        )
-        .await;
-        if let Ok(output) = listed
-            && output.status.success()
-            && parse_libation_accounts(&String::from_utf8_lossy(&output.stdout))
-                .iter()
-                .any(|account| {
-                    account.account_id.eq_ignore_ascii_case(account_id) && account.locale == locale
-                })
-        {
-            return Err(ApiError::conflict(
-                "That account is already connected in Libation. Use Reconnect on its existing entry.",
-            ));
-        }
+    if payload.profile_id.is_none()
+        && let Ok(accounts) = list_libation_accounts(&state.libation_config).await
+        && accounts.iter().any(|account| {
+            account.account_id.eq_ignore_ascii_case(account_id) && account.locale == locale
+        })
+    {
+        return Err(ApiError::conflict(
+            "That account is already connected in Libation. Use Reconnect on its existing entry.",
+        ));
     }
     let created_account = payload.profile_id.is_none();
     let added_by = auth.username.clone();
@@ -1489,14 +1478,8 @@ pub(crate) async fn list_libation_books(
             let mut labels = HashMap::new();
             if profile.managed {
                 labels.insert(profile.id.clone(), profile.name.clone());
-            } else if let Ok(output) = run_libation(
-                &profile.config,
-                vec!["list-accounts".to_string(), "--bare".to_string()],
-            )
-            .await
-                && output.status.success()
-            {
-                for account in parse_libation_accounts(&String::from_utf8_lossy(&output.stdout)) {
+            } else if let Ok(accounts) = list_libation_accounts(&profile.config).await {
+                for account in accounts {
                     labels.insert(account.id, account.name.unwrap_or(account.account_id));
                 }
             }
@@ -2001,17 +1984,9 @@ pub(crate) async fn scan_libation_profile(profile: &LibationProfile) -> Vec<Liba
             ownership: None,
         }];
     }
-    let accounts = match run_libation(
-        &profile.config,
-        vec!["list-accounts".to_string(), "--bare".to_string()],
-    )
-    .await
-    {
-        Ok(output) if output.status.success() => {
-            parse_libation_accounts(&String::from_utf8_lossy(&output.stdout))
-        }
-        _ => Vec::new(),
-    };
+    let accounts = list_libation_accounts(&profile.config)
+        .await
+        .unwrap_or_default();
     // `scan <id>` covers every marketplace an account is signed into, while
     // `list-accounts` prints one row per marketplace. Scan each account and
     // capture its export before the next scan reassigns any shared titles.
@@ -2170,15 +2145,13 @@ async fn record_selected_legacy_ownership(
     account_id: &str,
     asin: &str,
 ) -> anyhow::Result<()> {
-    let listed = run_libation(
-        &profile.config,
-        vec!["list-accounts".to_string(), "--bare".to_string()],
-    )
-    .await?;
-    if !listed.status.success() {
-        anyhow::bail!("Could not list Audible accounts after scanning.");
-    }
-    let accounts = parse_libation_accounts(&String::from_utf8_lossy(&listed.stdout));
+    let accounts = match list_libation_accounts(&profile.config).await {
+        Ok(accounts) => accounts,
+        Err(LibationAccountListError::Run(error)) => return Err(error),
+        Err(LibationAccountListError::Failed(_)) => {
+            anyhow::bail!("Could not list Audible accounts after scanning.")
+        }
+    };
     let ownership = capture_legacy_ownership(profile, account_id, &accounts).await?;
     if ownership.is_empty() {
         anyhow::bail!("Could not identify the selected Audible account.");
@@ -2399,15 +2372,7 @@ pub(crate) async fn liberate_libation_book(
     Extension(auth): Extension<AuthUser>,
     Path(asin): Path<String>,
 ) -> Result<Json<JobCreated>, ApiError> {
-    let asin = normalize_asin(&asin)
-        .ok_or_else(|| ApiError::bad_request("Invalid Audible product id."))?;
-    if auth.libation_access != LibationAccess::Direct {
-        return Err(ApiError::forbidden(
-            "This account must request approval for Libation downloads.",
-        ));
-    }
-    let grant_to_user = (!auth.is_admin).then_some(auth.id);
-    start_libation_download(&state, None, asin, grant_to_user).await
+    liberate_book_directly(&state, auth, None, &asin).await
 }
 
 pub(crate) async fn liberate_profile_libation_book(
@@ -2415,15 +2380,24 @@ pub(crate) async fn liberate_profile_libation_book(
     Extension(auth): Extension<AuthUser>,
     Path((profile_id, asin)): Path<(String, String)>,
 ) -> Result<Json<JobCreated>, ApiError> {
-    let asin = normalize_asin(&asin)
-        .ok_or_else(|| ApiError::bad_request("Invalid Audible product id."))?;
+    liberate_book_directly(&state, auth, Some(profile_id), &asin).await
+}
+
+async fn liberate_book_directly(
+    state: &AppState,
+    auth: AuthUser,
+    profile_id: Option<String>,
+    asin: &str,
+) -> Result<Json<JobCreated>, ApiError> {
+    let asin =
+        normalize_asin(asin).ok_or_else(|| ApiError::bad_request("Invalid Audible product id."))?;
     if auth.libation_access != LibationAccess::Direct {
         return Err(ApiError::forbidden(
             "This account must request approval for Libation downloads.",
         ));
     }
     let grant_to_user = (!auth.is_admin).then_some(auth.id);
-    start_libation_download(&state, Some(profile_id), asin, grant_to_user).await
+    start_libation_download(state, profile_id, asin, grant_to_user).await
 }
 
 /// The catalogue book carrying `asin`, compared case-insensitively.
@@ -2449,16 +2423,9 @@ async fn resolve_legacy_download_profile(
     if profile.id != "legacy" {
         return Ok(profile);
     }
-    let output = run_libation(
-        &profile.config,
-        vec!["list-accounts".to_string(), "--bare".to_string()],
-    )
-    .await
-    .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
-    if !output.status.success() {
-        return Err(ApiError::bad_gateway(command_output_text(&output)));
-    }
-    let accounts = parse_libation_accounts(&String::from_utf8_lossy(&output.stdout));
+    let accounts = list_libation_accounts(&profile.config)
+        .await
+        .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
     let Some(first) = accounts.first() else {
         return Ok(profile);
     };
@@ -3051,22 +3018,15 @@ pub(crate) async fn start_all_libation_downloads(
                 // Libation has no account selector for `liberate`. In a shared
                 // database, scan and download each account's ASINs before
                 // scanning the next account changes their recorded owner.
-                let listed = run_libation(
-                    &profile.config,
-                    vec!["list-accounts".to_string(), "--bare".to_string()],
-                )
-                .await;
-                let accounts = match listed {
-                    Ok(output) if output.status.success() => {
-                        parse_libation_accounts(&String::from_utf8_lossy(&output.stdout))
-                    }
-                    Ok(output) => {
+                let accounts = match list_libation_accounts(&profile.config).await {
+                    Ok(accounts) => accounts,
+                    Err(LibationAccountListError::Failed(output)) => {
                         exit_code = output.status.code();
                         append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
                         failures.push(format!("Could not list {} accounts", profile.name));
                         continue;
                     }
-                    Err(error) => {
+                    Err(LibationAccountListError::Run(error)) => {
                         exit_code = None;
                         failures.push(format!("Could not list {} accounts: {error}", profile.name));
                         continue;
@@ -3661,16 +3621,9 @@ pub(crate) async fn find_libation_profile(
         });
     }
     if profile_id.starts_with("legacy-") {
-        let output = run_libation(
-            &state.libation_config,
-            vec!["list-accounts".to_string(), "--bare".to_string()],
-        )
-        .await
-        .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let account = parse_libation_accounts(&String::from_utf8_lossy(&output.stdout))
+        let account = list_libation_accounts(&state.libation_config)
+            .await
+            .ok()?
             .into_iter()
             .find(|account| account.id == profile_id)?;
         return Some(LibationProfile {
@@ -3780,24 +3733,12 @@ pub(crate) async fn read_libation_status(state: &AppState, viewer: &AuthUser) ->
         }
     } else {
         if config.libation_files_dir.is_some() || managed_snapshot.is_empty() {
-            match run_libation(
-                &config,
-                vec!["list-accounts".to_string(), "--bare".to_string()],
-            )
-            .await
-            {
-                Ok(output) if output.status.success() => {
-                    accounts.extend(parse_libation_accounts(&String::from_utf8_lossy(
-                        &output.stdout,
-                    )));
-                }
-                Ok(output) if accounts.is_empty() => {
-                    accounts.push(legacy_probe_failure(command_output_text(&output)));
-                }
+            match list_libation_accounts(&config).await {
+                Ok(listed) => accounts.extend(listed),
                 Err(error) if accounts.is_empty() => {
                     accounts.push(legacy_probe_failure(error.to_string()));
                 }
-                _ => {}
+                Err(_) => {}
             }
         }
 
@@ -3879,48 +3820,38 @@ async fn probe_managed_accounts(
     let mut changed_health = HashMap::<String, (bool, String, Option<String>)>::new();
     for managed in managed_snapshot {
         let profile = managed_libation_profile(state, managed);
-        let result = run_libation(
-            &profile.config,
-            vec!["list-accounts".to_string(), "--bare".to_string()],
-        )
-        .await;
-        let (authenticated, connection_state, error) = match result {
-            Ok(output) if output.status.success() => {
-                let listed = parse_libation_accounts(&String::from_utf8_lossy(&output.stdout));
-                let authenticated = listed.iter().any(|account| {
-                    account.account_id.eq_ignore_ascii_case(&managed.account_id)
-                        && account.locale.eq_ignore_ascii_case(&managed.locale)
-                        && account.authenticated
-                });
-                let has_scan_error = authenticated
-                    && managed.connection_state == "error"
-                    && managed.last_error.is_some();
-                (
-                    authenticated && !has_scan_error,
-                    if has_scan_error {
-                        "error"
-                    } else if authenticated {
-                        "connected"
-                    } else {
-                        "needs_sign_in"
-                    }
-                    .to_string(),
-                    if has_scan_error {
-                        managed.last_error.clone()
-                    } else {
-                        (!authenticated).then(|| {
-                            "This Audible account needs to be signed in again.".to_string()
-                        })
-                    },
-                )
-            }
-            Ok(output) => (
-                false,
-                "error".to_string(),
-                Some(command_output_text(&output)),
-            ),
-            Err(error) => (false, "error".to_string(), Some(error.to_string())),
-        };
+        let (authenticated, connection_state, error) =
+            match list_libation_accounts(&profile.config).await {
+                Ok(listed) => {
+                    let authenticated = listed.iter().any(|account| {
+                        account.account_id.eq_ignore_ascii_case(&managed.account_id)
+                            && account.locale.eq_ignore_ascii_case(&managed.locale)
+                            && account.authenticated
+                    });
+                    let has_scan_error = authenticated
+                        && managed.connection_state == "error"
+                        && managed.last_error.is_some();
+                    (
+                        authenticated && !has_scan_error,
+                        if has_scan_error {
+                            "error"
+                        } else if authenticated {
+                            "connected"
+                        } else {
+                            "needs_sign_in"
+                        }
+                        .to_string(),
+                        if has_scan_error {
+                            managed.last_error.clone()
+                        } else {
+                            (!authenticated).then(|| {
+                                "This Audible account needs to be signed in again.".to_string()
+                            })
+                        },
+                    )
+                }
+                Err(error) => (false, "error".to_string(), Some(error.to_string())),
+            };
         // Only a real transition is written back; a status poll that found
         // nothing new must not rewrite the store.
         if authenticated != managed.authenticated
@@ -3983,6 +3914,39 @@ fn legacy_probe_failure(error: String) -> LibationAccount {
         added_by: None,
         added_at: None,
     }
+}
+
+/// Why `list-accounts` produced no rows: the CLI could not be started, or it
+/// exited unsuccessfully with this output. Displays as the message to show.
+pub(crate) enum LibationAccountListError {
+    Run(anyhow::Error),
+    Failed(std::process::Output),
+}
+
+impl std::fmt::Display for LibationAccountListError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Run(error) => write!(f, "{error}"),
+            Self::Failed(output) => f.write_str(&command_output_text(output)),
+        }
+    }
+}
+
+pub(crate) async fn list_libation_accounts(
+    config: &LibationConfig,
+) -> Result<Vec<LibationAccount>, LibationAccountListError> {
+    let output = run_libation(
+        config,
+        vec!["list-accounts".to_string(), "--bare".to_string()],
+    )
+    .await
+    .map_err(LibationAccountListError::Run)?;
+    if !output.status.success() {
+        return Err(LibationAccountListError::Failed(output));
+    }
+    Ok(parse_libation_accounts(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
 }
 
 pub(crate) fn parse_libation_accounts(output: &str) -> Vec<LibationAccount> {
