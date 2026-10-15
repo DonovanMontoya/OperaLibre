@@ -381,14 +381,11 @@ export function useClips({
       return;
     }
     if (inside) return;
-    const ranOut = bookPosition >= audition.endSeconds && bookPosition <= audition.endSeconds + 5;
-    // Anywhere else means the listener moved on their own; that is now their
-    // place, and pulling them back would be the surprise.
-    if (ranOut) finishAuditionRef.current(audition);
-    else {
-      clipPreviewBookIdRef.current = null;
-      setAudition(null);
-    }
+    // A seek the listener chose already released the preview above, so any
+    // other report outside the clip means it ran out. That report can land
+    // far past the end when a locked phone or suspended web view kept playing;
+    // the place to keep is still the one the listener left.
+    finishAuditionRef.current(audition);
   }, [audition, bookId, bookPosition, clipPreviewBookIdRef]);
 
   const stopAuditionRef = useRef(stopAudition);
