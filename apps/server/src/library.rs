@@ -2661,7 +2661,7 @@ pub(crate) fn probe_sync_map(path: &FsPath, generated: bool) -> Option<ProbedSyn
         identity: sync_report::MapIdentity {
             map_generated_at: probe.generated_at,
             map_size: reader.size,
-            map_digest: Some(hex_digest(reader.digest.finalize())),
+            map_digest: hex_digest(reader.digest.finalize()),
         },
     })
 }

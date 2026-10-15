@@ -1,5 +1,6 @@
 import type { AuthUser, Book, Chapter, Progress, Track } from "./types";
 import { ApiError } from "./apiError.ts";
+import { fetchWithTimeout } from "./fetchWithTimeout.ts";
 import { summarizeBookProgress } from "./reliability.ts";
 import { readServerId } from "./serverIdentity.ts";
 
@@ -8,26 +9,6 @@ const CLIENT_VERSION = "0.1.0";
 const DEVICE_ID_STORAGE_KEY = "operalibre.jellyfinDeviceId";
 const TICKS_PER_SECOND = 10_000_000;
 const REQUEST_TIMEOUT_MS = 8_000;
-
-/** Fetch and read the response under one deadline, body included. */
-async function fetchWithTimeout<T>(
-  url: string,
-  init: RequestInit | undefined,
-  read: (response: Response) => Promise<T>
-): Promise<T> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  const abort = () => controller.abort();
-  if (init?.signal?.aborted) controller.abort();
-  init?.signal?.addEventListener("abort", abort, { once: true });
-  try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
-    return await read(response);
-  } finally {
-    window.clearTimeout(timer);
-    init?.signal?.removeEventListener("abort", abort);
-  }
-}
 
 type JellyfinUser = {
   Id?: string;
@@ -149,7 +130,7 @@ async function jellyfinRequest<T>(
       return undefined as T;
     }
     return await response.json() as T;
-  });
+  }, REQUEST_TIMEOUT_MS);
 }
 
 function seconds(ticks: number | null | undefined) {
@@ -415,7 +396,7 @@ export async function pingJellyfin(baseUrl: string) {
       throw new Error(`Jellyfin responded ${response.status}.`);
     }
     return readServerId(await response.json().catch(() => null));
-  });
+  }, REQUEST_TIMEOUT_MS);
 }
 
 export async function loginToJellyfin(baseUrl: string, username: string, password: string) {

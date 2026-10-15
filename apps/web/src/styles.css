@@ -1356,12 +1356,6 @@ html:not(.native-app) .web-shell > .player-pane {
   color: var(--paper);
 }
 
-.library-pane h1 .amp {
-  font-family: "Instrument Serif", serif;
-  font-style: italic;
-  color: var(--gold-soft);
-}
-
 .icon-button {
   width: 42px;
   height: 42px;
@@ -2999,11 +2993,6 @@ img.large-cover {
   overflow: hidden;
   background: var(--reader-surface);
   transition: background 0.25s ease;
-}
-
-.epub-reader.fullscreen .epub-stage {
-  height: auto;
-  min-height: 0;
 }
 
 /* A page turned by hand (readerPageTurn.ts). The page is paper: it peels
@@ -8735,11 +8724,6 @@ html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,
   html.native-app .word-key.wide { max-width: 96px; font-size: .8rem; }
 }
 
-/* Room for the ribbon when it's showing over the shelf list. */
-html.native-app .native-shell.tab-shelf > .library-pane {
-  padding-bottom: calc(var(--tabs-h) + 92px);
-}
-
 /* --- Press feedback instead of sticky hover states --- */
 html.native-app .mini-cover-button:hover,
 html.native-app .mini-actions button:hover,
@@ -12060,7 +12044,6 @@ html.native-app .profile-back {
 .admin-sync-job-state { font-size: 0.72rem; color: var(--ink-faded); }
 .admin-sync-job .sync-progress { max-width: none; }
 .admin-sync-job p { overflow-wrap: anywhere; }
-.admin-sync-job .admin-sync-job-error { color: var(--sync-fail); }
 
 .admin-software-update {
   display: grid;
@@ -14119,10 +14102,6 @@ html.native-app .recent-row {
     padding-bottom: calc(var(--tabs-h) + 10px);
   }
 
-  html.native-app .native-shell.has-mini-player .games-shell {
-    padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 14px);
-  }
-
   html.native-app .games-head { grid-column: 1; grid-row: 1; }
   html.native-app .games-head h1 { margin: 0; font-size: clamp(1.28rem, 3.2vw, 1.7rem); }
   html.native-app .games-head p { display: none; }
@@ -14182,16 +14161,6 @@ html.native-app .recent-row {
   html.native-app .match-record { align-self: center; margin: 0; font-size: .52rem; }
   html.native-app .match-record strong { font-size: .74rem; }
   html.native-app .match-score { align-self: end; margin: 0; font-size: .56rem; }
-  html.native-app .match-score strong { font-size: .92rem; }
-  html.native-app .match-board-frame { grid-column: 1; grid-row: 1; place-items: center; }
-  html.native-app .match-board,
-  html.native-app .native-shell.has-mini-player .match-board {
-    width: min(100%, max(112px, calc(var(--native-viewport-height) - var(--tabs-h) - var(--mini-player-height) - 120px)));
-  }
-  @supports (width: 1cqh) {
-    html.native-app .match-board,
-    html.native-app .native-shell.has-mini-player .match-board { width: min(100%, 100cqh); }
-  }
   html.native-app .match-game .game-message { grid-column: 1 / -1; grid-row: 2; margin: 3px 0 0; font-size: .66rem; }
 
   /* Word Grid follows the same split: board left, keyboard right. Keeping the
@@ -14207,19 +14176,6 @@ html.native-app .recent-row {
   html.native-app .word-game .game-title-row h2 { font-size: .95rem; }
   html.native-app .word-game .game-title-row .section-label { display: none; }
   html.native-app .word-game .game-reset { width: 30px; height: 30px; }
-  html.native-app .word-board-frame { grid-column: 1; grid-row: 2 / 4; }
-  html.native-app .word-board,
-  html.native-app .native-shell.has-mini-player .word-board {
-    width: min(100%, max(100px, calc((var(--native-viewport-height) - var(--tabs-h) - var(--mini-player-height) - 112px) * .82)));
-  }
-  @supports (width: 1cqh) {
-    html.native-app .word-board,
-    html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 82cqh); }
-  }
-  html.native-app .word-keys { grid-column: 2; grid-row: 2; align-self: center; margin: 0; gap: 4px; }
-  html.native-app .word-keys-row { gap: 3px; }
-  html.native-app .word-key { max-width: 32px; min-height: 34px; border-radius: 7px; font-size: .68rem; }
-  html.native-app .word-key.wide { max-width: 48px; font-size: .54rem; }
   html.native-app .word-game .game-message { grid-column: 2; grid-row: 3; margin: 3px 0 0; font-size: .66rem; }
 
   html.native-app .native-shell:is(.tab-shelf, .tab-games) .mini-player {

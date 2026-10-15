@@ -3,14 +3,12 @@ import Capacitor
 
 private enum DownloadError: LocalizedError {
     case invalidFiles
-    case invalidSource
     case invalidDestination
     case jobNotFound
 
     var errorDescription: String? {
         switch self {
         case .invalidFiles: return "At least one file is required."
-        case .invalidSource: return "A download source is not permitted."
         case .invalidDestination: return "A download destination is invalid."
         case .jobNotFound: return "The background download was not found."
         }

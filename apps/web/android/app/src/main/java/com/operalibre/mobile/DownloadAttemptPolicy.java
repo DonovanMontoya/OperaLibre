@@ -7,7 +7,8 @@ final class DownloadAttemptPolicy {
     private DownloadAttemptPolicy() {}
 
     static boolean sameAttempt(String stored, String worker) {
-        // Empty tokens are only for jobs queued by older app versions.
+        // Jobs queued before attempt IDs existed read as empty on both sides,
+        // so they still match their own worker but never a newer attempt.
         return stored.equals(worker);
     }
 
