@@ -716,9 +716,7 @@ pub(crate) async fn enqueue_sync_batch(
     let mut created = Vec::with_capacity(book_ids.len());
     let mut active_books: HashSet<String> = jobs
         .values()
-        .filter(|job| {
-            job.kind == SYNC_GENERATE_JOB_KIND && (is_active_job(job) || job.status == "paused")
-        })
+        .filter(|job| job.kind == SYNC_GENERATE_JOB_KIND && is_unfinished_job(job))
         .filter_map(|job| job.target_id.clone())
         .collect();
     let mut timestamp = next_job_timestamp(&jobs);
@@ -3515,19 +3513,20 @@ async fn run_alignment_cli(
         .map_err(|_| anyhow::anyhow!("{what} exceeded the two-hour command timeout."))?
         .map_err(|error| anyhow::anyhow!("Failed to run alignment CLI: {error}"))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail = stderr
-            .lines()
-            .rev()
-            .take(12)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
-        anyhow::bail!("{what} failed with status {}:\n{}", output.status, tail);
+        anyhow::bail!(
+            "{what} failed with status {}:\n{}",
+            output.status,
+            stderr_tail(&output)
+        );
     }
     Ok(())
+}
+
+/// The last 12 lines of a failed command's stderr, for its error message.
+fn stderr_tail(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines = stderr.lines().collect::<Vec<_>>();
+    lines[lines.len().saturating_sub(12)..].join("\n")
 }
 
 async fn extract_alignment_audio(
@@ -3590,20 +3589,10 @@ async fn extract_alignment_audio_with_timeout(
         })?
         .map_err(|error| anyhow::anyhow!("Failed to run ffmpeg for chapter audio: {error}"))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail = stderr
-            .lines()
-            .rev()
-            .take(12)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
         anyhow::bail!(
             "ffmpeg failed to extract chapter audio with status {}:\n{}",
             output.status,
-            tail
+            stderr_tail(&output)
         );
     }
     Ok(())

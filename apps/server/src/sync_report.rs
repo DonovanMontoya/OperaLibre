@@ -1040,7 +1040,7 @@ async fn backfill_reports(state: &AppState) {
         let busy = state.jobs.read().await.values().any(|job| {
             job.kind == SYNC_GENERATE_JOB_KIND
                 && job.target_id.as_deref() == Some(book_id.as_str())
-                && (is_active_job(job) || job.status == "paused")
+                && is_unfinished_job(job)
         });
         if busy {
             continue;
@@ -1089,7 +1089,7 @@ pub(crate) async fn publish_backfill(
     if jobs.values().any(|job| {
         job.kind == SYNC_GENERATE_JOB_KIND
             && job.target_id.as_deref() == Some(book_id)
-            && (is_active_job(job) || job.status == "paused")
+            && is_unfinished_job(job)
     }) {
         return Ok(());
     }
