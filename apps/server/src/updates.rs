@@ -282,7 +282,6 @@ impl UpdateManager {
         let Some(_guard) = InstallGuard::acquire(&self.installing) else {
             bail!("Wait for the current update to finish before changing channels.");
         };
-        fs::create_dir_all(&self.data_dir).await?;
         crate::write_json_atomic(
             &self.data_dir.join("update-channel.json"),
             &ChannelSettings { channel },
@@ -629,7 +628,6 @@ impl UpdateManager {
         &self,
         settings: &ExperimentalFeatureSettings,
     ) -> anyhow::Result<()> {
-        fs::create_dir_all(&self.data_dir).await?;
         crate::write_json_atomic(&self.data_dir.join("experimental-features.json"), settings)
             .await
             .map_err(|error| anyhow!("Could not save experimental feature settings: {error:?}"))
@@ -1336,24 +1334,7 @@ async fn validate_sync_addon_package(
     {
         bail!("The sync add-on package metadata does not match this server or release.");
     }
-    safe_addon_member(root, &metadata.cli)?;
-    if let Some(ffmpeg) = &metadata.ffmpeg {
-        safe_addon_member(root, ffmpeg)?;
-    }
-    validate_installed_sync_addon(
-        root,
-        SyncAddonPackageMetadata {
-            schema_version: metadata.schema_version,
-            id: metadata.id.clone(),
-            version: metadata.version.clone(),
-            platform: metadata.platform.clone(),
-            protocol_version: metadata.protocol_version,
-            cli: metadata.cli.clone(),
-            cli_args: metadata.cli_args.clone(),
-            ffmpeg: metadata.ffmpeg.clone(),
-        },
-    )?;
-    Ok(metadata)
+    Ok(validate_installed_sync_addon(root, metadata)?.metadata)
 }
 
 async fn install_frontend_files(
@@ -1361,56 +1342,86 @@ async fn install_frontend_files(
     destination: PathBuf,
     data_dir: PathBuf,
 ) -> anyhow::Result<()> {
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("Could not create a frontend update timestamp")?
-            .as_millis();
-        let parent = destination
-            .parent()
-            .ok_or_else(|| anyhow!("The configured web frontend has no parent folder."))?;
-        let staged = parent.join(format!(
-            ".operalibre-frontend-staged-{}-{timestamp}",
-            std::process::id()
-        ));
-        let rollback = parent.join(format!(
-            ".operalibre-frontend-rollback-{}-{timestamp}",
-            std::process::id()
-        ));
-        let backup = data_dir
-            .join("update-backups")
-            .join(format!("{timestamp}-frontend"))
-            .join("web");
-
-        copy_directory(&destination, &backup)
-            .context("Could not create the frontend rollback copy")?;
-        if let Err(error) = copy_directory(&source, &staged) {
-            let _ = std::fs::remove_dir_all(&staged);
-            return Err(error).context("Could not stage the new web frontend");
-        }
-        std::fs::rename(&destination, &rollback)
-            .context("Could not move the installed web frontend aside")?;
-        if let Err(error) = std::fs::rename(&staged, &destination) {
-            let rollback_result = std::fs::rename(&rollback, &destination);
-            return match rollback_result {
-                Ok(()) => Err(error).context(
-                    "Could not install the web frontend; the previous version was restored",
-                ),
-                Err(rollback_error) => Err(anyhow!(
-                    "Could not install the web frontend ({error}) and could not restore the previous version ({rollback_error}). The rollback copy remains at {}.",
-                    backup.display()
-                )),
-            };
-        }
-        if let Err(error) = std::fs::remove_dir_all(&rollback) {
-            tracing::warn!(
-                "could not remove temporary frontend rollback folder {}: {error}",
-                rollback.display()
-            );
-        }
-        Ok(())
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("Could not create a frontend update timestamp")?
+        .as_millis();
+    let backup = data_dir
+        .join("update-backups")
+        .join(format!("{timestamp}-frontend"))
+        .join("web");
+    tokio::task::spawn_blocking(move || {
+        swap_in_directory(
+            &source,
+            &destination,
+            &backup,
+            timestamp,
+            "web frontend",
+            ".operalibre-frontend",
+        )
     })
-    .await??;
+    .await?
+}
+
+/// Copies `source` beside `destination` and renames it into place. An
+/// existing `destination` is first copied to `backup`, then moved aside and
+/// moved back if the new copy cannot be renamed in. `name` words the errors
+/// and `prefix` names the temporary sibling folders.
+fn swap_in_directory(
+    source: &Path,
+    destination: &Path,
+    backup: &Path,
+    timestamp: u128,
+    name: &str,
+    prefix: &str,
+) -> anyhow::Result<()> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| anyhow!("The {name} folder has no parent."))?;
+    std::fs::create_dir_all(parent)?;
+    let pid = std::process::id();
+    let staged = parent.join(format!("{prefix}-staged-{pid}-{timestamp}"));
+    let rollback = parent.join(format!("{prefix}-rollback-{pid}-{timestamp}"));
+    if let Err(error) = copy_directory(source, &staged) {
+        let _ = std::fs::remove_dir_all(&staged);
+        return Err(error).with_context(|| format!("Could not stage the new {name}"));
+    }
+    if destination.exists() {
+        let moved_aside = copy_directory(destination, backup)
+            .with_context(|| format!("Could not create the {name} rollback copy"))
+            .and_then(|()| {
+                std::fs::rename(destination, &rollback)
+                    .with_context(|| format!("Could not move the installed {name} aside"))
+            });
+        if let Err(error) = moved_aside {
+            let _ = std::fs::remove_dir_all(&staged);
+            return Err(error);
+        }
+    }
+    if let Err(error) = std::fs::rename(&staged, destination) {
+        let rollback_result = if rollback.exists() {
+            std::fs::rename(&rollback, destination)
+        } else {
+            Ok(())
+        };
+        return match rollback_result {
+            Ok(()) => Err(error).with_context(|| {
+                format!("Could not install the {name}; the previous version was restored")
+            }),
+            Err(rollback_error) => Err(anyhow!(
+                "Could not install the {name} ({error}) and could not restore the previous version ({rollback_error}). The rollback copy remains at {}.",
+                backup.display()
+            )),
+        };
+    }
+    if rollback.exists()
+        && let Err(error) = std::fs::remove_dir_all(&rollback)
+    {
+        tracing::warn!(
+            "could not remove temporary {name} rollback folder {}: {error}",
+            rollback.display()
+        );
+    }
     Ok(())
 }
 
@@ -1485,57 +1496,24 @@ async fn install_sync_addon_files(
     destination: PathBuf,
     data_dir: PathBuf,
 ) -> anyhow::Result<()> {
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("Could not create a sync add-on update timestamp")?
-            .as_millis();
-        let parent = destination
-            .parent()
-            .ok_or_else(|| anyhow!("The sync add-on folder has no parent."))?;
-        std::fs::create_dir_all(parent)?;
-        let staged = parent.join(format!(
-            ".readalong-sync-staged-{}-{timestamp}",
-            std::process::id()
-        ));
-        let rollback = parent.join(format!(
-            ".readalong-sync-rollback-{}-{timestamp}",
-            std::process::id()
-        ));
-        if let Err(error) = copy_directory(&source, &staged) {
-            let _ = std::fs::remove_dir_all(&staged);
-            return Err(error).context("Could not stage the sync add-on");
-        }
-        if destination.exists() {
-            let backup = data_dir
-                .join("update-backups")
-                .join(format!("{timestamp}-readalong-sync"));
-            copy_directory(&destination, &backup)
-                .context("Could not create the sync add-on rollback copy")?;
-            std::fs::rename(&destination, &rollback)
-                .context("Could not move the installed sync add-on aside")?;
-        }
-        if let Err(error) = std::fs::rename(&staged, &destination) {
-            let rollback_result = if rollback.exists() {
-                std::fs::rename(&rollback, &destination)
-            } else {
-                Ok(())
-            };
-            return match rollback_result {
-                Ok(()) => Err(error)
-                    .context("Could not install the sync add-on; the previous version was restored"),
-                Err(rollback_error) => Err(anyhow!(
-                    "Could not install the sync add-on ({error}) and could not restore the previous version ({rollback_error})."
-                )),
-            };
-        }
-        if rollback.exists() {
-            let _ = std::fs::remove_dir_all(rollback);
-        }
-        Ok(())
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("Could not create a sync add-on update timestamp")?
+        .as_millis();
+    let backup = data_dir
+        .join("update-backups")
+        .join(format!("{timestamp}-readalong-sync"));
+    tokio::task::spawn_blocking(move || {
+        swap_in_directory(
+            &source,
+            &destination,
+            &backup,
+            timestamp,
+            "sync add-on",
+            ".readalong-sync",
+        )
     })
-    .await??;
-    Ok(())
+    .await?
 }
 
 fn copy_directory(source: &Path, destination: &Path) -> anyhow::Result<()> {
@@ -1823,6 +1801,37 @@ mod tests {
             std::fs::read_to_string(data.join("sync/book.sync.json")).unwrap(),
             "map"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sync_runtime_that_cannot_be_backed_up_stays_installed_without_staging_debris() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let addons = root.path().join("addons");
+        let installed = addons.join("readalong-sync");
+        let data = root.path().join("data");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(source.join("runtime"), "new").unwrap();
+        std::fs::write(installed.join("runtime"), "old").unwrap();
+        // The backup copy refuses entries other than files and folders.
+        std::os::unix::fs::symlink("runtime", installed.join("link")).unwrap();
+
+        let error = super::install_sync_addon_files(source, installed.clone(), data)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("rollback copy"), "{error:#}");
+        assert_eq!(
+            std::fs::read_to_string(installed.join("runtime")).unwrap(),
+            "old"
+        );
+        let siblings = std::fs::read_dir(&addons)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(siblings, ["readalong-sync"]);
     }
 
     use super::{
