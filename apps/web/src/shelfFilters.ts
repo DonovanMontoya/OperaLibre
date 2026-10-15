@@ -68,7 +68,7 @@ export function shelfFacetKey(value: string) {
   return value.trim().toLowerCase();
 }
 
-export function shelfFacetValues(values: (string | null | undefined)[]): ShelfFacetValue[] {
+function shelfFacetValues(values: (string | null | undefined)[]): ShelfFacetValue[] {
   const seen = new Map<string, ShelfFacetValue>();
   for (const value of values) {
     const label = value?.trim();
@@ -114,18 +114,6 @@ export function bookReadingAvailability(book: Pick<Book, "readingFile" | "syncFi
 
 export function bookMatchesShelfReading(book: Pick<Book, "readingFile" | "syncFile">, reading: ShelfReadingFilter, sentenceFollowAvailable: boolean) {
   return reading === "all" || bookReadingAvailability(book, sentenceFollowAvailable) === reading;
-}
-
-/**
- * Recheck native files when the source of a device copy changes, while keeping
- * progress and metadata updates from repeatedly touching the filesystem.
- */
-export function shelfDownloadScanKey(books: Book[]) {
-  return JSON.stringify(books.map((book) => [
-    book.id,
-    book.deviceBookId ?? null,
-    book.tracks.map((track) => track.localFilePath ?? null)
-  ]));
 }
 
 /** Split once per shelf update rather than once per book in a large library. */

@@ -378,7 +378,7 @@ export function hasUserConfiguredServer(): boolean {
   return isDemoMode() || !!readStoredServerUrl();
 }
 
-export function setServerUrl(rawValue: string) {
+function setServerUrl(rawValue: string) {
   const value = Capacitor.isNativePlatform()
     ? requireSecurePublicServerAddress(rawValue)
     : normalizeServerAddress(rawValue);
