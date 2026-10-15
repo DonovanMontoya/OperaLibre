@@ -179,16 +179,6 @@ pub(crate) fn parse_byte_range(range: &str, file_size: u64) -> ByteRange {
     ByteRange::Satisfiable(start, end.map_or(last, |end| end.min(last)))
 }
 
-/// The satisfiable byte range, if there is exactly one. Serving code tells an
-/// ignorable header from an unsatisfiable range with [`parse_byte_range`].
-#[cfg(test)]
-pub(crate) fn parse_range(range: &str, file_size: u64) -> Option<(u64, u64)> {
-    match parse_byte_range(range, file_size) {
-        ByteRange::Satisfiable(start, end) => Some((start, end)),
-        ByteRange::Unsatisfiable | ByteRange::Unsupported => None,
-    }
-}
-
 pub(crate) fn natural_path_key(path: &FsPath) -> String {
     path.to_string_lossy().to_lowercase()
 }
