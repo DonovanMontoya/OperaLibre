@@ -1,6 +1,7 @@
 import { ArrowLeft, Headphones } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { getProfileStats, getServerStorageKey, isNetworkError, mediaUrl } from "./api";
+import { errorMessage } from "./formatting";
 import { Achievements } from "./Achievements";
 import { AvatarFace } from "./Avatar";
 import { readingStatus } from "./bookProgress";
@@ -131,7 +132,7 @@ export function ProfilePage({
         } else if (isNetworkError(err)) {
           setOfflineSource("device");
         } else {
-          setError(err instanceof Error ? err.message : "Could not load profile.");
+          setError(errorMessage(err, "Could not load profile."));
         }
       })
       .finally(() => {

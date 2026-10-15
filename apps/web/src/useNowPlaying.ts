@@ -1,7 +1,7 @@
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { mediaUrl } from "./api";
 import { getOfflineCoverUrl } from "./offline";
-import { trackOffsetSeconds } from "./formatting";
+import { errorMessage, trackOffsetSeconds } from "./formatting";
 import { updateNativeAudioNowPlaying } from "./nativeAudio";
 import type { Book, Track } from "./types";
 import type { ChapterSegment } from "./chapters";
@@ -88,7 +88,7 @@ export function useNowPlaying({
     };
     if (nativeAudio) {
       void updateNativeAudioNowPlaying(nowPlaying).catch((error) => {
-        setPlaybackError(error instanceof Error ? error.message : "Could not update iOS Now Playing.");
+        setPlaybackError(errorMessage(error, "Could not update iOS Now Playing."));
       });
       return;
     }
