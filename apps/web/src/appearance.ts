@@ -26,7 +26,7 @@ export function applyDarkMode(root: HTMLElement, enabled: boolean): void {
   root.classList.toggle("dark-mode", enabled);
 }
 
-function prefersDarkQuery(): MediaQueryList | null {
+export function prefersDarkQuery(): MediaQueryList | null {
   return typeof window.matchMedia === "function"
     ? window.matchMedia("(prefers-color-scheme: dark)")
     : null;
