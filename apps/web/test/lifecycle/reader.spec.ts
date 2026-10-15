@@ -52,15 +52,18 @@ test('a resize before the first page reports its location lays the page out agai
     Object.defineProperty(window, '__operalibreReader', {
       configurable: true,
       get: () => reader,
-      set(value: { rendition: { reportLocation(): unknown } }) {
+      set(value: { rendition: { reportLocation(): unknown; once(event: string, listener: () => void): void } }) {
         reader = value;
         const report = value.rendition.reportLocation.bind(value.rendition);
         let first = true;
         value.rendition.reportLocation = () => {
           if (!first) return report();
           first = false;
+          // Report only after epub.js has handled the narrower stage, and so
+          // after the reader's own resize handler has run.
+          const resized = new Promise<void>(resolve => value.rendition.once('resized', resolve));
           document.getElementById('root')!.style.width = '900px';
-          return new Promise(resolve => setTimeout(resolve, 500)).then(report);
+          return resized.then(report);
         };
       }
     });
