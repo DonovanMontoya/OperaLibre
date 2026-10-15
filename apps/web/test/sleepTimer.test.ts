@@ -10,15 +10,7 @@ import {
   sleepTimerChoices,
   writeCustomSleepTimers
 } from "../src/sleepTimer.ts";
-
-function memoryStorage(initialValue: string | null = null) {
-  const values = new Map<string, string>();
-  if (initialValue !== null) values.set(SLEEP_TIMER_STORAGE_KEY, initialValue);
-  return {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { values.set(key, value); }
-  };
-}
+import { memoryStorage } from "./memoryStorage.ts";
 
 test("custom durations are whole minutes inside the supported range", () => {
   assert.equal(normalizeSleepTimerMinutes("22"), 22);
@@ -79,8 +71,8 @@ test("remembered durations survive a round trip", () => {
 });
 
 test("corrupt stored durations fall back to the presets alone", () => {
-  assert.deepEqual(readCustomSleepTimers(memoryStorage(null)), []);
-  assert.deepEqual(readCustomSleepTimers(memoryStorage("not json")), []);
-  assert.deepEqual(readCustomSleepTimers(memoryStorage('{"minutes":22}')), []);
-  assert.deepEqual(readCustomSleepTimers(memoryStorage('[22,"nope",0,900,7]')), [22, 7]);
+  assert.deepEqual(readCustomSleepTimers(memoryStorage(SLEEP_TIMER_STORAGE_KEY, null)), []);
+  assert.deepEqual(readCustomSleepTimers(memoryStorage(SLEEP_TIMER_STORAGE_KEY, "not json")), []);
+  assert.deepEqual(readCustomSleepTimers(memoryStorage(SLEEP_TIMER_STORAGE_KEY, '{"minutes":22}')), []);
+  assert.deepEqual(readCustomSleepTimers(memoryStorage(SLEEP_TIMER_STORAGE_KEY, '[22,"nope",0,900,7]')), [22, 7]);
 });

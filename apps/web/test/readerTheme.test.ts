@@ -9,15 +9,7 @@ import {
   resolveReaderTheme,
   writeReaderThemeChoice
 } from "../src/readerTheme.ts";
-
-function memoryStorage(initialValue: string | null = null) {
-  const values = new Map<string, string>();
-  if (initialValue !== null) values.set(READER_THEME_STORAGE_KEY, initialValue);
-  return {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { values.set(key, value); }
-  };
-}
+import { memoryStorage } from "./memoryStorage.ts";
 
 function root(...classes: string[]) {
   const set = new Set(classes);
@@ -26,8 +18,8 @@ function root(...classes: string[]) {
 
 test("an install that never picked a look follows the app", () => {
   assert.equal(readReaderThemeChoice(memoryStorage()), "auto");
-  assert.equal(readReaderThemeChoice(memoryStorage("garbage")), "auto");
-  assert.equal(readReaderThemeChoice(memoryStorage("auto")), "auto");
+  assert.equal(readReaderThemeChoice(memoryStorage(READER_THEME_STORAGE_KEY, "garbage")), "auto");
+  assert.equal(readReaderThemeChoice(memoryStorage(READER_THEME_STORAGE_KEY, "auto")), "auto");
 });
 
 test("a fixed look stays fixed", () => {

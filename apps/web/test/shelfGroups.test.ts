@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { register } from "node:module";
+import { memoryStorage } from "./memoryStorage.ts";
 
 register(`data:text/javascript,${encodeURIComponent(`
   export async function resolve(specifier, context, nextResolve) {
@@ -18,15 +19,6 @@ const {
   toggleCollapsedShelfGroup,
   writeCollapsedShelfGroups
 } = await import("../src/shelfGroups.ts");
-
-function memoryStorage(initialValue: string | null = null) {
-  const values = new Map<string, string>();
-  if (initialValue !== null) values.set(SHELF_COLLAPSED_GROUPS_STORAGE_KEY, initialValue);
-  return {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { values.set(key, value); }
-  };
-}
 
 test("a folded series stays folded after the app reopens", () => {
   const storage = memoryStorage();
@@ -71,7 +63,7 @@ test("expand all reopens every saved group in the current sort after reload", ()
 
 test("unreadable saved state opens every group instead of failing", () => {
   for (const saved of ["not json", "[]", "null", JSON.stringify({ series: "Harry Potter", tag: [3, ""] })]) {
-    assert.deepEqual(readCollapsedShelfGroups(memoryStorage(saved)), {});
+    assert.deepEqual(readCollapsedShelfGroups(memoryStorage(SHELF_COLLAPSED_GROUPS_STORAGE_KEY, saved)), {});
   }
 });
 

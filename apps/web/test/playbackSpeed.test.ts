@@ -7,15 +7,7 @@ import {
   readPlaybackSpeed,
   writePlaybackSpeed
 } from "../src/playbackSpeed.ts";
-
-function memoryStorage(initialValue: string | null = null) {
-  const values = new Map<string, string>();
-  if (initialValue !== null) values.set(PLAYBACK_SPEED_STORAGE_KEY, initialValue);
-  return {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { values.set(key, value); }
-  };
-}
+import { memoryStorage } from "./memoryStorage.ts";
 
 test("playback speed supports exact 0.05x adjustments", () => {
   assert.equal(normalizePlaybackSpeed(1.03), 1.05);
@@ -29,7 +21,7 @@ test("playback speed stays within the supported range", () => {
 });
 
 test("granular playback speed is restored and written consistently", () => {
-  const storage = memoryStorage("1.15");
+  const storage = memoryStorage(PLAYBACK_SPEED_STORAGE_KEY, "1.15");
   assert.equal(readPlaybackSpeed(storage), 1.15);
 
   writePlaybackSpeed(storage, 1.1);
@@ -37,9 +29,9 @@ test("granular playback speed is restored and written consistently", () => {
 });
 
 test("invalid stored speeds fall back to normal", () => {
-  assert.equal(readPlaybackSpeed(memoryStorage("not-a-number")), 1);
-  assert.equal(readPlaybackSpeed(memoryStorage("3")), 1);
-  assert.equal(readPlaybackSpeed(memoryStorage(null)), 1);
+  assert.equal(readPlaybackSpeed(memoryStorage(PLAYBACK_SPEED_STORAGE_KEY, "not-a-number")), 1);
+  assert.equal(readPlaybackSpeed(memoryStorage(PLAYBACK_SPEED_STORAGE_KEY, "3")), 1);
+  assert.equal(readPlaybackSpeed(memoryStorage(PLAYBACK_SPEED_STORAGE_KEY, null)), 1);
 });
 
 test("playback speed labels omit unnecessary trailing zeroes", () => {
