@@ -9127,6 +9127,50 @@ fn libation_staging_cleanup_preserves_published_books_and_symlinks() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn libation_reconnect_reports_a_failed_account_listing() {
+    let root = tempfile::tempdir().unwrap();
+    let state = libation_browser_fixture(root.path());
+    std::fs::write(
+        root.path().join("libation-accounts.tsv"),
+        "fixture@example.test\tPersonal\tus\tyes\tyes\n",
+    )
+    .unwrap();
+    let initial =
+        super::libation_status(super::State(state.clone()), super::AdminUser(admin_user()))
+            .await
+            .unwrap()
+            .0;
+    let id = initial.accounts[0].id.clone();
+    // Finding the profile lists accounts once; the reconnect check lists them
+    // again, and that second listing fails.
+    let cli = state.libation_config.cli_path.as_ref().unwrap();
+    let source = std::fs::read_to_string(cli).unwrap();
+    let listed_once = root.path().join("listed-once");
+    std::fs::write(
+        cli,
+        source.replace(
+            "if [ \"$command\" = \"list-accounts\" ]; then",
+            &format!(
+                "if [ \"$command\" = \"list-accounts\" ]; then\n  if [ -f '{marker}' ]; then\n    printf 'Account settings are locked\\n' >&2\n    exit 1\n  fi\n  : > '{marker}'",
+                marker = listed_once.display()
+            ),
+        ),
+    )
+    .unwrap();
+    let error = super::start_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Json(browser_login_request(Some(id))),
+    )
+    .await
+    .expect_err("a failed listing must not start a reconnect");
+    assert_eq!(error.status, axum::http::StatusCode::BAD_GATEWAY);
+    assert_eq!(error.message, "Account settings are locked");
+    assert!(state.libation_login_sessions.lock().await.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn libation_status_preserves_legacy_accounts_without_probing_during_sign_in() {
     let root = tempfile::tempdir().unwrap();
     let state = libation_browser_fixture(root.path());
