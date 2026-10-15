@@ -7,6 +7,7 @@ import {
   writeAppearanceMode
 } from "./appearance";
 import { haptic, syncStatusBarStyle } from "./native";
+import { errorMessage } from "./formatting";
 
 export function useDisplaySettings({
   ios
@@ -42,7 +43,7 @@ export function useDisplaySettings({
       }
       haptic("light");
     } catch (error) {
-      setRotationLockError(error instanceof Error ? error.message : "Could not change the rotation lock.");
+      setRotationLockError(errorMessage(error, "Could not change the rotation lock."));
     } finally {
       setRotationLockBusy(false);
     }

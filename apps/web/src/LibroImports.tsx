@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, ExternalLink, FolderOpen, LoaderCircle, RefreshCcw, Upload } from "lucide-react";
 import { configureLibroImports, getBooks, getLibroImports, scanLibroImports } from "./api";
+import { errorMessage } from "./formatting";
 import type { Book, LibroImportStatus } from "./types";
 
 const labels = { waiting: "Waiting for download", imported: "Imported", review: "Needs review", missing: "Missing library copy" };
@@ -45,7 +46,7 @@ export function LibroImports({ isOwner, onUpload, onBooksChanged }: {
           }
         }
       } catch (err) {
-        if (!stopped) setLoadError(err instanceof Error ? err.message : "Could not load imports.");
+        if (!stopped) setLoadError(errorMessage(err, "Could not load imports."));
       } finally {
         if (!stopped) timer = setTimeout(() => void refresh(), 3000);
       }
@@ -64,7 +65,7 @@ export function LibroImports({ isOwner, onUpload, onBooksChanged }: {
       setFolder(next.folder ?? "");
       setNotice(next.folder ? "Folder saved. Complete downloads will appear in your library automatically." : "Watching stopped. Imported books and original downloads are kept.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save this folder.");
+      setError(errorMessage(err, "Could not save this folder."));
     } finally { setBusy(false); }
   }
 
@@ -76,7 +77,7 @@ export function LibroImports({ isOwner, onUpload, onBooksChanged }: {
       await scanLibroImports();
       setStatus(await getLibroImports());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not check for downloads.");
+      setError(errorMessage(err, "Could not check for downloads."));
     } finally { setBusy(false); }
   }
 
