@@ -4,6 +4,7 @@
  * described to the listener. Pure functions, so they run in the test
  * runner without a browser.
  */
+import { hasPreciseSync } from "./syncGeneration.ts";
 import type { Book, CompanionFile, SyncFragment, SyncMap, SyncRecoveryGap } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -344,8 +345,7 @@ export function readAlongMode(
   if (!sentenceFollowAvailable) return "chapter";
   // A loaded map is the truth; the book's promise only stands in until then.
   if (map) return syncMapPrecision(map) ?? "chapter";
-  const source = book.syncFile?.source;
-  if (source === "sidecar" || source === "generated") return "sentence";
+  if (hasPreciseSync(book)) return "sentence";
   return "chapter";
 }
 

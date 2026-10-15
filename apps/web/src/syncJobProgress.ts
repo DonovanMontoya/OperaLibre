@@ -1,4 +1,5 @@
 import { formatDurationLabel } from "./formatting";
+import { syncJobPercent } from "./syncJobFeed";
 import type { Book, JobStatus } from "./types";
 
 export function describeSyncJob({
@@ -16,12 +17,7 @@ export function describeSyncJob({
   const syncJobForBook =
     syncJob && selectedBook && syncJob.targetId === selectedBook.id ? syncJob : null;
   const syncJobRunning = !!syncJobForBook && ["queued", "running", "paused"].includes(syncJobForBook.status);
-  const syncProgressPercent = (() => {
-    const fraction = syncJobForBook?.progress?.fraction;
-    return typeof fraction === "number" && Number.isFinite(fraction)
-      ? Math.min(100, Math.max(0, Math.round(fraction * 100)))
-      : null;
-  })();
+  const syncProgressPercent = syncJobForBook ? syncJobPercent(syncJobForBook) : null;
   const syncElapsedSeconds = (() => {
     if (syncJobForBook?.status !== "running") return null;
     const startedAt = Number(syncJobForBook.runningAt ?? syncJobForBook.startedAt);

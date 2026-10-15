@@ -1,6 +1,7 @@
 import { readingStatus, readingStatusLabel } from "./bookProgress.ts";
 import type { ReadingStatus } from "./bookProgress.ts";
 import { tagsForBook } from "./bookMetadata.ts";
+import { hasPreciseSync } from "./syncGeneration.ts";
 import type { Book } from "./types.ts";
 
 /**
@@ -106,8 +107,7 @@ export function bookMatchesShelfDownload(availableOnDevice: boolean, downloadedO
 /** Outdated maps remain usable, and still offer follow-along reading. */
 export function bookReadingAvailability(book: Pick<Book, "readingFile" | "syncFile">, sentenceFollowAvailable: boolean) {
   if (!book.readingFile) return "none";
-  const source = book.syncFile?.source;
-  return sentenceFollowAvailable && book.readingFile.extension.toLowerCase() === "epub" && (source === "sidecar" || source === "generated")
+  return sentenceFollowAvailable && book.readingFile.extension.toLowerCase() === "epub" && hasPreciseSync(book)
     ? "followAlong"
     : "ebook";
 }

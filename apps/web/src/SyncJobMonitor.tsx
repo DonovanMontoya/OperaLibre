@@ -10,6 +10,7 @@ import {
   sortSyncJobs
 } from "./syncJobFeed";
 import { canRerunChapter, chapterProblem, coveragePercent, gradeLabel, gradeTone, groupSyncedBooks, jobProblem, languageName, sortChapters, syncJobAttention, syncJobScope } from "./syncQuality";
+import { hasPreciseSync } from "./syncGeneration";
 import { SyncProblem } from "./SyncProblem";
 import type { Book, JobStatus, SyncReport } from "./types";
 
@@ -484,7 +485,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
   const queued = jobs?.filter((job) => job.status === "queued").length ?? 0;
   const booksById = useMemo(() => new Map(libraryBooks.map((book) => [book.id, book])), [libraryBooks]);
 
-  const isSynced = (book: Book) => !book.syncFile?.outdated && (book.syncFile?.source === "generated" || book.syncFile?.source === "sidecar");
+  const isSynced = (book: Book) => !book.syncFile?.outdated && hasPreciseSync(book);
   const eligibleBooks = useMemo(() => libraryBooks.filter((book) => book.source !== "device"
     && book.readingFile?.extension === "epub" && book.tracks.length > 0)
     .sort((a, b) => a.title.localeCompare(b.title)), [libraryBooks]);

@@ -3,57 +3,45 @@ import { useEffect, useState } from "react";
 export const LANDSCAPE_QUERY = "(orientation: landscape)";
 // A phone on its side: short enough that the iPad spread never applies.
 export const SHORT_LANDSCAPE_QUERY = "(orientation: landscape) and (max-height: 499px)";
+function matchesQuery(query: string): boolean {
+  return typeof window !== "undefined" && !!window.matchMedia?.(query).matches;
+}
+
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => matchesQuery(query));
+  useEffect(() => {
+    const list = window.matchMedia(query);
+    const update = () => setMatches(list.matches);
+    update();
+    list.addEventListener("change", update);
+    return () => list.removeEventListener("change", update);
+  }, [query]);
+  return matches;
+}
+
 export function readLandscape(): boolean {
-  return typeof window !== "undefined" && !!window.matchMedia?.(LANDSCAPE_QUERY).matches;
+  return matchesQuery(LANDSCAPE_QUERY);
 }
 
 export function useLandscapeOrientation(): boolean {
-  const [landscape, setLandscape] = useState(readLandscape);
-  useEffect(() => {
-    const query = window.matchMedia(LANDSCAPE_QUERY);
-    const update = () => setLandscape(query.matches);
-    update();
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
-  return landscape;
+  return useMediaQuery(LANDSCAPE_QUERY);
 }
 
 // A browser window wide enough to hold a book open: two pages, each still a
 // comfortable measure. The web reader borrows the Duo's spread here.
 const WIDE_SPREAD_QUERY = "(min-width: 1100px) and (orientation: landscape)";
 export function useWideSpreadWindow(): boolean {
-  const [wide, setWide] = useState(
-    () => typeof window !== "undefined" && !!window.matchMedia?.(WIDE_SPREAD_QUERY).matches
-  );
-  useEffect(() => {
-    const query = window.matchMedia(WIDE_SPREAD_QUERY);
-    const update = () => setWide(query.matches);
-    update();
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
-  return wide;
+  return useMediaQuery(WIDE_SPREAD_QUERY);
 }
 
 // A browser window as narrow as a phone, where book details stack in one column.
 const PHONE_WIDTH_QUERY = "(max-width: 620px)";
 export function usePhoneWidthWindow(): boolean {
-  const [phone, setPhone] = useState(
-    () => typeof window !== "undefined" && !!window.matchMedia?.(PHONE_WIDTH_QUERY).matches
-  );
-  useEffect(() => {
-    const query = window.matchMedia(PHONE_WIDTH_QUERY);
-    const update = () => setPhone(query.matches);
-    update();
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
-  return phone;
+  return useMediaQuery(PHONE_WIDTH_QUERY);
 }
 
 export function readShortLandscape(): boolean {
-  return typeof window !== "undefined" && !!window.matchMedia?.(SHORT_LANDSCAPE_QUERY).matches;
+  return matchesQuery(SHORT_LANDSCAPE_QUERY);
 }
 
 // How much of the web reading room fits: the page alone, the page beside its
