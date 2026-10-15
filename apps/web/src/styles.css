@@ -20466,7 +20466,9 @@ html .shell > .player-pane.has-native-player.native-player-view-now.has-car-mode
   background: #1c1c1e;
   background-image: none;
 }
-html .shell > .player-pane.has-native-player.native-player-view-now.fit-playback.has-car-mode:not(.has-reader) .native-now-playing {
+html .shell > .player-pane.has-native-player.native-player-view-now.fit-playback.has-car-mode:not(.has-reader) .native-now-playing,
+/* The reading tab drops fit-playback across a horizontal fold, whose card grid would put the car player above the hinge alone. */
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell > .player-pane.has-native-player.native-player-view-now.has-car-mode .native-now-playing:not(.has-reader) {
   display: flex;
   align-items: stretch;
   padding: 0;

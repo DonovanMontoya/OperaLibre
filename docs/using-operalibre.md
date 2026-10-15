@@ -21,11 +21,7 @@ Tapping a book in **Continue Reading** loads your saved position in the player w
 
 OperaLibre remembers a reader’s position automatically. Each reader has separate progress, so two people can listen to the same book independently.
 
-Tap the car icon in the upper-right corner of the player for larger playback
-controls. When clips are enabled, **Save moment** keeps a passage with one tap.
-Tap the same car icon again to return to the normal player without interrupting
-your book. Car mode is a manual choice for the current app session; it does not
-detect Driving Focus.
+Tap the car icon in the upper-right corner of the player for larger playback controls. With **Audio clips** on and a book from an OperaLibre server, **Save moment** keeps the last 30 seconds and the next 10 as a clip with one tap. Tap the same car icon again to return to the normal player without interrupting your book. Car mode is a manual choice for the current app session; it does not detect Driving Focus.
 
 ### Fix a book that is too quiet
 

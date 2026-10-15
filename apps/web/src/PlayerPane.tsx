@@ -303,6 +303,10 @@ export function PlayerPane({
 
   const [carMode, setCarMode] = useState(false);
   const carModeButtonRef = useRef<HTMLButtonElement>(null);
+  // Car mode only shows while its player can: once playback clears or the
+  // view moves away, the normal layout (and its way back to the library)
+  // returns, and the choice is only kept for when the player comes back.
+  const carModeActive = carMode && isViewingPlayingBook && nativePlayerView === "now" && Boolean(currentTrack);
   const nowArtworkRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const artwork = nowArtworkRef.current;
@@ -322,7 +326,7 @@ export function PlayerPane({
     observer.observe(cover);
     window.addEventListener("resize", positionRibbon);
     return () => { observer.disconnect(); window.removeEventListener("resize", positionRibbon); };
-  }, [playbackBook?.id, nativePlayerView, isViewingPlayingBook, carMode]);
+  }, [playbackBook?.id, nativePlayerView, isViewingPlayingBook, carModeActive]);
   const [contentsTab, setContentsTab] = useState<"chapters" | "clips">("chapters");
   const contentsId = useId();
   useEffect(() => setContentsTab("chapters"), [selectedBook?.id]);
@@ -613,7 +617,7 @@ export function PlayerPane({
 
   return (
     <section
-      className={`player-pane native-player-view-${nativePlayerView} ${carMode && nativePlayerView === "now" ? "has-car-mode" : ""} ${
+      className={`player-pane native-player-view-${nativePlayerView} ${carModeActive ? "has-car-mode" : ""} ${
         isViewingPlayingBook && currentTrack ? "has-native-player" : ""
       } ${
         nativeTab === "reading" && usesFoldLayout(playbackFold) && playbackFold.fold?.axis === "horizontal"
@@ -622,7 +626,7 @@ export function PlayerPane({
       ref={playerPaneRef}
       onScroll={handlePlayerPaneScroll}
       onKeyDown={event => {
-        if (carMode && event.key === "Escape") {
+        if (carModeActive && event.key === "Escape") {
           event.stopPropagation();
           setCarMode(false);
           carModeButtonRef.current?.focus();
@@ -643,8 +647,8 @@ export function PlayerPane({
       </button>
       {isViewingPlayingBook && nativePlayerView === "now" && currentTrack ? (
         <button type="button" className="car-mode-toggle" ref={carModeButtonRef}
-          aria-label={carMode ? "Exit car mode" : "Car mode"} aria-pressed={carMode}
-          title={carMode ? "Exit car mode" : "Car mode"}
+          aria-label="Car mode" aria-pressed={carMode}
+          title="Car mode"
           onClick={event => {
             event.currentTarget.focus();
             setCarMode(value => !value);
@@ -662,7 +666,7 @@ export function PlayerPane({
         <>
           {isViewingPlayingBook && nativePlayerView === "now" && playbackBook && currentTrack ? (
             <section className="native-now-playing" aria-label="Now playing">
-              {carMode ? (
+              {carModeActive ? (
                 <CarPlayer
                   book={playbackBook}
                   elapsed={activeChapter ? chapterElapsed : position}
