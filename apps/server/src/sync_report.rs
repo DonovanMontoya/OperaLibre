@@ -137,11 +137,7 @@ pub(crate) fn classify_error(error: &str) -> Cause {
         Cause::AudioUnreadable
     } else if has("language identifier") {
         Cause::LanguageGuess
-    } else if has("stopped without writing a result")
-        // Older releases reported the missing result file this way.
-        || has("(os error 2)")
-        || killed_by_signal(error)
-    {
+    } else if has("stopped without writing a result") || killed_by_signal(error) {
         Cause::RuntimeCrash
     } else if has("stalled at") || has("produced no usable sentence fragments") {
         // Recognition never got past one point in the text.
@@ -1781,10 +1777,6 @@ mod tests {
                 Cause::RuntimeCrash,
             ),
             (
-                "No such file or directory (os error 2)",
-                Cause::RuntimeCrash,
-            ),
-            (
                 "Alignment of `Chapter 9` failed with status signal: 11 (SIGSEGV) (core dumped):\n",
                 Cause::RuntimeCrash,
             ),
@@ -1824,6 +1816,9 @@ mod tests {
                 "Alignment of `Chapter 9` failed with status exit status: 1341:",
                 Cause::Unknown,
             ),
+            // Any missing file, such as a moved track; only a missing
+            // recognition result means the runtime crashed.
+            ("No such file or directory (os error 2)", Cause::Unknown),
             (
                 "Alignment produced no usable sentence fragments.",
                 Cause::NoisyAudio,
