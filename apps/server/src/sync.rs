@@ -716,9 +716,7 @@ pub(crate) async fn enqueue_sync_batch(
     let mut created = Vec::with_capacity(book_ids.len());
     let mut active_books: HashSet<String> = jobs
         .values()
-        .filter(|job| {
-            job.kind == SYNC_GENERATE_JOB_KIND && (is_active_job(job) || job.status == "paused")
-        })
+        .filter(|job| job.kind == SYNC_GENERATE_JOB_KIND && is_unfinished_job(job))
         .filter_map(|job| job.target_id.clone())
         .collect();
     let mut timestamp = next_job_timestamp(&jobs);
@@ -2252,10 +2250,8 @@ struct RecognitionSettings {
 impl RecognitionSettings {
     fn for_language(language: Option<&str>) -> Self {
         let code = language
-            .and_then(|value| value.split(['-', '_']).next())
-            .map(|value| value.trim().to_ascii_lowercase())
-            .filter(|value| !value.is_empty())
-            .map(|value| if value == "eng" { "en".into() } else { value });
+            .map(sync_report::two_letter_language)
+            .filter(|value| !value.is_empty());
         let english = code.as_deref() == Some("en");
         Self {
             model: if english { "tiny.en" } else { "tiny" },
@@ -3517,19 +3513,20 @@ async fn run_alignment_cli(
         .map_err(|_| anyhow::anyhow!("{what} exceeded the two-hour command timeout."))?
         .map_err(|error| anyhow::anyhow!("Failed to run alignment CLI: {error}"))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail = stderr
-            .lines()
-            .rev()
-            .take(12)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
-        anyhow::bail!("{what} failed with status {}:\n{}", output.status, tail);
+        anyhow::bail!(
+            "{what} failed with status {}:\n{}",
+            output.status,
+            stderr_tail(&output)
+        );
     }
     Ok(())
+}
+
+/// The last 12 lines of a failed command's stderr, for its error message.
+fn stderr_tail(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines = stderr.lines().collect::<Vec<_>>();
+    lines[lines.len().saturating_sub(12)..].join("\n")
 }
 
 async fn extract_alignment_audio(
@@ -3592,20 +3589,10 @@ async fn extract_alignment_audio_with_timeout(
         })?
         .map_err(|error| anyhow::anyhow!("Failed to run ffmpeg for chapter audio: {error}"))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail = stderr
-            .lines()
-            .rev()
-            .take(12)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
         anyhow::bail!(
             "ffmpeg failed to extract chapter audio with status {}:\n{}",
             output.status,
-            tail
+            stderr_tail(&output)
         );
     }
     Ok(())
@@ -3716,6 +3703,29 @@ mod tests {
             state.jobs.read().await[&id].cause,
             Some(sync_report::Cause::EditionMismatch)
         );
+    }
+
+    #[test]
+    fn recognition_language_is_a_code_the_recognizer_accepts() {
+        // Echogarden rejects bibliographic codes such as `ger`, failing the
+        // book, and only a two-letter `en` picks the English models.
+        for (label, language) in [
+            ("ger", "de"),
+            ("fre", "fr"),
+            ("fra", "fr"),
+            ("fr-FR", "fr"),
+            ("dut", "nl"),
+            ("eng", "en"),
+            ("haw", "haw"),
+        ] {
+            let recognition = RecognitionSettings::for_language(Some(label));
+            assert_eq!(recognition.language.as_deref(), Some(language), "{label}");
+        }
+        assert_eq!(
+            RecognitionSettings::for_language(Some("eng")).model,
+            "tiny.en"
+        );
+        assert_eq!(RecognitionSettings::for_language(Some(" ")).language, None);
     }
 
     #[cfg(unix)]
@@ -4021,16 +4031,25 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
             std::fs::write(&cli, script).unwrap();
             std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
             let job = create_job(&state, "sync-fixture").await;
-            let result = tokio::time::timeout(
-                Duration::from_millis(500),
-                run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks, None),
-            )
-            .await;
+            let generation =
+                run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks, None);
             if script.contains("sleep") {
-                assert!(result.is_err());
-                assert!(root.path().join("aligner.started").exists());
+                // Interrupted once the aligner is running, as by a shutdown.
+                let started = cli.with_extension("started");
+                tokio::time::timeout(Duration::from_secs(30), async {
+                    tokio::select! {
+                        _ = generation => panic!("generation ended before it was interrupted"),
+                        () = async {
+                            while !fs::try_exists(&started).await.unwrap() {
+                                tokio::task::yield_now().await;
+                            }
+                        } => {}
+                    }
+                })
+                .await
+                .unwrap();
             } else {
-                assert!(result.unwrap().is_err());
+                assert!(generation.await.is_err());
             }
             assert_eq!(fs::read(&destination).await.unwrap(), original);
         }

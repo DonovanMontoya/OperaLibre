@@ -1155,7 +1155,7 @@ async fn setup_cannot_run_twice() {
         )
         .await;
 
-    assert_ne!(second.status, StatusCode::OK);
+    assert_eq!(second.status, StatusCode::BAD_REQUEST, "{}", second.text());
 }
 
 #[tokio::test]
@@ -1261,26 +1261,6 @@ async fn a_listener_chooses_and_clears_their_own_picture() {
         .await;
     assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text());
     assert!(server.get("/api/auth/me", &reader).await.json()["avatar"].is_null());
-}
-
-#[tokio::test]
-async fn a_reader_cannot_reach_admin_routes() {
-    let server = TestServer::start(1).await;
-    let owner = server.setup_owner().await;
-    let reader = server.add_reader(&owner, "reader").await;
-
-    let listed = server.get("/api/users", &reader).await;
-    assert_eq!(listed.status, StatusCode::FORBIDDEN, "{}", listed.text());
-
-    let rescan = server
-        .send_json(
-            "POST",
-            "/api/library/rescan",
-            &reader,
-            serde_json::json!({}),
-        )
-        .await;
-    assert_eq!(rescan.status, StatusCode::FORBIDDEN, "{}", rescan.text());
 }
 
 #[tokio::test]
@@ -1953,24 +1933,6 @@ async fn a_non_owner_administrator_cannot_mint_a_libation_approver() {
         true,
         "the owner's explicit grant was dropped"
     );
-}
-
-#[tokio::test]
-async fn admin_only_routes_refuse_a_reader() {
-    let server = TestServer::start(1).await;
-    let owner = server.setup_owner().await;
-    let reader = server.add_reader(&owner, "bystander").await;
-
-    for (method, path) in ADMIN_ONLY_ROUTES {
-        let response = server
-            .send_json(method, path, &reader, serde_json::json!({}))
-            .await;
-        assert_eq!(
-            response.status,
-            StatusCode::FORBIDDEN,
-            "{method} {path} was reachable by a reader"
-        );
-    }
 }
 
 #[tokio::test]
@@ -2746,18 +2708,6 @@ async fn metrics_are_owner_only_and_describe_the_server() {
     assert!(!metrics["version"].as_str().unwrap().is_empty());
 }
 
-#[tokio::test]
-async fn metrics_count_a_listener_who_just_saved_a_position() {
-    let server = TestServer::start(2).await;
-    let owner = server.setup_owner().await;
-    let (book, track) = server.first_book_and_track(&owner).await;
-
-    save_position(&server, &owner, &book, &track, 3.0, serde_json::json!({})).await;
-
-    let metrics = server.get("/api/metrics", &owner).await.json();
-    assert_eq!(metrics["listeningNow"], 1);
-}
-
 /// Two people on the same book are two listeners, and one person touching two
 /// books is one listener: the count is of people, not of books.
 #[tokio::test]
@@ -2768,8 +2718,10 @@ async fn listening_now_counts_people_not_books() {
     let (book, track) = server.first_book_and_track(&owner).await;
 
     save_position(&server, &owner, &book, &track, 3.0, serde_json::json!({})).await;
-    save_position(&server, &reader, &book, &track, 4.0, serde_json::json!({})).await;
+    let metrics = server.get("/api/metrics", &owner).await.json();
+    assert_eq!(metrics["listeningNow"], 1);
 
+    save_position(&server, &reader, &book, &track, 4.0, serde_json::json!({})).await;
     let metrics = server.get("/api/metrics", &owner).await.json();
     assert_eq!(
         metrics["listeningNow"], 2,

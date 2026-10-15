@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useModalFocus } from "./useModalFocus";
 import { KeyRound, Plus, X, BookOpen, ChevronRight, CloudDownload, LayoutGrid, List, LoaderCircle, RefreshCcw, Search } from "lucide-react";
 import { connectLibroAccount, disconnectLibroAccount, getBooks, getLibroAccount, importLibroPurchase, refreshLibroAccount, renameLibroAccount } from "./api";
+import { errorMessage } from "./formatting";
 import type { Book, JobStatus, LibroAccountStatus, LibroAccountSummary } from "./types";
 import { libroDeviceBackend, cancelLibroDevice } from "./libroDevice";
 import { libroCoverURL } from "./libroDevicePolicy";
@@ -114,7 +115,7 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
           newDownloads.forEach(job => completed.current.add(job.id));
         }
       } catch (err) {
-        if (!stopped) setPollError(err instanceof Error ? err.message : "Could not load Libro.fm.");
+        if (!stopped) setPollError(errorMessage(err, "Could not load Libro.fm."));
         delay = 5000;
       } finally {
         if (!stopped) timer = setTimeout(() => void poll(), delay);
@@ -134,7 +135,7 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
       if (key === "connect") setReconnect(false);
       if (key === "rename") setEditing(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Libro.fm could not complete the request.");
+      setError(errorMessage(err, "Libro.fm could not complete the request."));
     } finally {
       if (key === "connect") setPassword("");
       setBusy(null);

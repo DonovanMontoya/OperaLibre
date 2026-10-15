@@ -137,11 +137,7 @@ pub(crate) fn classify_error(error: &str) -> Cause {
         Cause::AudioUnreadable
     } else if has("language identifier") {
         Cause::LanguageGuess
-    } else if has("stopped without writing a result")
-        // Older releases reported the missing result file this way.
-        || has("(os error 2)")
-        || killed_by_signal(error)
-    {
+    } else if has("stopped without writing a result") || killed_by_signal(error) {
         Cause::RuntimeCrash
     } else if has("stalled at") || has("produced no usable sentence fragments") {
         // Recognition never got past one point in the text.
@@ -254,9 +250,10 @@ fn primary_language(code: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// Whether two language tags name the same language. EPUBs may use
-/// three-letter codes where the recognizer reports two, as `eng` for `en`.
-pub(crate) fn same_language(a: &str, b: &str) -> bool {
+/// A language tag's primary language, as the two-letter code the recognizer
+/// reports. EPUBs may use three-letter codes, as `eng` for `en`, and the
+/// recognizer rejects the bibliographic ones such as `fre` and `ger`.
+pub(crate) fn two_letter_language(code: &str) -> String {
     const THREE_LETTER: [(&str, &str); 22] = [
         ("eng", "en"),
         ("nld", "nl"),
@@ -281,14 +278,16 @@ pub(crate) fn same_language(a: &str, b: &str) -> bool {
         ("tur", "tr"),
         ("ukr", "uk"),
     ];
-    let two_letter = |code: &str| {
-        let code = primary_language(code);
-        THREE_LETTER
-            .iter()
-            .find(|(three, _)| *three == code)
-            .map_or(code, |(_, two)| two.to_string())
-    };
-    two_letter(a) == two_letter(b)
+    let code = primary_language(code);
+    THREE_LETTER
+        .iter()
+        .find(|(three, _)| *three == code)
+        .map_or(code, |(_, two)| two.to_string())
+}
+
+/// Whether two language tags name the same language.
+pub(crate) fn same_language(a: &str, b: &str) -> bool {
+    two_letter_language(a) == two_letter_language(b)
 }
 
 /// Says why a Poor or Failed chapter went wrong, or which automatic fix a
@@ -1041,7 +1040,7 @@ async fn backfill_reports(state: &AppState) {
         let busy = state.jobs.read().await.values().any(|job| {
             job.kind == SYNC_GENERATE_JOB_KIND
                 && job.target_id.as_deref() == Some(book_id.as_str())
-                && (is_active_job(job) || job.status == "paused")
+                && is_unfinished_job(job)
         });
         if busy {
             continue;
@@ -1090,7 +1089,7 @@ pub(crate) async fn publish_backfill(
     if jobs.values().any(|job| {
         job.kind == SYNC_GENERATE_JOB_KIND
             && job.target_id.as_deref() == Some(book_id)
-            && (is_active_job(job) || job.status == "paused")
+            && is_unfinished_job(job)
     }) {
         return Ok(());
     }
@@ -1778,10 +1777,6 @@ mod tests {
                 Cause::RuntimeCrash,
             ),
             (
-                "No such file or directory (os error 2)",
-                Cause::RuntimeCrash,
-            ),
-            (
                 "Alignment of `Chapter 9` failed with status signal: 11 (SIGSEGV) (core dumped):\n",
                 Cause::RuntimeCrash,
             ),
@@ -1821,6 +1816,9 @@ mod tests {
                 "Alignment of `Chapter 9` failed with status exit status: 1341:",
                 Cause::Unknown,
             ),
+            // Any missing file, such as a moved track; only a missing
+            // recognition result means the runtime crashed.
+            ("No such file or directory (os error 2)", Cause::Unknown),
             (
                 "Alignment produced no usable sentence fragments.",
                 Cause::NoisyAudio,

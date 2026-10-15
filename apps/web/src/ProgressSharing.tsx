@@ -1,6 +1,7 @@
 import { Users } from "lucide-react";
 import { useState } from "react";
 import { updateProgressSharing } from "./api";
+import { errorMessage } from "./formatting";
 import {
   isAnnouncingFinishes,
   isNotifiedOfFinishes,
@@ -48,7 +49,7 @@ export function ProgressSharingCard({
       // ones move the feed alone, so the shelf does not need refetching.
       if (shareProgress !== enabled) onSharingChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not change progress sharing.");
+      setError(errorMessage(err, "Could not change progress sharing."));
     } finally {
       setBusy(false);
     }
