@@ -37,9 +37,15 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
             call.reject("The audio URL is invalid.")
             return
         }
+        // The web layer always sends a position, so a missing one is a bug;
+        // starting at 0:00 instead would overwrite the reader's place.
+        guard let positionSeconds = call.getDouble("positionSeconds"), positionSeconds.isFinite else {
+            call.reject("The playback position is invalid.")
+            return
+        }
         let request = AudiobookLoadRequest(
             url: url,
-            positionSeconds: call.getDouble("positionSeconds") ?? 0,
+            positionSeconds: positionSeconds,
             rate: call.getDouble("rate") ?? 1,
             volume: call.getDouble("volume") ?? 1,
             gain: call.getDouble("gain") ?? 1,
@@ -86,7 +92,11 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
     }
 
     @objc public func seek(_ call: CAPPluginCall) {
-        engine.seek(toPositionSeconds: call.getDouble("positionSeconds") ?? 0)
+        guard let positionSeconds = call.getDouble("positionSeconds"), positionSeconds.isFinite else {
+            call.reject("The playback position is invalid.")
+            return
+        }
+        engine.seek(toPositionSeconds: positionSeconds)
         call.resolve()
     }
 
