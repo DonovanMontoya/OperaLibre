@@ -179,11 +179,7 @@ pub(crate) async fn create_job_with_state(
     if deduplicate_pending
         && let Some(existing) = jobs
             .values()
-            .filter(|job| {
-                job.kind == kind
-                    && job.target_id == target_id
-                    && (is_active_job(job) || job.status == "paused")
-            })
+            .filter(|job| job.kind == kind && job.target_id == target_id && is_unfinished_job(job))
             .max_by_key(|job| job_started_timestamp(job))
     {
         return (existing.id.clone(), false);
@@ -224,6 +220,11 @@ pub(crate) const JOB_LIST_OUTPUT_BYTES: usize = 4 * 1024;
 
 pub(crate) fn is_active_job(job: &JobStatus) -> bool {
     matches!(job.status.as_str(), "queued" | "running")
+}
+
+/// Queued, running, or paused: a job that has not finished and may still run.
+pub(crate) fn is_unfinished_job(job: &JobStatus) -> bool {
+    is_active_job(job) || job.status == "paused"
 }
 
 /// The newest queued or running job of `kind`, if any.

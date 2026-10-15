@@ -306,12 +306,8 @@ impl Api {
                 .map_err(|_| {
                     ApiError::bad_gateway("Libro.fm returned an unexpected book record.")
                 })?;
+            // `LibroBook` deserialization already rejects malformed ISBNs.
             for book in batch {
-                if !valid_isbn(&book.isbn) {
-                    return Err(ApiError::bad_gateway(
-                        "Libro.fm returned an invalid book identifier.",
-                    ));
-                }
                 if seen.insert(book.isbn.clone()) {
                     books.push(book);
                 }
@@ -560,27 +556,20 @@ pub(crate) async fn import_libro_purchase(
 ) -> Result<Json<JobCreated>, ApiError> {
     let _guard = account_guard(&state, &auth.id).await;
     let accounts = read_account(&state, &auth.id).await?;
-    let account = accounts
+    let (token, book) = accounts
         .into_iter()
-        .find(|a| {
+        .filter(|a| {
             selection
                 .email
                 .as_ref()
                 .is_none_or(|email| a.email.eq_ignore_ascii_case(email))
-                && a.books.iter().any(|book| book.isbn == isbn)
+        })
+        .find_map(|a| {
+            let book = a.books.into_iter().find(|book| book.isbn == isbn)?;
+            Some((a.token, book))
         })
         .ok_or_else(|| {
             ApiError::not_found("This purchase is not in the selected Libro.fm account.")
-        })?;
-    let book = account
-        .books
-        .iter()
-        .find(|book| book.isbn == isbn)
-        .cloned()
-        .ok_or_else(|| {
-            ApiError::not_found(
-                "This book is not in your connected Libro.fm library. Refresh the library first.",
-            )
         })?;
     let prefix = format!("libro:{}:", auth.id);
     let target = format!("{prefix}{isbn}");
@@ -623,7 +612,7 @@ pub(crate) async fn import_libro_purchase(
                     .await
                     .map_err(|_| ApiError::internal("Downloads are shutting down."))?;
                 update_job_running(&state, &job).await;
-                acquire_book(&state, &auth.id, &account.token, &book, &job).await
+                acquire_book(&state, &auth.id, &token, &book, &job).await
             }
             .await;
             finish(&state, &job, result).await;

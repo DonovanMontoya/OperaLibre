@@ -48,7 +48,7 @@ export async function cancelLibroDevice(isbn: string) {
   await discard(item);
 }
 
-export async function connectLibroDevice(email: string, password: string) {
+async function connectLibroDevice(email: string, password: string) {
   if (read<Pending[]>(JOBS, []).some(active) || starting || refresh) throw new Error("Wait for the current device operation to finish.");
   starting = true;
   try {
@@ -58,7 +58,7 @@ export async function connectLibroDevice(email: string, password: string) {
   } finally { starting = false; }
 }
 
-export async function disconnectLibroDevice(email?: string) {
+async function disconnectLibroDevice(email?: string) {
   if (read<Pending[]>(JOBS, []).some(active) || starting || refresh) throw new Error("Wait for the current device operation to finish.");
   starting = true;
   try {
@@ -132,7 +132,7 @@ async function settleDownloads() {
   }
 }
 
-export async function getLibroDevice(): Promise<LibroAccountStatus> {
+async function getLibroDevice(): Promise<LibroAccountStatus> {
   // One reconciler prevents two mounted catalog screens from extracting/publishing twice.
   if (!reconcile && !starting) reconcile = settleDownloads().finally(() => { reconcile = null; });
   await reconcile;
@@ -147,7 +147,7 @@ export async function getLibroDevice(): Promise<LibroAccountStatus> {
     jobs: read<Pending[]>(JOBS, []).map(item => item.job).reverse() };
 }
 
-export async function importLibroDevice(isbn: string, email?: string) {
+async function importLibroDevice(isbn: string, email?: string) {
   if (starting || read<Pending[]>(JOBS, []).some(active)) throw new Error("Wait for your current device download to finish.");
   starting = true;
   try {
@@ -183,7 +183,7 @@ export async function importLibroDevice(isbn: string, email?: string) {
   } finally { starting = false; }
 }
 
-export async function renameLibroDevice(email: string, nickname: string) {
+async function renameLibroDevice(email: string, nickname: string) {
   if (starting || refresh) throw new Error("Wait for the current device operation to finish.");
   starting = true;
   try { await Native.request({ action: "rename", email, nickname }); }

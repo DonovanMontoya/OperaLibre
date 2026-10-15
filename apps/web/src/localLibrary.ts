@@ -588,6 +588,6 @@ export async function addDeviceEpub(bookId: string, file: Pick<PickedFile, "name
 }
 
 /** Attach a picked-file copy to an equivalent server book and hide the duplicate device row. */
-export function mergeDeviceAndServerBooks(serverBooks: Book[], deviceBooks = getDeviceBooks()): Book[] {
+export function mergeDeviceAndServerBooks(serverBooks: Book[], deviceBooks: Book[]): Book[] {
   return mergeLibraryBooks(serverBooks, deviceBooks);
 }

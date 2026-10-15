@@ -7,6 +7,7 @@ import {
   signInAtAddress,
   type ServerAlias
 } from "./api";
+import { errorMessage } from "./formatting";
 
 export function useServerAliases() {
   const [serverAliases, setServerAliases] = useState<ServerAlias[]>(getServerAliases);
@@ -27,7 +28,7 @@ export function useServerAliases() {
       setAliasName("");
       setAliasUrl("");
     } catch (error) {
-      setAliasError(error instanceof Error ? error.message : "Could not save that alias.");
+      setAliasError(errorMessage(error, "Could not save that alias."));
     }
   }
 
@@ -41,7 +42,7 @@ export function useServerAliases() {
       await activateServerAlias(alias);
       window.location.reload();
     } catch (error) {
-      setAliasError(error instanceof Error ? error.message : "Could not reach that address.");
+      setAliasError(errorMessage(error, "Could not reach that address."));
       setSwitchingAliasId(null);
     }
   }
