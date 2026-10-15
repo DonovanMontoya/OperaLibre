@@ -86,6 +86,11 @@ pub(crate) struct User {
     pub(crate) announce_finishes: bool,
     #[serde(default = "default_share_progress", skip_serializing_if = "is_true")]
     pub(crate) notify_finishes: bool,
+    /// The picture this listener chose, as an identifier from the clients'
+    /// built-in set. The art lives in the clients, so the server only keeps
+    /// the name and an unset one means the listener's initial.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) avatar: Option<String>,
     pub(crate) created_at: String,
 }
 
@@ -110,6 +115,9 @@ pub(crate) struct UserPublic {
     pub(crate) share_progress: bool,
     pub(crate) announce_finishes: bool,
     pub(crate) notify_finishes: bool,
+    /// Always present, `null` when unset: clients read the key itself as the
+    /// sign that this server stores pictures.
+    pub(crate) avatar: Option<String>,
     pub(crate) created_at: String,
 }
 
@@ -136,6 +144,7 @@ impl From<AuthUser> for UserPublic {
             share_progress: auth.share_progress,
             announce_finishes: auth.announce_finishes,
             notify_finishes: auth.notify_finishes,
+            avatar: auth.avatar,
             created_at: String::new(),
         }
     }
@@ -201,6 +210,7 @@ pub(crate) struct AuthUser {
     pub(crate) share_progress: bool,
     pub(crate) announce_finishes: bool,
     pub(crate) notify_finishes: bool,
+    pub(crate) avatar: Option<String>,
 }
 
 impl From<&User> for AuthUser {
@@ -224,6 +234,7 @@ impl From<&User> for AuthUser {
             share_progress: user.share_progress,
             announce_finishes: user.announce_finishes,
             notify_finishes: user.notify_finishes,
+            avatar: user.avatar.clone(),
         }
     }
 }
@@ -258,6 +269,15 @@ pub(crate) struct UpdateProgressSharingRequest {
     pub(crate) announce_finishes: Option<bool>,
     #[serde(default)]
     pub(crate) notify_finishes: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateAvatarRequest {
+    /// `null` goes back to the listener's initial. The key itself is required,
+    /// so a request that misspells it is refused instead of clearing the picture.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub(crate) avatar: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -822,6 +842,7 @@ pub(crate) async fn setup_admin(
         share_progress: true,
         announce_finishes: true,
         notify_finishes: true,
+        avatar: None,
         created_at: now_unix_string(),
     };
 
@@ -1164,6 +1185,49 @@ pub(crate) async fn update_progress_sharing(
     Ok(Json(public))
 }
 
+pub(crate) const AVATAR_MAX_LENGTH: usize = 32;
+
+/// The set of pictures belongs to the clients and grows with them, so this
+/// checks only that the value is a plain identifier: a server must not have to
+/// be upgraded before a newer app can save a picture it has never heard of.
+pub(crate) fn validate_avatar(avatar: &str) -> Result<(), ApiError> {
+    let plain = !avatar.is_empty()
+        && avatar.len() <= AVATAR_MAX_LENGTH
+        && avatar
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+    if plain {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "A picture is named with lowercase letters, digits, and hyphens.",
+        ))
+    }
+}
+
+pub(crate) async fn update_avatar(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(payload): Json<UpdateAvatarRequest>,
+) -> Result<Json<UserPublic>, ApiError> {
+    if let Some(avatar) = &payload.avatar {
+        validate_avatar(avatar)?;
+    }
+    let public = state
+        .users
+        .mutate(|users| {
+            let user = users
+                .users
+                .iter_mut()
+                .find(|user| user.id == auth.id)
+                .ok_or(ApiError::not_found("User not found."))?;
+            user.avatar = payload.avatar;
+            Ok(UserPublic::from(&*user))
+        })
+        .await?;
+    Ok(Json(public))
+}
+
 /// An authenticated administrator.
 ///
 /// Handlers that take this instead of `Extension<AuthUser>` cannot be reached
@@ -1338,6 +1402,7 @@ pub(crate) async fn create_user(
         share_progress: true,
         announce_finishes: true,
         notify_finishes: true,
+        avatar: None,
         created_at: now_unix_string(),
     };
     let created = new_user.clone();

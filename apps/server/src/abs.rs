@@ -1088,7 +1088,10 @@ pub(crate) fn decide_abs_progress_write(
     let explicit_restart =
         abs_checkpoint_is_restart(book, previous, requested_book_position, finished);
     let (mut saved, backup_previous) = if let Some(book_position) = requested_book_position {
-        let (track, track_position) = track_at_book_position(book, book_position);
+        // The handler rejects a book without tracks before deciding anything.
+        let Some((track, track_position)) = track_at_book_position(book, book_position) else {
+            return ProgressDecision::Keep;
+        };
         let intentional_rewind =
             abs_write_is_intentional_rewind(previous, book_position, last_update, now_millis);
         let checkpoint = ProgressUpdate {
@@ -1175,31 +1178,15 @@ pub(crate) async fn abs_cover(
     get_cover_art(state, auth, item_id, headers).await
 }
 
-/// Which track a whole-book position lands in, and how far into it.
-pub(crate) fn track_at_book_position(book: &Book, book_position: f64) -> (Track, f64) {
+/// Which track a whole-book position lands in, and how far into it. `None`
+/// only for a book without tracks.
+pub(crate) fn track_at_book_position(book: &Book, book_position: f64) -> Option<(Track, f64)> {
     let offsets = track_offsets(book);
     for ((start, duration), track) in offsets.iter().zip(&book.tracks) {
         if book_position < start + duration || duration <= &0.0 {
-            return (track.clone(), (book_position - start).max(0.0));
+            return Some((track.clone(), (book_position - start).max(0.0)));
         }
     }
-    match book.tracks.last() {
-        Some(track) => {
-            let (start, _) = offsets.last().copied().unwrap_or((0.0, 0.0));
-            (track.clone(), (book_position - start).max(0.0))
-        }
-        None => (
-            Track {
-                id: String::new(),
-                title: String::new(),
-                file_name: String::new(),
-                index: 0,
-                duration_seconds: None,
-                stream_url: String::new(),
-                chapters: Vec::new(),
-                metadata: Default::default(),
-            },
-            0.0,
-        ),
-    }
+    let ((start, _), track) = offsets.last().zip(book.tracks.last())?;
+    Some((track.clone(), (book_position - start).max(0.0)))
 }

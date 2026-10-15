@@ -127,7 +127,7 @@ export function readProgressCheckpoint(
  * `new Date("1783894082")` is Invalid Date, and a NaN comparator leaves the
  * list in library order, handing the play bar whichever book sorts first.
  */
-export function mostRecentlyListenedBookId(
+function mostRecentlyListenedBookId(
   books: Array<{ id: string; progress?: { updatedAt: string } | null }>
 ): string | null {
   return books
@@ -309,7 +309,7 @@ export function rebasePendingProgress(local: Progress, attempted: Progress, save
 }
 
 /** Mirrors the server's PROGRESS_NEAR_ZERO_SECONDS. */
-export const NEAR_ZERO_PROGRESS_SECONDS = 60;
+const NEAR_ZERO_PROGRESS_SECONDS = 60;
 /** Mirrors the server's PROGRESS_BACKUP_REGRESSION_SECONDS. */
 export const PROGRESS_RESET_GUARD_SECONDS = 300;
 
@@ -371,7 +371,7 @@ export function adoptableServerProgress(
 }
 
 /** Mirrors the server's PROGRESS_AUTOMATIC_REGRESSION_SLACK_SECONDS. */
-export const FOREGROUND_ADOPTION_SLACK_SECONDS = 2;
+const FOREGROUND_ADOPTION_SLACK_SECONDS = 2;
 
 /**
  * Whether the server kept its own copy over a save — typically the checkpoint
@@ -561,7 +561,7 @@ export function summarizeBookProgress(
   };
 }
 
-export function normalizedBookTitle(value: string): string {
+function normalizedBookTitle(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 

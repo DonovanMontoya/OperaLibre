@@ -1,7 +1,9 @@
 import { ArrowLeft, Headphones } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { getProfileStats, getServerStorageKey, isNetworkError, mediaUrl } from "./api";
+import { errorMessage } from "./formatting";
 import { Achievements } from "./Achievements";
+import { AvatarFace } from "./Avatar";
 import { readingStatus } from "./bookProgress";
 import { getOfflineCoverUrl, releaseOfflineMediaUrl } from "./offline";
 import {
@@ -130,7 +132,7 @@ export function ProfilePage({
         } else if (isNetworkError(err)) {
           setOfflineSource("device");
         } else {
-          setError(err instanceof Error ? err.message : "Could not load profile.");
+          setError(errorMessage(err, "Could not load profile."));
         }
       })
       .finally(() => {
@@ -143,8 +145,6 @@ export function ProfilePage({
 
   const deviceStats = useMemo(() => deriveDeviceProfileStats(books), [books]);
   const displayedStats = offlineSource === "device" ? deviceStats : stats;
-
-  const monogram = user.username.slice(0, 1).toUpperCase();
 
   const weeks = useMemo<StreakDay[][]>(() => {
     if (!displayedStats) return [];
@@ -192,7 +192,7 @@ export function ProfilePage({
             </p>
           ) : null}
           <header className="profile-head">
-            <div className="profile-mono" aria-hidden="true">{monogram}</div>
+            <div className="profile-mono" aria-hidden="true"><AvatarFace user={user} /></div>
             <div className="profile-id">
               <h1>Ledger</h1>
               <span className="ledger-owner">{user.username}’s reading activity</span>

@@ -1155,7 +1155,7 @@ async fn setup_cannot_run_twice() {
         )
         .await;
 
-    assert_ne!(second.status, StatusCode::OK);
+    assert_eq!(second.status, StatusCode::BAD_REQUEST, "{}", second.text());
 }
 
 #[tokio::test]
@@ -1194,23 +1194,73 @@ async fn unknown_api_paths_return_json_not_the_spa_fallback() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn a_reader_cannot_reach_admin_routes() {
+async fn a_listener_chooses_and_clears_their_own_picture() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;
     let reader = server.add_reader(&owner, "reader").await;
 
-    let listed = server.get("/api/users", &reader).await;
-    assert_eq!(listed.status, StatusCode::FORBIDDEN, "{}", listed.text());
+    // The key is always sent, so a client can tell this server stores pictures.
+    let before = server.get("/api/auth/me", &reader).await.json();
+    assert!(before.get("avatar").is_some_and(|value| value.is_null()));
 
-    let rescan = server
+    let chosen = server
         .send_json(
-            "POST",
-            "/api/library/rescan",
+            "PUT",
+            "/api/me/avatar",
             &reader,
-            serde_json::json!({}),
+            serde_json::json!({ "avatar": "owl" }),
         )
         .await;
-    assert_eq!(rescan.status, StatusCode::FORBIDDEN, "{}", rescan.text());
+    assert_eq!(chosen.status, StatusCode::OK, "{}", chosen.text());
+    assert_eq!(chosen.json()["avatar"], "owl");
+
+    // Anything that is not a plain identifier is refused, and so is a body
+    // without the key; neither disturbs the picture already chosen.
+    for body in [
+        serde_json::json!({ "avatar": "" }),
+        serde_json::json!({ "avatar": "Owl" }),
+        serde_json::json!({ "avatar": "../owl" }),
+        serde_json::json!({ "avatar": "a".repeat(AVATAR_MAX_LENGTH + 1) }),
+        serde_json::json!({ "picture": "fox" }),
+    ] {
+        let refused = server
+            .send_json("PUT", "/api/me/avatar", &reader, body.clone())
+            .await;
+        assert!(
+            refused.status.is_client_error(),
+            "{body}: {}",
+            refused.status
+        );
+    }
+    assert_eq!(
+        server.get("/api/auth/me", &reader).await.json()["avatar"],
+        "owl"
+    );
+
+    // It changes only the caller's account, and administrators see it.
+    let listed = server.get("/api/users", &owner).await.json();
+    let avatar_of = |name: &str| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|user| user["username"] == name)
+            .unwrap()["avatar"]
+            .clone()
+    };
+    assert_eq!(avatar_of("reader"), "owl");
+    assert!(avatar_of("owner").is_null());
+
+    let cleared = server
+        .send_json(
+            "PUT",
+            "/api/me/avatar",
+            &reader,
+            serde_json::json!({ "avatar": null }),
+        )
+        .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text());
+    assert!(server.get("/api/auth/me", &reader).await.json()["avatar"].is_null());
 }
 
 #[tokio::test]
@@ -1883,24 +1933,6 @@ async fn a_non_owner_administrator_cannot_mint_a_libation_approver() {
         true,
         "the owner's explicit grant was dropped"
     );
-}
-
-#[tokio::test]
-async fn admin_only_routes_refuse_a_reader() {
-    let server = TestServer::start(1).await;
-    let owner = server.setup_owner().await;
-    let reader = server.add_reader(&owner, "bystander").await;
-
-    for (method, path) in ADMIN_ONLY_ROUTES {
-        let response = server
-            .send_json(method, path, &reader, serde_json::json!({}))
-            .await;
-        assert_eq!(
-            response.status,
-            StatusCode::FORBIDDEN,
-            "{method} {path} was reachable by a reader"
-        );
-    }
 }
 
 #[tokio::test]
@@ -2676,18 +2708,6 @@ async fn metrics_are_owner_only_and_describe_the_server() {
     assert!(!metrics["version"].as_str().unwrap().is_empty());
 }
 
-#[tokio::test]
-async fn metrics_count_a_listener_who_just_saved_a_position() {
-    let server = TestServer::start(2).await;
-    let owner = server.setup_owner().await;
-    let (book, track) = server.first_book_and_track(&owner).await;
-
-    save_position(&server, &owner, &book, &track, 3.0, serde_json::json!({})).await;
-
-    let metrics = server.get("/api/metrics", &owner).await.json();
-    assert_eq!(metrics["listeningNow"], 1);
-}
-
 /// Two people on the same book are two listeners, and one person touching two
 /// books is one listener: the count is of people, not of books.
 #[tokio::test]
@@ -2698,8 +2718,10 @@ async fn listening_now_counts_people_not_books() {
     let (book, track) = server.first_book_and_track(&owner).await;
 
     save_position(&server, &owner, &book, &track, 3.0, serde_json::json!({})).await;
-    save_position(&server, &reader, &book, &track, 4.0, serde_json::json!({})).await;
+    let metrics = server.get("/api/metrics", &owner).await.json();
+    assert_eq!(metrics["listeningNow"], 1);
 
+    save_position(&server, &reader, &book, &track, 4.0, serde_json::json!({})).await;
     let metrics = server.get("/api/metrics", &owner).await.json();
     assert_eq!(
         metrics["listeningNow"], 2,

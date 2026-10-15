@@ -15,10 +15,7 @@ export function parseReadingQueue(value: string | null): string[] {
 
 export function queuedBooks(ids: readonly string[], books: readonly Book[]): Book[] {
   const available = new Map(books.map(book => [book.id, book]));
-  return ids.flatMap(id => {
-    const book = available.get(id);
-    return book && (!book.progress || book.progress.status === "notStarted") ? [book] : [];
-  });
+  return ids.flatMap(id => available.get(id) ?? []);
 }
 
 export function moveQueuedBookEarlier(ids: readonly string[], id: string, visibleIds: readonly string[] = ids): string[] {

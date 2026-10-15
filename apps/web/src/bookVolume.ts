@@ -11,7 +11,7 @@
 export const BOOK_GAIN_DB_MIN = -6;
 export const BOOK_GAIN_DB_MAX = 24;
 export const BOOK_GAIN_DB_STEP = 1;
-export const BOOK_GAIN_DB_DEFAULT = 0;
+const BOOK_GAIN_DB_DEFAULT = 0;
 export const BOOK_GAIN_DB_PRESETS = [0, 6, 12, 18, 24] as const;
 
 /** Matches the server's clamp, which is the authority for stored values. */
@@ -44,11 +44,11 @@ type VolumeStorage = {
   setItem(key: string, value: string): void;
 };
 
-export function dbToGain(db: number) {
+function dbToGain(db: number) {
   return 10 ** (db / 20);
 }
 
-export function gainToDb(gain: number) {
+function gainToDb(gain: number) {
   if (!Number.isFinite(gain) || gain <= 0) return BOOK_GAIN_DB_DEFAULT;
   return 20 * Math.log10(gain);
 }
@@ -160,7 +160,7 @@ export function writeUnsyncedBookGains(
  * server echoes is compared with a tolerance rather than for identity — a
  * hair of drift must not read as "someone else changed this book".
  */
-export function gainsMatch(a: number, b: number) {
+function gainsMatch(a: number, b: number) {
   return Math.abs(a - b) <= 1e-6 * Math.max(1, Math.abs(a), Math.abs(b));
 }
 

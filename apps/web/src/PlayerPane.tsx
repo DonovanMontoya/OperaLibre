@@ -1,6 +1,7 @@
 import { BookClips } from "./BookClips";
 import type { Clip } from "./clips";
 import { DemoMediaCredits } from "./DemoMediaCredits";
+import { BookPreviewBar, type PreviewPosition } from "./BookPreviewBar";
 import { BookCredits } from "./BookCredits";
 import type { useBookCompletion } from "./useBookCompletion";
 import type { useClips } from "./useClips";
@@ -32,6 +33,7 @@ import {
   Pause,
   Pencil,
   Play,
+  Plus,
   RotateCcw,
   RotateCw,
   ScrollText,
@@ -64,6 +66,7 @@ import type { Dispatch, ReactNode, RefObject, SetStateAction, TouchEvent, UIEven
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ServerCapabilities } from "./serverCapabilities";
 import { usePhoneWidthWindow } from "./useOrientation";
+import { useReadingQueue } from "./useReadingQueue";
 
 // Beyond this the segments are too thin to read or tap, and their fixed
 // borders/gaps overflow a phone screen; fall back to one continuous bar.
@@ -120,6 +123,10 @@ export function PlayerPane({
   userId,
   openNativePlayerSheet,
   openPlaybackView,
+  openBookPreview,
+  previewBookId,
+  stopBookPreview,
+  continueBookPreview,
   playPending,
   playSelectedBook,
   playbackBook,
@@ -130,6 +137,7 @@ export function PlayerPane({
   position,
   readalong,
   readalongPanelElement,
+  readingQueueStorageKey,
   readerPreferences,
   restartOrPreviousChapter,
   returnToLibrary,
@@ -212,6 +220,10 @@ export function PlayerPane({
   userId: string;
   openNativePlayerSheet: (sheet: Exclude<NativePlayerSheet, null>) => void;
   openPlaybackView: (view: "now" | "details" | "chapters") => void;
+  openBookPreview: ((book: Book) => void) | null;
+  previewBookId: string | null;
+  stopBookPreview: () => void;
+  continueBookPreview: (book: Book, position?: PreviewPosition) => Promise<boolean>;
   playPending: boolean;
   playSelectedBook: (book: Book) => Promise<void>;
   playbackBook: Book | null;
@@ -222,6 +234,7 @@ export function PlayerPane({
   position: number;
   readalong: ReturnType<typeof useReadalong>;
   readalongPanelElement: ReactNode;
+  readingQueueStorageKey: string;
   readerPreferences: ReturnType<typeof useReaderPreferences>;
   restartOrPreviousChapter: () => void;
   returnToLibrary: () => void;
@@ -328,6 +341,10 @@ export function PlayerPane({
   const [bookActionsAbove, setBookActionsAbove] = useState(false);
   const bookActionsRef = useRef<HTMLDivElement>(null);
   const bookActionsId = useId();
+  const [queueIds, saveQueueIds] = useReadingQueue(readingQueueStorageKey);
+  const selectedBookQueued = !!selectedBook && queueIds.includes(selectedBook.id);
+  const [queueSaveFailed, setQueueSaveFailed] = useState(false);
+  useEffect(() => setQueueSaveFailed(false), [selectedBook?.id]);
   useEffect(() => setBookActionsOpen(false), [selectedBook?.id, compactActions]);
   useLayoutEffect(() => {
     if (!bookActionsOpen) return;
@@ -769,7 +786,7 @@ export function PlayerPane({
                     setSleepCustomDraft("");
                     openNativePlayerSheet("sleep");
                   }}>
-                    <Timer size={16} /> {sleepAtChapterEnd ? "End of chapter" : sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
+                    <Timer size={16} /> <span>{sleepAtChapterEnd ? "End of chapter" : sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}</span>
                   </button>
                   <button
                     type="button"
@@ -895,7 +912,14 @@ export function PlayerPane({
           {native ? bookPageMasthead : <div className="book-page-masthead">{bookPageMasthead}</div>}
 
           <div className="book-heading">
-            <CoverArt book={selectedBook} size="large" />
+            <div className="book-cover-column">
+              <CoverArt book={selectedBook} size="large" />
+              {openBookPreview && selectedBook.source !== "device" && selectedBook.tracks.length > 0 ? (
+                <BookPreviewBar key={selectedBook.id} book={selectedBook} active={previewBookId === selectedBook.id}
+                  onStart={() => openBookPreview(selectedBook)} onStop={stopBookPreview}
+                  onContinue={position => continueBookPreview(selectedBook, position)} />
+              ) : null}
+            </div>
             <div className="meta">
               <div className="heading-top">
                 <span className="eyebrow">
@@ -984,6 +1008,27 @@ export function PlayerPane({
                       </small>
                     </span>
                   </button>
+                  {/* A book in progress is already in Up Next. */}
+                  {selectedBook.progress?.status !== "inProgress" ? (
+                    <button
+                      type="button"
+                      className="book-quick-return book-quick-queue"
+                      aria-pressed={selectedBookQueued}
+                      aria-label={selectedBookQueued ? `Remove ${selectedBook.title} from Up Next` : `Add ${selectedBook.title} to Up Next`}
+                      onClick={() => {
+                        haptic("light");
+                        setQueueSaveFailed(!saveQueueIds(selectedBookQueued
+                          ? queueIds.filter(id => id !== selectedBook.id)
+                          : [...queueIds, selectedBook.id]));
+                      }}
+                    >
+                      {selectedBookQueued ? <Check size={14} /> : <Plus size={14} />}
+                      <span>{selectedBookQueued ? "In Up Next · Remove" : "Add to Up Next"}</span>
+                    </button>
+                  ) : null}
+                  {queueSaveFailed ? (
+                    <span className="download-status" role="alert">Up Next could not be saved. Check available device storage and try again.</span>
+                  ) : null}
                   {playbackBook && playbackBook.id !== selectedBook.id ? (
                     <button type="button" className="book-quick-return" onClick={scrollToPlayer}>
                       <Headphones size={14} />

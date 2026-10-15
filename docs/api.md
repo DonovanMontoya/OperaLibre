@@ -94,6 +94,7 @@ The archive includes accounts, permissions, progress, per-book settings, reading
 | Method | Path | Description |
 | --- | --- | --- |
 | `PUT` | `/api/me/progress-sharing` | Turn shared reading activity on or off for the current user with `{ "shareProgress": bool }`. Optionally carries `announceFinishes` and `notifyFinishes` (both bool); each is left unchanged when omitted, so older clients cannot reset them. Returns the updated account. |
+| `PUT` | `/api/me/avatar` | Choose the current user's picture with `{ "avatar": "owl" }`, or `{ "avatar": null }` to go back to their initial. The value is an identifier of up to 32 lowercase letters, digits, and hyphens; the pictures themselves are drawn by the apps, and one an app does not recognise is shown as the initial. Returns the updated account. Accounts carry it as `avatar`, `null` when unset. |
 | `GET` | `/api/activity/finishes` | The shared "who finished what" feed, newest first, capped at 50: `{ entries, unseenCount, latestId }`. Empty unless the caller both shares progress and has `notifyFinishes` on. Excludes the caller's own finishes, anyone not currently announcing, and books the caller cannot access. |
 | `POST` | `/api/activity/finishes/seen` | Mark the feed read up to `{ "eventId": string }` — normally the `latestId` from a prior read. Only ever moves forward. Returns the refreshed feed. |
 

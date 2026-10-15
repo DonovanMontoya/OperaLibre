@@ -28,6 +28,8 @@ export function SettingsPage({
   audibleManagement,
   continueReadingAutoplay,
   toggleContinueReadingAutoplay,
+  bookPreviewsEnabled,
+  toggleBookPreviewsEnabled,
   audioRef,
   books,
   capabilities,
@@ -68,6 +70,8 @@ export function SettingsPage({
   audibleManagement: ReactNode;
   continueReadingAutoplay: boolean;
   toggleContinueReadingAutoplay: () => void;
+  bookPreviewsEnabled: boolean;
+  toggleBookPreviewsEnabled: () => void;
   audioRef: RefObject<HTMLAudioElement | null>;
   books: Book[];
   capabilities: ServerCapabilities;
@@ -217,6 +221,9 @@ export function SettingsPage({
           clippingEnabled={clippingEnabled}
           clippingAvailable={capabilities.clips}
           toggleClippingEnabled={toggleClippingEnabled}
+          bookPreviewsAvailable={isOperaLibre && !demoMode && !localMode}
+          bookPreviewsEnabled={bookPreviewsEnabled}
+          toggleBookPreviewsEnabled={toggleBookPreviewsEnabled}
           continueReadingAutoplay={continueReadingAutoplay}
           toggleContinueReadingAutoplay={toggleContinueReadingAutoplay}
           followAggressiveness={followAggressiveness}

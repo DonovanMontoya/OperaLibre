@@ -124,10 +124,13 @@ jobs:
       - name: Test development proxy
         run: node --experimental-strip-types --test script/dev_proxy.test.mjs
 
-      - name: Test Duo layouts, offline shelf, modal interactions, and sign-in
+      - name: Test performance runner
+        run: node --test script/performance/run.test.mjs
+
+      - name: Test browser lifecycle without the server
         run: |
           npx playwright install --with-deps chromium
-          npm run test:lifecycle -w @operalibre/web -- modal-focus.spec.ts duo-review.spec.ts duo-layout.spec.ts duo-reader-rail.spec.ts native-viewport.spec.ts address-sign-in.spec.ts audible-management.spec.ts libro-management.spec.ts book-store-settings.spec.ts cover-editor.spec.ts book-details-actions.spec.ts shelf-groups.spec.ts
+          npm run test:lifecycle -w @operalibre/web -- --project=browser
 
       - name: Upload cover editor screenshot
         if: always()
@@ -184,7 +187,7 @@ jobs:
       - name: Test playback progress, queue, and reconnect
         run: |
           npx playwright install --with-deps chromium
-          npm run test:lifecycle -w @operalibre/web -- playback.spec.ts reading-queue.spec.ts
+          npm run test:lifecycle -w @operalibre/web -- --project=server
 
       - name: Upload lifecycle output
         if: failure()

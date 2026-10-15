@@ -101,7 +101,7 @@ export class NativeAudioStateSynchronizer {
   }
 }
 
-export const NATIVE_FOREGROUND_SYNC_TIMEOUT_MS = 5000;
+const NATIVE_FOREGROUND_SYNC_TIMEOUT_MS = 5000;
 
 /**
  * Prevent a foreground server refresh from beating the native player's

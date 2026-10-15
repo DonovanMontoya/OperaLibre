@@ -59,7 +59,7 @@ const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
 const MAX_CHAPTERS = 2_000;
 const MAX_RAW_FIELD_CHARS = 400;
 
-export function emptyAudioFileTags(): AudioFileTags {
+function emptyAudioFileTags(): AudioFileTags {
   return {
     title: null,
     album: null,

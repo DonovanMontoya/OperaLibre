@@ -557,6 +557,11 @@ export type AuthUser = {
    */
   announceFinishes?: boolean;
   notifyFinishes?: boolean;
+  /**
+   * The chosen picture's id, `null` for the initial. Absent where pictures
+   * cannot be saved; see `supportsAvatars`.
+   */
+  avatar?: string | null;
   createdAt: string;
 };
 
