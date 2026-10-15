@@ -2,6 +2,7 @@ import type { AuthUser, Book, Progress } from "./types";
 import { getDeviceBooks, setDeviceBookCompletion } from "./localLibrary";
 import { syncedProgress, writeProgressCheckpoint } from "./reliability";
 import { getServerStorageKey, setBookCompletion } from "./api";
+import { errorMessage } from "./formatting";
 import { cacheLibrary, cacheProgress, warnCacheFailure } from "./offline";
 import { Capacitor } from "@capacitor/core";
 import { haptic } from "./native";
@@ -175,11 +176,9 @@ export function useBookCompletion({
     } catch (completionFailure) {
       setCompletionError({
         bookId: book.id,
-        message: completionFailure instanceof Error
-          ? completionFailure.message
-          : resetToUnplayed
-            ? `Could not mark ${book.title} unplayed.`
-            : `Could not mark ${book.title} ${finished ? "finished" : "unfinished"}.`
+        message: errorMessage(completionFailure, resetToUnplayed
+          ? `Could not mark ${book.title} unplayed.`
+          : `Could not mark ${book.title} ${finished ? "finished" : "unfinished"}.`)
       });
       return false;
     } finally {

@@ -1,7 +1,7 @@
 import { AlertTriangle, ArrowDown, ArrowUp, Pause, Play, X, ArrowUpRight, BookOpen, Check, ChevronDown, Clock, LoaderCircle, Moon, PlayCircle, RefreshCw, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { cancelBookSyncSchedule, controlSyncJob, removeSyncJob, generateSyncMap, getBooks, getSyncReport, getSyncSweep, listJobs, listSyncSchedules, runSyncSweep, scheduleBookSync, setSyncLanguage, setSyncSweep, type SyncSchedule, type SyncSweep } from "./api";
-import { formatTime } from "./formatting";
+import { errorMessage, formatTime } from "./formatting";
 import { jobElapsedMinutes } from "./jobTiming";
 import {
   syncFeedChanged,
@@ -72,7 +72,7 @@ function SyncChapterGrades({ report, onRerun, onLanguage, canSync }: {
       setOutcome({ message: done, failed: false });
       setSelected([]);
     } catch (err) {
-      setOutcome({ message: err instanceof Error ? err.message : failure, failed: true });
+      setOutcome({ message: errorMessage(err, failure), failed: true });
     } finally {
       setBusy(false);
     }
@@ -170,7 +170,7 @@ function SyncSweepPanel({ syncEnabled, revision, onQueued }: {
         if (!adopted) { if (next.localTime) setTime(next.localTime); setBooksPerNight(next.booksPerNight ?? 2); adopted = true; }
         setError(null);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Could not load the nightly sync.");
+        if (!cancelled) setError(errorMessage(err, "Could not load the nightly sync."));
       } finally {
         if (!cancelled) timer = window.setTimeout(() => void refresh(), 15000);
       }
@@ -190,7 +190,7 @@ function SyncSweepPanel({ syncEnabled, revision, onQueued }: {
         limit,
       ));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save the nightly sync.");
+      setError(errorMessage(err, "Could not save the nightly sync."));
     } finally {
       setBusy(null);
     }
@@ -208,7 +208,7 @@ function SyncSweepPanel({ syncEnabled, revision, onQueued }: {
       if (result.error) setError(result.error);
       onQueued();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start a full sync.");
+      setError(errorMessage(err, "Could not start a full sync."));
     } finally {
       setBusy(null);
     }
@@ -315,7 +315,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
     try {
       next = { bookId, data: await getSyncReport(bookId) };
     } catch (err) {
-      next = { bookId, error: err instanceof Error ? err.message : "Could not load this book’s chapter grades." };
+      next = { bookId, error: errorMessage(err, "Could not load this book’s chapter grades.") };
     }
     // Drop an answer for a book that was closed or switched away from meanwhile.
     setOpenReport((current) => current?.bookId === bookId ? next : current);
@@ -351,7 +351,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
       setSchedulingBook(null);
       setRevision((value) => value + 1);
     } catch (err) {
-      setActionError({ bookId, message: err instanceof Error ? err.message : "Could not update this book’s sync." });
+      setActionError({ bookId, message: errorMessage(err, "Could not update this book’s sync.") });
     } finally {
       setBusyBook(null);
     }
@@ -374,7 +374,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
       try {
         await setSyncLanguage(bookId, saved.previousLanguageOverride, saved.languageOverride ?? undefined);
       } catch {
-        const reason = err instanceof Error ? err.message : "Could not queue the sync.";
+        const reason = errorMessage(err, "Could not queue the sync.");
         throw new Error(`${reason} The language could not be restored. Check the book’s language setting before retrying.`);
       }
       throw err;
@@ -394,7 +394,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
       setFeed({ jobs: sortSyncJobs(received), now: Date.now() });
       setRevision((value) => value + 1);
     } catch (err) {
-      setQueueError(err instanceof Error ? err.message : "Could not update the sync queue.");
+      setQueueError(errorMessage(err, "Could not update the sync queue."));
     } finally { setBusyJob(null); }
   }
 
@@ -406,7 +406,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
         const next = await listSyncSchedules();
         if (!cancelled) { setSchedules(next); setScheduleError(null); }
       } catch (err) {
-        if (!cancelled) setScheduleError(err instanceof Error ? err.message : "Could not load schedules.");
+        if (!cancelled) setScheduleError(errorMessage(err, "Could not load schedules."));
       }
       try {
         const freshBooks = await getBooks();
@@ -455,7 +455,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
         schedule(syncJobPollDelay(next));
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Could not refresh sync jobs.");
+        setError(errorMessage(err, "Could not refresh sync jobs."));
         schedule(syncJobPollDelay(seen?.jobs ?? null));
       } finally {
         inFlight = false;

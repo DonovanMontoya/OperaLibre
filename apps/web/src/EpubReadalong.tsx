@@ -63,6 +63,7 @@ import type { Chapter, SyncFragment, SyncRecoveryGap } from "./types";
 import { readStoredValue, writeStoredValue } from "./appStorage";
 import { readReaderFollowEnabled, writeReaderFollowEnabled } from "./readalongPreferences";
 import { useLandscapeOrientation, useReadingRoomWindow, useWideSpreadWindow } from "./useOrientation";
+import { errorMessage } from "./formatting";
 
 const EMPTY_ILLUSTRATION_GAPS: IllustrationGap[] = [];
 
@@ -1393,7 +1394,7 @@ export function EpubReadalong({
         if (!cancelled && !abortController.signal.aborted) {
           console.error("EPUB readalong failed", error);
           setError("This EPUB could not be opened inline.");
-          setErrorDetail(error instanceof Error ? error.message : String(error));
+          setErrorDetail(errorMessage(error, String(error)));
         }
       }
     };
