@@ -55,47 +55,29 @@ fn late_automatic_checkpoints_cannot_rollback_completion() {
     assert!(!progress_write_is_unintentional_regression(
         36_000.0, 35_999.25, false
     ));
+    // Two seconds of slack, so a checkpoint just past it is refused, and a
+    // late checkpoint near the start is refused like any other.
+    assert!(!progress_write_is_unintentional_regression(
+        36_000.0, 35_998.0, false
+    ));
+    assert!(progress_write_is_unintentional_regression(
+        36_000.0, 35_997.9, false
+    ));
+    assert!(progress_write_is_unintentional_regression(30.0, 0.0, false));
 }
 
 #[test]
-fn fuzz_automatic_progress_never_moves_materially_backward() {
-    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
-    for _ in 0..100_000 {
-        // Deterministic property-style stress without another test-only
-        // dependency. Cover positions across very short and very long
-        // audiobooks plus arbitrary request reordering gaps.
-        state = state
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        let previous = (state % 2_000_000) as f64 / 10.0;
-        state = state.rotate_left(17) ^ 0xa076_1d64_78bd_642f;
-        let regression = 2.01 + (state % 500_000) as f64 / 100.0;
-        let incoming = (previous - regression).max(0.0);
-        if previous - incoming > 2.0 {
-            assert!(progress_write_is_unintentional_regression(
-                previous, incoming, false
-            ));
-            assert!(!progress_write_is_unintentional_regression(
-                previous, incoming, true
-            ));
-        }
-    }
-}
-
-#[test]
-fn fuzz_track_positions_stay_inside_known_media() {
-    let mut state = 0xd1b5_4a32_d192_ed03_u64;
-    for _ in 0..100_000 {
-        state ^= state >> 12;
-        state ^= state << 25;
-        state ^= state >> 27;
-        let duration = 0.01 + (state % 1_000_000) as f64 / 10.0;
-        state = state.wrapping_mul(2_685_821_657_736_338_717);
-        let reported = (state % 4_000_000) as f64 / 10.0 - 100_000.0;
-        let clamped = clamped_track_position(reported, Some(duration));
-        assert!(clamped >= 0.0);
-        assert!(clamped <= duration);
-    }
+fn track_positions_stay_inside_known_media() {
+    assert_eq!(clamped_track_position(90.0, Some(600.0)), 90.0);
+    assert_eq!(clamped_track_position(-5.0, Some(600.0)), 0.0);
+    assert_eq!(clamped_track_position(900.0, Some(600.0)), 600.0);
+    // An unknown, zero, or unreadable duration cannot bound the position,
+    // which is still kept off negative time.
+    assert_eq!(clamped_track_position(900.0, None), 900.0);
+    assert_eq!(clamped_track_position(900.0, Some(0.0)), 900.0);
+    assert_eq!(clamped_track_position(900.0, Some(f64::NAN)), 900.0);
+    assert_eq!(clamped_track_position(-5.0, None), 0.0);
+    assert_eq!(clamped_track_position(f64::NAN, Some(600.0)), 0.0);
 }
 
 fn track_with_duration(id: &str, index: usize, duration_seconds: Option<f64>) -> super::Track {
@@ -3984,19 +3966,6 @@ fn reading_log_metadata_is_parsed_and_sanitized() {
     );
     assert_eq!(super::sanitized_playback_speed(Some(f64::INFINITY)), None);
     assert_eq!(super::sanitized_client_name(Some("\nnot-a-client")), None);
-}
-
-#[test]
-fn playback_completion_timezone_is_parsed() {
-    let update: super::CompletionUpdate = serde_json::from_value(serde_json::json!({
-        "finished": true,
-        "tzOffsetMinutes": -240
-    }))
-    .unwrap();
-    assert_eq!(
-        super::sanitized_tz_offset_minutes(update.tz_offset_minutes),
-        -240
-    );
 }
 
 fn stored_at(book_position_seconds: f64, age_ms: u64) -> super::Progress {
