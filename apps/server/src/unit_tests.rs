@@ -7792,15 +7792,19 @@ fn leftover_download_archives_are_swept_at_startup() {
     let dir = root.path();
     std::fs::write(dir.join("operalibre-abc123.zip"), b"partial").unwrap();
     std::fs::write(dir.join("operalibre-def456.zip"), b"partial").unwrap();
+    std::fs::write(dir.join("operalibre-clip-0a1b.m4a"), b"partial").unwrap();
     std::fs::write(dir.join("unrelated.zip"), b"keep").unwrap();
+    std::fs::write(dir.join("chapter.m4a"), b"keep").unwrap();
     std::fs::write(dir.join("operalibre-notes.txt"), b"keep").unwrap();
     std::fs::create_dir(dir.join("operalibre-folder.zip")).unwrap();
 
-    assert_eq!(super::sweep_download_temp_dir(dir).unwrap(), 2);
+    assert_eq!(super::sweep_download_temp_dir(dir).unwrap(), 3);
 
     assert!(!dir.join("operalibre-abc123.zip").exists());
     assert!(!dir.join("operalibre-def456.zip").exists());
+    assert!(!dir.join("operalibre-clip-0a1b.m4a").exists());
     assert!(dir.join("unrelated.zip").exists());
+    assert!(dir.join("chapter.m4a").exists());
     assert!(dir.join("operalibre-notes.txt").exists());
     assert!(dir.join("operalibre-folder.zip").is_dir());
     assert_eq!(super::sweep_download_temp_dir(dir).unwrap(), 0);
