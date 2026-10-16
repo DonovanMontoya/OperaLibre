@@ -337,6 +337,13 @@ export function PlayerPane({
   }, [playbackBook?.id, nativePlayerView, isViewingPlayingBook]);
   const [contentsTab, setContentsTab] = useState<"chapters" | "clips">("chapters");
   const contentsId = useId();
+  /** Chapters and clips share the book's contents area as two tabs. */
+  const contentsTabbed = Boolean(capabilities.clips && readerPreferences.clippingEnabled && selectedBook && selectedBook.source !== "device");
+  function selectContentsTab(tab: "chapters" | "clips") {
+    setContentsTab(tab);
+    // Choosing the tab asks for the list; it stays collapsible from its header.
+    if (tab === "chapters") setChaptersOpen(true);
+  }
   useEffect(() => setContentsTab("chapters"), [selectedBook?.id]);
   const phoneWidth = usePhoneWidthWindow();
   const compactActions = native || phoneWidth;
@@ -1510,7 +1517,7 @@ export function PlayerPane({
             </div>
           ) : null}
 
-          {(capabilities.clips && readerPreferences.clippingEnabled) && selectedBook.source !== "device" ? (
+          {contentsTabbed ? (
             <div className="book-contents-tabs" role="tablist" aria-label="Book contents">
               {(["chapters", "clips"] as const).map((tab) => (
                 <button type="button" role="tab" key={tab} id={`${contentsId}-${tab}`}
@@ -1520,25 +1527,24 @@ export function PlayerPane({
                     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
                     event.preventDefault();
                     const next = event.key === "Home" ? "chapters" : event.key === "End" ? "clips" : tab === "chapters" ? "clips" : "chapters";
-                    setContentsTab(next);
+                    selectContentsTab(next);
                     document.getElementById(`${contentsId}-${next}`)?.focus();
                   }}
-                  onClick={() => { haptic("light"); setContentsTab(tab); }}>
+                  onClick={() => { haptic("light"); selectContentsTab(tab); }}>
                   {tab === "chapters" ? "Chapters" : "Clips"}
                 </button>
               ))}
             </div>
           ) : null}
-          <div role={(capabilities.clips && readerPreferences.clippingEnabled) && selectedBook.source !== "device" ? "tabpanel" : undefined}
+          <div role={contentsTabbed ? "tabpanel" : undefined}
             id={`${contentsId}-panel`} aria-labelledby={`${contentsId}-${contentsTab}`}>
-          {contentsTab === "clips" && (capabilities.clips && readerPreferences.clippingEnabled) && selectedBook.source !== "device" ? (
+          {contentsTab === "clips" && contentsTabbed ? (
             <BookClips key={selectedBook.id} book={selectedBook} userId={userId} refreshKey={clipsRefreshKey}
               open={(clipId) => openBookClips(selectedBook, clipId)}
               preview={(clip) => previewBookClip(selectedBook, clip)} stop={clips.stopAudition}
               playingClipId={clips.playingClipId} previewPending={clipPreviewPending} />
           ) : selectedChapterSegments.length > 0 ? (
             <section className="track-list-section" ref={trackListSectionRef}>
-              {!(capabilities.clips && readerPreferences.clippingEnabled) || selectedBook.source === "device" ? (
               <button
                 type="button"
                 className="track-list-header track-list-toggle"
@@ -1557,8 +1563,7 @@ export function PlayerPane({
                   <ChevronDown size={14} className={`toggle-chevron ${chaptersOpen ? "open" : ""}`} />
                 </span>
               </button>
-              ) : null}
-              {chaptersOpen || ((capabilities.clips && readerPreferences.clippingEnabled) && selectedBook.source !== "device") ? (
+              {chaptersOpen ? (
                 <div className="track-list" ref={chaptersListRef}>
                   {selectedChapterSegments.map((chapter, index) => (
                     <button
@@ -1575,7 +1580,7 @@ export function PlayerPane({
                 </div>
               ) : null}
             </section>
-          ) : <p className="book-no-chapters">This book has no chapter markers.</p>}
+          ) : contentsTabbed ? <p className="book-no-chapters">This book has no chapter markers.</p> : null}
           </div>
           {native && nativeTab === "shelf" && nativePlayerView === "details" && showChapterJumpTop ? (
             <button type="button" className="chapter-jump-top" onClick={jumpToPlayerTop} aria-label="Jump to top of book details">
