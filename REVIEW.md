@@ -4,7 +4,8 @@ OperaLibre is a self-hosted audiobook server: a Rust `axum` API in
 `apps/server`, a React frontend in `apps/web` shared by the web app and the
 Capacitor iOS and Android apps, and native code for background audio,
 downloads, lock-screen controls, and CarPlay. `AGENTS.md` holds the project
-rules; its "Project invariants" section is the detail behind this file.
+rules; its "Project invariants" section covers progress, read-along mapping,
+and compatibility in more detail.
 
 Failure here means a listener loses their place, their data leaks, or an
 existing install or client breaks. Every posted thread must be resolved before
@@ -75,7 +76,7 @@ Everything else is Nit at most.
 
 ## Do not report
 
-- What CI enforces: formatting, Clippy, ESLint, TypeScript, RustSec and npm
+- What CI enforces: formatting, Clippy, oxlint, TypeScript, RustSec and npm
   audits, dependency review, CodeQL.
 - Lockfiles, bundled assets under `apps/web/public/`, and build output.
 - Fake values in tests and fixtures.
