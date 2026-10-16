@@ -1,7 +1,10 @@
+import { BookClips } from "./BookClips";
+import type { Clip } from "./clips";
 import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BookPreviewBar, type PreviewPosition } from "./BookPreviewBar";
 import { BookCredits } from "./BookCredits";
 import type { useBookCompletion } from "./useBookCompletion";
+import type { useClips } from "./useClips";
 import type { useMetadataEditor } from "./useMetadataEditor";
 import type { useOfflineDownloads } from "./useOfflineDownloads";
 import type { useReadalong } from "./useReadalong";
@@ -85,6 +88,7 @@ export function PlayerPane({
   chapterSegments,
   chaptersListRef,
   chaptersOpen,
+  clips,
   closeReadalong,
   completionError,
   completionPendingBookId,
@@ -112,6 +116,11 @@ export function PlayerPane({
   nativeTab,
   nextChapter,
   offlineDownloads,
+  openBookClips,
+  previewBookClip,
+  clipPreviewPending,
+  clipsRefreshKey,
+  userId,
   openNativePlayerSheet,
   openPlaybackView,
   openBookPreview,
@@ -177,6 +186,7 @@ export function PlayerPane({
   chapterSegments: ChapterSegment[];
   chaptersListRef: RefObject<HTMLDivElement | null>;
   chaptersOpen: boolean;
+  clips: ReturnType<typeof useClips>;
   closeReadalong: () => void;
   completionError: DeviceNotice | null;
   completionPendingBookId: string | null;
@@ -204,6 +214,11 @@ export function PlayerPane({
   nativeTab: NativeTab;
   nextChapter: () => void;
   offlineDownloads: ReturnType<typeof useOfflineDownloads>;
+  openBookClips: (book: Book, clipId?: string) => void;
+  previewBookClip: (book: Book, clip: Clip) => void;
+  clipPreviewPending: boolean;
+  clipsRefreshKey: string | null;
+  userId: string;
   openNativePlayerSheet: (sheet: Exclude<NativePlayerSheet, null>) => void;
   openPlaybackView: (view: "now" | "details" | "chapters") => void;
   openBookPreview: ((book: Book) => void) | null;
@@ -300,6 +315,36 @@ export function PlayerPane({
     setEbookUploadFile
   } = uploads;
 
+  const nowArtworkRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const artwork = nowArtworkRef.current;
+    const cover = artwork?.querySelector<HTMLElement>(".large-cover");
+    if (!artwork || !cover) return;
+    const positionRibbon = () => {
+      const frame = artwork.getBoundingClientRect();
+      const bounds = cover.getBoundingClientRect();
+      artwork.style.setProperty("--cover-left", `${bounds.left - frame.left}px`);
+      artwork.style.setProperty("--cover-top", `${bounds.top - frame.top}px`);
+      artwork.style.setProperty("--cover-width", `${bounds.width}px`);
+      artwork.style.setProperty("--cover-height", `${bounds.height}px`);
+    };
+    positionRibbon();
+    const observer = new ResizeObserver(positionRibbon);
+    observer.observe(artwork);
+    observer.observe(cover);
+    window.addEventListener("resize", positionRibbon);
+    return () => { observer.disconnect(); window.removeEventListener("resize", positionRibbon); };
+  }, [playbackBook?.id, nativePlayerView, isViewingPlayingBook]);
+  const [contentsTab, setContentsTab] = useState<"chapters" | "clips">("chapters");
+  const contentsId = useId();
+  /** Chapters and clips share the book's contents area as two tabs. */
+  const contentsTabbed = Boolean(capabilities.clips && readerPreferences.clippingEnabled && selectedBook && selectedBook.source !== "device");
+  function selectContentsTab(tab: "chapters" | "clips") {
+    setContentsTab(tab);
+    // Choosing the tab asks for the list; it stays collapsible from its header.
+    if (tab === "chapters") setChaptersOpen(true);
+  }
+  useEffect(() => setContentsTab("chapters"), [selectedBook?.id]);
   const phoneWidth = usePhoneWidthWindow();
   const compactActions = native || phoneWidth;
   const [bookActionsOpen, setBookActionsOpen] = useState(false);
@@ -632,8 +677,18 @@ export function PlayerPane({
                   them either side of its fold. Everywhere else they take no
                   box and their children lay out in the card's grid. */}
               <div className="native-now-half native-now-lead">
-                <div className="native-now-artwork">
+                <div className="native-now-artwork" ref={nowArtworkRef}>
                   <CoverArt book={playbackBook} size="large" />
+                  {clips.visible ? (
+                    <button type="button" className="native-cover-clip" aria-label="Save a clip of the last 30 seconds and the next 10" onClick={clips.saveMoment}>
+                      <Bookmark size={18} aria-hidden="true" />
+                    </button>
+                  ) : null}
+                  {clips.visible && (clips.error || clips.lastSavedId) ? (
+                    <button type="button" className="native-cover-clip-notice" aria-label={clips.error ? `${clips.error} Open clips` : "Clip saved. Open clips"} onClick={() => openBookClips(playbackBook)}>
+                      <span role="status">{clips.error ? "Clip not saved" : "Clip saved"}</span>
+                    </button>
+                  ) : null}
                 </div>
 
                 <div className="native-now-copy">
@@ -1052,6 +1107,8 @@ export function PlayerPane({
             </div>
           </div>
 
+
+
           {selectedBook.source !== "device" && !demoMode && downloadedBookIds.has(selectedBook.id) ? (
             <section className="book-offline-files" aria-label="Offline files">
               <OfflineBookReadiness book={selectedBook} readiness={readiness[selectedBook.id]} />
@@ -1460,7 +1517,33 @@ export function PlayerPane({
             </div>
           ) : null}
 
-          {selectedChapterSegments.length > 0 ? (
+          {contentsTabbed ? (
+            <div className="book-contents-tabs" role="tablist" aria-label="Book contents">
+              {(["chapters", "clips"] as const).map((tab) => (
+                <button type="button" role="tab" key={tab} id={`${contentsId}-${tab}`}
+                  aria-selected={contentsTab === tab} aria-controls={`${contentsId}-panel`}
+                  tabIndex={contentsTab === tab ? 0 : -1}
+                  onKeyDown={(event) => {
+                    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                    event.preventDefault();
+                    const next = event.key === "Home" ? "chapters" : event.key === "End" ? "clips" : tab === "chapters" ? "clips" : "chapters";
+                    selectContentsTab(next);
+                    document.getElementById(`${contentsId}-${next}`)?.focus();
+                  }}
+                  onClick={() => { haptic("light"); selectContentsTab(tab); }}>
+                  {tab === "chapters" ? "Chapters" : "Clips"}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div role={contentsTabbed ? "tabpanel" : undefined}
+            id={`${contentsId}-panel`} aria-labelledby={`${contentsId}-${contentsTab}`}>
+          {contentsTab === "clips" && contentsTabbed ? (
+            <BookClips key={selectedBook.id} book={selectedBook} userId={userId} refreshKey={clipsRefreshKey}
+              open={(clipId) => openBookClips(selectedBook, clipId)}
+              preview={(clip) => previewBookClip(selectedBook, clip)} stop={clips.stopAudition}
+              playingClipId={clips.playingClipId} previewPending={clipPreviewPending} />
+          ) : selectedChapterSegments.length > 0 ? (
             <section className="track-list-section" ref={trackListSectionRef}>
               <button
                 type="button"
@@ -1497,7 +1580,8 @@ export function PlayerPane({
                 </div>
               ) : null}
             </section>
-          ) : null}
+          ) : contentsTabbed ? <p className="book-no-chapters">This book has no chapter markers.</p> : null}
+          </div>
           {native && nativeTab === "shelf" && nativePlayerView === "details" && showChapterJumpTop ? (
             <button type="button" className="chapter-jump-top" onClick={jumpToPlayerTop} aria-label="Jump to top of book details">
               <ArrowUp size={16} />

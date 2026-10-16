@@ -11020,6 +11020,10 @@ html:not(.native-app) .native-player-return-icon {
     text-align: left;
   }
 
+  html:not(.native-app) .native-now-copy.has-clipper {
+    padding-left: 0;
+  }
+
   html:not(.native-app) .native-now-copy h2 {
     max-width: none;
     margin: 0;
@@ -14264,10 +14268,544 @@ html.native-app .recent-row {
   letter-spacing: 0.05em;
 }
 
+.clip-sheet {
+  max-height: min(82dvh, 720px);
+}
+
+.clip-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(214, 120, 96, 0.4);
+  border-radius: 12px;
+  color: #f3c3b4;
+  background: rgba(139, 46, 31, 0.24);
+  font-family: "Fraunces", serif;
+  font-size: 0.86rem;
+}
+
+.clip-error button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  padding: 4px;
+  color: inherit;
+}
+
+.clip-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid rgba(241, 231, 208, 0.13);
+  list-style: none;
+}
+
+.clip-row {
+  border-bottom: 1px solid rgba(241, 231, 208, 0.13);
+}
+
+.clip-row-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 62px;
+  padding: 8px 3px;
+}
+
+.clip-play {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(217, 181, 116, 0.32);
+  border-radius: 999px;
+  color: var(--gold-soft);
+  background: rgba(217, 181, 116, 0.08);
+}
+
+.clip-row.playing .clip-play {
+  color: var(--on-gold);
+  background: var(--gold-soft);
+}
+
+.clip-summary {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  color: rgba(255, 250, 237, 0.88);
+  text-align: left;
+}
+
+.clip-summary strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Fraunces", serif;
+  font-size: 1rem;
+  font-weight: 400;
+}
+
+.clip-row.playing .clip-summary strong {
+  color: var(--gold-soft);
+}
+
+.clip-summary small {
+  color: rgba(241, 231, 208, 0.5);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.61rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.05em;
+}
+
+.clip-note {
+  display: -webkit-box;
+  overflow: hidden;
+  color: rgba(241, 231, 208, 0.62);
+  font-family: "Fraunces", serif;
+  font-size: 0.84rem;
+  font-style: italic;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.clip-row-chevron {
+  color: rgba(217, 181, 116, 0.55);
+  transition: transform 0.18s ease;
+}
+
+.clip-row.open .clip-row-chevron {
+  transform: rotate(180deg);
+}
+
+.clip-editor {
+  display: grid;
+  gap: 12px;
+  padding: 2px 3px 18px;
+}
+
+.clip-dial-block {
+  display: grid;
+  gap: 5px;
+}
+
+/* The frame stays put and the audio is dragged beneath it. Vertical swipes
+   still scroll the sheet. */
+.clip-dial {
+  position: relative;
+  height: 78px;
+  border-radius: 16px;
+  cursor: grab;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.clip-dial.dragging {
+  cursor: grabbing;
+}
+
+.clip-dial:focus-visible {
+  outline: 2px solid rgba(217, 181, 116, 0.6);
+  outline-offset: 3px;
+}
+
+.clip-dial-audio {
+  position: absolute;
+  inset: 12px 0;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 13%, #000 87%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 13%, #000 87%, transparent);
+}
+
+.clip-dial-audio i {
+  position: absolute;
+  top: 50%;
+  width: max(2px, calc(var(--clip-dial-pitch) * 0.5));
+  border-radius: 999px;
+  background: rgba(241, 231, 208, 0.2);
+  transform: translateY(-50%);
+}
+
+.clip-dial-audio i.kept {
+  background: rgba(255, 250, 237, 0.86);
+}
+
+.clip-dial-audio i.played {
+  background: var(--gold-soft);
+}
+
+/* Matches the share of the dial the clip is drawn across. */
+.clip-dial-frame {
+  position: absolute;
+  inset: 0 20%;
+  border: 2px solid var(--gold-soft);
+  border-radius: 16px;
+  background: rgba(217, 181, 116, 0.07);
+  pointer-events: none;
+}
+
+.clip-dial-times {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-inline: 20%;
+  color: rgba(241, 231, 208, 0.42);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.61rem;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+/* Each time is centred on the edge of the frame it belongs to. */
+.clip-dial-times output {
+  width: 0;
+  display: flex;
+  justify-content: center;
+  color: var(--paper);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.clip-length {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.clip-length > span,
+.clip-field > span {
+  color: rgba(241, 231, 208, 0.55);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.61rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.clip-length > div {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The length opens the platform's own picker, a wheel on a phone. */
+.clip-length select {
+  min-width: 78px;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid rgba(217, 181, 116, 0.32);
+  border-radius: 999px;
+  color: var(--paper);
+  background: rgba(217, 181, 116, 0.08);
+  font-family: "JetBrains Mono", monospace;
+  /* Below 16px iOS zooms the page when the field takes focus. */
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  text-align-last: center;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.clip-length button {
+  width: 42px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(241, 231, 208, 0.16);
+  border-radius: 999px;
+  color: rgba(255, 250, 237, 0.88);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.clip-length button:disabled,
+.clip-actions button:disabled {
+  opacity: 0.4;
+}
+
+.clip-field {
+  display: grid;
+  gap: 6px;
+}
+
+.clip-field input,
+.clip-field textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(241, 231, 208, 0.16);
+  border-radius: 12px;
+  color: var(--paper);
+  background: rgba(255, 255, 255, 0.05);
+  font-family: "Fraunces", serif;
+  /* Below 16px iOS zooms the page when the field takes focus. */
+  font-size: 1rem;
+  resize: vertical;
+}
+
+.clip-field input::placeholder,
+.clip-field textarea::placeholder {
+  color: rgba(241, 231, 208, 0.36);
+}
+
+.clip-field input:focus,
+.clip-field textarea:focus {
+  border-color: rgba(217, 181, 116, 0.6);
+  outline: none;
+}
+
+.clip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.clip-actions button {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border: 1px solid rgba(241, 231, 208, 0.16);
+  border-radius: 999px;
+  color: rgba(255, 250, 237, 0.88);
+  background: rgba(255, 255, 255, 0.05);
+  font: 600 0.62rem "JetBrains Mono", monospace;
+  letter-spacing: 0.03em;
+}
+
+.clip-actions .clip-save:not(:disabled) {
+  color: var(--on-gold);
+  border-color: var(--gold-soft);
+  background: var(--gold-soft);
+}
+
+.clip-actions .clip-remove {
+  margin-left: auto;
+  color: #f3c3b4;
+  border-color: rgba(214, 120, 96, 0.4);
+}
+
+.clip-sheet-footnote {
+  margin-bottom: 0;
+}
+
+.book-contents-tabs {
+  display: flex;
+  margin: 24px 0 16px;
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.18);
+}
+
+.book-contents-tabs button {
+  flex: 1;
+  min-height: 48px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ink-soft);
+  font: 500 1rem "Fraunces", serif;
+}
+
+.book-contents-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--oxblood);
+  color: var(--oxblood);
+}
+
+.book-clips p {
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.book-clips-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.book-clips-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.14);
+  padding: 8px 0;
+}
+
+.book-clip-play {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--gold-soft);
+  color: #241b14;
+}
+
+.book-clip-detail {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 1;
+  min-width: 0;
+  min-height: 52px;
+  gap: 12px;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.book-clip-detail strong {
+  display: block;
+  overflow-wrap: anywhere;
+  font: 500 1.05rem "Fraunces", serif;
+}
+
+.book-clip-detail small {
+  display: block;
+  margin-top: 5px;
+  color: var(--ink-soft);
+  font: 0.7rem "JetBrains Mono", monospace;
+}
+
+.book-clip-detail svg {
+  flex-shrink: 0;
+}
+
+.book-clips-manage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  border: 0;
+  padding: 12px 0;
+  background: transparent;
+  color: var(--oxblood);
+}
+
+.book-saved-clips {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 72px;
+  margin: 18px 0;
+  padding: 14px 18px;
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
+  border-radius: 14px;
+  color: var(--ink);
+  background: rgba(var(--ink-rgb), 0.035);
+  text-align: left;
+  cursor: pointer;
+}
+
+.book-saved-clips > span {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+}
+
+.book-saved-clips strong {
+  font: 500 1.05rem "Fraunces", serif;
+}
+
+.book-saved-clips small {
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--ink-soft);
+}
+
+.book-saved-clips > svg {
+  flex-shrink: 0;
+}
+
+.book-saved-clips:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  outline-offset: 3px;
+}
+
+.clip-load-error {
+  display: grid;
+  gap: 12px;
+  color: var(--paper);
+}
+
+/* Position against the measured cover without changing its adaptive sizing. */
+.native-now-artwork {
+  position: relative;
+}
+
+.native-cover-clip {
+  position: absolute;
+  left: calc(var(--cover-left, 0px) + var(--cover-width, 100%) - 62px);
+  top: calc(var(--cover-top, 0px) - 2px);
+  z-index: 2;
+  align-self: start;
+  justify-self: end;
+  width: 48px;
+  height: 60px;
+  margin: 0;
+  padding: 12px 0 0;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  border: 0;
+  background: none;
+  color: var(--on-gold);
+  filter: drop-shadow(0 5px 5px rgba(26, 20, 16, 0.25));
+  cursor: pointer;
+}
+
+.native-cover-clip::before {
+  content: "";
+  position: absolute;
+  inset: 0 7px;
+  background: linear-gradient(90deg, #c9a15a, var(--gold-soft) 45%, #cfa862);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% calc(100% - 10px), 0 100%);
+}
+
+.native-cover-clip svg {
+  position: relative;
+}
+
+.native-cover-clip:active {
+  transform: translateY(2px);
+}
+
+.native-cover-clip-notice {
+  position: absolute;
+  left: calc(var(--cover-left, 0px) + var(--cover-width, 100%) / 2);
+  top: calc(var(--cover-top, 0px) + var(--cover-height, 100%) - 56px);
+  transform: translateX(-50%);
+  z-index: 2;
+  align-self: end;
+  justify-self: center;
+  min-height: 44px;
+  margin-bottom: 12px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 12px;
+  background: #241b14;
+  color: #f3ead8;
+  font: 0.75rem "JetBrains Mono", monospace;
+  cursor: pointer;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sleep-sheet,
   .sleep-sheet-scrim {
     animation: none;
+  }
+
+  .clip-row-chevron {
+    transition: none;
   }
 }
 
@@ -17293,6 +17831,11 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
 }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
+  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-copy.has-clipper {
+  padding-left: 0;
+}
+
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
   .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-controls {
   grid-row: 3;
   padding: 16px max(24px, env(safe-area-inset-right)) calc(var(--tabs-h) + 12px)
@@ -19905,6 +20448,7 @@ html.native-app .native-shell > .player-pane.has-native-player.native-player-vie
     }
     & .native-now-copy h2 { font-size: 1.15rem; }
     & .native-now-copy { text-align: left; }
+    & .native-now-copy.has-clipper { padding-left: 0; }
     & .native-now-copy h2 { margin-inline: 0; }
     & .native-now-playing:not(.has-reader) { gap: 8px; }
   }

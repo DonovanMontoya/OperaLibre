@@ -779,6 +779,9 @@ pub(crate) fn download_content_disposition(safe_filename: &str) -> String {
 pub(crate) const DOWNLOAD_TEMP_PREFIX: &str = "operalibre-";
 
 pub(crate) const DOWNLOAD_TEMP_SUFFIX: &str = ".zip";
+/// A clip export's working file, which shares the download prefix so the
+/// startup sweep also clears one left by a crash.
+pub(crate) const CLIP_EXPORT_TEMP_SUFFIX: &str = ".m4a";
 
 /// Remove archives left in the download directory by an earlier process: a
 /// crash or a hard stop mid-download loses the guard that would have deleted
@@ -792,7 +795,7 @@ pub(crate) fn sweep_download_temp_dir(download_temp_dir: &FsPath) -> io::Result<
             continue;
         };
         if !(name.starts_with(DOWNLOAD_TEMP_PREFIX)
-            && name.ends_with(DOWNLOAD_TEMP_SUFFIX)
+            && (name.ends_with(DOWNLOAD_TEMP_SUFFIX) || name.ends_with(CLIP_EXPORT_TEMP_SUFFIX))
             && entry.file_type()?.is_file())
         {
             continue;
