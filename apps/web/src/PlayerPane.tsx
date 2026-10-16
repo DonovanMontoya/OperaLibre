@@ -322,7 +322,8 @@ export function PlayerPane({
   // Car mode only shows while its player can: once playback clears or the
   // view moves away, the normal layout (and its way back to the library)
   // returns, and the choice is only kept for when the player comes back.
-  const carModeActive = carMode && isViewingPlayingBook && nativePlayerView === "now" && Boolean(currentTrack);
+  const carModeAvailable = isViewingPlayingBook && nativePlayerView === "now" && Boolean(currentTrack);
+  const carModeActive = carMode && carModeAvailable;
   const nowArtworkRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const artwork = nowArtworkRef.current;
@@ -678,7 +679,7 @@ export function PlayerPane({
         <Library size={16} />
         <span>Library</span>
       </button>
-      {isViewingPlayingBook && nativePlayerView === "now" && currentTrack ? (
+      {carModeAvailable ? (
         <button type="button" className="car-mode-toggle" ref={carModeButtonRef}
           aria-label="Car mode" aria-pressed={carMode}
           title="Car mode"
