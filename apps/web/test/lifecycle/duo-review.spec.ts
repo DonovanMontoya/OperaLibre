@@ -1124,3 +1124,108 @@ test('a shelf warning opens book details and clears after retrying only missing 
     return offline.isBookDownloaded(book);
   }, book)).toBe(true);
 });
+
+test('a wide browser window can give the whole page to the Shelf', async ({ page }) => {
+  const books = library(8);
+  const book = books[0];
+  book.tracks.forEach(track => { track.streamUrl = `/fixture-${track.index}.wav`; });
+  books[3].readingFile = { id: 'ebook', fileName: 'book.epub', extension: 'epub', contentType: 'application/epub+zip', url: '/fixture-book.epub' };
+  // Opening, closing and putting the Shelf away never save a position; only
+  // playing does.
+  const progressWrites: Array<{ bookId: string; position: number }> = [];
+  page.on('request', request => {
+    const match = /\/api\/books\/([^/]+)\/progress(?:\?|$)/.exec(request.url());
+    if (!match || request.method() === 'GET') return;
+    const body = request.postDataJSON() as { bookPositionSeconds?: number; positionSeconds?: number } | null;
+    progressWrites.push({ bookId: decodeURIComponent(match[1]), position: body?.bookPositionSeconds ?? body?.positionSeconds ?? -1 });
+  });
+  await openShell(page, false, false, true, books);
+  await serveFixtureAudio(page);
+  await page.route('**/fixture-book.epub*', route => route.fulfill({ contentType: 'application/epub+zip', body: 'fixture ebook bytes' }));
+  await page.route(`**/api/books/${book.id}/progress`, route => route.fulfill({ json: {
+    bookId: book.id, trackId: book.tracks[0].id, positionSeconds: 60,
+    bookPositionSeconds: 60, durationSeconds: 240, updatedAt: '2026-09-30T12:00:00Z'
+  } }));
+  const shell = page.locator('.web-shell');
+  await page.getByRole('button', { name: 'Expand shelf' }).click();
+  await expect(shell).toHaveClass(/shelf-expanded/);
+  await expect(page.locator('.player-pane')).toBeHidden();
+  // One page, not the Duo's two leaves: covers by default, reading across, then down.
+  await expect(page.locator('.book-list')).toHaveClass(/is-grid/);
+  await expect(page.locator('.book-list > .book-leaf')).toHaveCount(1);
+  const [first, second] = await page.locator('.book-row').evaluateAll(rows =>
+    rows.slice(0, 2).map(row => row.getBoundingClientRect()).map(({ top, left }) => ({ top, left })));
+  expect(second.top).toBe(first.top);
+  expect(second.left).toBeGreaterThan(first.left);
+
+  await page.reload();
+  await expect(shell).toHaveClass(/shelf-expanded/);
+
+  // A book chosen from the whole Shelf opens in a popup over it; closing the
+  // popup finds the Shelf where it was, with focus back on the book.
+  const pane = page.locator('.library-pane');
+  await pane.evaluate(el => el.scrollTo(0, 400));
+  const scrolled = await pane.evaluate(el => el.scrollTop);
+  expect(scrolled).toBeGreaterThan(0);
+  const row = page.locator('.book-row').filter({ hasText: books[3].title });
+  await row.click();
+  const popup = page.getByRole('dialog', { name: books[3].title });
+  await expect(popup.getByRole('heading', { name: books[3].title })).toBeVisible();
+  await expect(shell).toHaveClass(/shelf-expanded/);
+  await expect(pane).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(popup).toBeHidden();
+  await expect(row).toBeFocused();
+  expect(await pane.evaluate(el => el.scrollTop)).toBe(scrolled);
+  // The reading room opens over the Shelf; the popup steps aside until the
+  // reader closes.
+  await row.click();
+  await popup.getByRole('button', { name: 'Open reader' }).click();
+  await expect(shell).toHaveClass(/reader-open/);
+  await expect(popup).toBeHidden();
+  await page.getByRole('button', { name: 'Close the reader', exact: true }).click();
+  await expect(shell).not.toHaveClass(/reader-open/);
+  await popup.getByRole('button', { name: 'Close book details' }).click();
+  await expect(popup).toBeHidden();
+  expect(progressWrites).toEqual([]);
+
+  // A book picked up from the Shelf plays beneath it in the mini player, and
+  // the Shelf can still be put away; the mini player leads to the reading room.
+  await page.getByRole('button', { name: `Continue reading ${book.title}` }).click();
+  const miniPlayer = page.getByRole('complementary', { name: 'Mini player' });
+  await expect(miniPlayer).toBeVisible();
+  await expect(shell).toHaveClass(/shelf-expanded/);
+  await expect(page.getByRole('button', { name: 'Collapse shelf' })).toBeVisible();
+  await miniPlayer.getByRole('button', { name: 'Open current book' }).click();
+  await expect(shell).not.toHaveClass(/shelf-expanded/);
+  await expect(page.locator('.player-pane')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Expand shelf' })).toBeVisible();
+
+  // The Player tab beside Library does the same from the Shelf's own bar.
+  await page.getByRole('button', { name: 'Expand shelf' }).click();
+  await expect(shell).toHaveClass(/shelf-expanded/);
+  await page.getByRole('group', { name: 'Library navigation' }).getByRole('button', { name: 'Player' }).click();
+  await expect(shell).not.toHaveClass(/shelf-expanded/);
+  await expect(page.locator('.player-pane')).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Library navigation' }).getByRole('button', { name: 'Player' })).toHaveCount(0);
+
+  // Without motion the popup closes at once.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.getByRole('button', { name: 'Expand shelf' }).click();
+  await row.click();
+  await expect(popup).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(popup).toBeHidden();
+  await expect(row).toBeFocused();
+
+  // Playing saved the playing book's place, never another book's, and never 0:00.
+  expect(progressWrites.every(write => write.bookId === book.id && write.position > 0)).toBe(true);
+});
+
+test('a narrow browser window keeps the Shelf beside the reading room', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 800 });
+  await page.addInitScript(() => localStorage.setItem('operalibre.shelfExpanded', 'true'));
+  await openShell(page, false);
+  await expect(page.locator('.web-shell')).not.toHaveClass(/shelf-expanded/);
+  await expect(page.locator('.shelf-expand-button')).toHaveCount(0);
+});

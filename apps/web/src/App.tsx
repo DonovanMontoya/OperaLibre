@@ -16,6 +16,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState
@@ -118,8 +119,11 @@ import {
   readStoredValue,
   unsyncedBookGainStore,
   writeStoredBookGains,
-  writeStoredBookId
+  writeStoredBookId,
+  writeStoredValue
 } from "./appStorage";
+import { useWideSpreadWindow } from "./useOrientation";
+import { containModalFocus } from "./modalFocus";
 import {
   type LibrarySource
 } from "./shelfSort";
@@ -179,6 +183,9 @@ import { usePlaybackRestore } from "./usePlaybackRestore";
 import { useAudioSource } from "./useAudioSource";
 // How long a Play still waiting on the stream shows as loading.
 const PLAY_PENDING_LIMIT_MS = 45_000;
+const SHELF_EXPANDED_STORAGE_KEY = "operalibre.shelfExpanded";
+// Matches the popup's fade-out in the stylesheet.
+const SHELF_BOOK_FADE_OUT_MS = 160;
 
 type AuthState =
   | { phase: "loading" }
@@ -817,6 +824,10 @@ function MainApp({
   // component's lifetime that still reaches the latest selectBook.
   const selectFromShelfRef = useRef<(book: Book) => void>(() => undefined);
   selectFromShelfRef.current = (book) => {
+    if (shelfExpanded) {
+      openShelfBook(book.id);
+      return;
+    }
     withWebViewTransition(() => {
       selectBook(book);
       setLibraryOpen(false);
@@ -1446,6 +1457,21 @@ function MainApp({
     writeReaderOpenFlag
   } = readalong;
 
+  // A wide browser window can give the reading room's place to the Shelf as
+  // one page, with the mini player docked beneath it while a book plays. A
+  // book opened from it is a popup over the Shelf rather than a page in its
+  // place. The browser keeps the choice.
+  const wideWebWindow = useWideSpreadWindow();
+  const [shelfExpandedChoice, setShelfExpandedChoice] = useState(() => readStoredValue(SHELF_EXPANDED_STORAGE_KEY) === "true");
+  const shelfCanExpand = !native && wideWebWindow && books.length > 0;
+  const shelfExpanded = shelfCanExpand && shelfExpandedChoice;
+  // The reading room opens over the Shelf, so a popup it was opened from
+  // steps aside until it closes again.
+  const readerShown = readalong.readalongOpen && !!(readalong.activeCompanion || readalong.showGallery);
+  const shelfBookOpen = shelfExpanded && nativePlayerView !== "now" && !readerShown;
+  // Set for the moment the popup takes to fade out before it closes.
+  const [shelfBookClosing, setShelfBookClosing] = useState(false);
+
   const shelf = useShelf({
     books,
     demoMode,
@@ -1455,7 +1481,8 @@ function MainApp({
     localMode,
     native,
     playbackFold,
-    sentenceFollowAvailable: readalong.sentenceFollowAvailable
+    sentenceFollowAvailable: readalong.sentenceFollowAvailable,
+    shelfExpanded
   });
   const {
     changeShelfLayout,
@@ -1837,6 +1864,66 @@ function MainApp({
     showChapterJumpTop,
     trackListSectionRef
   });
+
+  function setShelfExpanded(next: boolean, then?: () => void) {
+    writeStoredValue(SHELF_EXPANDED_STORAGE_KEY, String(next));
+    withWebViewTransition(() => {
+      setShelfExpandedChoice(next);
+      then?.();
+      setNativePlayerView("now");
+    });
+  }
+
+  function toggleShelfExpanded() {
+    setShelfExpanded(!shelfExpanded);
+  }
+
+  function openShelfBook(bookId: string) {
+    setSelectedBookId(bookId);
+    setNativePlayerView("details");
+  }
+
+  // The popup fades in by itself when it opens (see the stylesheet); closing
+  // waits out a short fade before the page underneath changes.
+  function closeShelfBook() {
+    if (shelfBookClosing) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setNativePlayerView("now");
+      return;
+    }
+    setShelfBookClosing(true);
+    shelfBookCloseTimer.current = window.setTimeout(() => {
+      setShelfBookClosing(false);
+      setNativePlayerView("now");
+    }, SHELF_BOOK_FADE_OUT_MS);
+  }
+  const shelfBookCloseTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(shelfBookCloseTimer.current), []);
+
+  // The popup keeps keyboard focus while it is open and hands it back to the
+  // shelf row it came from; Escape closes it.
+  const closeShelfBookRef = useRef(closeShelfBook);
+  closeShelfBookRef.current = closeShelfBook;
+  useLayoutEffect(() => {
+    const pane = playerPaneRef.current;
+    if (!shelfBookOpen || !pane) return;
+    return containModalFocus(pane, () => closeShelfBookRef.current());
+  }, [playerPaneRef, shelfBookOpen]);
+
+  // Starting a book from its popup fades the popup out as playback begins;
+  // the mini player beneath the Shelf takes over from there.
+  async function playFromShelfBook(book: Book) {
+    closeShelfBook();
+    await playSelectedBook(book);
+  }
+
+  // The playing book's own page lives in the reading room, so reaching for it
+  // from the whole-window Shelf gives the reading room back.
+  function showPlayerFromShelf() {
+    setShelfExpanded(false, () => {
+      if (playbackBook) setSelectedBookId(playbackBook.id);
+    });
+  }
   function openStoreSettings(target: StoreSettingsTarget) {
     setStoreSettingsTarget(target);
     openNativeTab("settings");
@@ -2018,7 +2105,7 @@ function MainApp({
       className={
         native
           ? `shell native-shell tab-${nativeTab} shelf-${shelfLayout}${ipad ? " device-ipad" : ""}${shelfLandscape ? " shelf-landscape" : ""}${shelfFolded ? " shelf-folded" : ""}${nativeTab === "games" ? ` games-${activeGame}` : ""}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}${hasMiniPlayer ? " has-mini-player" : ""}`
-          : `shell web-shell player-view-${nativePlayerView}${readalongPanelElement ? " reader-open" : ""}`
+          : `shell web-shell player-view-${nativePlayerView}${readalongPanelElement ? " reader-open" : ""}${shelfExpanded ? ` shelf-expanded${hasMiniPlayer ? " has-mini-player" : ""}${shelfBookOpen ? ` shelf-book-open${shelfBookClosing ? " shelf-book-closing" : ""}` : ""}` : ""}`
       }
     >
       {native ? <NativeLaunchCover ready={startupViewReady} settled={nativeTabsSettled} onLift={liftLaunchCover} /> : null}
@@ -2171,7 +2258,7 @@ function MainApp({
         nativeTab={nativeTab}
         offlineDownloads={offlineDownloads}
         onConnectServer={onConnectServer}
-        openBookDetails={openBookDetails}
+        openBookDetails={shelfExpanded ? openShelfBook : openBookDetails}
         openStoreSettings={openStoreSettings}
         pausePlayback={pausePlayback}
         playbackBook={playbackBook}
@@ -2180,7 +2267,7 @@ function MainApp({
         refreshLibrary={refreshLibrary}
         resumeSelectedBook={resumeSelectedBook}
         continueReadingBook={continueReadingBook}
-        selectBook={selectBook}
+        selectBook={shelfExpanded ? (book: Book) => openShelfBook(book.id) : selectBook}
         selectFromShelf={selectFromShelf}
         selectedBook={selectedBook}
         setBooks={setBooks}
@@ -2189,6 +2276,10 @@ function MainApp({
         setLibrarySource={setLibrarySource}
         setUserMenuOpen={setUserMenuOpen}
         shelf={shelf}
+        shelfCanExpand={shelfCanExpand}
+        shelfExpanded={shelfExpanded}
+        toggleShelfExpanded={toggleShelfExpanded}
+        openPlayerFromShelf={shelfExpanded ? showPlayerFromShelf : null}
         shelfPull={shelfPull}
         showYourLibrary={showYourLibrary}
         uploads={uploads}
@@ -2254,7 +2345,7 @@ function MainApp({
           setPreviewBook(book);
         } : null}
         playPending={playPending}
-        playSelectedBook={playSelectedBook}
+        playSelectedBook={shelfBookOpen ? playFromShelfBook : playSelectedBook}
         playbackBook={playbackBook}
         playbackDescription={playbackDescription}
         playbackError={playbackError}
@@ -2265,9 +2356,10 @@ function MainApp({
         readalongPanelElement={native ? readalongPanelElement : null}
         readingQueueStorageKey={readingQueueStorageKey}
         readerPreferences={readerPreferences}
+        closeShelfBook={shelfBookOpen ? closeShelfBook : null}
         restartOrPreviousChapter={restartOrPreviousChapter}
         returnToLibrary={returnToLibrary}
-        scrollToPlayer={scrollToPlayer}
+        scrollToPlayer={shelfExpanded ? showPlayerFromShelf : scrollToPlayer}
         scrubbedElapsed={scrubbedElapsed}
         seekBookPosition={seekBookPosition}
         seekBy={seekBy}
@@ -2296,6 +2388,7 @@ function MainApp({
         volume={volume}
         withWebViewTransition={withWebViewTransition}
       />
+      {shelfBookOpen ? <div className="shelf-book-scrim" aria-hidden="true" onClick={closeShelfBook} /> : null}
 
       {/* The browser's reader is a room over the whole shell rather than a
           panel in the player, so it survives moving between the book's page
@@ -2323,7 +2416,7 @@ function MainApp({
             onOpen: openNativePlayerSheet
           } : null}
           restartOrPreviousChapter={restartOrPreviousChapter}
-          scrollToPlayer={scrollToPlayer}
+          scrollToPlayer={shelfExpanded ? showPlayerFromShelf : scrollToPlayer}
           scrubbedElapsed={scrubbedElapsed}
           seekBookPosition={seekBookPosition}
           seekBy={seekBy}

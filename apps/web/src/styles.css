@@ -711,9 +711,10 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .library-sort {
-  /* Wide enough to still read as a labelled control when the view toggle
-     wraps below it on a narrow shelf. */
-  flex: 1 1 150px;
+  /* Gives way before the view toggle does, so a slightly narrower shelf
+     keeps all three on one row; still wide enough to read as a labelled
+     control when the toggle has to wrap below it. */
+  flex: 1 1 120px;
   min-width: 0;
   position: relative;
   display: flex;
@@ -786,8 +787,10 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .view-toggle button {
   /* Three densities have to share the row with the sort control, so each
-     button is only as wide as its glyph needs. */
+     button is only as wide as its glyph needs. Tall enough to tap when the
+     toggle wraps onto a row of its own. */
   width: 34px;
+  min-height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -876,6 +879,17 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .shelf-navigation .source-health-badge { margin-left: 0; }
+
+/* In a wide window the row ends with the toggle that gives the Shelf the
+   whole window: a square icon beside the tabs. */
+.source-toggle.shelf-navigation.with-expand-button { display: flex; }
+.source-toggle.shelf-navigation.with-expand-button > button { flex: 1 1 0; min-width: 0; }
+.source-toggle.shelf-navigation > button.shelf-expand-button {
+  flex: none;
+  width: 44px;
+  color: rgba(241, 231, 208, 0.55);
+}
+.source-toggle.shelf-navigation > button.shelf-expand-button:hover { color: var(--gold-soft); }
 
 .purchase-source { display: grid; gap: 7px; min-width: 0; }
 .purchase-source label {
@@ -5610,6 +5624,660 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   transition: opacity 0.3s ease;
   z-index: 30;
   border: 0;
+}
+
+/* --------- The whole-window Shelf (web) ---------
+   A wide browser window with nothing playing can give the reading room's
+   place to the Shelf. It is one page, set as the shelf mock-up draws it: the
+   bar along the top, the collection's title and order, the progress filter,
+   Up Next across the page, then the books. Up Next's label and the title
+   letters share one margin, so every cover starts on the same line. */
+html:not(.native-app) .web-shell.shelf-expanded {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+html:not(.native-app) .web-shell.shelf-expanded:not(.shelf-book-open) > .player-pane {
+  display: none;
+}
+
+/* A book opened from here is its title page in a popup over the dimmed
+   Shelf, which stays where it was underneath. `body` outranks the details
+   page's own placement rules for the pane. */
+html:not(.native-app) body .web-shell.shelf-expanded.shelf-book-open > .player-pane {
+  position: fixed;
+  z-index: 31;
+  inset: 0;
+  width: min(1040px, 100% - 96px);
+  height: fit-content;
+  max-height: calc(100% - 64px);
+  margin: auto;
+  padding: 28px 44px 44px;
+  gap: 24px;
+  background: var(--paper);
+  background-image: var(--paper-wash);
+  border-radius: 6px;
+  box-shadow:
+    0 0 0 1px rgba(var(--ink-rgb), 0.14),
+    0 48px 120px -36px rgba(0, 0, 0, 0.85);
+}
+
+html:not(.native-app) .web-shell.shelf-expanded.shelf-book-open > .player-pane::before {
+  display: none;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded .shelf-book-close {
+  flex: none;
+  color: var(--ink-faded);
+  border-color: rgba(var(--ink-rgb), 0.18);
+}
+
+.shelf-book-scrim {
+  position: fixed;
+  z-index: 30;
+  inset: 0;
+  background: rgba(10, 7, 5, 0.62);
+}
+
+/* While a book plays, the mini player is the page's footer, set to the same
+   measure as the Shelf above it. */
+html:not(.native-app) .web-shell.shelf-expanded.has-mini-player {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+html:not(.native-app) body .web-shell.shelf-expanded > .library-pane {
+  grid-row: 1;
+}
+
+html:not(.native-app) body .web-shell.shelf-expanded:not(.reader-open) > .mini-player {
+  display: grid;
+  position: relative;
+  inset: auto;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  margin: 0;
+  padding: 12px max(40px, (100% - 1320px) / 2);
+  border-width: 1px 0 0;
+  box-shadow: none;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane {
+  --shelf-margin: 150px;
+  --shelf-gutter: 32px;
+  --status-h: 0px;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  column-gap: 24px;
+  align-content: start;
+  padding: 0 max(40px, (100% - 1320px) / 2) 120px;
+  border-right: 0;
+  box-shadow: none;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane > *,
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane > .library-toolbar > *,
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane:not(.purchase-browsing) .purchase-books-pane > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane > :is(.pane-title, .library-toolbar),
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane > .library-toolbar > .library-search-row,
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane:not(.purchase-browsing) > .purchase-results,
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane:not(.purchase-browsing) :is(.purchase-settings-pane, .purchase-books-pane) {
+  display: contents;
+}
+
+/* The bar: wordmark, Library and Get books, search, then the page's tools.
+   Its rule is the pane's own spine, laid along the first row instead. */
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane::before {
+  position: static;
+  grid-row: 1;
+  grid-column: 1 / -1;
+  width: auto;
+  border-bottom: 1px solid rgba(217, 181, 116, 0.22);
+  background: none;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane > .pane-title > div:first-child {
+  grid-row: 1;
+  grid-column: 1;
+  align-self: center;
+  padding: 22px 0;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane > .pane-title h1 {
+  margin: 0;
+  font-size: 1.9rem;
+  line-height: 1;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane > .pane-title > .pane-actions {
+  grid-row: 1;
+  grid-column: 3;
+  align-self: center;
+  justify-self: end;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane > .library-toolbar > .shelf-navigation {
+  grid-row: 1;
+  grid-column: 2;
+  align-self: stretch;
+  justify-self: start;
+  display: flex;
+  gap: 28px;
+  margin-left: 28px;
+  border-bottom: 0;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .shelf-navigation button {
+  flex: none;
+  min-height: 0;
+  padding: 0;
+  border-bottom-width: 1px;
+  font-size: 1.05rem;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .shelf-navigation button > svg {
+  display: none;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane > .library-toolbar .library-search {
+  grid-row: 1;
+  grid-column: 2;
+  align-self: center;
+  justify-self: end;
+  /* Leaves the tabs beside it their room. */
+  width: min(380px, 100% - 320px);
+}
+
+/* The collection's title and count, and its order and view opposite. */
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane:not(.purchase-browsing) .purchase-books-pane > .continue-reading-library-heading {
+  grid-row: 2;
+  grid-column: 1;
+  align-self: end;
+  margin: 40px 0 0;
+  padding: 0;
+  border: 0;
+  color: var(--paper);
+  font: 400 3.4rem/0.9 "Instrument Serif", serif;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane > .library-toolbar > .library-results-summary {
+  grid-row: 2;
+  grid-column: 2;
+  align-self: end;
+  justify-content: start;
+  gap: 14px;
+  margin: 0;
+  color: rgba(241, 231, 208, 0.55);
+  font: 1.05rem "Fraunces", serif;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane > .library-toolbar > .library-controls {
+  grid-row: 2;
+  /* Across the middle too, so the bar's search keeps its width. */
+  grid-column: 2 / -1;
+  align-self: end;
+  justify-self: end;
+  flex-wrap: nowrap;
+  margin-top: 40px;
+}
+
+/* The sidebar's narrow view buttons have room here to match their neighbours. */
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-controls .view-toggle button {
+  width: 44px;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-controls .view-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-controls > .shelf-expand-button {
+  flex: none;
+  width: 44px;
+  display: grid;
+  place-items: center;
+  color: var(--gold-soft);
+  background: rgba(217, 181, 116, 0.06);
+  border: 1px solid rgba(217, 181, 116, 0.22);
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-controls > .shelf-expand-button:hover {
+  background: rgba(217, 181, 116, 0.14);
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-controls > .library-sort {
+  flex: none;
+  width: 230px;
+}
+
+/* Reading progress, the filter reached for most, as one row of choices with
+   their counts. The rest of the filters open beside it. */
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane > .library-toolbar > .library-status-inline {
+  grid-row: 3;
+  grid-column: 1 / 3;
+  justify-self: start;
+  display: flex;
+  margin-top: 26px;
+  border: 1px solid rgba(217, 181, 116, 0.24);
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-status-inline button {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 42px;
+  padding: 10px 18px;
+  border-right: 1px solid rgba(217, 181, 116, 0.24);
+  background: none;
+  color: rgba(241, 231, 208, 0.72);
+  font: 0.98rem "Fraunces", serif;
+  white-space: nowrap;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-status-inline button:last-child {
+  border-right: 0;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-status-inline button em {
+  color: rgba(241, 231, 208, 0.42);
+  font-style: normal;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-status-inline button.selected {
+  color: var(--gold-soft);
+  background: rgba(217, 181, 116, 0.08);
+  box-shadow: inset 0 0 0 1px var(--gold-soft);
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-status-inline button:disabled {
+  opacity: 0.4;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-status-inline button:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  outline-offset: -2px;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane > .library-toolbar .library-filter-toggle {
+  grid-row: 3;
+  grid-column: 3;
+  align-self: end;
+  justify-self: end;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane > .library-toolbar > :is(.library-filters, .library-active-filters) {
+  margin-top: 16px;
+}
+
+/* The selected progress says which books are showing, so it adds nothing to
+   the Filters count or to the summary of filters that are on. */
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-filters .shelf-facet-status,
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane :is(.library-active-filters.status-only, .active-filter-chip.status, .library-filter-toggle em.counts-status) {
+  display: none;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-filter-toggle em.beside-status {
+  display: inline-grid;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-filter-toggle.status-engaged:not(.engaged, .open) {
+  border-color: rgba(217, 181, 116, 0.16);
+  color: rgba(241, 231, 208, 0.62);
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-filters .shelf-facet-availability {
+  padding-top: 0;
+  border-top: 0;
+}
+
+/* Up Next: its label in the margin and three books across the page. Further
+   books carry on to the right. */
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading {
+  display: grid;
+  grid-template-columns: var(--shelf-margin) repeat(3, minmax(0, 1fr));
+  column-gap: var(--shelf-gutter);
+  margin: 28px 0 0;
+  padding: 26px 0;
+  border-block: 1px solid rgba(217, 181, 116, 0.2);
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading > * {
+  grid-column: 2 / -1;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-heading {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  display: grid;
+  align-content: start;
+  justify-content: start;
+  gap: 6px;
+  margin: 0;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-heading h2 {
+  color: rgba(241, 231, 208, 0.62);
+  font: 0.7rem/1.6 "JetBrains Mono", monospace;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-lead {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-rest {
+  grid-column: 3 / -1;
+  grid-row: 1;
+  grid-auto-flow: column;
+  grid-auto-columns: calc((100% - var(--shelf-gutter)) / 2);
+  gap: var(--shelf-gutter);
+  margin: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(217, 181, 116, 0.3) transparent;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-rest > li {
+  scroll-snap-align: start;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .queue-hint {
+  display: block;
+  grid-column: 3 / -1;
+  grid-row: 1;
+  align-self: center;
+  margin: 0;
+  color: rgba(241, 231, 208, 0.5);
+  font: italic 1rem/1.35 "Instrument Serif", serif;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-book {
+  grid-template-columns: 84px minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
+  height: 100%;
+  padding: 0 46px 0 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-book:hover strong {
+  color: var(--gold-soft);
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-book .cover-mark {
+  width: 84px;
+  height: 84px;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-book img.cover-mark {
+  height: auto;
+  max-height: 112px;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-copy > strong {
+  font-size: 1.15rem;
+  line-height: 1.2;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-author {
+  font-size: 0.95rem;
+}
+
+/* The measure, then what it says beneath: how far, and how long is left. */
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-meter {
+  order: 1;
+  height: 2px;
+  margin-top: 8px;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-progress {
+  order: 2;
+  flex-direction: row-reverse;
+  margin-top: 0;
+  font-size: 0.62rem;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .queue-row .continue-reading-progress {
+  flex-direction: row;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-play {
+  top: 0;
+  right: 0;
+  width: 34px;
+  height: 34px;
+  transform: none;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .queue-actions {
+  top: auto;
+  right: 0;
+  bottom: 0;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .queue-move svg {
+  transform: rotate(-90deg);
+}
+
+/* The books, in whichever view: rows of them, tighter rows, or covers,
+   each a page of equal cells. */
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list {
+  --shelf-tracks: repeat(auto-fill, minmax(380px, 1fr));
+  --shelf-row-gap: 0px;
+  --shelf-column-gap: 40px;
+  display: grid;
+  grid-template-columns: var(--shelf-tracks);
+  gap: var(--shelf-row-gap) var(--shelf-column-gap);
+  align-content: start;
+  margin-top: 34px;
+  /* A shelf in no particular groups still starts where Up Next's books do. */
+  padding: 0 0 0 calc(var(--shelf-margin) + var(--shelf-gutter));
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-compact {
+  --shelf-tracks: repeat(auto-fill, minmax(320px, 1fr));
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-grid {
+  --shelf-tracks: repeat(auto-fill, minmax(170px, 1fr));
+  --shelf-row-gap: 34px;
+  --shelf-column-gap: 24px;
+}
+
+/* An alphabetical shelf is filed under its letters and a grouped one under
+   its series, tag, genre or progress, each named in the margin beside its
+   books and held in view while they pass. */
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list:has(> .book-leaf > .book-sort-run > :is(.book-letter, .book-sort-group)) {
+  grid-template-columns: minmax(0, 1fr);
+  column-gap: 20px;
+  padding-left: 0;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-lettered {
+  grid-template-columns: minmax(0, 1fr) 22px;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list:has(> .book-leaf > .book-sort-run > :is(.book-letter, .book-sort-group)) > .book-leaf {
+  grid-column: 1;
+  grid-row: 1;
+  display: grid;
+  align-content: start;
+  gap: 44px;
+  min-width: 0;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-sort-run:has(> :is(.book-letter, .book-sort-group)) {
+  display: grid;
+  grid-template-columns: var(--shelf-margin) minmax(0, 1fr);
+  column-gap: var(--shelf-gutter);
+  align-items: start;
+  /* A letter jumped to comes to rest where its heading holds. */
+  scroll-margin-top: 36px;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-sort-run:has(> :is(.book-letter, .book-sort-group)) > .book-run-books {
+  grid-column: 2;
+  display: grid;
+  grid-template-columns: var(--shelf-tracks);
+  gap: var(--shelf-row-gap) var(--shelf-column-gap);
+  min-width: 0;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-sort-run > :is(.book-letter, .book-sort-group) {
+  position: sticky;
+  top: 0;
+  grid-column: 1;
+  margin: 0;
+  padding-top: 10px;
+  border: 0;
+  border-top: 1px solid rgba(217, 181, 116, 0.5);
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-letter {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-letter > strong {
+  color: var(--paper);
+  font: 3rem/0.9 "Instrument Serif", serif;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-letter > em {
+  margin-top: 6px;
+  color: rgba(241, 231, 208, 0.42);
+  font: 0.8rem "Fraunces", serif;
+}
+
+/* A group's name is longer than a letter, so it wraps within the margin:
+   what kind of group, its name, then how many. It still folds away. */
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-sort-group-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-sort-group-toggle > strong {
+  grid-column: 1 / -1;
+  overflow: visible;
+  color: var(--paper);
+  font: 1.6rem/1.05 "Instrument Serif", serif;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-sort-group-toggle > em {
+  grid-column: 1 / -1;
+  margin: 0;
+  font: 0.8rem "Fraunces", serif;
+  letter-spacing: 0;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-sort-group-toggle:hover > strong {
+  color: var(--gold-soft);
+}
+
+/* Quiet type under each cover, as on a printed list: the title, who wrote
+   it, how long it runs. A book not yet started needs no label to say so. */
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-grid .book-text strong {
+  min-height: 0;
+  font-size: 1rem;
+  -webkit-line-clamp: 1;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-grid .book-text > strong + span {
+  color: rgba(241, 231, 208, 0.62);
+  font: 0.88rem/1.3 "Fraunces", serif;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-grid .book-text > .book-runtime-tag {
+  font-family: "Fraunces", serif;
+  /* The tag's own size is marked important for every other shelf. */
+  font-size: 0.85rem !important;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-grid .book-runtime-tag > svg {
+  display: none;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-grid .book-progress.notStarted {
+  visibility: hidden;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-lettered > .book-letter-index {
+  grid-column: 2;
+  grid-row: 1;
+  position: sticky;
+  top: max(0px, 50dvh - 260px);
+  align-self: start;
+  display: grid;
+  grid-auto-rows: minmax(0, 1fr);
+  height: min(500px, 100dvh - 72px);
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-lettered > .book-letter-index > button {
+  display: grid;
+  place-items: center;
+  color: rgba(241, 231, 208, 0.58);
+  font: 0.62rem "JetBrains Mono", monospace;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-lettered > .book-letter-index > button:disabled {
+  color: rgba(241, 231, 208, 0.18);
+  /* A press on an empty letter still starts a drag along the strip. */
+  pointer-events: none;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-lettered > .book-letter-index > button[aria-current] {
+  color: var(--gold-soft);
+  font-weight: 700;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-lettered > .book-letter-index > button:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  border-radius: 4px;
+}
+
+/* Get books keeps the same bar, with its stores and order beneath it and
+   the catalog across the page. */
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane.purchase-browsing > .library-toolbar > .purchase-source {
+  grid-row: 2;
+  grid-column: 1 / 3;
+  align-self: end;
+  justify-self: start;
+  width: min(520px, 100%);
+  margin-top: 32px;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane.purchase-browsing > .library-toolbar > .library-results-summary {
+  grid-row: 3;
+  grid-column: 1 / -1;
+  margin-top: 18px;
+}
+
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane.purchase-browsing > .purchase-results {
+  margin-top: 28px;
 }
 
 /* --------- Responsive --------- */
@@ -19893,6 +20561,25 @@ html:not(.native-app) .book-subjects span {
     object-fit: cover;
     animation-duration: 420ms;
   }
+  /* Over the whole-window Shelf the page is a popup: it fades in with a
+     slight lift while the shelf dims, and fades back out while
+     closeShelfBook waits. Plain animations rather than a view transition,
+     which WebKit only runs for the first popup of a session. */
+  html:not(.native-app) body .web-shell.shelf-book-open > .player-pane {
+    animation: shelf-book-in 200ms ease-out both;
+  }
+  html:not(.native-app) body .web-shell.shelf-book-closing > .player-pane {
+    animation: shelf-book-out 160ms ease-in both;
+  }
+  html:not(.native-app) .web-shell.shelf-expanded > .player-pane > * {
+    animation: none;
+  }
+  html:not(.native-app) .shelf-book-scrim {
+    animation: scrim-fade 200ms ease-out both;
+  }
+  html:not(.native-app) .shelf-book-closing > .shelf-book-scrim {
+    animation: shelf-book-scrim-out 160ms ease-in both;
+  }
   /* See withWebViewTransition: after the first turn the sections no longer
      rise in on their own. */
   html[data-web-page-turned]:not(.native-app) .web-shell > .player-pane > * {
@@ -19906,6 +20593,18 @@ html:not(.native-app) .book-subjects span {
 
 @keyframes web-page-in {
   from { opacity: 0; transform: translateX(18px); }
+}
+
+@keyframes shelf-book-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.99); }
+}
+
+@keyframes shelf-book-out {
+  to { opacity: 0; transform: translateY(4px); }
+}
+
+@keyframes shelf-book-scrim-out {
+  to { opacity: 0; }
 }
 
 /* Get Books follows the iPhone's tighter store header. The sidebar is a
