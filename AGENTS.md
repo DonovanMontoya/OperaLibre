@@ -169,6 +169,10 @@ When reporting results, say which checks ran and where: local command, browser,
 simulator, physical device, or remote CI. Do not describe a change as ready to
 merge based on a passing subset of checks.
 
+## Code Review Rules
+
+When reviewing a pull request, read and follow `REVIEW.md`.
+
 ## Project invariants
 
 ### Playback progress
