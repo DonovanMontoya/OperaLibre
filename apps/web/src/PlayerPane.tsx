@@ -131,6 +131,7 @@ export function PlayerPane({
   readingQueueStorageKey,
   readerPreferences,
   restartOrPreviousChapter,
+  closeShelfBook,
   returnToLibrary,
   scrollToPlayer,
   scrubbedElapsed,
@@ -222,6 +223,8 @@ export function PlayerPane({
   readingQueueStorageKey: string;
   readerPreferences: ReturnType<typeof useReaderPreferences>;
   restartOrPreviousChapter: () => void;
+  /** Set while this page is a popup over the whole-window Shelf. */
+  closeShelfBook: (() => void) | null;
   returnToLibrary: () => void;
   scrollToPlayer: () => void;
   scrubbedElapsed: number;
@@ -559,7 +562,7 @@ export function PlayerPane({
       {/* On the shelf tab the details page is a child page of the library
           list, so it always needs its own way back — even with nothing
           playing. "Back to Now Playing" still requires a playing book. */}
-      {nativePlayerView !== "now" && (playbackBook || (native && nativeTab === "shelf")) ? (
+      {nativePlayerView !== "now" && !closeShelfBook && (playbackBook || (native && nativeTab === "shelf")) ? (
         <button
           type="button"
           className="native-player-return"
@@ -583,6 +586,11 @@ export function PlayerPane({
         <span>Vol. I <span className="dot">·</span> The Reading Room</span>
         <span>Folio {String(activeTrackIndex + 1).padStart(3, "0")} / {String(selectedBook?.tracks.length ?? 0).padStart(3, "0")}</span>
       </div>
+      {closeShelfBook ? (
+        <button type="button" className="icon-button shelf-book-close" aria-label="Close book details" data-modal-initial-focus onClick={closeShelfBook}>
+          <X size={18} />
+        </button>
+      ) : null}
     </>
   );
 
@@ -595,6 +603,7 @@ export function PlayerPane({
           ? "" : "fit-playback"
       }`}
       ref={playerPaneRef}
+      {...(closeShelfBook ? { role: "dialog", "aria-modal": true, "aria-label": selectedBook?.title } : {})}
       onScroll={handlePlayerPaneScroll}
       onTouchStart={beginBookDetailsBackSwipe}
       onTouchEnd={finishBookDetailsBackSwipe}

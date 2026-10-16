@@ -101,6 +101,18 @@ their first tag. With multiple tags selected, the first selected tag that a
 book carries determines its group and number; without tag filters, its first
 tag is used.
 
+### Spread out your shelf
+
+In a wide browser window, the **Expand shelf** button at the top of the shelf
+gives it the whole window, with Up Next across the top and your books below
+as covers. Books sorted by title or author are filed under their letters,
+with an A–Z index along the edge to jump between them; sorted by series or
+tag, each group's name sits beside its books. Opening a book shows its page
+in a window over the shelf. While a book plays, the player sits along the
+bottom. Select it, or choose **Player** at the top, to go back to the full
+player. **Collapse shelf** returns to the usual layout, and the browser
+remembers your choice.
+
 ## Add people and recover access
 
 An administrator opens **Administration → Users & access** to add a reader, remove one, reset a password, or limit their shelf to selected books. In the native apps, Administration is inside **Settings**. Give every household member their own account rather than sharing the administrator password. See [Users & Accounts](users.md) for owner and administrator permissions.

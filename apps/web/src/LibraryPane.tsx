@@ -20,6 +20,7 @@ import {
   CloudDownload,
   ExternalLink,
   FolderOpen,
+  Headphones,
   KeyRound,
   LayoutGrid,
   Library,
@@ -29,6 +30,8 @@ import {
   BookHeadphones,
   Network,
   PanelLeftClose,
+  PanelRightClose,
+  PanelRightOpen,
   RefreshCcw,
   Rows3,
   Search,
@@ -109,6 +112,10 @@ export function LibraryPane({
   setLibrarySource,
   setUserMenuOpen,
   shelf,
+  shelfCanExpand,
+  shelfExpanded,
+  toggleShelfExpanded,
+  openPlayerFromShelf,
   shelfPull,
   showYourLibrary,
   uploads,
@@ -159,6 +166,11 @@ export function LibraryPane({
   setLibrarySource: Dispatch<SetStateAction<LibrarySource>>;
   setUserMenuOpen: Dispatch<SetStateAction<boolean>>;
   shelf: ReturnType<typeof useShelf>;
+  shelfCanExpand: boolean;
+  shelfExpanded: boolean;
+  toggleShelfExpanded: () => void;
+  /** Set while the Shelf has the whole window, to give it back to the player. */
+  openPlayerFromShelf: (() => void) | null;
   shelfPull: { pull: number; refreshing: boolean; handlers: { onTouchStart?: undefined; onTouchMove?: undefined; onTouchEnd?: undefined; onTouchCancel?: undefined; }; } | { pull: number; refreshing: boolean; handlers: { onTouchStart: (event: TouchEvent<HTMLElement>) => void; onTouchMove: (event: TouchEvent<HTMLElement>) => void; onTouchEnd: () => void; onTouchCancel: () => void; }; };
   showYourLibrary: () => void;
   uploads: ReturnType<typeof useUploads>;
@@ -393,6 +405,22 @@ export function LibraryPane({
   const statusFiltered = shelfFilters.status !== "all";
   const otherFilterCount = activeShelfFilterCount - (statusFiltered ? 1 : 0);
 
+  // How much of the window the Shelf takes is a way of seeing it, so the
+  // toggle sits with the views rather than the actions: beside Library and
+  // Get books in the sidebar, and with the view buttons once it has room.
+  const shelfExpandLabel = shelfExpanded ? "Collapse shelf" : "Expand shelf";
+  const shelfExpandButton = shelfCanExpand ? (
+    <button
+      type="button"
+      className="shelf-expand-button"
+      aria-label={shelfExpandLabel}
+      title={shelfExpandLabel}
+      onClick={toggleShelfExpanded}
+    >
+      {shelfExpanded ? <PanelRightOpen size={16} /> : <PanelRightClose size={16} />}
+    </button>
+  ) : null;
+
   return (
     <aside ref={libraryPaneRef} className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource !== "local" ? "purchase-browsing" : ""}`} {...shelfPull.handlers}>
       {native ? (
@@ -563,16 +591,24 @@ export function LibraryPane({
       </div>
 
       <div className="library-toolbar">
-        {!demoMode && libroAvailable ? (
+        {(!demoMode && libroAvailable) || shelfCanExpand ? (
           <>
-            <div className="source-toggle shelf-navigation" role="group" aria-label="Library navigation">
+            <div className={`source-toggle shelf-navigation${shelfCanExpand && !shelfExpanded ? " with-expand-button" : ""}`} role="group" aria-label="Library navigation">
               <button type="button" className={librarySource === "local" ? "selected" : ""} onClick={showYourLibrary} aria-pressed={librarySource === "local"}>
                 <Library size={16} /> Library
               </button>
-              <button type="button" className={librarySource !== "local" ? "selected" : ""} onClick={() => setLibrarySource(lastPurchaseSource.current === "audible" && !canBrowseLibation ? "libro" : lastPurchaseSource.current)} aria-pressed={librarySource !== "local"}>
-                <Cloud size={16} /> Get books
-                {currentUser.isAdmin && brokenLibationAccounts.length > 0 ? <span className="source-health-badge" aria-label={`${brokenLibationAccounts.length} Audible accounts need attention`}>{brokenLibationAccounts.length}</span> : null}
-              </button>
+              {!demoMode && libroAvailable ? (
+                <button type="button" className={librarySource !== "local" ? "selected" : ""} onClick={() => setLibrarySource(lastPurchaseSource.current === "audible" && !canBrowseLibation ? "libro" : lastPurchaseSource.current)} aria-pressed={librarySource !== "local"}>
+                  <Cloud size={16} /> Get books
+                  {currentUser.isAdmin && brokenLibationAccounts.length > 0 ? <span className="source-health-badge" aria-label={`${brokenLibationAccounts.length} Audible accounts need attention`}>{brokenLibationAccounts.length}</span> : null}
+                </button>
+              ) : null}
+              {openPlayerFromShelf ? (
+                <button type="button" onClick={openPlayerFromShelf}>
+                  <Headphones size={16} /> Player
+                </button>
+              ) : null}
+              {shelfExpanded ? null : shelfExpandButton}
             </div>
             {librarySource !== "local" ? (
               <>
@@ -687,6 +723,7 @@ export function LibraryPane({
               );
             })}
           </div>
+          {shelfExpanded ? shelfExpandButton : null}
         </div>
 
         {showShelfFilters && filtersOpen ? (

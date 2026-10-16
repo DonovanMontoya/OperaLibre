@@ -22,7 +22,7 @@ import {
   writeCollapsedShelfGroups
 } from "./shelfGroups";
 import { runShelfLayoutTransition } from "./shelfTransition";
-import { readStoredShelfViewMode, type ShelfViewMode, writeStoredShelfViewMode } from "./shelfView";
+import { readStoredShelfViewMode, SHELF_VIEW_MODE_OPTIONS, type ShelfViewMode, writeStoredShelfViewMode } from "./shelfView";
 import {
   bookMatchesFacet,
   bookMatchesShelfDownload,
@@ -51,6 +51,8 @@ import { compareReadingStatus, readingStatus, readingStatusLabel } from "./bookP
 // The window size at which an iPad opens into the two-page spread.
 const SHELF_SPREAD_QUERY = "(min-width: 720px) and (min-height: 500px)";
 
+const EXPANDED_VIEW_MODE_STORAGE_KEY = "operalibre.viewMode.expanded";
+
 export function useShelf({
   books,
   demoMode,
@@ -60,7 +62,8 @@ export function useShelf({
   localMode,
   native,
   playbackFold,
-  sentenceFollowAvailable
+  sentenceFollowAvailable,
+  shelfExpanded
 }: {
   books: Book[];
   demoMode: boolean;
@@ -71,6 +74,7 @@ export function useShelf({
   native: boolean;
   playbackFold: DeviceFoldState;
   sentenceFollowAvailable: boolean;
+  shelfExpanded: boolean;
 }) {
   const [sortMode, setSortMode] = useState<SortMode>(() => readStoredSortMode("local"));
   const [sortReversed, setSortReversed] = useState(() => readStoredValue("operalibre.sortReversed.local") === "true");
@@ -79,6 +83,13 @@ export function useShelf({
   const [startsOnFullShelf] = useState(() => native && ipad && window.matchMedia(SHELF_SPREAD_QUERY).matches);
   const [viewMode, setViewMode] = useState<ShelfViewMode>(() => startsOnFullShelf ? "grid" : readStoredShelfViewMode());
   const [purchaseViewMode, setPurchaseViewMode] = useState<ShelfViewMode>(readStoredPurchaseViewMode);
+  // The whole-window Shelf keeps a view of its own, covers until the reader
+  // picks another, so widening it never changes how the narrow Shelf reads.
+  const [expandedViewMode, setExpandedViewMode] = useState<ShelfViewMode>(() => {
+    const stored = readStoredValue(EXPANDED_VIEW_MODE_STORAGE_KEY);
+    return SHELF_VIEW_MODE_OPTIONS.find((option) => option.value === stored)?.value ?? "grid";
+  });
+  const shownViewMode = shelfExpanded ? expandedViewMode : viewMode;
   // iPad's two-page Shelf can give the whole screen to either page: the
   // player alone, or the collection alone at its larger grid.
   const [shelfLayout, setShelfLayout] = useState<ShelfLayout>(startsOnFullShelf ? "library" : "split");
@@ -131,6 +142,11 @@ export function useShelf({
   }
 
   function selectViewMode(mode: ShelfViewMode) {
+    if (shelfExpanded) {
+      setExpandedViewMode(mode);
+      writeStoredValue(EXPANDED_VIEW_MODE_STORAGE_KEY, mode);
+      return;
+    }
     viewBeforeWideShelfRef.current = null;
     setViewMode(mode);
     writeStoredShelfViewMode(mode);
@@ -379,9 +395,11 @@ export function useShelf({
   }, [shelfMatches, shelfFilters.tags, sortMode, sortReversed]);
 
   const splitShelfIntoLeaves = native && playbackFold.posture !== "closed" && playbackFold.fold?.axis === "vertical";
-  // The open Duo has room to set covers sorted by title out under their
+  // The open Duo's covers, and every view of a browser window giving the
+  // Shelf the whole page, have room to file an alphabetical shelf under its
   // letters, with an index to jump between them.
-  const letteredShelf = splitShelfIntoLeaves && viewMode === "grid" && sortMode === "title";
+  const letteredShelf = ((splitShelfIntoLeaves && viewMode === "grid") || shelfExpanded)
+    && (sortMode === "title" || sortMode === "author");
   const visibleBookRuns = useMemo(() => {
     const runs: Array<{
       label: string | null;
@@ -391,7 +409,9 @@ export function useShelf({
     // A search opens folded groups: a match hidden behind a heading reads as no match.
     const searching = searchQuery.trim().length > 0;
     visibleBooks.forEach((book, index) => {
-      const label = letteredShelf ? titleInitial(book.title) : bookSortGroupLabel(book, sortMode, shelfFilters.tags);
+      const label = letteredShelf
+        ? titleInitial(sortMode === "author" ? book.author ?? "" : book.title)
+        : bookSortGroupLabel(book, sortMode, shelfFilters.tags);
       const previous = runs[runs.length - 1];
       if (label && previous?.label && compareShelfLabels(label, previous.label) === 0) {
         previous.items.push({ book, index });
@@ -406,7 +426,7 @@ export function useShelf({
   const visibleBookColumns = useMemo(() => {
     // Covers read across the whole spread in order, so only rows are dealt
     // out between the two leaves.
-    if (!splitShelfIntoLeaves || viewMode === "grid") return [visibleBookRuns];
+    if (!splitShelfIntoLeaves || shownViewMode === "grid") return [visibleBookRuns];
     const columns: typeof visibleBookRuns[] = [[], []];
     const weights = [0, 0];
     for (const run of visibleBookRuns) {
@@ -415,7 +435,7 @@ export function useShelf({
       weights[column] += (run.collapsed ? 0 : run.items.length) + 0.5;
     }
     return columns;
-  }, [splitShelfIntoLeaves, viewMode, visibleBookRuns]);
+  }, [shownViewMode, splitShelfIntoLeaves, visibleBookRuns]);
 
   return {
     activeShelfFilterChips,
@@ -450,7 +470,7 @@ export function useShelf({
     sortOrderLabel,
     sortReversed,
     toggleShelfGroup,
-    viewMode,
+    viewMode: shownViewMode,
     visibleBookColumns,
     visibleBooks
   };
