@@ -3,6 +3,7 @@ import type { ServerBackend, ProgressWrite, ProgressWriteOptions } from "./serve
 import { Capacitor } from "@capacitor/core";
 import { ApiError } from "./apiError";
 import type { Clip } from "./clips";
+import { fetchWithTimeout } from "./fetchWithTimeout";
 import type {
   AlignmentStatus,
   AuthStatus,
@@ -85,32 +86,6 @@ const STARTUP_TIMEOUT_MS = 8_000;
  */
 export const SERVER_SETUP_GUIDE_URL = "https://donovanmontoya.github.io/OperaLibre/getting-started.html";
 const LOCAL_MODE_STORAGE_KEY = "operalibre.localMode";
-
-/**
- * Fetch and read the response under one deadline. The body is read inside the
- * timeout too: a server that sends headers and then stalls would otherwise
- * leave `response.json()` pending forever.
- */
-async function fetchWithTimeout<T>(
-  url: string,
-  init: RequestInit,
-  read: (response: Response) => Promise<T>,
-  timeoutMs = STARTUP_TIMEOUT_MS
-): Promise<T> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-  const abort = () => controller.abort();
-  // An already-aborted signal never fires "abort" again.
-  if (init.signal?.aborted) controller.abort();
-  init.signal?.addEventListener("abort", abort, { once: true });
-  try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
-    return await read(response);
-  } finally {
-    window.clearTimeout(timer);
-    init.signal?.removeEventListener("abort", abort);
-  }
-}
 
 export function defaultServerUrl(serverType: ServerType) {
   if (typeof window === "undefined") {
@@ -404,7 +379,7 @@ export function hasUserConfiguredServer(): boolean {
   return isDemoMode() || !!readStoredServerUrl();
 }
 
-export function setServerUrl(rawValue: string) {
+function setServerUrl(rawValue: string) {
   const value = Capacitor.isNativePlatform()
     ? requireSecurePublicServerAddress(rawValue)
     : normalizeServerAddress(rawValue);
@@ -499,7 +474,7 @@ export async function pingServer(serverType: ServerType, rawValue: string): Prom
       throw new Error(`Server responded ${response.status}.`);
     }
     return readServerId(await response.json().catch(() => null));
-  });
+  }, STARTUP_TIMEOUT_MS);
 }
 
 let unauthorizedHandler: (() => void) | null = null;
@@ -945,6 +920,14 @@ export async function updateProgressSharing(
   });
 }
 
+/** `null` goes back to the account's initial. */
+export async function updateAvatar(avatar: string | null) {
+  return request<AuthUser>("/api/me/avatar", {
+    method: "PUT",
+    body: JSON.stringify({ avatar })
+  });
+}
+
 /**
  * The shared "who finished what" feed.
  *
@@ -1060,7 +1043,10 @@ export type ClipList = { clips: Clip[]; canExportAudio: boolean };
 /** A book's clips, or null from a server released before clips existed. */
 export async function listClips(bookId: string): Promise<ClipList | null> {
   try {
-    return await request<ClipList>(`/api/books/${encodeURIComponent(bookId)}/clips`);
+    const list = await request<ClipList | null>(`/api/books/${encodeURIComponent(bookId)}/clips`);
+    // Anything without a clip list, such as a fallback route answering for an
+    // older server, means this server has no clips.
+    return Array.isArray(list?.clips) ? list : null;
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) return null;
     throw error;

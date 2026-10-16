@@ -297,9 +297,14 @@ html:not(.native-app) .web-shell > .player-pane {
 
 /* A filter left on is a fact about what you are looking at, so the button
    carries it in the accent colour even when the panel is shut. */
-.library-filter-toggle.engaged {
+.library-filter-toggle.engaged,
+.library-filter-toggle.status-engaged {
   color: var(--gold-soft);
   border-color: var(--gold-soft);
+}
+
+.library-filter-toggle em.beside-status {
+  display: none;
 }
 
 .library-filter-toggle em {
@@ -1351,12 +1356,6 @@ html:not(.native-app) .web-shell > .player-pane {
   color: var(--paper);
 }
 
-.library-pane h1 .amp {
-  font-family: "Instrument Serif", serif;
-  font-style: italic;
-  color: var(--gold-soft);
-}
-
 .icon-button {
   width: 42px;
   height: 42px;
@@ -1405,6 +1404,10 @@ html:not(.native-app) .web-shell > .player-pane {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.continue-reading-rest {
+  margin-top: 9px;
 }
 
 .continue-reading-row {
@@ -1660,7 +1663,24 @@ html:not(.native-app) .web-shell > .player-pane {
   outline-offset: 3px;
 }
 
+/* Every tile keeps the same places whatever its book has to say: two lines
+   for the title, one for the byline, one for its place in an order, one for
+   its facts, and the reading state last. A place a book cannot fill stays
+   empty, so covers and states line up across a row. */
+.book-list.is-grid .book-text {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto auto 20px auto;
+  gap: 0 8px;
+  align-content: start;
+}
+
+.book-list.is-grid .book-text > * {
+  grid-column: 1 / -1;
+}
+
 .book-list.is-grid .book-text strong {
+  grid-row: 1;
+  min-height: 2.4em;
   font-size: 0.9rem;
   -webkit-line-clamp: 2;
 }
@@ -1669,8 +1689,46 @@ html:not(.native-app) .web-shell > .player-pane {
   font-size: 0.62rem;
 }
 
+.book-list.is-grid .book-text > strong + span {
+  grid-row: 2;
+  margin-top: 4px;
+}
+
+.book-list.is-grid .book-text > .book-sort-context {
+  grid-row: 3;
+  align-self: end;
+}
+
+/* Only a group that numbers its books keeps the line for it. */
+.book-list.is-grid .book-sort-run:has(.book-sort-context) .book-text {
+  grid-template-rows: auto auto 18px 20px auto;
+}
+
+/* The facts share one quiet line: runtime first, then a glyph for the text
+   and one for the household, none of them louder than the others. */
+.book-list.is-grid .book-text > :is(.book-runtime-tag, .book-readalong-tag, .book-shared-readers) {
+  grid-row: 4;
+  align-self: center;
+  color: rgba(241, 231, 208, 0.55) !important;
+}
+
+.book-list.is-grid .book-text > .book-runtime-tag {
+  grid-column: 1;
+}
+
+.book-list.is-grid .book-text > .book-readalong-tag {
+  grid-column: 2;
+}
+
+.book-list.is-grid .book-text > .book-shared-readers {
+  grid-column: 3;
+  gap: 4px;
+  letter-spacing: 0.04em;
+}
+
 .book-list.is-grid .book-progress {
-  margin-top: 2px;
+  grid-row: 5;
+  margin-top: 4px;
 }
 
 .book-row {
@@ -2935,11 +2993,6 @@ img.large-cover {
   overflow: hidden;
   background: var(--reader-surface);
   transition: background 0.25s ease;
-}
-
-.epub-reader.fullscreen .epub-stage {
-  height: auto;
-  min-height: 0;
 }
 
 /* A page turned by hand (readerPageTurn.ts). The page is paper: it peels
@@ -6668,74 +6721,245 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   position: relative;
 }
 
+/* A chosen picture fills whichever badge holds it and takes that badge's
+   shape; an initial sits on the badge's own colour instead. */
+.avatar-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
 .user-avatar {
   display: inline-grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   background: var(--oxblood);
   color: var(--paper);
-  font-size: 0.75rem;
-  font-weight: 600;
+  font: 1.05rem/1 "Instrument Serif", serif;
+}
+
+/* The round buttons beside this one spin their icon on hover. A face should
+   stay upright, so this one answers with its ring instead. */
+.icon-button.account-button {
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.icon-button.account-button:hover {
+  transform: none;
+}
+
+.icon-button.account-button[aria-expanded="true"] {
+  border-color: var(--gold-soft);
+  box-shadow: 0 0 0 3px rgba(217, 181, 116, 0.2);
 }
 
 .user-menu {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 10px);
   right: 0;
   z-index: 30;
-  min-width: 200px;
-  background: rgba(var(--sheet-rgb), 0.98);
+  width: min(316px, calc(100vw - 32px));
+  /* Opaque: over the dark pane, even a little translucency lets the shelf's
+     pale lettering ghost through the sheet. */
+  background: rgb(var(--sheet-rgb));
   border: 1px solid rgba(var(--ink-rgb), 0.18);
-  border-radius: 10px;
-  box-shadow: 0 18px 36px rgba(26, 20, 16, 0.18);
-  padding: 0.5rem;
+  border-radius: 14px;
+  box-shadow: 0 22px 44px -14px rgba(10, 6, 4, 0.55);
+  padding: 6px;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 2px;
+  animation: user-menu-in 0.14s ease-out both;
+}
+
+@keyframes user-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .user-menu {
+    animation: none;
+  }
+}
+
+.user-menu-account {
+  margin-bottom: 4px;
+  border-radius: 10px;
+  background: rgba(var(--ink-rgb), 0.05);
 }
 
 .user-menu-head {
   display: flex;
-  flex-direction: column;
-  padding: 0.4rem 0.6rem;
-  border-bottom: 1px solid rgba(var(--ink-rgb), 0.1);
-  margin-bottom: 0.25rem;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
 }
 
-.user-menu-head strong {
-  font-size: 0.95rem;
+.user-menu .user-menu-portrait {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--oxblood);
+  color: var(--paper);
+  font: 1.7rem/1 "Instrument Serif", serif;
+}
+
+.user-menu button.user-menu-portrait {
+  cursor: pointer;
+}
+
+.user-menu-portrait:focus-visible,
+.avatar-tile:focus-visible,
+.avatar-picker-reset:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.user-menu-portrait-edit {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgb(var(--sheet-rgb));
+  color: var(--ink-soft);
+  box-shadow: 0 0 0 1px rgba(var(--ink-rgb), 0.2);
+}
+
+.user-menu-id {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.user-menu-id strong {
+  overflow: hidden;
+  color: var(--ink);
+  font: 500 1.15rem/1.2 "Fraunces", serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-menu-id span {
+  color: var(--ink-faded);
+  font: italic 0.85rem/1.3 "Fraunces", serif;
+}
+
+.avatar-picker {
+  display: grid;
+  gap: 12px;
+  padding: 4px 12px 14px;
+}
+
+.avatar-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+}
+
+.user-menu .avatar-tile {
+  display: block;
+  aspect-ratio: 1;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.avatar-tile:hover {
+  transform: scale(1.08);
+}
+
+.avatar-tile[aria-checked="true"] {
+  box-shadow: 0 0 0 2px rgb(var(--sheet-rgb)), 0 0 0 4px var(--ink);
+}
+
+.user-menu .avatar-picker-reset {
+  justify-self: start;
+  margin: -4px 0 -6px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--ink-faded);
+  font: italic 0.85rem/1.3 "Fraunces", serif;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.avatar-picker-reset:hover {
   color: var(--ink);
 }
 
-.user-menu-head span {
-  font-size: 0.78rem;
-  color: var(--ink-faded);
+.avatar-picker-error {
+  margin: 0;
+  color: var(--oxblood);
+  font-size: 0.82rem;
+  line-height: 1.35;
 }
 
-.user-menu button:not(.settings-switch) {
+.user-menu button[role="menuitem"] {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 12px;
   background: transparent;
   border: none;
-  padding: 0.5rem 0.6rem;
-  border-radius: 6px;
+  padding: 9px 12px;
+  border-radius: 8px;
   font: inherit;
   cursor: pointer;
   color: var(--ink);
   text-align: left;
 }
 
-.user-menu button:not(.settings-switch):hover,
-.user-menu button:not(.settings-switch):focus-visible {
+.user-menu button[role="menuitem"] svg {
+  flex: none;
+  color: var(--ink-faded);
+}
+
+.user-menu button[role="menuitem"]:hover,
+.user-menu button[role="menuitem"]:focus-visible {
   background: rgba(184, 137, 58, 0.18);
 }
 
+/* Leaving is set apart from the places the menu can take you. */
+.user-menu button.user-menu-leave {
+  position: relative;
+  margin-top: 9px;
+}
+
+.user-menu-leave::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  right: 0;
+  left: 0;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
+}
+
 .user-menu .behavior-settings {
-  width: min(300px, calc(100vw - 48px));
-  padding: 0.45rem 0.6rem;
+  width: auto;
+  margin-top: 4px;
+  padding: 4px 12px;
   border-top: 1px solid rgba(var(--ink-rgb), 0.1);
 }
 
@@ -6841,6 +7065,7 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
 .unplayed-confirm-card {
   width: min(440px, 100%);
 }
+
 
 .unplayed-confirm-copy {
   margin: 0;
@@ -7898,7 +8123,7 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading {
   gap: 16px;
 }
 
-html.native-app .native-shell.tab-shelf.library-book-open .book-heading .large-cover {
+html.native-app .native-shell.tab-shelf.library-book-open .book-heading .book-cover-column {
   width: 100%;
   justify-self: start;
 }
@@ -8497,11 +8722,6 @@ html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,
   html.native-app .word-keys-row { gap: 7px; }
   html.native-app .word-key { max-width: 58px; min-height: 64px; border-radius: 10px; font-size: 1.05rem; }
   html.native-app .word-key.wide { max-width: 96px; font-size: .8rem; }
-}
-
-/* Room for the ribbon when it's showing over the shelf list. */
-html.native-app .native-shell.tab-shelf > .library-pane {
-  padding-bottom: calc(var(--tabs-h) + 92px);
 }
 
 /* --- Press feedback instead of sticky hover states --- */
@@ -9228,6 +9448,15 @@ html.native-app .native-now-utility button {
   font-size: 0.5rem;
   letter-spacing: 0.04em;
   white-space: nowrap;
+}
+
+/* The sleep label changes length ("End of chapter") and a fifth tile narrows
+   the row, so it wraps to a second line rather than spilling past the tile. */
+.native-now-utility button > span {
+  max-width: 100%;
+  line-height: 1.2;
+  text-align: center;
+  white-space: normal;
 }
 
 @media (max-height: 740px) {
@@ -10511,6 +10740,14 @@ html.native-app .continue-reading-book {
   border-radius: var(--m-radius-sm);
 }
 
+html.native-app .continue-reading-book:active {
+  background: rgba(217, 181, 116, 0.12);
+}
+
+html.native-app .continue-reading-play:active {
+  transform: translateY(-50%) scale(0.92);
+}
+
 html.native-app .continue-reading-meter,
 html.native-app .continue-reading-meter > i {
   border-radius: 999px;
@@ -10994,7 +11231,6 @@ html.native-app .native-shell.tab-shelf.library-book-open .mini-player {
 }
 
 html.native-app .native-shell.tab-shelf.library-book-open .mini-cover-button {
-  width: 30px;
   height: 42px;
 }
 
@@ -11325,6 +11561,7 @@ html.native-app .user-menu {
   left: calc(env(safe-area-inset-left) + 10px);
   right: calc(env(safe-area-inset-right) + 10px);
   bottom: calc(env(safe-area-inset-bottom) + 12px);
+  width: auto;
   min-width: 0;
   padding: 8px;
   border-radius: 20px;
@@ -11342,8 +11579,12 @@ html.native-app .user-menu::before {
   margin-bottom: 4px;
 }
 
-html.native-app .user-menu-head {
-  padding: 8px 12px 12px;
+html.native-app .user-menu-account {
+  border-radius: 14px;
+}
+
+html.native-app .user-menu .avatar-picker-reset {
+  min-height: 44px;
 }
 
 html.native-app .user-menu button[role="menuitem"] {
@@ -11807,7 +12048,6 @@ html.native-app .profile-back {
 .admin-sync-job-state { font-size: 0.72rem; color: var(--ink-faded); }
 .admin-sync-job .sync-progress { max-width: none; }
 .admin-sync-job p { overflow-wrap: anywhere; }
-.admin-sync-job .admin-sync-job-error { color: var(--sync-fail); }
 
 .admin-software-update {
   display: grid;
@@ -14069,14 +14309,9 @@ html.native-app .recent-row {
     margin: 0;
   }
 
+  /* A book's own page says what it is in its heading; the running head
+     would only repeat a track count beside the way back. */
   html.native-app .native-shell.tab-shelf.library-book-open .folio {
-    grid-column: 2;
-    grid-row: 1;
-    align-self: center;
-    justify-content: flex-end;
-  }
-
-  html.native-app .native-shell.tab-shelf.library-book-open .folio > span:first-child {
     display: none;
   }
 
@@ -14356,7 +14591,7 @@ html.native-app .recent-row {
     gap: clamp(20px, 3vw, 40px);
   }
 
-  html.native-app .native-shell.tab-shelf.library-book-open .book-heading .large-cover {
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading .book-cover-column {
     width: clamp(120px, 16vw, 200px);
     justify-self: start;
   }
@@ -14403,10 +14638,6 @@ html.native-app .recent-row {
     column-gap: clamp(10px, 2.5vw, 22px);
     padding-top: max(8px, var(--status-h));
     padding-bottom: calc(var(--tabs-h) + 10px);
-  }
-
-  html.native-app .native-shell.has-mini-player .games-shell {
-    padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 14px);
   }
 
   html.native-app .games-head { grid-column: 1; grid-row: 1; }
@@ -14468,16 +14699,6 @@ html.native-app .recent-row {
   html.native-app .match-record { align-self: center; margin: 0; font-size: .52rem; }
   html.native-app .match-record strong { font-size: .74rem; }
   html.native-app .match-score { align-self: end; margin: 0; font-size: .56rem; }
-  html.native-app .match-score strong { font-size: .92rem; }
-  html.native-app .match-board-frame { grid-column: 1; grid-row: 1; place-items: center; }
-  html.native-app .match-board,
-  html.native-app .native-shell.has-mini-player .match-board {
-    width: min(100%, max(112px, calc(var(--native-viewport-height) - var(--tabs-h) - var(--mini-player-height) - 120px)));
-  }
-  @supports (width: 1cqh) {
-    html.native-app .match-board,
-    html.native-app .native-shell.has-mini-player .match-board { width: min(100%, 100cqh); }
-  }
   html.native-app .match-game .game-message { grid-column: 1 / -1; grid-row: 2; margin: 3px 0 0; font-size: .66rem; }
 
   /* Word Grid follows the same split: board left, keyboard right. Keeping the
@@ -14493,19 +14714,6 @@ html.native-app .recent-row {
   html.native-app .word-game .game-title-row h2 { font-size: .95rem; }
   html.native-app .word-game .game-title-row .section-label { display: none; }
   html.native-app .word-game .game-reset { width: 30px; height: 30px; }
-  html.native-app .word-board-frame { grid-column: 1; grid-row: 2 / 4; }
-  html.native-app .word-board,
-  html.native-app .native-shell.has-mini-player .word-board {
-    width: min(100%, max(100px, calc((var(--native-viewport-height) - var(--tabs-h) - var(--mini-player-height) - 112px) * .82)));
-  }
-  @supports (width: 1cqh) {
-    html.native-app .word-board,
-    html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 82cqh); }
-  }
-  html.native-app .word-keys { grid-column: 2; grid-row: 2; align-self: center; margin: 0; gap: 4px; }
-  html.native-app .word-keys-row { gap: 3px; }
-  html.native-app .word-key { max-width: 32px; min-height: 34px; border-radius: 7px; font-size: .68rem; }
-  html.native-app .word-key.wide { max-width: 48px; font-size: .54rem; }
   html.native-app .word-game .game-message { grid-column: 2; grid-row: 3; margin: 3px 0 0; font-size: .66rem; }
 
   html.native-app .native-shell:is(.tab-shelf, .tab-games) .mini-player {
@@ -16655,6 +16863,14 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 }
 .purchase-book-list .purchase-book-row > .audible-download-action > svg { display: none; }
 
+/* "Downloading" is the longest status. It keeps its spinner, the only sign the
+   download is moving, and tightens its spacing instead. */
+.purchase-book-list .purchase-book-row > .audible-download-status.downloading {
+  gap: 5px;
+  padding-inline: 4px;
+  letter-spacing: 0.02em;
+}
+
 /* "On server" opens the book, so it reads as a quiet action rather than a
    disabled one: the ink colour it inherits is meant for light paper. */
 .purchase-book-list .purchase-book-row > .local-marker { color: var(--gold-soft); }
@@ -17006,7 +17222,7 @@ html.native-app[data-fold-posture] .native-shell:not(.device-ipad) > .library-pa
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell:not(.device-ipad) > .library-pane:not(.purchase-browsing) > .pane-title {
-  width: calc(var(--fold-x) - max(28px, env(safe-area-inset-left)));
+  width: var(--leaf-left, calc(var(--fold-x) - max(28px, env(safe-area-inset-left))));
   max-width: 100%;
   box-sizing: border-box;
 }
@@ -17050,6 +17266,11 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) > .library-pane {
+  /* The two columns every Shelf layout here shares: one per physical leaf,
+     with an equal margin either side of the hinge. */
+  --leaf-margin: 22px;
+  --leaf-left: calc(var(--fold-x) - max(24px, env(safe-area-inset-left)) - var(--leaf-margin));
+  --leaf-gap: calc(var(--fold-width) + 2 * var(--leaf-margin));
   position: relative;
   inset: auto;
   grid-column: 1 / -1;
@@ -17062,6 +17283,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   transform: none;
   pointer-events: auto;
   padding-right: max(24px, env(safe-area-inset-right));
+  padding-left: max(24px, env(safe-area-inset-left));
   background-image: linear-gradient(180deg, #241a12 0%, #100a06 100%);
 }
 
@@ -17087,12 +17309,6 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
    painted across a fake binding. Each toolbar lane belongs to a leaf and the
    physical hinge supplies all the separation the composition needs. */
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) > .library-pane > .library-toolbar {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: calc(var(--fold-width) + 24px);
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) .shelf-navigation {
   grid-column: 1 / -1;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -17108,22 +17324,6 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) .shelf-navigation button.selected {
   border-bottom-width: 2px;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) > .library-pane > .library-toolbar > .library-search-row {
-  grid-column: 1;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) > .library-pane > .library-toolbar > .library-controls {
-  grid-column: 2;
-  justify-self: stretch;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) > .library-pane > .library-toolbar > :is(.library-results-summary, .library-filters, .library-active-filters) {
-  grid-column: 1 / -1;
 }
 
 /* Get Books is a two-leaf workstation on the inner display. Store, account,
@@ -17325,36 +17525,501 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:not(:has(.book-sort-group)) {
-  --shelf-leaf-gap: calc(var(--fold-width) + 28px);
-  grid-template-columns: repeat(3, minmax(0, 1fr)) var(--shelf-leaf-gap)
-    repeat(3, minmax(0, 1fr));
-  column-gap: 12px;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:not(:has(.book-sort-group)) > :nth-child(6n + 4) {
-  grid-column: 5;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:not(:has(.book-sort-group)) > .book-sort-run:nth-child(6n + 4) > .book-row {
-  grid-column: 5;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) .book-list.is-list {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: calc(var(--fold-width) + 40px);
+  grid-template-columns: var(--leaf-left) minmax(0, 1fr);
+  column-gap: var(--leaf-gap);
   align-content: start;
+}
+
+/* The open Duo's Shelf is one page across both leaves, scrolling as a whole.
+   The toolbar and the results dissolve into the page grid so each row can
+   give a leaf to each of its parts; anything not placed below spans both. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) {
+  display: grid;
+  grid-template-columns: var(--leaf-left) minmax(0, 1fr);
+  grid-template-rows: repeat(11, auto) 1fr;
+  column-gap: var(--leaf-gap);
+  align-content: start;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) > :is(.library-toolbar, .purchase-results) {
+  display: contents;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) > *,
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) > .library-toolbar > *,
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .purchase-books-pane > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) > .pane-title {
+  grid-column: 1;
+  grid-row: 1;
+  width: auto;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) > .library-toolbar > * {
+  margin: 0 0 12px;
+}
+
+/* Library and Get books sit beside the wordmark, on the same rule. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) > .library-toolbar > .shelf-navigation {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: end;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 0;
+  margin-bottom: 14px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) > .library-toolbar > .library-search-row {
+  grid-column: 1;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) > .library-toolbar > .library-controls {
+  grid-column: 2;
+  justify-self: stretch;
+}
+
+/* The count and the order caption the collection, opposite its heading. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) > .library-toolbar > .library-results-summary {
+  grid-column: 2;
+  grid-row: 11;
+  align-self: center;
+  margin: 0;
+}
+
+/* Reading progress is the filter reached for most, and the left leaf has the
+   room, so it stands above the collection as plain words with their counts.
+   It names the collection well enough that the heading need not be drawn. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) > .library-toolbar > .library-status-inline {
+  grid-column: 1;
+  grid-row: 11;
+  display: flex;
+  gap: 20px;
+  margin: 0;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .library-status-inline button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0;
+  background: none;
+  color: rgba(241, 231, 208, 0.52);
+  font: 0.62rem "JetBrains Mono", monospace;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .library-status-inline button > span {
+  padding: 4px 0;
+  border-bottom: 1px solid transparent;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .library-status-inline button em {
+  font-style: normal;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .library-status-inline button.selected {
+  color: var(--gold-soft);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .library-status-inline button.selected > span {
+  border-bottom-color: currentColor;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .library-status-inline button:disabled {
+  opacity: 0.32;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .library-filters .shelf-facet-status {
+  display: none;
+}
+
+/* The selected word is the whole account of a progress choice here: it adds
+   nothing to the Filters button or to the summary of filters that are on. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) :is(.library-active-filters.status-only, .active-filter-chip.status, .library-filter-toggle em.counts-status) {
+  display: none;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .library-filter-toggle em.beside-status {
+  display: inline-grid;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .library-filter-toggle.status-engaged:not(.engaged, .open) {
+  border-color: rgba(217, 181, 116, 0.16);
+  color: rgba(241, 231, 208, 0.62);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .library-filters .shelf-facet-availability {
+  padding-top: 0;
+  border-top: 0;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-library-heading {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .book-list {
+  grid-row: 12;
+}
+
+/* Up Next is a single band between two rules: its name in the margin, the
+   book to pick up next on the left leaf, and the rest of the plan in a row
+   that scrolls sideways within the right one. However long the plan grows,
+   the band keeps its height and the collection keeps its place. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading {
+  grid-row: 10;
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--leaf-left) minmax(0, 1fr);
+  column-gap: var(--leaf-gap);
+  margin: 2px 0 4px;
+  padding: 14px 0;
+  border-block: 1px solid rgba(217, 181, 116, 0.2);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading > * {
+  grid-column: 1 / -1;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-heading {
+  grid-column: 1;
+  grid-row: 1;
+  display: grid;
+  align-content: start;
+  justify-content: start;
+  gap: 6px;
+  width: 68px;
+  margin: 0;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-heading h2 {
+  color: rgba(241, 231, 208, 0.6);
+  font: 0.65rem/1.5 "JetBrains Mono", monospace;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead {
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 84px;
+  padding-left: 80px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  gap: 0;
+  margin: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest::-webkit-scrollbar {
+  display: none;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .queue-hint {
+  display: block;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  margin: 0;
+  color: rgba(241, 231, 208, 0.5);
+  font: italic 1rem/1.35 "Instrument Serif", serif;
+}
+
+/* Neither the lead nor the row draws a box: the band's rules hold them. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-book {
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li .continue-reading-book {
+  grid-template-columns: 60px minmax(0, 1fr);
+  gap: 14px;
+  padding: 0 56px 0 0;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li.queue-row .continue-reading-book {
+  padding-right: 128px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li .cover-mark {
+  width: 60px;
+  height: 80px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li img.cover-mark {
+  height: auto;
+  max-height: 80px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li .continue-reading-copy > strong {
+  font-size: 1.15rem;
+  line-height: 1.2;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li .continue-reading-author {
+  font-size: 0.95rem;
+}
+
+/* The measure first, then what it says, as on a ledger line. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li .continue-reading-meter {
+  order: 1;
+  height: 2px;
+  margin-top: 4px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li .continue-reading-progress {
+  order: 2;
+  flex-direction: row-reverse;
+  margin-top: 0;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li.queue-row .continue-reading-progress {
+  flex-direction: row;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li .continue-reading-play {
+  right: 0;
+  width: 40px;
+  height: 40px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li .continue-reading-play svg {
+  width: 16px;
+  height: 16px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li .queue-actions {
+  right: 48px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li {
+  flex: 0 0 204px;
+  scroll-snap-align: start;
+  padding: 0 14px;
+  border-left: 1px solid rgba(217, 181, 116, 0.14);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li .continue-reading-book {
+  grid-template-columns: 46px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  padding: 0 34px 0 0;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li .cover-mark {
+  width: 46px;
+  height: 62px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li img.cover-mark {
+  height: auto;
+  max-height: 62px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li .continue-reading-copy {
+  gap: 3px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li .continue-reading-copy > strong {
+  font-size: 0.9rem;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li .continue-reading-author {
+  font-size: 0.8rem;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li .continue-reading-play {
+  top: 0;
+  right: 14px;
+  width: 28px;
+  height: 28px;
+  transform: none;
+}
+
+/* In a row, earlier is to the left. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li .queue-actions {
+  top: auto;
+  right: 8px;
+  bottom: -6px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li .queue-actions button {
+  width: 32px;
+  height: 36px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li .queue-move svg {
+  transform: rotate(-90deg);
+}
+
+/* Beside an open book or the player, the collection has one leaf. There the
+   books after the first in Up Next are a tight stack, so a long plan does
+   not bury the collection beneath it. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest {
+  gap: 7px;
+  margin-top: 7px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li .continue-reading-book {
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 11px;
+  padding: 8px 50px 8px 10px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li.queue-row .continue-reading-book {
+  padding-right: 118px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li .cover-mark {
+  width: 34px;
+  height: 45px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li img.cover-mark {
+  height: auto;
+  max-height: 45px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li .continue-reading-copy {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 3px 10px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li .continue-reading-copy > strong {
+  grid-column: 1 / -1;
+  -webkit-line-clamp: 1;
+  font-size: 0.9rem;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li .continue-reading-progress {
+  margin-top: 0;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li .continue-reading-meter {
+  grid-column: 1 / -1;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li .continue-reading-play {
+  right: 10px;
+  width: 28px;
+  height: 28px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li .queue-actions {
+  right: 42px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li .queue-actions button {
+  width: 34px;
 }
 
 /* Below the unified toolbar, each grouped run belongs to one physical leaf.
    The complete series/tag/status group is the grid item, so its heading and
    every one of its books stay together instead of crossing the hinge. */
 .book-leaf,
-.book-sort-run { display: contents; }
+.book-sort-run,
+.book-run-books { display: contents; }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) .book-list > .book-leaf {
@@ -17371,7 +18036,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-list > .book-leaf > .book-sort-run > .book-row {
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-list > .book-leaf > .book-sort-run .book-row {
   width: 100%;
 }
 
@@ -17381,56 +18046,371 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   margin-top: 0;
 }
 
+/* Covers are one page across both leaves. Every tile is the size that fits
+   three to the narrower leaf, so a row reads straight across the fold: three
+   on the left, a turn of the page over the hinge, three on the right. */
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) {
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid {
+  container-type: inline-size;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: calc(var(--fold-width) + 40px);
+  grid-template-columns: var(--leaf-left) minmax(0, 1fr);
+  gap: 24px var(--leaf-gap);
   align-content: start;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(> .book-leaf) {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: calc(var(--fold-width) + 40px);
-  align-content: start;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(> .book-leaf) > .book-leaf {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  align-content: start;
-  gap: 12px;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(> .book-leaf) > .book-leaf > .book-sort-run:not(:has(.book-sort-group)) {
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid > .book-leaf {
+  --tile: calc((min(var(--leaf-left), 100cqw - var(--leaf-left) - var(--leaf-gap)) - 28px) / 3);
+  --turn: calc(var(--leaf-left) + var(--leaf-gap) - 3 * var(--tile) - 42px);
   display: contents;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run {
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:not(:has(.book-sort-group)) > .book-leaf,
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run:has(.book-row:nth-child(4)) > .book-run-books {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  align-content: start;
-  gap: 12px;
+  grid-template-columns: repeat(3, var(--tile)) calc(var(--tile) + var(--turn)) repeat(2, var(--tile));
+  gap: 24px 14px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:not(:has(.book-sort-group)) > .book-leaf {
+  grid-column: 1 / -1;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:not(:has(.book-sort-group)) > .book-leaf > .book-sort-run:nth-child(6n + 4) .book-row,
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run:has(.book-row:nth-child(4)) .book-row:nth-child(6n + 4) {
+  justify-self: end;
+  width: var(--tile);
+}
+
+/* A group of three or fewer keeps to a leaf, so two of them share a row. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run {
+  display: block;
   min-width: 0;
+  max-width: calc(3 * var(--tile) + 28px);
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run > .book-sort-group {
-  grid-column: 1 / -1;
   width: 100%;
-  margin-top: 0;
+  margin: 0 0 12px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run > .book-run-books {
+  display: grid;
+  grid-template-columns: repeat(3, var(--tile));
+  gap: 24px 14px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run:has(.book-row:nth-child(4)) {
+  grid-column: 1 / -1;
+  max-width: none;
+}
+
+/* Its name stays on the left leaf; only the rule beneath runs across. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run:has(.book-row:nth-child(4)) .book-sort-group-toggle > strong {
+  max-width: calc(var(--leaf-left) - 120px);
+}
+
+/* A series longer than a leaf runs out to the right instead of wrapping, and
+   turns a spread at a time, three covers to a leaf, so a rest never leaves a
+   cover on the hinge. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books {
+  grid-template-columns: var(--tile);
+  grid-auto-columns: var(--tile) var(--tile) calc(var(--tile) + var(--turn)) var(--tile) var(--tile) var(--tile);
+  grid-auto-flow: column;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books::-webkit-scrollbar {
+  display: none;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books > .book-row:nth-child(6n + 4) {
+  justify-self: end;
+  width: var(--tile);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books > .book-row:nth-child(6n + 1) {
+  scroll-snap-align: start;
+}
+
+/* More than the spread can show: the count says there is further to go. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(7)) .book-sort-group-toggle > em::after {
+  content: "›";
+  margin-left: 7px;
+  color: var(--gold-soft);
+  font-size: 0.8rem;
+}
+
+/* The last spread is filled out, and the row runs on by whatever the screen
+   shows past a spread, so it comes to rest with its first cover at the left
+   edge like every other. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books:has(> .book-row:last-child:nth-child(6n + 1))::after,
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books:has(> .book-row:last-child:nth-child(6n + 2))::after,
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books:has(> .book-row:last-child:nth-child(6n + 3))::after,
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books:has(> .book-row:last-child:nth-child(6n + 4))::after,
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books:has(> .book-row:last-child:nth-child(6n + 5))::after {
+  content: "";
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books:has(> .book-row:last-child:nth-child(6n + 1))::after {
+  grid-column: span 5;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books:has(> .book-row:last-child:nth-child(6n + 2))::after {
+  grid-column: span 4;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books:has(> .book-row:last-child:nth-child(6n + 3))::after {
+  grid-column: span 3;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books:has(> .book-row:last-child:nth-child(6n + 4))::after {
+  grid-column: span 2;
+}
+
+/* A series with more than the two leaves can show says so on the right leaf:
+   the covers are a little narrower, so the edge of the seventh stands in
+   view. Each turn still rests with three covers either side of the hinge. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(7)) > .book-run-books {
+  --tile: min((var(--leaf-left) - 28px) / 3, (100cqw - var(--leaf-left) - var(--leaf-gap) - 42px) / 3.35);
+  --turn: calc(var(--leaf-left) + var(--leaf-gap) - 3 * var(--tile) - 42px);
+  padding-right: max(0px, 100cqw - var(--leaf-left) - var(--leaf-gap) - 3 * var(--tile) - 28px);
+}
+
+/* Fully open, the inner screen is one slab. The Shelf's two columns become an
+   ordinary two-up with an ordinary gutter, and covers run evenly from edge
+   to edge; only a half-open Duo is set as two pages either side of its hinge. */
+html.native-app[data-fold-axis="vertical"][data-fold-posture="flat"]
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) {
+  --leaf-left: minmax(0, 1fr);
+  --leaf-gap: 28px;
+}
+
+html.native-app[data-fold-axis="vertical"][data-fold-posture="flat"]
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid {
+  column-gap: 14px;
+}
+
+html.native-app[data-fold-axis="vertical"][data-fold-posture="flat"]
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid > .book-leaf {
+  --tile: calc((100cqw - 70px) / 6);
+  --turn: 0px;
+}
+
+html.native-app[data-fold-axis="vertical"][data-fold-posture="flat"]
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books {
+  scroll-snap-type: x proximity;
+}
+
+html.native-app[data-fold-axis="vertical"][data-fold-posture="flat"]
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books > .book-row {
+  scroll-snap-align: start;
+}
+
+html.native-app[data-fold-axis="vertical"][data-fold-posture="flat"]
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(4)) > .book-run-books:has(> .book-row:last-child:nth-child(n))::after {
+  content: none;
+}
+
+/* A series with more than the slab can show says so at its edge: the covers
+   are a little narrower, so part of the seventh stands in view. */
+html.native-app[data-fold-axis="vertical"][data-fold-posture="flat"]
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(7)) > .book-run-books {
+  --tile: calc((100cqw - 84px) / 6.6);
+  --turn: 0px;
+  padding-right: 0;
+  /* A cover the row comes to rest on stands just clear of the faded edge. */
+  scroll-padding-left: 48px;
+}
+
+/* Where the row can be followed as it moves, whichever edge has more beyond
+   it fades out, and an edge with nothing past it stays crisp. */
+@property --shelf-row-fade-start {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --shelf-row-fade-end {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@keyframes shelf-row-edges {
+  0% { --shelf-row-fade-start: 0px; --shelf-row-fade-end: 48px; }
+  12%, 88% { --shelf-row-fade-start: 48px; --shelf-row-fade-end: 48px; }
+  100% { --shelf-row-fade-start: 48px; --shelf-row-fade-end: 0px; }
+}
+
+@supports (animation-timeline: scroll()) {
+  /* Half open, a turn rests against the row's left edge, so only the far
+     edge fades. */
+  html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(7)) > .book-run-books {
+    mask-image: linear-gradient(to right, #000 calc(100% - var(--shelf-row-fade-end) * 0.75), transparent);
+    animation: shelf-row-edges linear both;
+    animation-timeline: scroll(self inline);
+  }
+
+  html.native-app[data-fold-axis="vertical"][data-fold-posture="flat"]
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(7)) > .book-run-books {
+    mask-image: linear-gradient(to right, transparent, #000 var(--shelf-row-fade-start),
+      #000 calc(100% - var(--shelf-row-fade-end)), transparent);
+    animation: shelf-row-edges linear both;
+    animation-timeline: scroll(self inline);
+  }
+}
+
+/* Sorted by title, the open Duo files its covers under their letters. Each
+   letter stands in a margin beside its books and stays in view while they
+   pass, and an index down the far edge jumps from one letter to another. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered {
+  grid-template-columns: minmax(0, 1fr) 26px;
+  column-gap: 10px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered:not(:has(.book-sort-group)) > .book-leaf {
+  --letter: 46px;
+  --tile: calc((min(var(--leaf-left) - var(--letter), 100cqw - var(--leaf-left) - var(--leaf-gap) - 36px) - 28px) / 3);
+  --turn: calc(var(--leaf-left) + var(--leaf-gap) - var(--letter) - 3 * var(--tile) - 42px);
+  grid-column: 1;
+  grid-row: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 26px;
+}
+
+html.native-app[data-fold-axis="vertical"][data-fold-posture="flat"]
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered:not(:has(.book-sort-group)) > .book-leaf {
+  --tile: calc((100cqw - var(--letter) - 106px) / 6);
+  --turn: 0px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered > .book-leaf > .book-sort-run {
+  display: grid;
+  grid-template-columns: var(--letter) minmax(0, 1fr);
+  align-items: start;
+  /* A letter jumped to comes to rest where its heading holds while its books
+     pass: at the page's own top margin. */
+  scroll-margin-top: calc(var(--status-h) + 22px);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered > .book-leaf > .book-sort-run > .book-run-books {
+  display: grid;
+  grid-template-columns: repeat(3, var(--tile)) calc(var(--tile) + var(--turn)) repeat(2, var(--tile));
+  gap: 24px 14px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered > .book-leaf > .book-sort-run > .book-run-books > .book-row {
+  justify-self: start;
+  width: var(--tile);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered > .book-leaf > .book-sort-run > .book-run-books > .book-row:nth-child(6n + 4) {
+  justify-self: end;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered .book-letter {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  width: calc(var(--letter) - 14px);
+  padding-top: 8px;
+  border-top: 1px solid rgba(217, 181, 116, 0.5);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered .book-letter > strong {
+  color: var(--paper);
+  font: 2.1rem/0.9 "Instrument Serif", serif;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered .book-letter > em {
+  color: rgba(241, 231, 208, 0.42);
+  font: 0.55rem "JetBrains Mono", monospace;
+  font-style: normal;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered > .book-letter-index {
+  grid-column: 2;
+  grid-row: 1;
+  position: sticky;
+  top: max(0px, 50dvh - 254px - var(--status-h));
+  align-self: start;
+  display: grid;
+  grid-auto-rows: minmax(0, 1fr);
+  height: min(464px, 100dvh - 44px - var(--status-h));
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered > .book-letter-index > button {
+  display: grid;
+  place-items: center;
+  color: rgba(241, 231, 208, 0.58);
+  font: 0.6rem "JetBrains Mono", monospace;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered > .book-letter-index > button:disabled {
+  color: rgba(241, 231, 208, 0.18);
+  /* A press on an empty letter still starts a drag along the strip. */
+  pointer-events: none;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered > .book-letter-index > button[aria-current] {
+  color: var(--gold-soft);
+  font-weight: 700;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered > .book-letter-index > button:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  border-radius: 4px;
 }
 
 /* The floating transport stands on the right page, clear of the crease. Its
@@ -17700,6 +18680,22 @@ html.native-app.side-rail[data-fold-axis="vertical"]:not([data-fold-posture="clo
   padding-right: calc(max(var(--fore-edge, 20px), env(safe-area-inset-right)) + 12px);
 }
 
+/* With the clock in the rail there is no status bar above the page, so the
+   page keeps its own head margin clear of the screen's rounded corner: a
+   little on the cover screen, more on the open one. */
+html.native-app.side-rail .native-shell.tab-shelf.library-book-open > .player-pane {
+  padding-top: calc(var(--status-h) + 30px);
+}
+
+html.native-app.side-rail[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open > .player-pane {
+  padding-top: calc(var(--status-h) + 38px);
+}
+
+html.native-app.side-rail .native-shell.tab-shelf.library-book-open .native-player-return {
+  margin-bottom: 8px;
+}
+
 /* Browsing, the mini player stands in the rail: the book to return to, and
    the transport, one above the other. It keeps its own dark lacquer, a pill
    like the tab bar's beneath it, so it reads the same over any page. */
@@ -17749,8 +18745,19 @@ html.native-app.side-rail .native-shell:is(.tab-shelf, .tab-games) .mini-player 
 }
 
 html.native-app.side-rail .native-shell:is(.tab-shelf, .tab-games) .mini-cover-button {
+  display: grid;
+  place-items: center;
   width: 44px;
   height: 44px;
+}
+
+/* The pill's cap is a half circle, and square artwork filling the button
+   would put its corners through it. The art sits inside the touch target,
+   as clear of the cap as the round buttons are of the foot. */
+html.native-app.side-rail .native-shell:is(.tab-shelf, .tab-games) .mini-cover-button .cover-mark {
+  height: 36px;
+  max-width: 36px;
+  border-radius: 10px;
 }
 
 html.native-app.side-rail .native-shell:is(.tab-shelf, .tab-games) .mini-actions {
@@ -19173,7 +20180,7 @@ html:not(.native-app) .book-subjects span {
     white-space: nowrap;
   }
 
-  html:not(.native-app) .book-heading > .large-cover {
+  html:not(.native-app) .book-heading > .book-cover-column {
     grid-column: 1;
     grid-row: 2 / -1;
     width: 100%;
@@ -19475,7 +20482,7 @@ html:not(.native-app) .library-pane.purchase-browsing {
     display: contents;
   }
 
-  html.native-app .native-shell.tab-shelf.library-book-open .book-heading .large-cover {
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading .book-cover-column {
     grid-column: 1;
     grid-row: 1 / 5;
     align-self: start;
@@ -19576,7 +20583,7 @@ html:not(.native-app) .library-pane.purchase-browsing {
   }
 
   html:not(.native-app) .book-heading :is(.meta, .heading-top) { display: contents; }
-  html:not(.native-app) .book-heading > .large-cover {
+  html:not(.native-app) .book-heading > .book-cover-column {
     grid-column: 1;
     grid-row: 1 / 4;
     width: 100%;
@@ -19648,7 +20655,7 @@ html:not(.native-app) .library-pane.purchase-browsing {
     justify-items: center;
     row-gap: 8px;
 
-    & .large-cover {
+    & .book-cover-column {
       grid-column: 1;
       grid-row: 1;
       width: clamp(160px, 20vh, 200px);
@@ -19724,7 +20731,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf.library-book-open .book-heading :is(.meta, .heading-top) { display: contents; }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf.library-book-open .book-heading .large-cover {
+  .native-shell.tab-shelf.library-book-open .book-heading .book-cover-column {
     grid-column: 1;
     grid-row: 1 / 5;
     width: 100%;
@@ -20088,306 +21095,61 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
   text-align: center;
 }
 
-/* --------- Up Next: the device-local reading plan ---------
-   Shares the Continue Reading card language, but a planned book is not a
-   listening session: no meter, and its actions sit in a ruled footer so Start
-   reads as the one primary move beside two quiet housekeeping controls. The
-   section is its own size container because the shelf pane, not the viewport,
-   decides how much room a row has (phone, either Duo leaf, desktop spine). */
-.reading-queue {
-  container: reading-queue / inline-size;
+/* --------- Up Next: books in progress, then the device-local plan ---------
+   A planned book uses the same card as one in progress. It has no meter, and
+   two quiet controls beside play reorder it or take it off the plan. */
+.queue-row .continue-reading-book {
+  padding-right: 126px;
 }
 
-.reading-queue .continue-reading-heading {
-  justify-content: flex-start;
-  gap: 10px;
-  margin-bottom: 4px;
+.queue-row .continue-reading-progress {
+  color: rgba(241, 231, 208, 0.55);
 }
 
-.reading-queue .continue-reading-heading > span {
-  padding-top: 5px;
-  color: rgba(217, 181, 116, 0.75);
-  font-variant-numeric: tabular-nums;
-}
-
-.reading-queue .queue-add {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  flex: 0 0 auto;
-  min-height: 44px;
-  margin-left: auto;
-  padding: 0 13px;
-  border: 1px solid rgba(217, 181, 116, 0.3);
-  border-radius: 3px;
-  color: var(--gold-soft);
-  font: 500 0.6rem "JetBrains Mono", monospace;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
-}
-
-.reading-queue .queue-add[aria-expanded="true"] {
-  border-color: var(--gold-soft);
-  background: rgba(217, 181, 116, 0.14);
-  color: var(--paper);
-}
-
-.queue-description {
-  margin: 0 0 14px;
-  color: rgba(241, 231, 208, 0.58);
-  font: 0.8rem/1.45 "Fraunces", serif;
-}
-
-/* Picker */
-.queue-picker {
-  display: grid;
-  gap: 10px;
-  margin: 0 0 14px;
-  padding: 12px;
-  border: 1px solid rgba(217, 181, 116, 0.24);
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.24);
-  color: var(--paper);
-}
-
-.queue-picker label {
-  color: rgba(241, 231, 208, 0.6);
-  font: 0.58rem "JetBrains Mono", monospace;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.queue-picker input {
-  width: 100%;
-  min-width: 0;
-  min-height: 44px;
-  padding: 0 12px;
-  border: 1px solid rgba(217, 181, 116, 0.3);
-  border-radius: 3px;
-  background: rgba(241, 231, 208, 0.05);
-  color: var(--paper);
-  /* 16px keeps iOS from zooming the page when the field takes focus. */
-  font: 1rem "Fraunces", serif;
-  color-scheme: dark;
-  appearance: none;
-  -webkit-appearance: none;
-}
-
-.queue-picker input::placeholder {
-  color: rgba(241, 231, 208, 0.42);
-  font-style: italic;
-}
-
-.queue-picker input:focus-visible {
-  outline: 2px solid var(--gold-soft);
-  outline-offset: 2px;
-  border-color: var(--gold-soft);
-}
-
-.queue-candidates {
-  max-height: min(264px, 45vh);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.queue-candidates:empty {
-  display: none;
-}
-
-.queue-candidates li {
+.queue-actions {
+  position: absolute;
+  top: 0;
+  right: 50px;
+  bottom: 0;
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 56px;
-  padding: 6px 0;
 }
 
-.queue-candidates li + li {
-  border-top: 1px solid rgba(217, 181, 116, 0.12);
-}
-
-.queue-candidates li > span {
-  flex: 1;
-  min-width: 0;
+.queue-actions button {
   display: grid;
-  gap: 2px;
-}
-
-.queue-candidates strong,
-.queue-candidates small {
-  display: block;
-  overflow-wrap: anywhere;
-}
-
-.queue-candidates strong {
-  font: 500 0.9rem/1.25 "Fraunces", serif;
-}
-
-.queue-candidates small {
-  color: rgba(241, 231, 208, 0.62);
-  font: italic 0.85rem/1.2 "Instrument Serif", serif;
-}
-
-.queue-candidate-add {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  min-width: 44px;
-  min-height: 44px;
-  padding: 0 12px;
-  border: 1px solid rgba(217, 181, 116, 0.3);
-  border-radius: 3px;
-  color: var(--gold-soft);
-  font: 500 0.6rem "JetBrains Mono", monospace;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  transition: background 160ms ease, border-color 160ms ease;
-}
-
-.queue-picker-empty {
-  margin: 0;
-  color: rgba(241, 231, 208, 0.62);
-  font: italic 0.95rem/1.35 "Instrument Serif", serif;
-}
-
-/* Empty plan: a dashed slot, the shape of the card that will fill it. */
-.queue-empty {
-  display: grid;
-  gap: 4px;
-  padding: 16px 14px;
-  border: 1px dashed rgba(217, 181, 116, 0.3);
-  border-radius: 3px;
-}
-
-.queue-empty strong {
-  color: var(--paper);
-  font: 400 1.15rem/1.2 "Instrument Serif", serif;
-}
-
-.queue-empty p {
-  margin: 0;
-  color: rgba(241, 231, 208, 0.58);
-  font: 0.8rem/1.45 "Fraunces", serif;
-}
-
-/* Planned book */
-.queue-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  border: 1px solid rgba(217, 181, 116, 0.24);
-  border-radius: 3px;
-  background: rgba(217, 181, 116, 0.06);
-}
-
-/* The head of the plan carries the same gold edge a book's spine does. */
-.queue-row.is-next {
-  border-color: rgba(217, 181, 116, 0.42);
-  box-shadow: inset 2px 0 0 var(--gold-soft);
-}
-
-.queue-row .continue-reading-book {
-  grid-template-columns: 44px minmax(0, 1fr) auto;
-  min-width: 0;
-  padding: 12px;
+  place-items: center;
+  width: 36px;
+  height: 44px;
+  padding: 0;
   border: 0;
-  border-radius: 0;
+  border-radius: 3px;
   background: transparent;
+  color: rgba(241, 231, 208, 0.55);
+  transition: background 160ms ease, color 160ms ease;
 }
 
-.queue-row .continue-reading-book:focus-visible,
 .queue-actions button:focus-visible {
   outline: 2px solid var(--gold-soft);
   outline-offset: -3px;
 }
 
-.reading-queue :is(.queue-add, .queue-candidate-add):focus-visible {
-  outline: 2px solid var(--gold-soft);
-  outline-offset: 3px;
-}
-
-.queue-details-cue {
-  flex: 0 0 auto;
-  color: rgba(217, 181, 116, 0.5);
-  transition: color 160ms ease, transform 160ms ease;
-}
-
-.queue-row .continue-reading-progress {
-  justify-content: flex-start;
-  color: rgba(241, 231, 208, 0.5);
-  letter-spacing: 0.04em;
-}
-
-.queue-row.is-next .continue-reading-progress {
-  color: var(--gold-soft);
-}
-
-.queue-actions {
-  display: flex;
-  align-items: stretch;
-  border-top: 1px solid rgba(217, 181, 116, 0.16);
-}
-
-.queue-actions button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  min-width: 44px;
-  min-height: 44px;
-  color: rgba(241, 231, 208, 0.66);
-  transition: background 160ms ease, color 160ms ease;
-}
-
-.queue-actions button + button {
-  border-left: 1px solid rgba(217, 181, 116, 0.16);
-}
-
-.queue-actions .queue-start {
-  flex: 1 1 auto;
-  justify-content: flex-start;
-  gap: 10px;
-  padding: 0 14px 0 12px;
-  color: var(--paper);
-  font: 500 0.88rem "Fraunces", serif;
-}
-
-.queue-start-mark {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: var(--gold-soft);
-  color: var(--spine);
-}
-
-.queue-start-mark svg {
-  margin-left: 1px;
-}
-
 .queue-actions button:disabled {
-  color: rgba(241, 231, 208, 0.2);
-  cursor: default;
+  opacity: 0.3;
+}
+
+.queue-hint,
+.library-status-inline {
+  display: none;
 }
 
 .queue-unavailable {
   margin: 10px 0 0;
-  color: rgba(241, 231, 208, 0.5);
-  font: 0.58rem/1.6 "JetBrains Mono", monospace;
-  letter-spacing: 0.04em;
+  color: rgba(241, 231, 208, 0.58);
+  font: 0.8rem/1.45 "Fraunces", serif;
 }
 
 .queue-notice {
-  margin: 12px 0 0;
+  margin: 0 0 16px;
   padding-left: 10px;
   border-left: 2px solid var(--gold-soft);
   color: var(--gold-soft);
@@ -20400,20 +21162,6 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
 }
 
 @media (hover: hover) {
-  .reading-queue :is(.queue-add, .queue-candidate-add):hover {
-    border-color: var(--gold-soft);
-    background: rgba(217, 181, 116, 0.12);
-  }
-
-  .queue-row .continue-reading-book:hover {
-    background: rgba(217, 181, 116, 0.08);
-  }
-
-  .queue-row .continue-reading-book:hover .queue-details-cue {
-    color: var(--gold-soft);
-    transform: translateX(2px);
-  }
-
   .queue-actions button:not(:disabled):hover {
     background: rgba(217, 181, 116, 0.1);
     color: var(--paper);
@@ -20428,33 +21176,7 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
   background: rgba(217, 181, 116, 0.16);
 }
 
-/* A roomy shelf (tablet, wide leaf): the actions move beside the book. */
-@container reading-queue (min-width: 520px) {
-  .queue-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .queue-actions {
-    border-top: 0;
-    border-left: 1px solid rgba(217, 181, 116, 0.16);
-  }
-
-  .queue-actions .queue-start {
-    flex: 0 0 auto;
-    padding: 0 16px;
-  }
-}
-
-/* The narrowest shelves: tighten the Add control so the title keeps its line. */
-@container reading-queue (max-width: 300px) {
-  .reading-queue .queue-add {
-    padding: 0 10px;
-    letter-spacing: 0.1em;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .reading-queue :is(.queue-add, .queue-candidate-add, .queue-details-cue),
   .queue-actions button {
     transition: none;
   }
@@ -20678,3 +21400,94 @@ html:not(.native-app) .web-shell.player-view-now > .player-pane.has-native-playe
   .car-player-secondary { grid-column: 2; grid-row: 3; margin: 0; }
   .car-player-state { display: none; }
 }
+.book-cover-column {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  width: clamp(120px, 16vw, 200px);
+  align-self: start;
+}
+
+html .book-heading .book-cover-column > .large-cover { width: 100%; }
+
+.book-sample { width: 100%; text-align: left; }
+.book-sample-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 0 8px 0 0;
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  border-radius: 6px;
+  background: rgba(var(--sheet-rgb), 0.5);
+}
+.book-sample-play {
+  display: grid;
+  place-items: center;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 44px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--oxblood);
+  cursor: pointer;
+}
+.book-sample-play:hover { background: rgba(var(--ink-rgb), 0.06); }
+.book-sample-timeline { flex: 1; min-width: 0; }
+.book-sample-caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  color: var(--ink-soft);
+  font-size: 0.65rem;
+  line-height: 1.3;
+}
+.book-sample-caption time { font-variant-numeric: tabular-nums; }
+.book-sample progress {
+  display: block;
+  width: 100%;
+  height: 3px;
+  margin-top: 5px;
+  border: none;
+  border-radius: 2px;
+  accent-color: var(--oxblood);
+  background: rgba(var(--ink-rgb), 0.14);
+  overflow: hidden;
+}
+.book-sample progress::-webkit-progress-bar { background: rgba(var(--ink-rgb), 0.14); }
+.book-sample progress::-webkit-progress-value { background: var(--oxblood); }
+.book-sample progress::-moz-progress-bar { background: var(--oxblood); }
+.book-sample-reset {
+  display: block;
+  margin: 2px auto 0;
+  min-height: 28px;
+  padding: 3px 6px;
+  border: none;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.62rem;
+  cursor: pointer;
+}
+.book-sample-continue {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  border-radius: 6px;
+  background: var(--oxblood);
+  color: var(--paper);
+  font-size: 0.7rem;
+  line-height: 1.3;
+  cursor: pointer;
+}
+.book-sample-continue svg { flex: none; }
+.book-sample .book-sample-status { margin: 5px 0; color: var(--ink-soft); font-size: 0.72rem; line-height: 1.4; }

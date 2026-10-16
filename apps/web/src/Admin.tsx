@@ -21,6 +21,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AvatarFace } from "./Avatar";
 import {
   changePassword,
   createUser,
@@ -51,6 +52,7 @@ import {
   updateUserLibationAccess,
   updateUserRole
 } from "./api";
+import { errorMessage } from "./formatting";
 import type {
   AuthUser,
   Book,
@@ -146,7 +148,7 @@ export function AdminPanel({
       setUsers(nextUsers);
       setLibationRequests(nextRequests);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load users.");
+      setError(errorMessage(err, "Could not load users."));
     } finally {
       setLoading(false);
     }
@@ -180,7 +182,7 @@ export function AdminPanel({
       }
       if (force) {
         if (serverResult.status === "rejected") {
-          setError(serverResult.reason instanceof Error ? serverResult.reason.message : "Could not check for server updates.");
+          setError(errorMessage(serverResult.reason, "Could not check for server updates."));
         } else if (
           !serverResult.value.updateAvailable
           && (
@@ -209,7 +211,7 @@ export function AdminPanel({
       }
     } catch (err) {
       setFaststartError(
-        err instanceof Error ? err.message : "Could not check the library for faststart files."
+        errorMessage(err, "Could not check the library for faststart files.")
       );
     } finally {
       setFaststartChecking(false);
@@ -222,7 +224,7 @@ export function AdminPanel({
       setSyncAddon(await getSyncAddonStatus(force));
       if (force) setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not check the sync add-on.");
+      setError(errorMessage(err, "Could not check the sync add-on."));
     } finally {
       setSyncAddonChecking(false);
     }
@@ -246,7 +248,7 @@ export function AdminPanel({
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
       setNotice("Server backup downloaded. Store it somewhere private; it contains account credentials and session data.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not export the server backup.");
+      setError(errorMessage(err, "Could not export the server backup."));
     } finally {
       setBackupBusy(null);
     }
@@ -284,7 +286,7 @@ export function AdminPanel({
       }
       setNotice(restored.warning ? `${summary} ${restored.warning}` : summary);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not restore the server backup.");
+      setError(errorMessage(err, "Could not restore the server backup."));
     } finally {
       setBackupBusy(null);
     }
@@ -388,7 +390,7 @@ export function AdminPanel({
       setNewRole("reader");
       setNotice(`${created.username} can now sign in.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create the account.");
+      setError(errorMessage(err, "Could not create the account."));
     } finally {
       setBusyKey(null);
     }
@@ -402,7 +404,7 @@ export function AdminPanel({
       await deleteUser(user.id);
       setUsers((existing) => existing.filter((candidate) => candidate.id !== user.id));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not delete the account.");
+      setError(errorMessage(err, "Could not delete the account."));
     } finally {
       setBusyKey(null);
     }
@@ -417,7 +419,7 @@ export function AdminPanel({
       await changePassword(user.id, password);
       setNotice(`Password reset for ${user.username}. Their other sessions were signed out.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not reset the password.");
+      setError(errorMessage(err, "Could not reset the password."));
     } finally {
       setBusyKey(null);
     }
@@ -432,7 +434,7 @@ export function AdminPanel({
       setUsers((existing) => existing.map((candidate) => candidate.id === user.id ? updated : candidate));
       setNotice(`Book access updated for ${user.username}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update book access.");
+      setError(errorMessage(err, "Could not update book access."));
     } finally {
       setBusyKey(null);
     }
@@ -447,7 +449,7 @@ export function AdminPanel({
       setUsers((existing) => existing.map((candidate) => candidate.id === user.id ? updated : candidate));
       setNotice(`Libation access updated for ${user.username}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update Libation access.");
+      setError(errorMessage(err, "Could not update Libation access."));
     } finally {
       setBusyKey(null);
     }
@@ -462,7 +464,7 @@ export function AdminPanel({
       setUsers((existing) => existing.map((candidate) => candidate.id === user.id ? updated : candidate));
       setNotice(`${user.username} is now ${role === "owner" ? "an owner" : role === "admin" ? "an administrator" : "a reader"}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update the account role.");
+      setError(errorMessage(err, "Could not update the account role."));
     } finally {
       setBusyKey(null);
     }
@@ -477,7 +479,7 @@ export function AdminPanel({
       setUsers((existing) => existing.map((candidate) => candidate.id === user.id ? updated : candidate));
       setNotice(`Approval permission updated for ${user.username}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update approval permission.");
+      setError(errorMessage(err, "Could not update approval permission."));
     } finally {
       setBusyKey(null);
     }
@@ -492,7 +494,7 @@ export function AdminPanel({
       setLibationRequests((existing) => existing.map((item) => item.id === updated.id ? updated : item));
       setNotice(approved ? `${request.title} was approved and queued.` : `${request.title} was declined.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not decide the download request.");
+      setError(errorMessage(err, "Could not decide the download request."));
     } finally {
       setBusyKey(null);
     }
@@ -511,7 +513,7 @@ export function AdminPanel({
       onBooksChanged(nextBooks);
       setNotice(`${book.title} was removed from this server. It remains available to redownload from Libation.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not delete the downloaded book.");
+      setError(errorMessage(err, "Could not delete the downloaded book."));
     } finally {
       setBusyKey(null);
     }
@@ -559,7 +561,7 @@ export function AdminPanel({
         }
       );
     } catch (err) {
-      setFaststartError(err instanceof Error ? err.message : "Could not start the conversion.");
+      setFaststartError(errorMessage(err, "Could not start the conversion."));
     } finally {
       setFaststartStarting(false);
     }
@@ -575,7 +577,7 @@ export function AdminPanel({
       setFrontendUpdateStatus(null);
       await refreshUpdate(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not change the update channel.");
+      setError(errorMessage(err, "Could not change the update channel."));
     } finally {
       setChannelSaving(false);
     }
@@ -613,7 +615,7 @@ export function AdminPanel({
       }
       setNotice("The server has not confirmed the target version. Check the last update result and update.log before retrying.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not install the server update.");
+      setError(errorMessage(err, "Could not install the server update."));
       setNotice(null);
     } finally {
       setUpdateInstalling(false);
@@ -638,7 +640,7 @@ export function AdminPanel({
       setNotice("The new web frontend is ready. Reloading…");
       window.location.reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not install the frontend update.");
+      setError(errorMessage(err, "Could not install the frontend update."));
       setNotice(null);
       setFrontendUpdateInstalling(false);
     }
@@ -658,7 +660,7 @@ export function AdminPanel({
       onAlignmentChanged(installed);
       setNotice("The sync add-on is installed. Enable it when you are ready to use it.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not install the sync add-on.");
+      setError(errorMessage(err, "Could not install the sync add-on."));
       setNotice(null);
     } finally {
       setSyncAddonBusy(null);
@@ -676,7 +678,7 @@ export function AdminPanel({
       onAlignmentChanged(status);
       setNotice(`Follow-along sync generation is now ${status.enabled ? "enabled" : "disabled"}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not change the sync add-on.");
+      setError(errorMessage(err, "Could not change the sync add-on."));
     } finally {
       setSyncAddonBusy(null);
     }
@@ -696,7 +698,7 @@ export function AdminPanel({
       onAlignmentChanged(status);
       setNotice("The sync add-on was removed. Existing sync maps were kept.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not remove the sync add-on.");
+      setError(errorMessage(err, "Could not remove the sync add-on."));
     } finally {
       setSyncAddonBusy(null);
     }
@@ -765,7 +767,7 @@ export function AdminPanel({
                   setBusyKey("rescan");
                   setError(null);
                   try { await onRescan(); setNotice("Library rescan complete."); }
-                  catch (err) { setError(err instanceof Error ? err.message : "Rescan failed."); }
+                  catch (err) { setError(errorMessage(err, "Rescan failed.")); }
                   finally { setBusyKey(null); }
                 }}
               >
@@ -1077,7 +1079,7 @@ export function AdminPanel({
                   return (
                     <article className="admin-user" key={user.id}>
                       <div className="admin-user-head">
-                        <div className="admin-avatar">{user.username.slice(0, 1).toUpperCase()}</div>
+                        <div className="admin-avatar"><AvatarFace user={user} /></div>
                         <div><strong>{user.username}</strong><span>{user.isOwner ? "Owner" : user.isAdmin ? "Administrator" : allBooks ? "Reader · all books" : `Reader · ${user.allowedBookIds?.length ?? 0} of ${books.length} books`}{user.id === currentUser.id ? " · you" : ""}</span></div>
                         <div className="admin-row-actions">
                           {user.id !== currentUser.id ? <button type="button" disabled={busyKey !== null || !canManageTarget || (!currentUser.isOwner && user.libationAccess === "direct")} onClick={() => void handleResetPassword(user)}><KeyRound size={13} /> Reset</button> : null}

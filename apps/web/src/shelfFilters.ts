@@ -1,6 +1,7 @@
 import { readingStatus, readingStatusLabel } from "./bookProgress.ts";
 import type { ReadingStatus } from "./bookProgress.ts";
 import { tagsForBook } from "./bookMetadata.ts";
+import { hasPreciseSync } from "./syncGeneration.ts";
 import type { Book } from "./types.ts";
 
 /**
@@ -67,7 +68,7 @@ export function shelfFacetKey(value: string) {
   return value.trim().toLowerCase();
 }
 
-export function shelfFacetValues(values: (string | null | undefined)[]): ShelfFacetValue[] {
+function shelfFacetValues(values: (string | null | undefined)[]): ShelfFacetValue[] {
   const seen = new Map<string, ShelfFacetValue>();
   for (const value of values) {
     const label = value?.trim();
@@ -106,26 +107,13 @@ export function bookMatchesShelfDownload(availableOnDevice: boolean, downloadedO
 /** Outdated maps remain usable, and still offer follow-along reading. */
 export function bookReadingAvailability(book: Pick<Book, "readingFile" | "syncFile">, sentenceFollowAvailable: boolean) {
   if (!book.readingFile) return "none";
-  const source = book.syncFile?.source;
-  return sentenceFollowAvailable && book.readingFile.extension.toLowerCase() === "epub" && (source === "sidecar" || source === "generated")
+  return sentenceFollowAvailable && book.readingFile.extension.toLowerCase() === "epub" && hasPreciseSync(book)
     ? "followAlong"
     : "ebook";
 }
 
 export function bookMatchesShelfReading(book: Pick<Book, "readingFile" | "syncFile">, reading: ShelfReadingFilter, sentenceFollowAvailable: boolean) {
   return reading === "all" || bookReadingAvailability(book, sentenceFollowAvailable) === reading;
-}
-
-/**
- * Recheck native files when the source of a device copy changes, while keeping
- * progress and metadata updates from repeatedly touching the filesystem.
- */
-export function shelfDownloadScanKey(books: Book[]) {
-  return JSON.stringify(books.map((book) => [
-    book.id,
-    book.deviceBookId ?? null,
-    book.tracks.map((track) => track.localFilePath ?? null)
-  ]));
 }
 
 /** Split once per shelf update rather than once per book in a large library. */

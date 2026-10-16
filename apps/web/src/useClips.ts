@@ -11,9 +11,11 @@ import {
 } from "./api";
 import {
   type Clip,
+  type ClipDelivery,
   clipAround,
   clipFileName,
   clipsForBook,
+  deliverQueuedClips,
   newClipId,
   pendingClipStorageKey,
   readPendingClips,
@@ -51,6 +53,14 @@ export type ClipEdit = Pick<Clip, "startSeconds" | "endSeconds" | "title" | "not
 /** Whether a refused save can never succeed, so keeping it queued is pointless. */
 function saveWasRejected(error: unknown) {
   return error instanceof ApiError && [400, 409, 413, 422].includes(error.status);
+}
+
+/**
+ * The server cannot find the clip's book: it left the library, its folder is
+ * briefly unmounted, or the reader lost access. Only this clip has to wait.
+ */
+function bookUnavailable(error: unknown) {
+  return error instanceof ApiError && (error.status === 403 || error.status === 404);
 }
 
 function sameContent(left: ClipEdit, right: ClipEdit) {
@@ -107,7 +117,7 @@ export function useClips({
   const bookIdRef = useRef(collectionBookId);
   bookIdRef.current = collectionBookId;
   const flushingRef = useRef(false);
-  const deliveriesRef = useRef(new Map<string, Promise<"saved" | "waiting" | string>>());
+  const deliveriesRef = useRef(new Map<string, Promise<ClipDelivery>>());
 
   function storePending(next: Clip[]) {
     pendingRef.current = next;
@@ -120,7 +130,7 @@ export function useClips({
    * pass: no connection, a restarting server, an expired sign-in, a library
    * that is briefly unmounted.
    */
-  function deliver(clip: Clip): Promise<"saved" | "waiting" | string> {
+  function deliver(clip: Clip): Promise<ClipDelivery> {
     const queued = pendingRef.current.find((candidate) => candidate.id === clip.id);
     if (!queued) return Promise.resolve("saved");
     const existing = deliveriesRef.current.get(clip.id);
@@ -130,7 +140,7 @@ export function useClips({
     return delivery;
   }
 
-  async function deliverNow(clip: Clip): Promise<"saved" | "waiting" | string> {
+  async function deliverNow(clip: Clip): Promise<ClipDelivery> {
     try {
       let stored: Clip | null = null;
       if (!clip.deleted) {
@@ -150,7 +160,7 @@ export function useClips({
       }
       return "saved";
     } catch (failure) {
-      if (!saveWasRejected(failure) || isNetworkError(failure)) return "waiting";
+      if (!saveWasRejected(failure) || isNetworkError(failure)) return bookUnavailable(failure) ? "held" : "waiting";
       storePending(pendingRef.current.filter((candidate) => candidate.id !== clip.id));
       return errorMessage(failure, "The clip could not be saved.");
     }
@@ -160,9 +170,7 @@ export function useClips({
     if (flushingRef.current) return;
     flushingRef.current = true;
     try {
-      for (const clip of [...pendingRef.current]) {
-        if (await deliver(clip) === "waiting") break;
-      }
+      await deliverQueuedClips([...pendingRef.current], deliver);
     } finally {
       flushingRef.current = false;
     }
@@ -246,7 +254,7 @@ export function useClips({
     storePending([...pendingRef.current, clip]);
     setLastSavedId(clip.id);
     void deliver(clip).then((outcome) => {
-      if (outcome === "saved" || outcome === "waiting") return;
+      if (outcome === "saved" || outcome === "waiting" || outcome === "held") return;
       setLastSavedId(null);
       setError(outcome);
     });
@@ -381,14 +389,11 @@ export function useClips({
       return;
     }
     if (inside) return;
-    const ranOut = bookPosition >= audition.endSeconds && bookPosition <= audition.endSeconds + 5;
-    // Anywhere else means the listener moved on their own; that is now their
-    // place, and pulling them back would be the surprise.
-    if (ranOut) finishAuditionRef.current(audition);
-    else {
-      clipPreviewBookIdRef.current = null;
-      setAudition(null);
-    }
+    // A seek the listener chose already released the preview above, so any
+    // other report outside the clip means it ran out. That report can land
+    // far past the end when a locked phone or suspended web view kept playing;
+    // the place to keep is still the one the listener left.
+    finishAuditionRef.current(audition);
   }, [audition, bookId, bookPosition, clipPreviewBookIdRef]);
 
   const stopAuditionRef = useRef(stopAudition);

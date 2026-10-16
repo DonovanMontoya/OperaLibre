@@ -192,21 +192,10 @@ fn next_occurrence(local_time: &str, time_zone: &str, now: u64) -> Result<u64, A
         let Some(date) = local_now.date_naive().checked_add_days(Days::new(offset)) else {
             continue;
         };
-        let requested = date.and_time(time);
-        match zone.from_local_datetime(&requested) {
-            LocalResult::Ambiguous(first, second) => {
-                let instant = timestamp_millis(first.min(second))?;
-                if instant > now {
-                    return Ok(instant);
-                }
-            }
-            _ => {
-                if let Some(candidate) = occurrence_on(date, time, zone) {
-                    let instant = timestamp_millis(candidate)?;
-                    if instant > now {
-                        return Ok(instant);
-                    }
-                }
+        if let Some(candidate) = occurrence_on(date, time, zone) {
+            let instant = timestamp_millis(candidate)?;
+            if instant > now {
+                return Ok(instant);
             }
         }
     }
@@ -260,7 +249,7 @@ pub(crate) async fn schedule(
     Json(request): Json<ScheduleRequest>,
 ) -> Result<Json<SyncSchedule>, ApiError> {
     let now = unix_now_millis();
-    if request.run_at <= now || request.run_at > now.saturating_add(366 * 24 * 60 * 60 * 1000) {
+    if request.run_at <= now || request.run_at > now.saturating_add(YEAR_MS) {
         return Err(ApiError::bad_request(
             "Choose a future time within the next year.",
         ));
@@ -293,7 +282,7 @@ pub(crate) async fn schedule(
     if state.jobs.read().await.values().any(|job| {
         job.kind == SYNC_GENERATE_JOB_KIND
             && job.target_id.as_ref() == Some(&book_id)
-            && matches!(job.status.as_str(), "queued" | "running" | "paused")
+            && is_unfinished_job(job)
     }) {
         return Err(ApiError::conflict(
             "This book is already queued, syncing, or paused.",
@@ -324,7 +313,7 @@ pub(crate) async fn cancel(
     let active = state.jobs.read().await.values().any(|job| {
         job.kind == SYNC_GENERATE_JOB_KIND
             && job.target_id.as_ref() == Some(&book_id)
-            && (is_active_job(job) || job.status == "paused")
+            && is_unfinished_job(job)
     });
     if entries.iter().any(|entry| {
         entry.book_id == book_id
@@ -387,7 +376,7 @@ async fn run_sweep(state: &AppState, limit: usize) -> SweepRun {
             if let Some(book_id) = job.target_id.as_deref() {
                 let latest = attempts.entry(book_id).or_default();
                 *latest = (*latest).max(job_started_timestamp(job));
-                if matches!(job.status.as_str(), "queued" | "running" | "paused") {
+                if is_unfinished_job(job) {
                     busy.insert(book_id.to_string());
                 }
             }
@@ -576,6 +565,20 @@ fn due_status(entry: &SyncSchedule, now: u64) -> Option<&'static str> {
     })
 }
 
+/// Record the outcome of handing a due entry to the sync queue.
+fn record_submission(entry: &mut SyncSchedule, result: Result<Json<JobCreated>, ApiError>) {
+    match result {
+        Ok(Json(job)) => {
+            entry.status = "submitted".into();
+            entry.job_id = Some(job.job_id);
+        }
+        Err(error) => {
+            entry.status = "failed".into();
+            entry.error = Some(error.message);
+        }
+    }
+}
+
 pub(crate) async fn tick(state: &AppState) -> Result<(), ApiError> {
     // Invalid recovered jobs can finish here, which records their schedule
     // outcome under the schedule lock itself.
@@ -628,16 +631,7 @@ pub(crate) async fn tick(state: &AppState) -> Result<(), ApiError> {
             } else {
                 crate::sync::enqueue_sync_map(state.clone(), entries[index].book_id.clone()).await
             };
-            match result {
-                Ok(Json(job)) => {
-                    entries[index].status = "submitted".into();
-                    entries[index].job_id = Some(job.job_id);
-                }
-                Err(error) => {
-                    entries[index].status = "failed".into();
-                    entries[index].error = Some(error.message);
-                }
-            }
+            record_submission(&mut entries[index], result);
             save(state, &entries).await?;
             continue;
         }
@@ -657,16 +651,9 @@ pub(crate) async fn tick(state: &AppState) -> Result<(), ApiError> {
             continue;
         }
         save(state, &entries).await?;
-        match crate::sync::enqueue_sync_map(state.clone(), entries[index].book_id.clone()).await {
-            Ok(Json(job)) => {
-                entries[index].status = "submitted".into();
-                entries[index].job_id = Some(job.job_id);
-            }
-            Err(error) => {
-                entries[index].status = "failed".into();
-                entries[index].error = Some(error.message);
-            }
-        }
+        let result =
+            crate::sync::enqueue_sync_map(state.clone(), entries[index].book_id.clone()).await;
+        record_submission(&mut entries[index], result);
         save(state, &entries).await?;
     }
     // Keep the same lock for the sweep. This serializes the durable claim with

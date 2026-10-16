@@ -255,6 +255,22 @@ test('interrupted preview never checkpoints its temporary position or seek inten
   await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThanOrEqual(90);
 });
 
+test('a preview that plays far past its end without a report still returns to the listener’s place', async ({ page }) => {
+  const fixture = await setup(page);
+  const book = fixture.books[1];
+  fixture.clips.get(book.id)![0].endSeconds = 25;
+  await page.locator('.book-row').nth(1).click();
+  await page.getByRole('tab', { name: 'Clips', exact: true }).click();
+  await page.getByRole('button', { name: 'Preview Passage from book 2', exact: true }).click();
+  const audio = page.locator('audio');
+  await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => !element.paused && element.currentTime > 11)).toBe(true);
+  // The next report arrives well past the clip, as after a locked screen.
+  await audio.evaluate((element: HTMLAudioElement) => { element.currentTime = 60; });
+  await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => ({ time: element.currentTime, paused: element.paused }))).toEqual({ time: 90, paused: true });
+  await expect.poll(() => fixture.writes.filter(write => write.bookId === book.id).slice(-1)[0]?.position).toBe(90);
+  expect(fixture.writes.filter(write => write.bookId === book.id).every(write => write.position === 90)).toBe(true);
+});
+
 test('pending removal retries a lost-response server copy after restart without resurrecting it', async ({ page }) => {
   const fixture = await setup(page);
   const book = fixture.books[0];

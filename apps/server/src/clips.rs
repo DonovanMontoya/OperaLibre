@@ -523,19 +523,6 @@ pub(crate) async fn clip_audio(
             "This clip is outside the book's audio.",
         ));
     }
-    // The same containment check streaming applies, so a link planted in the
-    // library cannot be read out through an export.
-    let roots = vec![state.library_root.clone()];
-    let paths: Vec<PathBuf> = inputs.iter().map(|(path, _)| path.clone()).collect();
-    tokio::task::spawn_blocking(move || {
-        paths
-            .iter()
-            .try_for_each(|path| open_contained_file(path, &roots).map(|_| ()))
-    })
-    .await
-    .map_err(|error| ApiError::internal(format!("Could not open media file: {error}")))?
-    .map_err(|_| ApiError::not_found("Media file not found"))?;
-
     let moment = clip_timestamp(clip.start_seconds);
     let title = clip
         .title
@@ -550,15 +537,31 @@ pub(crate) async fn clip_audio(
         None => format!("{} - {moment}", book.title),
     };
 
-    let _slot = CLIP_EXPORT_SLOT
-        .acquire()
-        .await
-        .map_err(|_| ApiError::internal("Clip export is unavailable."))?;
-    let output = ClipExportFile(
-        state
-            .download_temp_dir
-            .join(format!("clip-{}.m4a", new_clip_id())),
-    );
+    // Waiting behind another export could outlast the request timeout and
+    // leave the encode running for nobody, so a busy server says so instead.
+    let _slot = CLIP_EXPORT_SLOT.try_acquire().map_err(|_| {
+        ApiError::service_unavailable("Another clip is being prepared. Try again in a moment.")
+    })?;
+    // The same containment check streaming applies, run just before ffmpeg
+    // opens the files, so a link planted in the library cannot be read out
+    // through an export. ffmpeg gets the resolved paths that were checked.
+    let roots = vec![state.library_root.clone()];
+    let inputs = tokio::task::spawn_blocking(move || {
+        inputs
+            .into_iter()
+            .map(|(path, segment)| {
+                open_contained_file(&path, &roots)?;
+                Ok((std::fs::canonicalize(&path)?, segment))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Could not open media file: {error}")))?
+    .map_err(|_| ApiError::not_found("Media file not found"))?;
+    let output = ClipExportFile(state.download_temp_dir.join(format!(
+        "{DOWNLOAD_TEMP_PREFIX}clip-{}{CLIP_EXPORT_TEMP_SUFFIX}",
+        new_clip_id()
+    )));
     export_clip_audio(&tools.ffmpeg, &inputs, &tags, &output.0).await?;
     let audio = fs::read(&output.0).await?;
 

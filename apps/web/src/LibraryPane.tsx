@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { useCarPlay } from "./useCarPlay";
 import type { useFinishFeed } from "./useFinishFeed";
 import type { useOfflineDownloads } from "./useOfflineDownloads";
@@ -46,6 +46,7 @@ import { ShelfBookList, ShelfFacetGroup } from "./ShelfBookList";
 import { DeviceImportNotice } from "./DeviceImportNotice";
 import { readingQueueKey } from "./readingQueue";
 import { ContinueReading } from "./ContinueReading";
+import { AvatarFace } from "./Avatar";
 import { isPendingJob, jobDetailLines, jobStateLabel, jobSummary, jobTitle } from "./jobLabels";
 import { formatElapsed, formatMinutes } from "./formatting";
 import { LibroCatalog, StoreHeading } from "./LibroCatalog";
@@ -174,6 +175,7 @@ export function LibraryPane({
     filterToggleRef,
     filtersOpen,
     hasCollapsedShelfGroups,
+    letteredShelf,
     purchaseViewMode,
     reverseSort,
     searchQuery,
@@ -255,21 +257,35 @@ export function LibraryPane({
   // Known only once the status has loaded, so the prompt does not flash first.
   const audibleNeedsAccount = native && !!libationStatus && allAudibleAccounts.length === 0;
 
-  const queueActionsRef = useRef({ selectBook, resumeSelectedBook, openBookDetails, setLibraryOpen });
-  queueActionsRef.current = { selectBook, resumeSelectedBook, openBookDetails, setLibraryOpen };
-  const startQueuedBook = useCallback((book: Book) => {
-    const actions = queueActionsRef.current;
-    actions.selectBook(book);
-    actions.resumeSelectedBook(book);
-    actions.setLibraryOpen(false);
-  }, []);
+  const userMenuWrapRef = useRef<HTMLDivElement>(null);
+  // The native sheet has its own scrim; the web dropdown closes on a click
+  // anywhere else or on Escape, which hands focus back to its button.
+  useEffect(() => {
+    if (!userMenuOpen || native) return;
+    const wrap = userMenuWrapRef.current;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!wrap?.contains(event.target as Node)) setUserMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setUserMenuOpen(false);
+      wrap?.querySelector<HTMLButtonElement>(".account-button")?.focus();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [native, setUserMenuOpen, userMenuOpen]);
+  const queueActionsRef = useRef({ openBookDetails, setLibraryOpen });
+  queueActionsRef.current = { openBookDetails, setLibraryOpen };
   const openQueuedBook = useCallback((id: string) => {
     queueActionsRef.current.openBookDetails(id);
     queueActionsRef.current.setLibraryOpen(false);
   }, []);
-  const readingBooks = useMemo(() => isOffline
-    ? visibleBooks.filter(book => book.source === "device" || !!book.deviceBookId || downloadedBookIds.has(book.id))
-    : visibleBooks, [isOffline, visibleBooks, downloadedBookIds]);
+  // Up Next is the reader's plan, so searching or filtering the shelf below
+  // leaves it alone.
   const queueBooks = useMemo(() => isOffline
     ? books.filter(book => book.source === "device" || !!book.deviceBookId || downloadedBookIds.has(book.id))
     : books, [isOffline, books, downloadedBookIds]);
@@ -350,6 +366,32 @@ export function LibraryPane({
       </button>
     );
   }
+
+  const queueStorageKey = readingQueueKey(getServerStorageKey(), currentUser.id);
+  // The filter panel holds these, and the open Duo also sets them out above
+  // the collection where its two leaves leave room.
+  const statusButtons = SHELF_STATUS_OPTIONS.map((option) => {
+    const isSelected = shelfFilters.status === option.value;
+    const count = shelfFacets.statusCounts[option.value];
+    return (
+      <button
+        type="button"
+        key={option.value}
+        className={isSelected ? "selected" : ""}
+        aria-pressed={isSelected}
+        disabled={count === 0 && !isSelected}
+        onClick={() => setShelfFilters({ ...shelfFilters, status: option.value })}
+      >
+        <span>{option.label}</span>
+        <em>{count}</em>
+      </button>
+    );
+  });
+  // Where those words stand above the collection, the selected one already
+  // says which progress is showing, so the styles there leave it out of the
+  // Filters count and the summary of filters that are on.
+  const statusFiltered = shelfFilters.status !== "all";
+  const otherFilterCount = activeShelfFilterCount - (statusFiltered ? 1 : 0);
 
   return (
     <aside ref={libraryPaneRef} className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource !== "local" ? "purchase-browsing" : ""}`} {...shelfPull.handlers}>
@@ -483,14 +525,15 @@ export function LibraryPane({
           >
             <RefreshCcw size={16} />
           </button>
-          <div className="user-menu-wrap">
+          <div className="user-menu-wrap" ref={userMenuWrapRef}>
             <button
-              className="icon-button"
+              className="icon-button account-button"
               aria-label="Account menu"
+              aria-haspopup="menu"
               aria-expanded={userMenuOpen}
               onClick={() => setUserMenuOpen((open) => !open)}
             >
-              <span className="user-avatar">{currentUser.username.slice(0, 1).toUpperCase()}</span>
+              <span className="user-avatar"><AvatarFace user={currentUser} /></span>
             </button>
             {userMenuOpen
               ? native
@@ -587,14 +630,15 @@ export function LibraryPane({
             <button
               type="button"
               ref={filterToggleRef}
-              className={`library-filter-toggle ${filtersOpen ? "open" : ""} ${activeShelfFilterCount > 0 ? "engaged" : ""}`}
+              className={`library-filter-toggle ${filtersOpen ? "open" : ""} ${otherFilterCount > 0 ? "engaged" : ""} ${statusFiltered ? "status-engaged" : ""}`}
               onClick={() => setFiltersOpen(!filtersOpen)}
               aria-expanded={filtersOpen}
               aria-controls="library-filter-panel"
             >
               <SlidersHorizontal size={14} aria-hidden="true" />
               <span>Filters</span>
-              {activeShelfFilterCount > 0 ? <em>{activeShelfFilterCount}</em> : null}
+              {activeShelfFilterCount > 0 ? <em className={statusFiltered ? "counts-status" : undefined}>{activeShelfFilterCount}</em> : null}
+              {statusFiltered && otherFilterCount > 0 ? <em className="beside-status">{otherFilterCount}</em> : null}
             </button>
           ) : null}
         </div>
@@ -664,23 +708,7 @@ export function LibraryPane({
                   <span className="shelf-facet-title">Progress</span>
                 </div>
                 <div className="shelf-status-row" role="group" aria-label="Filter by reading progress">
-                  {SHELF_STATUS_OPTIONS.map((option) => {
-                    const isSelected = shelfFilters.status === option.value;
-                    const count = shelfFacets.statusCounts[option.value];
-                    return (
-                      <button
-                        type="button"
-                        key={option.value}
-                        className={isSelected ? "selected" : ""}
-                        aria-pressed={isSelected}
-                        disabled={count === 0 && !isSelected}
-                        onClick={() => setShelfFilters({ ...shelfFilters, status: option.value })}
-                      >
-                        <span>{option.label}</span>
-                        <em>{count}</em>
-                      </button>
-                    );
-                  })}
+                  {statusButtons}
                 </div>
               </div>
 
@@ -743,14 +771,20 @@ export function LibraryPane({
           </section>
         ) : null}
 
+        {showShelfFilters ? (
+          <div className="library-status-inline" role="group" aria-label="Filter by reading progress">
+            {statusButtons}
+          </div>
+        ) : null}
+
         {showShelfFilters && activeShelfFilterCount > 0 ? (
-          <div className="library-active-filters">
+          <div className={`library-active-filters${otherFilterCount === 0 ? " status-only" : ""}`}>
             <span className="library-active-filters-caption">Filtering</span>
             {activeShelfFilterChips.map((chip) => (
               <button
                 type="button"
                 key={chip.id}
-                className="active-filter-chip"
+                className={`active-filter-chip${chip.id.startsWith("status:") ? " status" : ""}`}
                 onClick={chip.clear}
                 aria-label={`Remove ${chip.caption.toLowerCase()} filter ${chip.label}`}
               >
@@ -963,11 +997,9 @@ export function LibraryPane({
 
           {!isLoading ? (
             <ContinueReading
-              key={readingQueueKey(getServerStorageKey(), currentUser.id)}
-              storageKey={readingQueueKey(getServerStorageKey(), currentUser.id)}
-              books={readingBooks}
-              queueBooks={queueBooks}
-              onStart={startQueuedBook}
+              key={queueStorageKey}
+              storageKey={queueStorageKey}
+              books={queueBooks}
               onOpenBook={openQueuedBook}
               onContinue={continueReadingBook}
             />
@@ -979,6 +1011,8 @@ export function LibraryPane({
             columns={visibleBookColumns}
             viewMode={viewMode}
             sortMode={sortMode}
+            lettered={letteredShelf}
+            sortReversed={sortReversed}
             shelfTags={shelfFilters.tags}
             selectedBookId={selectedBook?.id ?? null}
             playbackBookId={playbackBook?.id ?? null}

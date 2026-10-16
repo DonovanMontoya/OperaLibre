@@ -254,9 +254,9 @@ test('wide Duo gives Shelf both leaves while Reading keeps the player spread', a
   await page.setContent(`<html class="native-app side-rail" data-fold-posture="half-open" data-fold-axis="vertical" data-fold-active><head>
     <style>${stylesheet}</style>
     </head><body><main class="native-shell tab-shelf has-mini-player shelf-landscape shelf-folded">
-    <section class="library-pane"><div class="shelf-layout-controls">Layout</div><div class="book-list is-grid">
-      ${Array.from({ length: 12 }, (_, index) => `<button class="book-row">Book ${index + 1}</button>`).join('')}
-    </div></section><section class="player-pane">Player</section>
+    <section class="library-pane"><div class="shelf-layout-controls">Layout</div><div class="book-list is-grid"><div class="book-leaf">
+      ${Array.from({ length: 12 }, (_, index) => `<section class="book-sort-run"><div class="book-run-books"><button class="book-row">Book ${index + 1}</button></div></section>`).join('')}
+    </div></div></section><section class="player-pane">Player</section>
     </main></body></html>`);
   await page.evaluate(() => {
     const root = document.documentElement;
@@ -275,17 +275,21 @@ test('wide Duo gives Shelf both leaves while Reading keeps the player spread', a
   const libraryPane = (await page.locator('.library-pane').boundingBox())!;
   expect(libraryPane.x).toBeLessThanOrEqual(0.5);
   expect(libraryPane.x + libraryPane.width).toBeGreaterThanOrEqual(950.5);
-  for (const book of await page.locator('.book-row').all()) {
-    const box = (await book.boundingBox())!;
-    expect(box.x + box.width <= 460 || box.x >= 491).toBe(true);
-  }
+  // Covers read straight across the spread: six to a row, three on each leaf.
+  const covers = await Promise.all((await page.locator('.book-row').all()).map(async book => (await book.boundingBox())!));
+  for (const box of covers) expect(box.x + box.width <= 460 || box.x >= 491).toBe(true);
+  expect(covers.slice(0, 6).every(box => Math.abs(box.y - covers[0].y) < 1 && Math.abs(box.width - covers[0].width) < 1)).toBe(true);
+  expect(covers.slice(0, 6).map(box => box.x)).toEqual([...covers.slice(0, 6).map(box => box.x)].sort((a, b) => a - b));
+  expect(covers[2].x + covers[2].width).toBeLessThanOrEqual(460);
+  expect(covers[3].x).toBeGreaterThanOrEqual(491);
+  expect(covers[6].y).toBeGreaterThan(covers[0].y);
 
   await page.locator('.book-list').evaluate(list => {
     list.setAttribute('class', 'book-list is-list');
     const run = (index: number) => `<div class="book-sort-run">
         <div class="book-sort-group"><span>Series</span><strong>Series ${index + 1}</strong></div>
-        ${Array.from({ length: index === 0 ? 3 : 1 }, (_, bookIndex) =>
-          `<button class="book-row">Book ${index + 1}.${bookIndex + 1}</button>`).join('')}
+        <div class="book-run-books">${Array.from({ length: index === 0 ? 3 : 1 }, (_, bookIndex) =>
+          `<button class="book-row">Book ${index + 1}.${bookIndex + 1}</button>`).join('')}</div>
       </div>`;
     list.innerHTML = `<div class="book-leaf">${run(0)}${run(2)}</div><div class="book-leaf">${run(1)}${run(3)}</div>`;
   });
@@ -299,19 +303,49 @@ test('wide Duo gives Shelf both leaves while Reading keeps the player spread', a
     expect(box.x + box.width).toBeLessThanOrEqual(460);
   }
 
-  await page.locator('.book-list').evaluate(list => list.classList.replace('is-list', 'is-grid'));
-  for (const leaf of await page.locator('.book-leaf').all()) {
-    const runs = await leaf.locator('.book-sort-run').all();
-    for (const run of runs) {
-      const runBox = (await run.boundingBox())!;
-      const leafBox = (await leaf.boundingBox())!;
-      expect(runBox.width).toBeGreaterThan(leafBox.width * 0.9);
-      for (const book of await run.locator('.book-row').all()) {
-        const box = (await book.boundingBox())!;
-        expect(box.x + box.width <= 460 || box.x >= 491).toBe(true);
-      }
-    }
-  }
+  // Grouped covers are one flow. Short groups pair up, one to a leaf; a group
+  // of loose books wraps six across; a long series runs out to the right.
+  await page.locator('.book-list').evaluate(list => {
+    list.setAttribute('class', 'book-list is-grid');
+    const run = (name: string, count: number, sequence: boolean) => `<section class="book-sort-run ${sequence ? 'is-sequence' : ''}">
+        <div class="book-sort-group"><button class="book-sort-group-toggle"><span>Series</span><strong>${name}</strong><em>${count} books</em></button></div>
+        <div class="book-run-books">${Array.from({ length: count }, (_, bookIndex) =>
+          `<button class="book-row">${name} ${bookIndex + 1}</button>`).join('')}</div>
+      </section>`;
+    list.innerHTML = `<div class="book-leaf">${run('Pair A', 1, true)}${run('Pair B', 2, true)}${run('Long', 8, true)}${run('Loose', 8, false)}</div>`;
+  });
+  const offHinge = (box: { x: number; width: number }) => box.x + box.width <= 460 || box.x >= 491;
+  const boxes = async (name: string) => Promise.all((await page.locator('.book-row', { hasText: new RegExp(`^${name} `) }).all())
+    .map(async book => (await book.boundingBox())!));
+  const [pairA, pairB] = [await boxes('Pair A'), await boxes('Pair B')];
+  expect(pairA[0].x + pairA[0].width).toBeLessThanOrEqual(460);
+  expect(pairB[0].x).toBeGreaterThanOrEqual(491);
+  expect(Math.abs(pairA[0].y - pairB[0].y)).toBeLessThan(1);
+
+  const loose = await boxes('Loose');
+  expect(loose.every(offHinge)).toBe(true);
+  expect(loose[5].y).toBe(loose[0].y);
+  expect(loose[6].y).toBeGreaterThan(loose[0].y);
+
+  const strip = page.locator('.book-sort-run', { hasText: 'Long' }).locator('.book-run-books');
+  const viewport = (await strip.boundingBox())!;
+  const shown = async () => (await boxes('Long')).filter(box => box.x + box.width > viewport.x && box.x < viewport.x + viewport.width);
+  let long = await boxes('Long');
+  expect(long.every(box => box.y === long[0].y)).toBe(true);
+  expect((await shown()).every(offHinge)).toBe(true);
+  // Six covers stand whole, three to a leaf, and the edge of the seventh
+  // shows past them so the row is seen to go on.
+  const edge = viewport.x + viewport.width;
+  expect((await shown()).filter(box => box.x + box.width <= edge + 0.5)).toHaveLength(6);
+  expect(long[6].x).toBeLessThan(edge - 20);
+  expect(long[6].x + long[6].width).toBeGreaterThan(edge + 20);
+  // Thrown to its end, the row comes to rest a whole spread on: the last
+  // two books lead the left leaf, with none on the hinge.
+  await strip.evaluate(row => row.scrollTo({ left: row.scrollWidth, behavior: 'instant' }));
+  long = await boxes('Long');
+  expect(Math.abs(long[6].x - viewport.x)).toBeLessThan(1);
+  expect((await shown()).every(offHinge)).toBe(true);
+  expect(await shown()).toHaveLength(2);
 
   await page.locator('main').evaluate(main => {
     main.classList.remove('tab-shelf');
@@ -364,7 +398,7 @@ test('Get Books keeps controls on the left leaf and books on the right leaf', as
       <aside class="library-pane purchase-browsing">
         <header class="pane-title"><h1>OperaLibre</h1></header>
         <div class="library-toolbar">
-          <div class="shelf-navigation"><button>Library</button><button>Get books</button></div>
+          <div class="source-toggle shelf-navigation"><button>Library</button><button>Get books</button></div>
           <div class="purchase-source"><div class="purchase-tabs"><button>All accounts</button><button>Libro.fm</button><button>Audible</button></div></div>
           <div class="library-search-row">Search</div><div class="library-controls"><label class="library-sort">Sort</label><button class="library-sort-direction">Down</button><div class="view-toggle"><button>List</button><button>Compact</button><button>Grid</button></div></div>
         </div>
@@ -392,6 +426,11 @@ test('Get Books keeps controls on the left leaf and books on the right leaf', as
   for (const selector of ['.library-search-row', '.library-controls']) {
     const box = (await page.locator(selector).boundingBox())!;
     expect(box.width).toBeGreaterThan(350);
+  }
+  // Both shelf tabs stay with the controls; neither spills across to the books.
+  for (const tab of await page.locator('.shelf-navigation button').all()) {
+    const box = (await tab.boundingBox())!;
+    expect(box.x + box.width).toBeLessThanOrEqual(460);
   }
   const storeTabs = (await page.locator('.purchase-tabs').boundingBox())!;
   expect(storeTabs.width).toBeGreaterThan(350);

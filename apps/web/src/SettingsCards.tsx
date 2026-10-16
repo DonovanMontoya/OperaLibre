@@ -1,6 +1,7 @@
 import { ClippingSetting } from "./ClippingSetting";
 import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BehaviorSection } from "./BehaviorSection";
+import { BookPreviewSetting } from "./BookPreviewSetting";
 import { ContinueReadingSetting } from "./ContinueReadingSetting";
 import { DeviceImportNotice } from "./DeviceImportNotice";
 import {
@@ -230,6 +231,9 @@ export function BehaviorSettings({
   clippingEnabled,
   clippingAvailable,
   toggleClippingEnabled,
+  bookPreviewsAvailable,
+  bookPreviewsEnabled,
+  toggleBookPreviewsEnabled,
   continueReadingAutoplay,
   toggleContinueReadingAutoplay,
   followAggressiveness,
@@ -243,6 +247,9 @@ export function BehaviorSettings({
   clippingEnabled: boolean;
   clippingAvailable: boolean;
   toggleClippingEnabled: () => void;
+  bookPreviewsAvailable: boolean;
+  bookPreviewsEnabled: boolean;
+  toggleBookPreviewsEnabled: () => void;
   continueReadingAutoplay: boolean;
   toggleContinueReadingAutoplay: () => void;
   followAggressiveness: FollowAggressiveness;
@@ -258,6 +265,7 @@ export function BehaviorSettings({
       <BehaviorSection>
         <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
         {clippingAvailable ? <ClippingSetting enabled={clippingEnabled} onToggle={toggleClippingEnabled} /> : null}
+        {bookPreviewsAvailable ? <BookPreviewSetting enabled={bookPreviewsEnabled} onToggle={toggleBookPreviewsEnabled} /> : null}
         <div className="settings-toggle-row">
           <span>
             <strong>Games tab</strong>

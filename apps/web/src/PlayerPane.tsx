@@ -2,6 +2,7 @@ import { BookClips } from "./BookClips";
 import type { Clip } from "./clips";
 import { DemoMediaCredits } from "./DemoMediaCredits";
 import { CarPlayer } from "./CarPlayer";
+import { BookPreviewBar, type PreviewPosition } from "./BookPreviewBar";
 import { BookCredits } from "./BookCredits";
 import type { useBookCompletion } from "./useBookCompletion";
 import type { useClips } from "./useClips";
@@ -34,6 +35,7 @@ import {
   Pause,
   Pencil,
   Play,
+  Plus,
   RotateCcw,
   RotateCw,
   ScrollText,
@@ -66,6 +68,7 @@ import type { Dispatch, ReactNode, RefObject, SetStateAction, TouchEvent, UIEven
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ServerCapabilities } from "./serverCapabilities";
 import { usePhoneWidthWindow } from "./useOrientation";
+import { useReadingQueue } from "./useReadingQueue";
 
 // Beyond this the segments are too thin to read or tap, and their fixed
 // borders/gaps overflow a phone screen; fall back to one continuous bar.
@@ -122,6 +125,10 @@ export function PlayerPane({
   userId,
   openNativePlayerSheet,
   openPlaybackView,
+  openBookPreview,
+  previewBookId,
+  stopBookPreview,
+  continueBookPreview,
   playPending,
   playSelectedBook,
   playbackBook,
@@ -132,6 +139,7 @@ export function PlayerPane({
   position,
   readalong,
   readalongPanelElement,
+  readingQueueStorageKey,
   readerPreferences,
   restartOrPreviousChapter,
   returnToLibrary,
@@ -214,6 +222,10 @@ export function PlayerPane({
   userId: string;
   openNativePlayerSheet: (sheet: Exclude<NativePlayerSheet, null>) => void;
   openPlaybackView: (view: "now" | "details" | "chapters") => void;
+  openBookPreview: ((book: Book) => void) | null;
+  previewBookId: string | null;
+  stopBookPreview: () => void;
+  continueBookPreview: (book: Book, position?: PreviewPosition) => Promise<boolean>;
   playPending: boolean;
   playSelectedBook: (book: Book) => Promise<void>;
   playbackBook: Book | null;
@@ -224,6 +236,7 @@ export function PlayerPane({
   position: number;
   readalong: ReturnType<typeof useReadalong>;
   readalongPanelElement: ReactNode;
+  readingQueueStorageKey: string;
   readerPreferences: ReturnType<typeof useReaderPreferences>;
   restartOrPreviousChapter: () => void;
   returnToLibrary: () => void;
@@ -329,6 +342,13 @@ export function PlayerPane({
   }, [playbackBook?.id, nativePlayerView, isViewingPlayingBook, carModeActive]);
   const [contentsTab, setContentsTab] = useState<"chapters" | "clips">("chapters");
   const contentsId = useId();
+  /** Chapters and clips share the book's contents area as two tabs. */
+  const contentsTabbed = Boolean(capabilities.clips && readerPreferences.clippingEnabled && selectedBook && selectedBook.source !== "device");
+  function selectContentsTab(tab: "chapters" | "clips") {
+    setContentsTab(tab);
+    // Choosing the tab asks for the list; it stays collapsible from its header.
+    if (tab === "chapters") setChaptersOpen(true);
+  }
   useEffect(() => setContentsTab("chapters"), [selectedBook?.id]);
   const phoneWidth = usePhoneWidthWindow();
   const compactActions = native || phoneWidth;
@@ -336,6 +356,10 @@ export function PlayerPane({
   const [bookActionsAbove, setBookActionsAbove] = useState(false);
   const bookActionsRef = useRef<HTMLDivElement>(null);
   const bookActionsId = useId();
+  const [queueIds, saveQueueIds] = useReadingQueue(readingQueueStorageKey);
+  const selectedBookQueued = !!selectedBook && queueIds.includes(selectedBook.id);
+  const [queueSaveFailed, setQueueSaveFailed] = useState(false);
+  useEffect(() => setQueueSaveFailed(false), [selectedBook?.id]);
   useEffect(() => setBookActionsOpen(false), [selectedBook?.id, compactActions]);
   useLayoutEffect(() => {
     if (!bookActionsOpen) return;
@@ -813,7 +837,7 @@ export function PlayerPane({
                     setSleepCustomDraft("");
                     openNativePlayerSheet("sleep");
                   }}>
-                    <Timer size={16} /> {sleepAtChapterEnd ? "End of chapter" : sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
+                    <Timer size={16} /> <span>{sleepAtChapterEnd ? "End of chapter" : sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}</span>
                   </button>
                   <button
                     type="button"
@@ -941,7 +965,14 @@ export function PlayerPane({
           {native ? bookPageMasthead : <div className="book-page-masthead">{bookPageMasthead}</div>}
 
           <div className="book-heading">
-            <CoverArt book={selectedBook} size="large" />
+            <div className="book-cover-column">
+              <CoverArt book={selectedBook} size="large" />
+              {openBookPreview && selectedBook.source !== "device" && selectedBook.tracks.length > 0 ? (
+                <BookPreviewBar key={selectedBook.id} book={selectedBook} active={previewBookId === selectedBook.id}
+                  onStart={() => openBookPreview(selectedBook)} onStop={stopBookPreview}
+                  onContinue={position => continueBookPreview(selectedBook, position)} />
+              ) : null}
+            </div>
             <div className="meta">
               <div className="heading-top">
                 <span className="eyebrow">
@@ -1030,6 +1061,27 @@ export function PlayerPane({
                       </small>
                     </span>
                   </button>
+                  {/* A book in progress is already in Up Next. */}
+                  {selectedBook.progress?.status !== "inProgress" ? (
+                    <button
+                      type="button"
+                      className="book-quick-return book-quick-queue"
+                      aria-pressed={selectedBookQueued}
+                      aria-label={selectedBookQueued ? `Remove ${selectedBook.title} from Up Next` : `Add ${selectedBook.title} to Up Next`}
+                      onClick={() => {
+                        haptic("light");
+                        setQueueSaveFailed(!saveQueueIds(selectedBookQueued
+                          ? queueIds.filter(id => id !== selectedBook.id)
+                          : [...queueIds, selectedBook.id]));
+                      }}
+                    >
+                      {selectedBookQueued ? <Check size={14} /> : <Plus size={14} />}
+                      <span>{selectedBookQueued ? "In Up Next · Remove" : "Add to Up Next"}</span>
+                    </button>
+                  ) : null}
+                  {queueSaveFailed ? (
+                    <span className="download-status" role="alert">Up Next could not be saved. Check available device storage and try again.</span>
+                  ) : null}
                   {playbackBook && playbackBook.id !== selectedBook.id ? (
                     <button type="button" className="book-quick-return" onClick={scrollToPlayer}>
                       <Headphones size={14} />
@@ -1502,7 +1554,7 @@ export function PlayerPane({
             </div>
           ) : null}
 
-          {(capabilities.clips && readerPreferences.clippingEnabled) && selectedBook.source !== "device" ? (
+          {contentsTabbed ? (
             <div className="book-contents-tabs" role="tablist" aria-label="Book contents">
               {(["chapters", "clips"] as const).map((tab) => (
                 <button type="button" role="tab" key={tab} id={`${contentsId}-${tab}`}
@@ -1512,25 +1564,24 @@ export function PlayerPane({
                     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
                     event.preventDefault();
                     const next = event.key === "Home" ? "chapters" : event.key === "End" ? "clips" : tab === "chapters" ? "clips" : "chapters";
-                    setContentsTab(next);
+                    selectContentsTab(next);
                     document.getElementById(`${contentsId}-${next}`)?.focus();
                   }}
-                  onClick={() => { haptic("light"); setContentsTab(tab); }}>
+                  onClick={() => { haptic("light"); selectContentsTab(tab); }}>
                   {tab === "chapters" ? "Chapters" : "Clips"}
                 </button>
               ))}
             </div>
           ) : null}
-          <div role={(capabilities.clips && readerPreferences.clippingEnabled) && selectedBook.source !== "device" ? "tabpanel" : undefined}
+          <div role={contentsTabbed ? "tabpanel" : undefined}
             id={`${contentsId}-panel`} aria-labelledby={`${contentsId}-${contentsTab}`}>
-          {contentsTab === "clips" && (capabilities.clips && readerPreferences.clippingEnabled) && selectedBook.source !== "device" ? (
+          {contentsTab === "clips" && contentsTabbed ? (
             <BookClips key={selectedBook.id} book={selectedBook} userId={userId} refreshKey={clipsRefreshKey}
               open={(clipId) => openBookClips(selectedBook, clipId)}
               preview={(clip) => previewBookClip(selectedBook, clip)} stop={clips.stopAudition}
               playingClipId={clips.playingClipId} previewPending={clipPreviewPending} />
           ) : selectedChapterSegments.length > 0 ? (
             <section className="track-list-section" ref={trackListSectionRef}>
-              {!(capabilities.clips && readerPreferences.clippingEnabled) || selectedBook.source === "device" ? (
               <button
                 type="button"
                 className="track-list-header track-list-toggle"
@@ -1549,8 +1600,7 @@ export function PlayerPane({
                   <ChevronDown size={14} className={`toggle-chevron ${chaptersOpen ? "open" : ""}`} />
                 </span>
               </button>
-              ) : null}
-              {chaptersOpen || ((capabilities.clips && readerPreferences.clippingEnabled) && selectedBook.source !== "device") ? (
+              {chaptersOpen ? (
                 <div className="track-list" ref={chaptersListRef}>
                   {selectedChapterSegments.map((chapter, index) => (
                     <button
@@ -1567,7 +1617,7 @@ export function PlayerPane({
                 </div>
               ) : null}
             </section>
-          ) : <p className="book-no-chapters">This book has no chapter markers.</p>}
+          ) : contentsTabbed ? <p className="book-no-chapters">This book has no chapter markers.</p> : null}
           </div>
           {native && nativeTab === "shelf" && nativePlayerView === "details" && showChapterJumpTop ? (
             <button type="button" className="chapter-jump-top" onClick={jumpToPlayerTop} aria-label="Jump to top of book details">

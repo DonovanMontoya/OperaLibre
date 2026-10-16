@@ -11,6 +11,7 @@ import {
   setServerConnection,
   setupAdmin
 } from "./api";
+import { errorMessage } from "./formatting";
 import type { LoginResponse, ServerType } from "./types";
 
 type AuthMode = "setup" | "login";
@@ -77,7 +78,7 @@ export function ServerSetup({
       setServerConnection(serverType, url, serverId);
       onConnected();
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Could not reach that server.";
+      const message = errorMessage(err, "Could not reach that server.");
       setError(message);
     } finally {
       setBusy(false);
@@ -214,7 +215,7 @@ export function AuthGate({
           : await login(username, password);
       onAuthenticated(response);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Something went wrong.";
+      const message = errorMessage(err, "Something went wrong.");
       setError(message);
     } finally {
       setBusy(false);

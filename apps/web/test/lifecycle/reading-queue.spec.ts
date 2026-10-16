@@ -13,15 +13,16 @@ test('a queued book starts its own audio without marking another book started', 
   const books = await server.books();
   const first = books.find(book => book.title === 'First Book')!;
   const second = books.find(book => book.title === 'Second Book')!;
-  await page.getByRole('button', { name: 'Add books', exact: true }).click();
-  await page.getByRole('searchbox', { name: 'Find a book to add', exact: true }).fill('Second');
-  await page.getByRole('searchbox', { name: 'Find a book to add', exact: true }).press('Escape');
-  await expect(page.getByRole('searchbox', { name: 'Find a book to add', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Add books', exact: true })).toBeFocused();
-  await page.getByRole('button', { name: 'Add books', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Up Next', exact: true })).toHaveCount(0);
+  await page.locator('.book-row').filter({ hasText: 'Second Book' }).click();
   await page.getByRole('button', { name: 'Add Second Book to Up Next', exact: true }).click();
-  await page.getByRole('button', { name: 'Close', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Continue Reading', exact: true })).toHaveCount(0);
+  await expect(page.locator('.book-quick-queue')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.queue-row')).toHaveCount(1);
+  await page.locator('.book-quick-queue').click();
+  await expect(page.locator('.queue-row')).toHaveCount(0);
+  await page.locator('.book-quick-queue').click();
+  await expect(page.locator('.queue-row')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: /^Continue reading/ })).toHaveCount(0);
   expect(await server.progress(second.id)).toBeNull();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: 'Open library', exact: true }).click();
@@ -37,4 +38,10 @@ test('a queued book starts its own audio without marking another book started', 
   await page.getByRole('button', { name: 'Pause', exact: true }).first().click();
   await expect.poll(async () => (await server.progress(second.id))?.bookPositionSeconds ?? 0).toBeGreaterThan(1);
   expect(await server.progress(first.id)).toBeNull();
+
+  // In progress, it stays in Up Next by itself and no longer offers to be planned.
+  await page.getByRole('button', { name: 'Open library', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Up Next', exact: true }).getByRole('listitem')).toHaveCount(1);
+  await page.locator('.book-row').filter({ hasText: 'Second Book' }).click();
+  await expect(page.locator('.book-quick-queue')).toHaveCount(0);
 });

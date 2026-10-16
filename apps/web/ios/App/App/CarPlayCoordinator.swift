@@ -254,14 +254,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         redrawCarLists()
     }
 
-    func togglePlayPause() {
-        if engine.status.isPlaying {
-            engine.pause()
-        } else {
-            engine.play()
-        }
-    }
-
     /// Cycles the speeds the app's own player offers, so the car and the phone
     /// agree on what the button does.
     static let playbackRates: [Double] = [1, 1.25, 1.5, 1.75, 2, 0.75]
