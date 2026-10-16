@@ -33,7 +33,7 @@ export function imageCfiOnPage(contentsList: Contents[], cfi: string, viewport: 
 }
 
 /** A long interval may contain narration of text printed only in a picture. */
-export function illustrationGapCandidates(fragments: SyncFragment[]) {
+function illustrationGapCandidates(fragments: SyncFragment[]) {
   const candidates: Array<{ before: SyncFragment; after: SyncFragment }> = [];
   for (let index = 0; index + 1 < fragments.length; index += 1) {
     const before = fragments[index];

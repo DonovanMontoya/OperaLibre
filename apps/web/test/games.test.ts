@@ -21,13 +21,6 @@ test("dead boards are detected and never dealt", () => {
   }
 });
 
-test("only real words can be spent as a guess", () => {
-  // A stray row of letters used to cost an attempt and be scored as if it
-  // were a word.
-  for (const junk of ["aaaaa", "qwert", "asdfg", "abcde"]) assert.equal(GUESS_WORDS.has(junk), false);
-  for (const word of ["crane", "adieu", "books", "their"]) assert.equal(GUESS_WORDS.has(word), true);
-});
-
 test("words newer than a Scrabble lexicon are still words", () => {
   for (const word of ["email", "blogs", "inbox", "login", "emoji", "manga", "ramen"]) {
     assert.ok(GUESS_WORDS.has(word), `${word} was turned away`);

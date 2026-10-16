@@ -12,7 +12,7 @@ export type SharedProgressSummary = {
   detail: string;
 };
 
-export function readerPercentLabel(entry: SharedProgress): string | null {
+function readerPercentLabel(entry: SharedProgress): string | null {
   if (entry.status === "finished") return null;
   if (entry.percentComplete === null || !Number.isFinite(entry.percentComplete)) {
     return null;

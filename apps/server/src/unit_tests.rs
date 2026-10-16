@@ -4,9 +4,9 @@ use super::{
     AuthUser, HeaderMap, HeaderValue, LoginThrottle, Session, StatusCode, bytes_etag,
     can_access_book, clamped_track_position, clean_imported_title, composer_narrator,
     if_none_match_matches, is_supported_audio_file, libation_cover_art_url, media_content_type,
-    normalize_asin, normalize_guessed_asin, parse_origin_list, parse_range,
-    progress_write_is_stale, progress_write_is_suspect_reset,
-    progress_write_is_unintentional_regression, sanitize_filename, walk_audio_files_checked,
+    normalize_asin, normalize_guessed_asin, parse_origin_list, progress_write_is_stale,
+    progress_write_is_suspect_reset, progress_write_is_unintentional_regression, sanitize_filename,
+    walk_audio_files_checked,
 };
 
 #[test]
@@ -1004,23 +1004,6 @@ fn other_media_extensions_keep_the_guessed_type() {
     );
 }
 
-#[test]
-fn parse_range_handles_common_forms() {
-    assert_eq!(parse_range("bytes=0-99", 1000), Some((0, 99)));
-    assert_eq!(parse_range("bytes=500-", 1000), Some((500, 999)));
-    assert_eq!(parse_range("bytes=-100", 1000), Some((900, 999)));
-    assert_eq!(parse_range("bytes=0-4999", 1000), Some((0, 999)));
-}
-
-#[test]
-fn parse_range_rejects_unsatisfiable_ranges() {
-    assert_eq!(parse_range("bytes=-0", 1000), None);
-    assert_eq!(parse_range("bytes=1000-", 1000), None);
-    assert_eq!(parse_range("bytes=5-2", 1000), None);
-    assert_eq!(parse_range("items=0-99", 1000), None);
-    assert_eq!(parse_range("bytes=abc-def", 1000), None);
-}
-
 #[tokio::test]
 async fn invalid_requested_range_returns_416_with_file_size() {
     let root = tempfile::tempdir().unwrap();
@@ -1065,11 +1048,6 @@ async fn empty_file_without_range_returns_empty_200() {
     .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[axum::http::header::CONTENT_LENGTH], "0");
-}
-
-#[test]
-fn suffix_range_longer_than_file_starts_at_zero() {
-    assert_eq!(parse_range("bytes=-5000", 1000), Some((0, 999)));
 }
 
 #[test]
@@ -7706,8 +7684,21 @@ fn byte_ranges_distinguish_ignorable_headers_from_unsatisfiable_ones() {
         ByteRange::Satisfiable(0, 99)
     );
     assert_eq!(
+        super::parse_byte_range("bytes=500-", 1000),
+        ByteRange::Satisfiable(500, 999)
+    );
+    assert_eq!(
         super::parse_byte_range("bytes=-100", 1000),
         ByteRange::Satisfiable(900, 999)
+    );
+    // An end or suffix past the file is clamped to it.
+    assert_eq!(
+        super::parse_byte_range("bytes=0-4999", 1000),
+        ByteRange::Satisfiable(0, 999)
+    );
+    assert_eq!(
+        super::parse_byte_range("bytes=-5000", 1000),
+        ByteRange::Satisfiable(0, 999)
     );
     // Outside the file: refused with 416.
     assert_eq!(
@@ -9132,6 +9123,50 @@ fn libation_staging_cleanup_preserves_published_books_and_symlinks() {
             .symlink_metadata()
             .is_ok()
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_reconnect_reports_a_failed_account_listing() {
+    let root = tempfile::tempdir().unwrap();
+    let state = libation_browser_fixture(root.path());
+    std::fs::write(
+        root.path().join("libation-accounts.tsv"),
+        "fixture@example.test\tPersonal\tus\tyes\tyes\n",
+    )
+    .unwrap();
+    let initial =
+        super::libation_status(super::State(state.clone()), super::AdminUser(admin_user()))
+            .await
+            .unwrap()
+            .0;
+    let id = initial.accounts[0].id.clone();
+    // Finding the profile lists accounts once; the reconnect check lists them
+    // again, and that second listing fails.
+    let cli = state.libation_config.cli_path.as_ref().unwrap();
+    let source = std::fs::read_to_string(cli).unwrap();
+    let listed_once = root.path().join("listed-once");
+    std::fs::write(
+        cli,
+        source.replace(
+            "if [ \"$command\" = \"list-accounts\" ]; then",
+            &format!(
+                "if [ \"$command\" = \"list-accounts\" ]; then\n  if [ -f '{marker}' ]; then\n    printf 'Account settings are locked\\n' >&2\n    exit 1\n  fi\n  : > '{marker}'",
+                marker = listed_once.display()
+            ),
+        ),
+    )
+    .unwrap();
+    let error = super::start_libation_account_login(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+        super::Json(browser_login_request(Some(id))),
+    )
+    .await
+    .expect_err("a failed listing must not start a reconnect");
+    assert_eq!(error.status, axum::http::StatusCode::BAD_GATEWAY);
+    assert_eq!(error.message, "Account settings are locked");
+    assert!(state.libation_login_sessions.lock().await.is_empty());
 }
 
 #[cfg(unix)]

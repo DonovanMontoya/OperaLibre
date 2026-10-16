@@ -22,14 +22,6 @@ export function resolveLocalFirstSources<T>(
   }));
 }
 
-export async function resolveLocalFirstUrls<T>(
-  items: readonly T[],
-  localUrl: (item: T) => Promise<string | null>,
-  remoteUrl: (item: T) => string
-): Promise<string[]> {
-  return (await resolveLocalFirstSources(items, localUrl, remoteUrl)).map(({ url }) => url);
-}
-
 export function canPublishNativeQueue(
   sources: readonly LocalFirstSource[],
   mediaCredentialReady: boolean

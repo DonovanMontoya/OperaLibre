@@ -192,21 +192,10 @@ fn next_occurrence(local_time: &str, time_zone: &str, now: u64) -> Result<u64, A
         let Some(date) = local_now.date_naive().checked_add_days(Days::new(offset)) else {
             continue;
         };
-        let requested = date.and_time(time);
-        match zone.from_local_datetime(&requested) {
-            LocalResult::Ambiguous(first, second) => {
-                let instant = timestamp_millis(first.min(second))?;
-                if instant > now {
-                    return Ok(instant);
-                }
-            }
-            _ => {
-                if let Some(candidate) = occurrence_on(date, time, zone) {
-                    let instant = timestamp_millis(candidate)?;
-                    if instant > now {
-                        return Ok(instant);
-                    }
-                }
+        if let Some(candidate) = occurrence_on(date, time, zone) {
+            let instant = timestamp_millis(candidate)?;
+            if instant > now {
+                return Ok(instant);
             }
         }
     }

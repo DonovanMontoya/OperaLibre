@@ -1,7 +1,7 @@
 export const PLAYBACK_SPEED_MIN = 0.75;
 export const PLAYBACK_SPEED_MAX = 2;
 export const PLAYBACK_SPEED_STEP = 0.05;
-export const PLAYBACK_SPEED_DEFAULT = 1;
+const PLAYBACK_SPEED_DEFAULT = 1;
 export const PLAYBACK_SPEED_PRESETS = [0.75, 1, 1.25, 1.5, 1.75, 2] as const;
 export const PLAYBACK_SPEED_VALUES = Array.from(
   { length: Math.round((PLAYBACK_SPEED_MAX - PLAYBACK_SPEED_MIN) / PLAYBACK_SPEED_STEP) + 1 },

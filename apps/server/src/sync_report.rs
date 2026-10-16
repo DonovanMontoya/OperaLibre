@@ -439,8 +439,7 @@ pub(crate) fn diagnose_chapters(
 pub(crate) struct MapIdentity {
     pub(crate) map_generated_at: Option<String>,
     pub(crate) map_size: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) map_digest: Option<String>,
+    pub(crate) map_digest: String,
 }
 
 impl MapIdentity {
@@ -448,7 +447,7 @@ impl MapIdentity {
         Self {
             map_generated_at,
             map_size: bytes.len() as u64,
-            map_digest: Some(hex_digest(Sha256::digest(bytes))),
+            map_digest: hex_digest(Sha256::digest(bytes)),
         }
     }
 }
@@ -1281,7 +1280,7 @@ mod tests {
             MapIdentity {
                 map_generated_at: Some("1".into()),
                 map_size: 10,
-                map_digest: Some("fixture".into()),
+                map_digest: "fixture".into(),
             },
             Graded::Run,
             grade_chapters(
@@ -1747,17 +1746,17 @@ mod tests {
             MapIdentity {
                 map_generated_at: Some("2".into()),
                 map_size: 10,
-                map_digest: Some("fixture".into()),
+                map_digest: "fixture".into(),
             },
             MapIdentity {
                 map_generated_at: Some("1".into()),
                 map_size: 11,
-                map_digest: Some("fixture".into()),
+                map_digest: "fixture".into(),
             },
             MapIdentity {
                 map_generated_at: None,
                 map_size: 10,
-                map_digest: Some("fixture".into()),
+                map_digest: "fixture".into(),
             },
         ] {
             assert!(read_current_report(root.path(), "book", &stale).is_none());

@@ -5,7 +5,8 @@ use crate::updates::SyncAddonRuntime;
 use crate::*;
 
 /// Queue rank is separate from creation time so moving a book never changes
-/// its elapsed time or history. Old snapshots fall back to creation order.
+/// its elapsed time or history. A job is only ranked once it is moved,
+/// resumed, or re-queued; until then it keeps its creation order.
 fn sync_queue_order(job: &JobStatus) -> u64 {
     job.queue_position
         .unwrap_or_else(|| job_started_timestamp(job))
