@@ -684,12 +684,8 @@ test('sorted by title, the open Duo files covers under their letters with an ind
   }
   await fold('flat');
 
-  // Covers sorted by author are filed under the author's letter; groups such
-  // as series keep their names instead.
+  // Only covers sorted by title are filed this way.
   await page.getByLabel('Sort library by').selectOption({ label: 'Author' });
-  await expect(letters.first()).toBeVisible();
-  await expect(index).toHaveCount(1);
-  await page.getByLabel('Sort library by').selectOption({ label: 'Series' });
   await expect(letters).toHaveCount(0);
   await expect(index).toHaveCount(0);
   await page.getByLabel('Sort library by').selectOption({ label: 'Title' });
@@ -1133,8 +1129,19 @@ test('a wide browser window can give the whole page to the Shelf', async ({ page
   const books = library(8);
   const book = books[0];
   book.tracks.forEach(track => { track.streamUrl = `/fixture-${track.index}.wav`; });
+  books[3].readingFile = { id: 'ebook', fileName: 'book.epub', extension: 'epub', contentType: 'application/epub+zip', url: '/fixture-book.epub' };
+  // Opening, closing and putting the Shelf away never save a position; only
+  // playing does.
+  const progressWrites: Array<{ bookId: string; position: number }> = [];
+  page.on('request', request => {
+    const match = /\/api\/books\/([^/]+)\/progress(?:\?|$)/.exec(request.url());
+    if (!match || request.method() === 'GET') return;
+    const body = request.postDataJSON() as { bookPositionSeconds?: number; positionSeconds?: number } | null;
+    progressWrites.push({ bookId: decodeURIComponent(match[1]), position: body?.bookPositionSeconds ?? body?.positionSeconds ?? -1 });
+  });
   await openShell(page, false, false, true, books);
   await serveFixtureAudio(page);
+  await page.route('**/fixture-book.epub*', route => route.fulfill({ contentType: 'application/epub+zip', body: 'fixture ebook bytes' }));
   await page.route(`**/api/books/${book.id}/progress`, route => route.fulfill({ json: {
     bookId: book.id, trackId: book.tracks[0].id, positionSeconds: 60,
     bookPositionSeconds: 60, durationSeconds: 240, updatedAt: '2026-09-30T12:00:00Z'
@@ -1170,9 +1177,17 @@ test('a wide browser window can give the whole page to the Shelf', async ({ page
   await expect(popup).toBeHidden();
   await expect(row).toBeFocused();
   expect(await pane.evaluate(el => el.scrollTop)).toBe(scrolled);
+  // The reading room opens over the Shelf; the popup steps aside until the
+  // reader closes.
   await row.click();
+  await popup.getByRole('button', { name: 'Open reader' }).click();
+  await expect(shell).toHaveClass(/reader-open/);
+  await expect(popup).toBeHidden();
+  await page.getByRole('button', { name: 'Close the reader', exact: true }).click();
+  await expect(shell).not.toHaveClass(/reader-open/);
   await popup.getByRole('button', { name: 'Close book details' }).click();
   await expect(popup).toBeHidden();
+  expect(progressWrites).toEqual([]);
 
   // A book picked up from the Shelf plays beneath it in the mini player, and
   // the Shelf can still be put away; the mini player leads to the reading room.
@@ -1193,6 +1208,18 @@ test('a wide browser window can give the whole page to the Shelf', async ({ page
   await expect(shell).not.toHaveClass(/shelf-expanded/);
   await expect(page.locator('.player-pane')).toBeVisible();
   await expect(page.getByRole('group', { name: 'Library navigation' }).getByRole('button', { name: 'Player' })).toHaveCount(0);
+
+  // Without motion the popup closes at once.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.getByRole('button', { name: 'Expand shelf' }).click();
+  await row.click();
+  await expect(popup).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(popup).toBeHidden();
+  await expect(row).toBeFocused();
+
+  // Playing saved the playing book's place, never another book's, and never 0:00.
+  expect(progressWrites.every(write => write.bookId === book.id && write.position > 0)).toBe(true);
 });
 
 test('a narrow browser window keeps the Shelf beside the reading room', async ({ page }) => {

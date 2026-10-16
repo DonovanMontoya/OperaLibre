@@ -1465,7 +1465,10 @@ function MainApp({
   const [shelfExpandedChoice, setShelfExpandedChoice] = useState(() => readStoredValue(SHELF_EXPANDED_STORAGE_KEY) === "true");
   const shelfCanExpand = !native && wideWebWindow && books.length > 0;
   const shelfExpanded = shelfCanExpand && shelfExpandedChoice;
-  const shelfBookOpen = shelfExpanded && nativePlayerView !== "now";
+  // The reading room opens over the Shelf, so a popup it was opened from
+  // steps aside until it closes again.
+  const readerShown = readalong.readalongOpen && !!(readalong.activeCompanion || readalong.showGallery);
+  const shelfBookOpen = shelfExpanded && nativePlayerView !== "now" && !readerShown;
   // Set for the moment the popup takes to fade out before it closes.
   const [shelfBookClosing, setShelfBookClosing] = useState(false);
 

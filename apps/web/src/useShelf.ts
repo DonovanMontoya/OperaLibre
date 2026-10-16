@@ -395,11 +395,11 @@ export function useShelf({
   }, [shelfMatches, shelfFilters.tags, sortMode, sortReversed]);
 
   const splitShelfIntoLeaves = native && playbackFold.posture !== "closed" && playbackFold.fold?.axis === "vertical";
-  // The open Duo's covers, and every view of a browser window giving the
-  // Shelf the whole page, have room to file an alphabetical shelf under its
-  // letters, with an index to jump between them.
-  const letteredShelf = ((splitShelfIntoLeaves && viewMode === "grid") || shelfExpanded)
-    && (sortMode === "title" || sortMode === "author");
+  // The open Duo has room to set covers sorted by title out under their
+  // letters, with an index to jump between them; a browser window giving the
+  // Shelf the whole page does the same in every view, by author as well.
+  const letteredShelf = (splitShelfIntoLeaves && viewMode === "grid" && sortMode === "title")
+    || (shelfExpanded && (sortMode === "title" || sortMode === "author"));
   const visibleBookRuns = useMemo(() => {
     const runs: Array<{
       label: string | null;
