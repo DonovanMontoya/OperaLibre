@@ -1043,7 +1043,10 @@ export type ClipList = { clips: Clip[]; canExportAudio: boolean };
 /** A book's clips, or null from a server released before clips existed. */
 export async function listClips(bookId: string): Promise<ClipList | null> {
   try {
-    return await request<ClipList>(`/api/books/${encodeURIComponent(bookId)}/clips`);
+    const list = await request<ClipList | null>(`/api/books/${encodeURIComponent(bookId)}/clips`);
+    // Anything without a clip list, such as a fallback route answering for an
+    // older server, means this server has no clips.
+    return Array.isArray(list?.clips) ? list : null;
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) return null;
     throw error;
