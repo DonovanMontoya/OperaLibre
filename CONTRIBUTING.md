@@ -30,6 +30,14 @@ Open <http://localhost:5173> and create the first administrator account. See the
 [README](README.md#build-and-run-from-source) for native app builds and
 [Configuration](docs/configuration.md) for every option.
 
+| Area | Location |
+| --- | --- |
+| Server (Rust/axum) | `apps/server` |
+| Web app and shared mobile frontend (React/Vite/Capacitor) | `apps/web` |
+| macOS host app | `apps/macos` |
+| Launcher and updater | `apps/launcher` |
+| Documentation site | `docs/` |
+
 ### Test environment
 
 For trying a change without your own library, `npm run testenv` runs your
@@ -52,14 +60,6 @@ reuse it, so sign-ins and anything you changed carry over. Open
 - Set `OPERALIBRE_TESTENV_DIR` to keep it somewhere else.
 
 Only one test environment runs at a time. Audible is unavailable on Windows.
-
-| Area | Location |
-| --- | --- |
-| Server (Rust/axum) | `apps/server` |
-| Web app and shared mobile frontend (React/Vite/Capacitor) | `apps/web` |
-| macOS host app | `apps/macos` |
-| Launcher and updater | `apps/launcher` |
-| Documentation site | `docs/` |
 
 ## Making a change
 

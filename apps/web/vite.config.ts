@@ -6,11 +6,12 @@ const frontendVersion = (process.env.OPERALIBRE_VERSION ?? "dev")
   .trim()
   .replace(/^[vV]/, "");
 
-export default defineConfig(({ command }) => {
+export default defineConfig(({ command, isPreview }) => {
   const proxyTarget = command === "serve" ? devProxyTarget() : undefined;
   // Set by `npm run testenv` to sign every request in as a test account
   // instead of the browser's own session.
-  const sessionToken = command === "serve" ? process.env.OPERALIBRE_DEV_SESSION_TOKEN : undefined;
+  // `vite preview` also counts as serve and reuses this proxy, so it is left out.
+  const sessionToken = command === "serve" && !isPreview ? process.env.OPERALIBRE_DEV_SESSION_TOKEN : undefined;
   return {
     // Relative asset URLs let this production bundle run inside the macOS app.
     base: "./",

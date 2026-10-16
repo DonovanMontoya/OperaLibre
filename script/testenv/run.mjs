@@ -9,7 +9,7 @@
 //   npm run testenv -- --reset         rebuild the environment from scratch
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createWriteStream, existsSync } from "node:fs";
+import { createWriteStream, existsSync, readdirSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -43,7 +43,12 @@ if (options.as !== undefined && !(options.as in USERS)) {
 if (options.as !== undefined && options.login) fail("--as and --login cannot be combined.");
 const signedInAs = options.login ? null : options.as ?? "owner";
 
-const home = path.resolve(process.env.OPERALIBRE_TESTENV_DIR ?? path.join(homedir(), ".operalibre-testenv"));
+// `||` so an empty variable falls back too, instead of resolving to the
+// current directory.
+const home = path.resolve(process.env.OPERALIBRE_TESTENV_DIR || path.join(homedir(), ".operalibre-testenv"));
+// Written first into every environment this script builds, so a rebuild only
+// ever deletes a folder it made.
+const MARKER = ".operalibre-testenv";
 const file = (...parts) => path.join(home, ...parts);
 const webRequire = createRequire(path.join(repositoryRoot, "apps/web/package.json"));
 
@@ -287,18 +292,32 @@ if (await serverReady()) {
 // An environment whose first build never finished is rebuilt too.
 const fresh = options.reset || !existsSync(file(".ready"));
 if (fresh) {
+  const contents = existsSync(home) ? readdirSync(home) : [];
+  if (contents.length > 0 && !contents.includes(MARKER) && !contents.includes(".ready")) {
+    fail(`${home} is not a test environment this script built, so it was left alone. Set OPERALIBRE_TESTENV_DIR to a new or empty folder.`);
+  }
   await rm(home, { recursive: true, force: true });
   await mkdir(home, { recursive: true });
+  await writeFile(file(MARKER), "");
   await buildLibrary();
   if (process.platform !== "win32") await buildStores();
   await writeConfig();
 }
 
+// Cargo reports where it put the binary, wherever its target directory is
+// configured to be.
 console.log("Building the server…");
-run("cargo", ["build", "--quiet", "--manifest-path", "apps/server/Cargo.toml"]);
-const target = process.env.CARGO_TARGET_DIR
-  ? path.resolve(repositoryRoot, process.env.CARGO_TARGET_DIR)
-  : path.join(repositoryRoot, "apps/server/target");
+const build = spawnSync("cargo", ["build", "--quiet", "--message-format=json-render-diagnostics", "--manifest-path", "apps/server/Cargo.toml"], {
+  cwd: repositoryRoot,
+  stdio: ["ignore", "pipe", "inherit"],
+  encoding: "utf8",
+  maxBuffer: 64 * 1024 * 1024
+});
+if (build.error) throw build.error;
+if (build.status !== 0) fail("cargo build failed.");
+const serverBinary = build.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line))
+  .find((message) => message.reason === "compiler-artifact" && message.target?.name === "operalibre-server" && message.executable)?.executable;
+if (!serverBinary) fail("cargo build did not report the server binary.");
 const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
   !key.startsWith("OPERALIBRE_") && !key.startsWith("LIBATION_")));
 environment.OPERALIBRE_SERVER_CONFIG = file("server.config");
@@ -330,7 +349,7 @@ function supervise(child, name) {
 }
 
 const serverLog = createWriteStream(file("server.log"), { flags: "a" });
-const server = supervise(spawn(path.join(target, "debug", process.platform === "win32" ? "operalibre-server.exe" : "operalibre-server"), [], {
+const server = supervise(spawn(serverBinary, [], {
   cwd: home,
   env: environment,
   stdio: ["ignore", "pipe", "pipe"]
