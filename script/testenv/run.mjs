@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { createWriteStream, existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -288,9 +288,10 @@ async function sessionToken(user) {
   return signedIn.token;
 }
 
-// The ports are fixed, so one run at a time per machine. The lock covers the
-// minutes of a first build, before the server answers.
-const lock = path.join(tmpdir(), "operalibre-testenv.lock");
+// One run at a time per environment. The lock covers the minutes of a first
+// build, before the server answers, and survives the rebuild that follows.
+const LOCK = "testenv.lock";
+const lock = file(LOCK);
 const readText = (target) => {
   try {
     return readFileSync(target, "utf8");
@@ -310,6 +311,7 @@ function lockedByAnother() {
 }
 const alreadyRunning = `A test environment is already running at ${WEB_URL}. Stop it first (Ctrl-C in its terminal).`;
 if (await serverReady()) fail(alreadyRunning);
+await mkdir(home, { recursive: true });
 try {
   writeFileSync(lock, String(process.pid), { flag: "wx" });
 } catch {
@@ -323,12 +325,11 @@ process.on("exit", () => {
 // An environment whose first build never finished is rebuilt too.
 const fresh = options.reset || !existsSync(file(".ready"));
 if (fresh) {
-  const contents = existsSync(home) ? readdirSync(home) : [];
+  const contents = readdirSync(home).filter((name) => name !== LOCK);
   if (contents.length > 0 && readText(file(MARKER)) !== MARKER_CONTENTS) {
     fail(`${home} is not a test environment this script built, so it was left alone. Set OPERALIBRE_TESTENV_DIR to a new or empty folder.`);
   }
-  await rm(home, { recursive: true, force: true });
-  await mkdir(home, { recursive: true });
+  await Promise.all(contents.map((name) => rm(file(name), { recursive: true, force: true })));
   await writeFile(file(MARKER), MARKER_CONTENTS);
   await buildLibrary();
   if (process.platform !== "win32") await buildStores();
