@@ -17204,7 +17204,7 @@ html.native-app .native-shell.shelf-landscape .libro-view-toolbar { margin: 4px 
 }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
-  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) {
+  .has-native-player.native-player-view-now .native-now-playing {
   /* The fold's rect is in viewport coordinates, so the card takes the whole
      viewport and its grid tracks meet the fold exactly. */
   position: fixed;
@@ -17226,7 +17226,7 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
 }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
-  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-half {
+  .has-native-player.native-player-view-now .native-now-playing .native-now-half {
   display: flex;
   box-sizing: border-box;
   min-width: 0;
@@ -17236,25 +17236,25 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
 }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
-  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-controls {
+  .has-native-player.native-player-view-now .native-now-playing .native-now-controls {
   gap: clamp(10px, 2vh, 18px);
 }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
-  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-controls > * {
+  .has-native-player.native-player-view-now .native-now-playing .native-now-controls > * {
   width: 100%;
   max-width: 560px;
   margin-inline: auto;
 }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
-  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) {
+  .has-native-player.native-player-view-now .native-now-playing {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: var(--fold-y) var(--fold-height) minmax(0, 1fr);
 }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
-  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-lead {
+  .has-native-player.native-player-view-now .native-now-playing .native-now-lead {
   grid-row: 1;
   flex-direction: row;
   align-items: center;
@@ -17265,7 +17265,7 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
 }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
-  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-artwork {
+  .has-native-player.native-player-view-now .native-now-playing .native-now-artwork {
   display: flex;
   flex: none;
   align-self: stretch;
@@ -17274,7 +17274,7 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
 }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
-  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-artwork .large-cover {
+  .has-native-player.native-player-view-now .native-now-playing .native-now-artwork .large-cover {
   /* The upper half's height less the clock, its padding, and the mat, capped
      so the title keeps a column beside it. */
   width: min(calc(var(--fold-y) - var(--status-h) - 54px), 300px, 40vw);
@@ -17284,7 +17284,7 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
 }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
-  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-copy {
+  .has-native-player.native-player-view-now .native-now-playing .native-now-copy {
   flex: 0 1 auto;
   min-width: 0;
   max-width: 460px;
@@ -17293,7 +17293,7 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
 }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
-  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-controls {
+  .has-native-player.native-player-view-now .native-now-playing .native-now-controls {
   grid-row: 3;
   padding: 16px max(24px, env(safe-area-inset-right)) calc(var(--tabs-h) + 12px)
     max(24px, env(safe-area-inset-left));
@@ -19253,7 +19253,7 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf .shelf-reveal-button,
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf.library-book-open > .mini-player { display: none; }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf
-  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) {
+  .has-native-player.native-player-view-now .native-now-playing {
   position: static;
   display: flex;
   flex-direction: column;
@@ -19262,9 +19262,9 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab
   gap: 16px;
 }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf
-  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-half { padding: 0; }
+  .has-native-player.native-player-view-now .native-now-playing .native-now-half { padding: 0; }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf
-  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-artwork .large-cover { width: 88px; height: 88px; }
+  .has-native-player.native-player-view-now .native-now-playing .native-now-artwork .large-cover { width: 88px; height: 88px; }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .admin-shell:not(.admin-overlay),
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .profile-page.ledger-dashboard {
@@ -19809,18 +19809,18 @@ html.native-app[data-fold-transition="fallback"] .native-shell.tab-games :is(.ga
 
 /* Playback is a static surface. Details, chapters and the reader retain their
    own scrolling; only the now-playing artwork gives way when space is tight. */
-html.native-app .native-shell > .player-pane.has-native-player.native-player-view-now:not(.has-reader) {
+html.native-app .native-shell > .player-pane.has-native-player.native-player-view-now {
   overflow: hidden;
 }
 html.native-app .native-shell > .player-pane.has-native-player.native-player-view-now > .folio {
   display: none;
 }
 
-html.native-app .native-shell > .player-pane.has-native-player.native-player-view-now.fit-playback:not(.has-reader) {
+html.native-app .native-shell > .player-pane.has-native-player.native-player-view-now.fit-playback {
   container: playback / size;
   gap: 0;
 
-  & .native-now-playing:not(.has-reader) {
+  & .native-now-playing {
     position: static;
     display: grid;
     grid-template-areas: none;
@@ -19906,10 +19906,10 @@ html.native-app .native-shell > .player-pane.has-native-player.native-player-vie
     & .native-now-copy h2 { font-size: 1.15rem; }
     & .native-now-copy { text-align: left; }
     & .native-now-copy h2 { margin-inline: 0; }
-    & .native-now-playing:not(.has-reader) { gap: 8px; }
+    & .native-now-playing { gap: 8px; }
   }
   @container playback (height < 300px) and (width > 500px) {
-    & .native-now-playing:not(.has-reader) {
+    & .native-now-playing {
       grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
       grid-template-rows: minmax(0, 1fr);
       gap: 20px;
@@ -19928,7 +19928,7 @@ html.native-app .native-shell > .player-pane.has-native-player.native-player-vie
 /* Size iPad controls from the player's page, so narrow or short multitasking
    windows retain the compact layout even on a large tablet. */
 html.native-app .native-shell.device-ipad
-  > .player-pane.has-native-player.native-player-view-now.fit-playback:not(.has-reader) {
+  > .player-pane.has-native-player.native-player-view-now.fit-playback {
   @container playback (min-width: 460px) and (min-height: 500px) {
     & .native-now-controls { gap: 16px; }
     & .native-now-transport {
@@ -19966,7 +19966,7 @@ html.native-app .native-shell.device-ipad
    comes after fit-playback because that compact fallback owns the final base
    sizes and would otherwise shrink the fold-specific controls back down. */
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-shell
-  > .player-pane.has-native-player.native-player-view-now.fit-playback:not(.has-reader) {
+  > .player-pane.has-native-player.native-player-view-now.fit-playback {
   padding-bottom: max(18px, env(safe-area-inset-bottom));
   & .native-now-controls { gap: 10px; }
   & .native-now-transport { gap: 8px; }
@@ -19992,7 +19992,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .na
 
 @media (orientation: portrait) {
   html.native-app[data-fold-posture="closed"] .native-shell
-    > .player-pane.has-native-player.native-player-view-now.fit-playback:not(.has-reader) {
+    > .player-pane.has-native-player.native-player-view-now.fit-playback {
     /* UIKit supplies this through its safe area; the HTML tab fallback
        reserves its own bar height through the same variable. */
     padding-bottom: max(18px, var(--tabs-h));
@@ -20025,7 +20025,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .na
    independently tuned controls. */
 @media (min-height: 660px) and (max-width: 719px) and (orientation: portrait) {
   html.native-app:not([data-fold-posture]) .native-shell
-    > .player-pane.has-native-player.native-player-view-now.fit-playback:not(.has-reader) {
+    > .player-pane.has-native-player.native-player-view-now.fit-playback {
     & .native-now-transport {
       gap: clamp(7px, 2.5vw, 12px);
       padding-block: 4px;
@@ -20394,7 +20394,7 @@ html:not(.native-app) .book-subjects span {
 /* A phone-sized browser gets the iPhone's promoted transport: a larger play
    button and taller seek and utility targets under the cover. */
 @media (min-height: 660px) and (max-width: 719px) and (orientation: portrait) {
-  html:not(.native-app) .native-now-playing:not(.has-reader) {
+  html:not(.native-app) .native-now-playing {
     & .native-now-transport {
       gap: clamp(7px, 2.5vw, 12px);
       padding-block: 4px;

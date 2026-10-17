@@ -127,7 +127,6 @@ public final class AudiobookPlayer {
     private var timeControlStatusObservation: NSKeyValueObservation?
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
-    private var stalledObserver: NSObjectProtocol?
     private var rateChangeObserver: NSObjectProtocol?
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
@@ -883,17 +882,6 @@ public final class AudiobookPlayer {
                     self.finishedWhileInactive = true
                 }
                 self.monitor?.audiobookPlayerDidFinishPlayback(self)
-            }
-        }
-
-        stalledObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemPlaybackStalled,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self, generation == self.generation else { return }
-            if UIApplication.shared.applicationState == .active {
-                self.emit("stalled", data: [:])
             }
         }
     }
@@ -1719,10 +1707,6 @@ public final class AudiobookPlayer {
             NotificationCenter.default.removeObserver(endObserver)
         }
         endObserver = nil
-        if let stalledObserver {
-            NotificationCenter.default.removeObserver(stalledObserver)
-        }
-        stalledObserver = nil
         if let rateChangeObserver {
             NotificationCenter.default.removeObserver(rateChangeObserver)
         }
