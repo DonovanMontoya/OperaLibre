@@ -368,7 +368,7 @@ export function getServerIdentityUrl(): string {
   return secured;
 }
 
-export function setServerType(serverType: ServerType) {
+function setServerType(serverType: ServerType) {
   if (typeof window !== "undefined") {
     window.localStorage.setItem(SERVER_TYPE_STORAGE_KEY, serverType);
   }
