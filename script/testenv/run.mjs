@@ -9,10 +9,10 @@
 //   npm run testenv -- --reset         rebuild the environment from scratch
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createWriteStream, existsSync, readdirSync } from "node:fs";
+import { createWriteStream, existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -47,8 +47,10 @@ const signedInAs = options.login ? null : options.as ?? "owner";
 // current directory.
 const home = path.resolve(process.env.OPERALIBRE_TESTENV_DIR || path.join(homedir(), ".operalibre-testenv"));
 // Written first into every environment this script builds, so a rebuild only
-// ever deletes a folder it made.
-const MARKER = ".operalibre-testenv";
+// ever deletes a folder it made. The name and contents differ from the
+// default folder's, which a parent folder such as ~ would otherwise pass for.
+const MARKER = "operalibre-testenv.marker";
+const MARKER_CONTENTS = "OperaLibre test environment\n";
 const file = (...parts) => path.join(home, ...parts);
 const webRequire = createRequire(path.join(repositoryRoot, "apps/web/package.json"));
 
@@ -286,19 +288,48 @@ async function sessionToken(user) {
   return signedIn.token;
 }
 
-if (await serverReady()) {
-  fail(`A test environment is already running at ${WEB_URL}. Stop it first (Ctrl-C in its terminal).`);
+// The ports are fixed, so one run at a time per machine. The lock covers the
+// minutes of a first build, before the server answers.
+const lock = path.join(tmpdir(), "operalibre-testenv.lock");
+const readText = (target) => {
+  try {
+    return readFileSync(target, "utf8");
+  } catch {
+    return null;
+  }
+};
+function lockedByAnother() {
+  const pid = Number(readText(lock));
+  if (!pid || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
+const alreadyRunning = `A test environment is already running at ${WEB_URL}. Stop it first (Ctrl-C in its terminal).`;
+if (await serverReady()) fail(alreadyRunning);
+try {
+  writeFileSync(lock, String(process.pid), { flag: "wx" });
+} catch {
+  // A lock left by a run that has since exited is taken over.
+  if (lockedByAnother()) fail(alreadyRunning);
+  writeFileSync(lock, String(process.pid));
+}
+process.on("exit", () => {
+  if (readText(lock) === String(process.pid)) unlinkSync(lock);
+});
 // An environment whose first build never finished is rebuilt too.
 const fresh = options.reset || !existsSync(file(".ready"));
 if (fresh) {
   const contents = existsSync(home) ? readdirSync(home) : [];
-  if (contents.length > 0 && !contents.includes(MARKER) && !contents.includes(".ready")) {
+  if (contents.length > 0 && readText(file(MARKER)) !== MARKER_CONTENTS) {
     fail(`${home} is not a test environment this script built, so it was left alone. Set OPERALIBRE_TESTENV_DIR to a new or empty folder.`);
   }
   await rm(home, { recursive: true, force: true });
   await mkdir(home, { recursive: true });
-  await writeFile(file(MARKER), "");
+  await writeFile(file(MARKER), MARKER_CONTENTS);
   await buildLibrary();
   if (process.platform !== "win32") await buildStores();
   await writeConfig();

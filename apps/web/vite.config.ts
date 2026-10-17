@@ -12,6 +12,9 @@ export default defineConfig(({ command, isPreview }) => {
   // instead of the browser's own session.
   // `vite preview` also counts as serve and reuses this proxy, so it is left out.
   const sessionToken = command === "serve" && !isPreview ? process.env.OPERALIBRE_DEV_SESSION_TOKEN : undefined;
+  // Once the browser signs out or in, its own session takes over until the
+  // dev server restarts.
+  let injectSession = Boolean(sessionToken);
   return {
     // Relative asset URLs let this production bundle run inside the macOS app.
     base: "./",
@@ -38,8 +41,11 @@ export default defineConfig(({ command, isPreview }) => {
       ...(sessionToken ? [{
         name: "operalibre-testenv-session",
         configureServer(server: ViteDevServer) {
-          // Signing out would end the shared test session, so it does nothing.
-          server.middlewares.use("/api/auth/logout", (_request, response) => {
+          // Signing out would end the shared test session, so it stops being
+          // injected instead of being ended on the server.
+          server.middlewares.use("/api/auth/logout", (_request, response, next) => {
+            if (!injectSession) return next();
+            injectSession = false;
             response.statusCode = 204;
             response.end();
           });
@@ -56,14 +62,15 @@ export default defineConfig(({ command, isPreview }) => {
           // production where the server serves the app.
           changeOrigin: true,
           configure(proxy) {
-            proxy.on("proxyReq", (proxyRequest) => {
+            proxy.on("proxyReq", (proxyRequest, request) => {
               if (proxyRequest.getHeader("origin")) {
                 proxyRequest.setHeader("origin", proxyTarget!);
               }
               if (proxyRequest.getHeader("referer")) {
                 proxyRequest.setHeader("referer", `${proxyTarget}/`);
               }
-              if (sessionToken) {
+              if (injectSession && request.url?.startsWith("/api/auth/login")) injectSession = false;
+              if (injectSession) {
                 proxyRequest.removeHeader("cookie");
                 proxyRequest.setHeader("authorization", `Bearer ${sessionToken}`);
               }
