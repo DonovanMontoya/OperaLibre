@@ -38,6 +38,29 @@ Open <http://localhost:5173> and create the first administrator account. See the
 | Launcher and updater | `apps/launcher` |
 | Documentation site | `docs/` |
 
+### Test environment
+
+For trying a change without your own library, `npm run testenv` runs your
+checkout against a ready-made environment: about fifty generated audiobooks,
+fake Audible and Libro.fm accounts under Get books, and two accounts with
+fixed passwords. It opens already signed in as the owner.
+
+| Account | Password | Role |
+| --- | --- | --- |
+| `owner` | `operalibre-test` | Owner |
+| `reader` | `operalibre-test` | Reader who asks before getting Audible books |
+
+The first run builds it in `~/.operalibre-testenv` (needs `ffmpeg`); later runs
+reuse it, so sign-ins and anything you changed carry over. Open
+<http://localhost:5197>.
+
+- `npm run testenv -- --as reader` signs in as the reader instead.
+- `npm run testenv -- --login` shows the sign-in page, for testing signing in.
+- `npm run testenv -- --reset` deletes the environment and builds a fresh one.
+- Set `OPERALIBRE_TESTENV_DIR` to keep it somewhere else.
+
+Only one test environment runs at a time. Audible is unavailable on Windows.
+
 ## Making a change
 
 1. Create a branch named with a `feat/`, `fix/`, `chore/`, or `docs/` prefix,

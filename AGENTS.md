@@ -95,6 +95,7 @@ checkout that sets `library_root`, `data_dir`, and a free `port`, and point
 isolate a server started beside an existing `server.config`.
 
 - `npm run dev` — server and web dev server together.
+- `npm run testenv` — the same against a ready-made test library and accounts.
 - `npm run typecheck` — Rust and TypeScript type checks.
 - `npm run build` — release server, launcher, and web build.
 - `npm run build:android`, `npm run build:ios`, `./script/build_and_run.sh` —
@@ -130,6 +131,11 @@ entries applied:
 
 An empty library is a weak test. Build a scratch copy instead of using live state:
 
+- For checking a change by hand, or showing it to the developer, use
+  `npm run testenv` (see the Test environment section of CONTRIBUTING.md)
+  instead of building a new server. It keeps one environment with fixed
+  accounts between runs; reuse it, and `--reset` only when its state gets in
+  the way.
 - Use a small folder of real or generated audio as the library; the lifecycle
   suite in `apps/web/test/lifecycle` shows how disposable fixtures are built.
 - To start from real state, snapshot the database with SQLite's `VACUUM INTO`,
