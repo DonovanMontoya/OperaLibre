@@ -284,7 +284,9 @@ async function sessionToken(user) {
   }
   const signedIn = await api("/api/auth/login", { method: "POST", body: { username: USERS[user], password: PASSWORD } });
   saved[user] = signedIn.token;
-  await writeFile(file("sessions.json"), JSON.stringify(saved, null, 2));
+  // Owner-only, like any saved sign-in.
+  await writeFile(file("sessions.json"), JSON.stringify(saved, null, 2), { mode: 0o600 });
+  await chmod(file("sessions.json"), 0o600);
   return signedIn.token;
 }
 
