@@ -298,7 +298,7 @@ fn validate_uploaded_epub(path: &FsPath) -> anyhow::Result<()> {
     for index in 0..archive.len() {
         let file = archive.by_index(index)?;
         anyhow::ensure!(
-            names.insert(file.name().to_string()),
+            names.insert(file.name()?.into_owned()),
             "The EPUB contains duplicate file names."
         );
         let limit = remaining.min(8 * 1024 * 1024);

@@ -3416,7 +3416,7 @@ mod tests {
         let mut output = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i).unwrap();
-            let name = entry.name().to_string();
+            let name = entry.name().unwrap().into_owned();
             let mut text = String::new();
             entry.read_to_string(&mut text).unwrap();
             if name.ends_with(".opf") {
