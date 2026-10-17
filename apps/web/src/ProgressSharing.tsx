@@ -10,13 +10,6 @@ import {
 } from "./sharingSettings";
 import type { AuthUser } from "./types";
 
-export {
-  isAnnouncingFinishes,
-  isNotifiedOfFinishes,
-  isSharingProgress,
-  supportsFinishFeed
-} from "./sharingSettings";
-
 type ProgressSharingCardProps = {
   user: AuthUser;
   onUserChanged: (user: AuthUser) => void;
