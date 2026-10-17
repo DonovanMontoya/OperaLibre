@@ -7,13 +7,6 @@ import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor
  * Capacitor so it can be tested.
  */
 
-export type {
-  CarLibraryBook,
-  CarLibraryChapter,
-  CarLibrarySnapshot,
-  CarLibraryTrack,
-  CarPlaybackSession
-} from "./carLibrary.ts";
 import {
   CarLibraryAccess,
   parseCarSessions,
@@ -50,7 +43,7 @@ interface CarPlayBridgePlugin {
     listener: (event: { bookId: string }) => void
   ): Promise<PluginListenerHandle>;
   addListener(
-    eventName: "carConnected" | "carDisconnected",
+    eventName: "carDisconnected",
     listener: () => void
   ): Promise<PluginListenerHandle>;
 }
@@ -70,10 +63,6 @@ let carOwnedBookId: string | null = null;
 
 export function carPlaybackOwnsEngine() {
   return carOwnedBookId !== null;
-}
-
-export function carPlaybackBookId() {
-  return carOwnedBookId;
 }
 
 /** Called from the native events and from the state read on resume. */
@@ -145,11 +134,11 @@ export function addCarPlayListener(
   listener: (event: { bookId: string }) => void
 ): Promise<PluginListenerHandle | null>;
 export function addCarPlayListener(
-  event: "carConnected" | "carDisconnected",
+  event: "carDisconnected",
   listener: () => void
 ): Promise<PluginListenerHandle | null>;
 export function addCarPlayListener(
-  event: "carPlaybackStarted" | "carPlaybackEnded" | "carConnected" | "carDisconnected",
+  event: "carPlaybackStarted" | "carPlaybackEnded" | "carDisconnected",
   // The overloads above are what callers see; this signature only has to accept
   // all of them.
   listener: (event: never) => void

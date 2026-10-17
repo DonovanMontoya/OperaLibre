@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AuthUser, FinishFeed } from "./types";
 import type { ServerCapabilities } from "./serverCapabilities";
 import { arrivedSince, EMPTY_FINISH_FEED, finishBannerText } from "./finishFeed";
-import { isNotifiedOfFinishes } from "./ProgressSharing";
+import { isNotifiedOfFinishes } from "./sharingSettings";
 import { getFinishFeed, markFinishFeedSeen } from "./api";
 import { ensureFinishBannerPermission, postFinishBanner } from "./finishNotifications";
 import { haptic } from "./native";

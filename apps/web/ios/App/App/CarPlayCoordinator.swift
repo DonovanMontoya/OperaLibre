@@ -69,7 +69,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     func carSceneDidConnect() {
         isConnected = true
         listedPlayback = nil
-        notifyWeb("carConnected", data: [:])
     }
 
     func carSceneDidDisconnect() {
