@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as nativeTabs from "../src/nativeTabs.ts";
+import * as shelfOnScreen from "../src/shelfOnScreen.ts";
 import { loadHook } from "./hookHarness.ts";
 
 const { nativeTabItems, fullShelfMustYield, nativeTabSelection, spreadTab } = nativeTabs;
@@ -68,6 +69,7 @@ test("tapping Shelf scrolls the library pane to the top only when its list is al
       "./native": { haptic: () => {} },
       "./nativeNavigation": { isLeftEdgeBackSwipe: () => false },
       "./nativeTabs": nativeTabs,
+      "./shelfOnScreen": shelfOnScreen,
       "./gamePreferences": { writeGamesEnabled: () => {} }
     })({
       changeShelfLayout: (_next: string, _animate: boolean, update?: () => void) => update?.(),
