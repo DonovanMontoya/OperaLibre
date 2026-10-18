@@ -6,6 +6,7 @@ import { isLeftEdgeBackSwipe } from "./nativeNavigation";
 import { type NativeTab, shelfRetapped, spreadTab } from "./nativeTabs";
 import { writeGamesEnabled } from "./gamePreferences";
 import type { LibrarySource, ShelfLayout } from "./shelfSort";
+import { rowsOnScreen } from "./shelfOnScreen";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 
 
@@ -341,18 +342,25 @@ export function usePlayerNavigation({
 function nameShelfCoversOnScreen(among?: Set<string>): Set<string> {
   clearShelfCoverNames();
   const named = new Set<string>();
-  const viewport = window.innerHeight;
-  for (const row of document.querySelectorAll<HTMLElement>(".book-list .book-row[data-book-id]")) {
-    const id = row.dataset.bookId ?? "";
+  for (const cover of shelfCoversOnScreen()) {
+    const id = cover.parentElement?.dataset.bookId ?? "";
     if (among && !among.has(id)) continue;
-    const cover = row.querySelector<HTMLElement>(":scope > .cover-mark");
-    if (!cover) continue;
-    const box = cover.getBoundingClientRect();
-    if (box.bottom <= 0 || box.top >= viewport) continue;
     cover.style.viewTransitionName = `shelf-cover-${id}`;
+    namedShelfCovers.push(cover);
     named.add(id);
   }
   return named;
+}
+
+let namedShelfCovers: HTMLElement[] = [];
+
+function shelfCoversOnScreen(): HTMLElement[] {
+  const viewport = window.innerHeight;
+  return [...document.querySelectorAll(".book-list > .book-leaf")].flatMap((leaf) => rowsOnScreen(
+    leaf.querySelectorAll<HTMLElement>(".book-row[data-book-id] > .cover-mark"),
+    (cover) => cover.getBoundingClientRect(),
+    viewport
+  ));
 }
 
 // Desktop Chromium also advertises AppleWebKit; see playbackGain.ts.
@@ -362,9 +370,8 @@ function webkitBrowser() {
 }
 
 function clearShelfCoverNames() {
-  for (const cover of document.querySelectorAll<HTMLElement>(".book-list .cover-mark[style*='view-transition-name']")) {
-    cover.style.viewTransitionName = "";
-  }
+  for (const cover of namedShelfCovers) cover.style.viewTransitionName = "";
+  namedShelfCovers = [];
 }
 
 function coverPainted(pane: HTMLElement | null) {
@@ -372,12 +379,7 @@ function coverPainted(pane: HTMLElement | null) {
 }
 
 function shelfCoversPainted() {
-  const viewport = window.innerHeight;
-  const covers = [...document.querySelectorAll<HTMLImageElement>(".book-list img.cover-mark")].filter((cover) => {
-    const box = cover.getBoundingClientRect();
-    return box.bottom > 0 && box.top < viewport;
-  });
-  return decoded(covers);
+  return decoded(shelfCoversOnScreen().filter((cover): cover is HTMLImageElement => cover instanceof HTMLImageElement));
 }
 
 // Waits for the covers' pixels, but never long enough to be felt.
