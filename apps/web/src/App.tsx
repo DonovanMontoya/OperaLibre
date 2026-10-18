@@ -1871,7 +1871,7 @@ function MainApp({
       setShelfExpandedChoice(next);
       then?.();
       setNativePlayerView("now");
-    });
+    }, { shelfResize: next ? "open" : "close" });
   }
 
   function toggleShelfExpanded() {

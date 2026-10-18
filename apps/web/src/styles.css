@@ -20111,7 +20111,9 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .na
     grid-template-rows: minmax(0, 1fr) auto;
   }
 
-  html:not(.native-app) .web-shell.player-view-details:has(> .mini-player) > .library-pane {
+  /* Only beside the reading room: over the whole-window Shelf the footer
+     runs under the collection, which keeps its single row. */
+  html:not(.native-app) .web-shell.player-view-details:not(.shelf-expanded):has(> .mini-player) > .library-pane {
     grid-row: 1 / -1;
   }
 
@@ -20585,6 +20587,152 @@ html:not(.native-app) .book-subjects span {
   html[data-web-page-turned]:not(.native-app) .web-shell > .player-pane > * {
     animation: none;
   }
+  /* Giving the Shelf the whole window, or the reading room its place back,
+     changes both panes at once (see withWebViewTransition). The shelf is
+     one surface: the wider of its two states is uncovered from, or covered
+     back to, the narrower one's edge on one curve. Nothing is resized on
+     the way — a group that changes size lays the page out again every
+     frame — so each group takes its final place at once and the motion is
+     a clip and a fade, which the compositor carries alone. The reading
+     room's page does not turn: it drops back behind the advancing shelf
+     and rises again when the shelf returns to its margin. The covers on
+     screen are carried from their list places to their grid places over
+     the top of it all. */
+  html[data-web-shelf-resize]:not(.native-app) .web-shell > .library-pane {
+    view-transition-name: web-shelf;
+  }
+  html[data-web-shelf-resize]:not(.native-app) .web-shell > .player-pane .large-cover {
+    view-transition-name: none;
+  }
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-old(root) {
+    display: none;
+  }
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-group(*) {
+    animation-duration: 320ms;
+    animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-group(web-page) {
+    z-index: 0;
+  }
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-group(web-shelf) {
+    z-index: 1;
+    animation: none;
+  }
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-image-pair(web-shelf) {
+    isolation: auto;
+  }
+  /* Each snapshot keeps the width it was captured at, anchored at the
+     window's edge, whatever the group's box becomes. */
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-old(web-shelf),
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-new(web-shelf) {
+    block-size: auto;
+    mix-blend-mode: normal;
+  }
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-old(web-shelf) {
+    inline-size: var(--web-shelf-from);
+  }
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-new(web-shelf) {
+    inline-size: var(--web-shelf-to);
+  }
+  html[data-web-shelf-resize="open"]:not(.native-app)::view-transition-old(web-shelf) {
+    animation: web-shelf-resize-out 140ms ease-in both;
+  }
+  html[data-web-shelf-resize="open"]:not(.native-app)::view-transition-new(web-shelf) {
+    animation: web-shelf-uncover 320ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+  html[data-web-shelf-resize="close"]:not(.native-app)::view-transition-old(web-shelf) {
+    animation: web-shelf-cover 320ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+  html[data-web-shelf-resize="close"]:not(.native-app)::view-transition-new(web-shelf) {
+    animation: web-shelf-resize-in 180ms ease-out 100ms both;
+  }
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-old(web-page) {
+    animation: web-shelf-page-recede 260ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-new(web-page) {
+    animation: web-shelf-page-return 320ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+  html[data-web-shelf-resize]:not(.native-app) .book-list .cover-mark {
+    view-transition-class: shelf-cover;
+  }
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-group(.shelf-cover) {
+    z-index: 2;
+  }
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-old(.shelf-cover),
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-new(.shelf-cover) {
+    block-size: 100%;
+    object-fit: cover;
+  }
+  /* While a book plays the mini player is the Shelf's footer, and it has
+     no place in the two-page layout: it rises from the window's foot as
+     the shelf opens and sinks away as the shelf closes. */
+  html[data-web-shelf-resize]:not(.native-app) .web-shell > .mini-player {
+    view-transition-name: web-mini-player;
+  }
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-group(web-mini-player) {
+    z-index: 3;
+  }
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-new(web-mini-player):only-child {
+    animation: web-mini-player-rise 320ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-old(web-mini-player):only-child {
+    animation: web-mini-player-sink 240ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+  /* A cover that leaves the screen goes with the wall it sat on, before
+     the retreating edge could leave it over the reading room. */
+  html[data-web-shelf-resize]:not(.native-app)::view-transition-old(.shelf-cover):only-child {
+    animation: web-shelf-resize-out 100ms ease-in both;
+  }
+  /* WebKit, which stalls over a view transition of this size, changes the
+     layout at once and lets the arriving pages settle in, with the mini
+     player rising or sinking as it does elsewhere. */
+  html[data-web-shelf-arrive]:not(.native-app) .web-shell > .library-pane,
+  html[data-web-shelf-arrive]:not(.native-app) .web-shell > .player-pane {
+    animation: web-shelf-arrive 280ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+  html[data-web-shelf-arrive="open"]:not(.native-app) .web-shell > .mini-player {
+    animation: web-mini-player-rise 320ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+}
+
+@keyframes web-shelf-resize-out {
+  to { opacity: 0; }
+}
+
+@keyframes web-shelf-resize-in {
+  from { opacity: 0; }
+}
+
+/* The wider shelf, which is the window's width, clipped to the narrower
+   one's and let out to its own; and the reverse. */
+@keyframes web-shelf-uncover {
+  from { clip-path: inset(0 calc(100vw - var(--web-shelf-from)) 0 0); }
+  to { clip-path: inset(0); }
+}
+
+@keyframes web-shelf-cover {
+  from { clip-path: inset(0); }
+  to { clip-path: inset(0 calc(100vw - var(--web-shelf-to)) 0 0); }
+}
+
+@keyframes web-mini-player-rise {
+  from { transform: translateY(100%); }
+}
+
+@keyframes web-mini-player-sink {
+  to { transform: translateY(100%); }
+}
+
+@keyframes web-shelf-arrive {
+  from { opacity: 0; transform: translateY(8px) scale(0.99); }
+}
+
+@keyframes web-shelf-page-recede {
+  to { opacity: 0; transform: scale(0.96); }
+}
+
+@keyframes web-shelf-page-return {
+  from { opacity: 0; transform: scale(0.96); }
 }
 
 @keyframes web-page-out {

@@ -303,6 +303,7 @@ export const ShelfBookList = memo(function ShelfBookList({
         return (
             <button
               key={book.id}
+              data-book-id={book.id}
               className={`book-row ${book.id === selectedBookId ? "active" : ""} ${book.id === playbackBookId ? "playing" : ""} ${book.progress?.status === "inProgress" ? "in-progress" : ""} ${unavailableOffline ? "offline-unavailable" : ""} ${hasMissingOfflineFiles ? "has-offline-warning" : ""}`}
               onClick={() => onSelectBook(book)}
             >

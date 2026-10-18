@@ -65,9 +65,15 @@ export function usePlayerNavigation({
   // On the web, changing books or returning to Now Playing reshapes the page
   // as one surface, the way the Duo's posture changes do, with the cover
   // carried across. The native shells keep their own navigation motion.
-  function withWebViewTransition(update: () => void) {
+  // Giving the Shelf the whole window, or the reading room its place back,
+  // is a change of layout rather than a turn of the page. While
+  // `data-web-shelf-resize` names the direction, the stylesheet uncovers
+  // the wider shelf from the narrower one's edge (the two widths are
+  // published as custom properties), the player page recedes behind it,
+  // and the covers on screen travel to their new places on the shelf.
+  function withWebViewTransition(update: () => void, { shelfResize = null as "open" | "close" | null } = {}) {
     const transitionDocument = document as Document & {
-      startViewTransition?: (callback: () => void | Promise<void>) => unknown;
+      startViewTransition?: (callback: () => void | Promise<void>) => { finished: Promise<unknown> };
     };
     if (
       native
@@ -84,13 +90,53 @@ export function usePlayerNavigation({
     // in behind the cover that has just landed. From the first turn on, the
     // turn is the only motion.
     document.documentElement.dataset.webPageTurned = "";
-    transitionDocument.startViewTransition(async () => {
+    const root = document.documentElement;
+    // WebKit does not carry a view transition of this size at frame rate: it
+    // paints the live wall again on every frame and stalls into place. There
+    // the layout changes at once and the arriving panes settle in with plain
+    // animations, as the Shelf's popup does, under `data-web-shelf-arrive`.
+    if (shelfResize && webkitBrowser()) {
+      update();
+      showNewPageFromTop();
+      root.dataset.webShelfArrive = shelfResize;
+      const pane = document.querySelector(".web-shell > .library-pane");
+      const settle = () => {
+        window.clearTimeout(fallback);
+        delete root.dataset.webShelfArrive;
+      };
+      const fallback = window.setTimeout(settle, 600);
+      pane?.addEventListener("animationend", settle, { once: true });
+      return;
+    }
+    const shelfWidth = () => `${document.querySelector(".web-shell > .library-pane")?.getBoundingClientRect().width ?? 0}px`;
+    const travelling = shelfResize ? nameShelfCoversOnScreen() : null;
+    if (shelfResize) {
+      root.dataset.webShelfResize = shelfResize;
+      root.style.setProperty("--web-shelf-from", shelfWidth());
+    }
+    const transition = transitionDocument.startViewTransition(async () => {
       flushSync(update);
       // The old page has already been captured, so jumping is invisible;
       // a smooth scroll would instead drag the new page while it fades in.
       showNewPageFromTop();
-      await coverPainted(playerPaneRef.current);
+      if (travelling) {
+        nameShelfCoversOnScreen(travelling);
+        root.style.setProperty("--web-shelf-to", shelfWidth());
+      }
+      // The wider shelf brings covers on screen that were never fetched,
+      // and a wall captured before they arrive shows empty tiles that fill
+      // in with a jolt once the motion ends.
+      await Promise.all([coverPainted(playerPaneRef.current), travelling ? shelfCoversPainted() : undefined]);
     });
+    if (shelfResize) {
+      const settle = () => {
+        delete root.dataset.webShelfResize;
+        root.style.removeProperty("--web-shelf-from");
+        root.style.removeProperty("--web-shelf-to");
+        clearShelfCoverNames();
+      };
+      void transition.finished.then(settle, settle);
+    }
   }
 
   function showNewPageFromTop() {
@@ -286,8 +332,56 @@ export function usePlayerNavigation({
  * turn has ended. A slow image is not worth holding the turn for: after a
  * moment the turn goes ahead and the cover arrives as it would have anyway.
  */
+// A shelf resize carries each cover on screen to its new place on the other
+// shelf. The rest of the collection, which the viewer cannot see, is left
+// out of the snapshot, so a large library costs no more than a small one.
+// After the update only the covers captured before it are named again: a
+// cover with no place on the old shelf stays part of the wall and is
+// uncovered with it, instead of arriving ahead of it over the reading room.
+function nameShelfCoversOnScreen(among?: Set<string>): Set<string> {
+  clearShelfCoverNames();
+  const named = new Set<string>();
+  const viewport = window.innerHeight;
+  for (const row of document.querySelectorAll<HTMLElement>(".book-list .book-row[data-book-id]")) {
+    const id = row.dataset.bookId ?? "";
+    if (among && !among.has(id)) continue;
+    const cover = row.querySelector<HTMLElement>(":scope > .cover-mark");
+    if (!cover) continue;
+    const box = cover.getBoundingClientRect();
+    if (box.bottom <= 0 || box.top >= viewport) continue;
+    cover.style.viewTransitionName = `shelf-cover-${id}`;
+    named.add(id);
+  }
+  return named;
+}
+
+// Desktop Chromium also advertises AppleWebKit; see playbackGain.ts.
+function webkitBrowser() {
+  const ua = window.navigator?.userAgent ?? "";
+  return /AppleWebKit/i.test(ua) && !/(?:Chrome|Chromium)\//i.test(ua);
+}
+
+function clearShelfCoverNames() {
+  for (const cover of document.querySelectorAll<HTMLElement>(".book-list .cover-mark[style*='view-transition-name']")) {
+    cover.style.viewTransitionName = "";
+  }
+}
+
 function coverPainted(pane: HTMLElement | null) {
-  const covers = [...(pane?.querySelectorAll<HTMLImageElement>("img.large-cover") ?? [])];
+  return decoded([...(pane?.querySelectorAll<HTMLImageElement>("img.large-cover") ?? [])]);
+}
+
+function shelfCoversPainted() {
+  const viewport = window.innerHeight;
+  const covers = [...document.querySelectorAll<HTMLImageElement>(".book-list img.cover-mark")].filter((cover) => {
+    const box = cover.getBoundingClientRect();
+    return box.bottom > 0 && box.top < viewport;
+  });
+  return decoded(covers);
+}
+
+// Waits for the covers' pixels, but never long enough to be felt.
+function decoded(covers: HTMLImageElement[]) {
   if (covers.length === 0) return Promise.resolve();
   return Promise.race([
     Promise.all(covers.map((cover) => cover.decode().catch(() => undefined))).then(() => undefined),
