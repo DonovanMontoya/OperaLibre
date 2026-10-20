@@ -12,13 +12,16 @@ independently of the server releases.
 
 ## Unreleased
 
-### 1.3.1 (planned)
+No unreleased changes recorded.
 
-Prepared from changes on main after the last 1.3.0 changelog update,
+## 1.3.1
+
+Released; confirmed by the maintainer. The build number, distribution channel,
+release date, and archived source commit have not been recorded.
+
+These notes cover changes on main after the last 1.3.0 changelog update,
 [`03fea133`](https://github.com/DonovanMontoya/OperaLibre/commit/03fea133a436dc60516f429f34516ff8660505b2),
 through [`992ce885`](https://github.com/DonovanMontoya/OperaLibre/commit/992ce8857687da9e5a9a63ed6361b64b01a9724f).
-The distributed build number, channel, date, and archived source commit are
-pending confirmation.
 
 - Plan books in **Up Next** without starting them or changing their listening
   progress. Search, reorder, and remove planned books; the queue stays on this
@@ -81,7 +84,7 @@ pending confirmation.
   [36c0907](https://github.com/DonovanMontoya/OperaLibre/commit/36c0907),
   [8853273](https://github.com/DonovanMontoya/OperaLibre/commit/8853273))
 
-### 1.3.0 (planned)
+## 1.3.0 (planned)
 
 Prepared from the changes on main since the recorded 1.2.6 (2) app baseline,
 [`db31b5fb`](https://github.com/DonovanMontoya/OperaLibre/commit/db31b5fb2528f2a0530bbe2d7447b59c596dd358),
