@@ -12,6 +12,75 @@ independently of the server releases.
 
 ## Unreleased
 
+### 1.3.1 (planned)
+
+Prepared from changes on main after the last 1.3.0 changelog update,
+[`03fea133`](https://github.com/DonovanMontoya/OperaLibre/commit/03fea133a436dc60516f429f34516ff8660505b2),
+through [`992ce885`](https://github.com/DonovanMontoya/OperaLibre/commit/992ce8857687da9e5a9a63ed6361b64b01a9724f).
+The distributed build number, channel, date, and archived source commit are
+pending confirmation.
+
+- Plan books in **Up Next** without starting them or changing their listening
+  progress. Search, reorder, and remove planned books; the queue stays on this
+  device, separately for each server and account. Opening a book's details
+  keeps current playback running.
+  ([#323](https://github.com/DonovanMontoya/OperaLibre/pull/323),
+  [#320](https://github.com/DonovanMontoya/OperaLibre/pull/320))
+- Preview the opening five minutes of a server book without changing saved
+  progress or Up Next. **Continue listening** starts where the sample ended
+  for a new book, or resumes an existing reading's saved position. Turn off
+  **Audio previews** in **Settings → Behavior** to hide the control. Previews
+  require a connection to an OperaLibre server.
+  ([#325](https://github.com/DonovanMontoya/OperaLibre/pull/325),
+  [#330](https://github.com/DonovanMontoya/OperaLibre/pull/330))
+- Fold shelf groups by series, tag, genre, or progress, with controls to expand
+  or collapse them together. Separate **Ebook only** and **Follow along** filters
+  make it easier to find books with text or synced narration.
+  ([7eb9b1a](https://github.com/DonovanMontoya/OperaLibre/commit/7eb9b1a),
+  [#306](https://github.com/DonovanMontoya/OperaLibre/pull/306),
+  [#289](https://github.com/DonovanMontoya/OperaLibre/pull/289))
+- On an open iPhone Duo, Shelf fills one page and Up Next appears as a single
+  list. Tapping Shelf again scrolls back to the top. Book actions, download
+  status, sleep-timer labels, and mini-player covers fit more reliably on
+  smaller screens, and text is easier to read in dark mode.
+  ([#329](https://github.com/DonovanMontoya/OperaLibre/pull/329),
+  [#309](https://github.com/DonovanMontoya/OperaLibre/pull/309),
+  [#310](https://github.com/DonovanMontoya/OperaLibre/pull/310),
+  [#311](https://github.com/DonovanMontoya/OperaLibre/pull/311),
+  [#331](https://github.com/DonovanMontoya/OperaLibre/pull/331),
+  [#332](https://github.com/DonovanMontoya/OperaLibre/pull/332),
+  [#333](https://github.com/DonovanMontoya/OperaLibre/pull/333))
+- Downloaded audio becomes available sooner while optional files are checked.
+  Missing files show a warning with retry controls in book details and
+  **Settings → Server downloads**. Removing a download stops that book's
+  playback, including CarPlay, while preserving its listening position.
+  ([#292](https://github.com/DonovanMontoya/OperaLibre/pull/292),
+  [#293](https://github.com/DonovanMontoya/OperaLibre/pull/293),
+  [#300](https://github.com/DonovanMontoya/OperaLibre/pull/300))
+- Playback recovers more reliably after interruptions and audio-service
+  resets. Invalid playback requests no longer fall back to 0:00, and the
+  paused mini player keeps the saved position. The sleep timer can stop at
+  the end of the current chapter.
+  ([#321](https://github.com/DonovanMontoya/OperaLibre/pull/321),
+  [#322](https://github.com/DonovanMontoya/OperaLibre/pull/322),
+  [#335](https://github.com/DonovanMontoya/OperaLibre/pull/335),
+  [#303](https://github.com/DonovanMontoya/OperaLibre/pull/303),
+  [#301](https://github.com/DonovanMontoya/OperaLibre/pull/301))
+- Get Books opens details for purchases that are not yet on the server, and
+  store-account settings are easier to reach. Connecting to a server has a
+  clearer address and sign-in flow.
+  ([#324](https://github.com/DonovanMontoya/OperaLibre/pull/324),
+  [#291](https://github.com/DonovanMontoya/OperaLibre/pull/291),
+  [#302](https://github.com/DonovanMontoya/OperaLibre/pull/302),
+  [#285](https://github.com/DonovanMontoya/OperaLibre/pull/285))
+- Choose an illustrated profile picture or return to your initial. Follow
+  Along reports chapter quality and offers targeted repairs that preserve
+  good chapters. These features require matching server support.
+  ([#327](https://github.com/DonovanMontoya/OperaLibre/pull/327),
+  [d67c877](https://github.com/DonovanMontoya/OperaLibre/commit/d67c877),
+  [36c0907](https://github.com/DonovanMontoya/OperaLibre/commit/36c0907),
+  [8853273](https://github.com/DonovanMontoya/OperaLibre/commit/8853273))
+
 ### 1.3.0 (planned)
 
 Prepared from the changes on main since the recorded 1.2.6 (2) app baseline,
