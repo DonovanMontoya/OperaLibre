@@ -78,6 +78,13 @@ export class PlaybackGainChain {
   private chain: Chain | null = null;
   private gain = 1;
   private unavailable = false;
+  private tap: AnalyserNode | null = null;
+
+  /**
+   * A visualizer is showing. It needs the element routed even at unity gain,
+   * where the chain otherwise stays out of the way entirely.
+   */
+  visualizing = false;
 
   /**
    * Whether this element's output is going through the chain. The player mounts
@@ -129,7 +136,12 @@ export class PlaybackGainChain {
       limiter.release.value = 0.25;
 
       source.connect(gain);
+      // Straight out to start with; `route` only rewires on a change, and a
+      // visualizer can build the chain while the book is at its own level.
+      gain.connect(context.destination);
       limiter.connect(context.destination);
+      // Disconnecting the outgoing source below drops it from the tap too.
+      if (this.tap) source.connect(this.tap);
 
       this.chain?.source.disconnect();
       this.chain = { context, source, gain, limiter, limiting: false, element };
@@ -169,6 +181,24 @@ export class PlaybackGainChain {
       void error;
       return false;
     }
+  }
+
+  /**
+   * The analyser a visualizer reads, built on first request so a boosted book
+   * with no visualizer pays nothing for it. It hangs off the source rather than
+   * the gain: `route` disconnects the gain node wholesale when the limiter
+   * comes and goes, and the picture should not depend on the boost anyway.
+   */
+  analyser(): AnalyserNode | null {
+    const chain = this.chain;
+    if (!chain) return null;
+    if (!this.tap) {
+      this.tap = chain.context.createAnalyser();
+      this.tap.fftSize = 1024;
+      this.tap.smoothingTimeConstant = 0.78;
+      chain.source.connect(this.tap);
+    }
+    return this.tap;
   }
 
   setGain(gain: number) {
