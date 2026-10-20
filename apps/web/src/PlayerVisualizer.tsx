@@ -19,6 +19,11 @@ const FADE_OUT = 220;
  */
 const REST = 0.5;
 const SETTLE = 900;
+/**
+ * Paints a second while playing. Speech needs no more, and a faster display
+ * would only spend more of a modest machine's time on the same picture.
+ */
+const FRAME = 1000 / 30;
 
 type Rgb = [number, number, number];
 type Point = { x: number; y: number; nx: number; ny: number };
@@ -384,8 +389,9 @@ function drawBloom({ ctx, cover, freq, phase, grow, pace }: Frame, state: BloomS
  * corner. Staged, the drawing fills the artwork area behind a smaller cover,
  * with the switches in the stage's corner.
  *
- * It only animates while the book is playing. Paused, the canvas is cleared,
- * or on the stage settles to a faint still picture, and is then left alone.
+ * It only animates while the book is playing, at no more than `FRAME`. Paused,
+ * the canvas is cleared, or on the stage settles to a faint still picture, and
+ * is then left alone.
  * `analyser` is asked every frame because the player swaps its <audio>, and
  * with it the routed source, on every track change.
  */
@@ -518,6 +524,10 @@ export function PlayerVisualizer({
       frame = 0;
       if (document.hidden || !visible) {
         last = 0;
+        return;
+      }
+      if (last && now - last < FRAME - 1) {
+        frame = requestAnimationFrame(draw);
         return;
       }
       const cover = coverRef.current;
