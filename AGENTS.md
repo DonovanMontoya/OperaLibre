@@ -136,6 +136,13 @@ An empty library is a weak test. Build a scratch copy instead of using live stat
   instead of building a new server. It keeps one environment with fixed
   accounts between runs; reuse it, and `--reset` only when its state gets in
   the way.
+- Decide whether the change touches signing in: the sign-in page, sessions,
+  setup, passwords, or sign-out. If it does not, hand over an environment that
+  opens already signed in (the default, or `--as reader` for reader
+  permissions) and do not ask the developer to sign in. Use `--login` and share
+  the test credentials only when signing in is part of what is being tested.
+  A frontend you start yourself, such as one shared over Tailscale, gets the
+  same treatment by passing a test session in `OPERALIBRE_DEV_SESSION_TOKEN`.
 - Use a small folder of real or generated audio as the library; the lifecycle
   suite in `apps/web/test/lifecycle` shows how disposable fixtures are built.
 - To start from real state, snapshot the database with SQLite's `VACUUM INTO`,
