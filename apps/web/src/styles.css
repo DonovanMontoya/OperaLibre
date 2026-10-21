@@ -17888,6 +17888,10 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   overscroll-behavior-x: contain;
   scroll-snap-type: x proximity;
   scrollbar-width: none;
+  /* The strip runs off the fore-edge; fade it out there rather than
+     cutting a card's controls in half. */
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -18545,6 +18549,110 @@ html.native-app[data-fold-active][data-fold-axis="vertical"]:not([data-fold-post
   .native-shell:is(.tab-shelf, .tab-games) > .mini-player {
   left: calc(var(--fold-x) + var(--fold-width) + 12px);
   right: max(12px, env(safe-area-inset-right));
+}
+
+/* Sheets float on one leaf. Centred on a single pane of glass, a bottom
+   sheet here would stand astride the hinge with the crease through its
+   text, and pressed into one leaf it reads as a page cut short. The inner
+   display is tablet-sized, so sheets take the wide layout's form instead: a
+   card with every corner rounded, centred on the recto where their buttons
+   live, below the clock column. The account menu stays on the verso under
+   its button. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) {
+  --recto-card-top: 24px;
+  --recto-card-left: calc(var(--fold-x) + var(--fold-width) + 24px);
+  /* The tab bar fades out while a modal is up, so the card uses the bar's
+     column too and keeps only the same margin it has at the hinge. */
+  --recto-card-right: 24px;
+  --verso-sheet-right: calc(100vw - var(--fold-x) + 12px);
+}
+
+/* The clock stays at the top of that column; the card starts below it. The
+   reader is the exception: its own transport stays in the rail with its
+   sheets open, so they keep clear of the column. */
+html.native-app.side-rail[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) {
+  --recto-card-top: calc(var(--rail-top) + 8px);
+}
+
+html.native-app.side-rail[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .epub-reader.fullscreen .epub-sheet-layer {
+  padding-right: calc(100vw - var(--rail-x) + 8px);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .sleep-sheet-layer,
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .modal-scrim,
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .epub-reader.fullscreen .epub-sheet-layer {
+  align-items: center;
+  justify-content: flex-end;
+  padding: var(--recto-card-top) var(--recto-card-right) 24px var(--recto-card-left);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .metadata-editor-scrim {
+  align-items: stretch;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  :is(.sleep-sheet, .details-sheet, .epub-reader.fullscreen .epub-sheet) {
+  max-height: calc(100dvh - var(--recto-card-top) - 24px);
+  border-bottom: 1px solid rgba(217, 181, 116, 0.18);
+  border-radius: 30px;
+  box-shadow: 0 30px 80px -24px rgba(0, 0, 0, 0.72);
+}
+
+/* The sheets pad by the safe-area insets, which is right when they are
+   flush with the glass. Floating, the column reserved beside the page is
+   not theirs to pad for, so the card's inner margins match on both sides. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .sleep-sheet {
+  padding: 13px 22px 24px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .details-sheet {
+  --details-sheet-pad-bottom: 22px;
+  padding: 13px 20px var(--details-sheet-pad-bottom);
+  border-bottom-color: rgba(139, 46, 31, 0.15);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .epub-reader.fullscreen .epub-sheet {
+  padding: 10px 18px 18px;
+  border-bottom-color: var(--reader-line);
+  border-radius: 24px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .modal-card {
+  max-height: calc(100dvh - var(--recto-card-top) - 24px);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
+  border-radius: 22px;
+}
+
+/* A card settles into place; it does not slide up from an edge it never touches. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  :is(.sleep-sheet, .details-sheet, .modal-card, .epub-reader.fullscreen .epub-sheet) {
+  animation: rise 0.26s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .user-menu {
+  right: var(--verso-sheet-right);
+}
+
+/* The bell's feed is a short list under the bell. Where the Shelf spreads its
+   pane across both leaves, the feed would stretch into a banner with its
+   times a page away from their lines, so it keeps to the leaf the bell is on.
+   Elsewhere the pane is already one leaf wide. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane .finish-feed-panel {
+  right: var(--verso-sheet-right);
+}
+
+/* With the hinge across the page, a sheet is a lower-half affair and stops
+   short of the crease. */
+html.native-app[data-fold-active][data-fold-axis="horizontal"]
+  :is(.sleep-sheet, .details-sheet, .modal-card, .epub-reader.fullscreen .epub-sheet) {
+  max-height: calc(100dvh - var(--fold-y) - var(--fold-height) - 8px);
+}
+
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .user-menu {
+  max-height: calc(100dvh - var(--fold-y) - var(--fold-height) - 20px);
+  overflow-y: auto;
 }
 
 /* The bar hangs down the side here, not across the bottom, so the fold runs
