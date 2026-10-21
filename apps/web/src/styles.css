@@ -1232,6 +1232,27 @@ html:not(.native-app) .web-shell > .player-pane {
   }
 }
 
+@keyframes bell-jingle {
+  0%, 100% {
+    transform: rotate(0deg) scale(1);
+  }
+  25% {
+    transform: rotate(-10deg) scale(1.1);
+  }
+  50% {
+    transform: rotate(9deg) scale(1.1);
+  }
+  75% {
+    transform: rotate(-5deg) scale(1.1);
+  }
+}
+
+@keyframes upload-lift {
+  to {
+    transform: translateY(-4px);
+  }
+}
+
 .audible-list {
   display: grid;
   gap: 2px;
@@ -1386,7 +1407,26 @@ html:not(.native-app) .web-shell > .player-pane {
 .icon-button:hover {
   color: var(--paper);
   border-color: var(--gold-soft);
-  transform: rotate(-180deg);
+}
+
+.upload-icon-button:hover svg {
+  animation: upload-lift 0.45s ease-out both;
+}
+
+.finish-feed-button:hover svg {
+  animation: bell-jingle 0.6s ease-in-out both;
+}
+
+.refresh-icon-button:hover svg {
+  animation: spin 0.7s ease-in-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .upload-icon-button:hover svg,
+  .finish-feed-button:hover svg,
+  .refresh-icon-button:hover svg {
+    animation: none;
+  }
 }
 
 .continue-reading {

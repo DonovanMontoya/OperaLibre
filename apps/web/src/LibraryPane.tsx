@@ -472,7 +472,7 @@ export function LibraryPane({
           ) : null}
           {capabilities.uploads ? (
             <button
-              className="icon-button"
+              className="icon-button upload-icon-button"
               aria-label="Upload audiobook"
               onClick={() => {
                 setUploadError(null);
@@ -547,7 +547,7 @@ export function LibraryPane({
             </div>
           ) : null}
           <button
-            className="icon-button"
+            className="icon-button refresh-icon-button"
             aria-label={capabilities.administration ? "Rescan library" : "Refresh library"}
             onClick={() => void refreshLibrary()}
           >
