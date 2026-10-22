@@ -9680,6 +9680,11 @@ html.native-app .book-heading .heading-actions {
   font-style: normal;
 }
 
+/* The shelf's mini-player already names the playing book and returns to it. */
+html.native-app .native-shell.tab-shelf.has-mini-player .book-quick-now-playing {
+  display: none;
+}
+
 .player-pane:has(.book-quick-start) > .book-preview-actions {
   display: none;
 }
