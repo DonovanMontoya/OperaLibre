@@ -991,7 +991,7 @@ export function PlayerPane({
                     <span className="download-status" role="alert">Up Next could not be saved. Check available device storage and try again.</span>
                   ) : null}
                   {playbackBook && playbackBook.id !== selectedBook.id ? (
-                    <button type="button" className="book-quick-return" onClick={scrollToPlayer}>
+                    <button type="button" className="book-quick-return book-quick-now-playing" onClick={scrollToPlayer}>
                       <Headphones size={14} />
                       <span>Now playing <em>{playbackBook.title}</em></span>
                     </button>
