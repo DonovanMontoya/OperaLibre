@@ -4976,7 +4976,9 @@ async fn audiobookshelf_author_ids_round_trip_without_path_or_identity_collision
         .await
         .unwrap();
     });
-    let response = reqwest::Client::new()
+    let response = http_client_builder()
+        .build()
+        .unwrap()
         .get(format!(
             "http://{address}/abs/api/authors/{slash_id}?include=items"
         ))
@@ -5790,7 +5792,7 @@ async fn a_damaged_epub_entry_that_fills_its_last_chunk_is_not_sent_as_complete(
         .await
         .unwrap();
     });
-    let client = reqwest::Client::new();
+    let client = http_client_builder().build().unwrap();
     let fetch = || async {
         client
             .get(format!(

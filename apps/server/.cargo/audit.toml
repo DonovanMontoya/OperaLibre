@@ -12,7 +12,7 @@ ignore = [
     #
     # Nothing to update to. `paste` reaches us only through `lofty`, which
     # reads the audio tags the library scanner depends on, and `lofty` is
-    # already pinned to its newest release (0.25.1) — no published version
+    # already on its newest release (0.25.4) — no published version
     # drops the dependency. The alternatives the advisory suggests (`pastey`,
     # `with_builtin_macros`) would have to be adopted by `lofty` upstream; we
     # cannot substitute them from here.

@@ -1432,6 +1432,28 @@ fn password_lengths_are_bounded() {
 }
 
 #[test]
+fn stored_password_hashes_keep_verifying_across_argon2_upgrades() {
+    // Written by argon2 0.5.3 with the default parameters. Every existing
+    // account holds a hash like this, so a crate upgrade must still accept it.
+    let stored = "$argon2id$v=19$m=19456,t=2,p=1$0jA1wa7HSpYyTt+A36Tk8g$uHCtHp/ZxgYcV0/Fkg4kCSufUf0oyNhPmtRmUuLGRHQ";
+    assert!(super::verify_password(
+        "correct horse battery staple",
+        stored
+    ));
+    assert!(!super::verify_password(
+        "correct horse battery stapler",
+        stored
+    ));
+
+    let fresh = super::hash_password("correct horse battery staple").unwrap();
+    assert!(fresh.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"));
+    assert!(super::verify_password(
+        "correct horse battery staple",
+        &fresh
+    ));
+}
+
+#[test]
 fn deployment_profiles_choose_safe_defaults() {
     assert_eq!(
         super::DeploymentMode::parse("local")

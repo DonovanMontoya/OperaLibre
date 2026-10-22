@@ -1,5 +1,5 @@
 //! Small shared helpers: timestamps, hashing and ids, filename sanitising,
-//! and HTTP range parsing.
+//! HTTP range parsing, and the outbound HTTP client.
 
 use crate::*;
 
@@ -101,6 +101,26 @@ pub(crate) fn find_on_path(candidates: &[&str]) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Start every outbound HTTP client here. Certificates are checked against the
+/// bundled Mozilla roots rather than the host's store, which minimal NAS and
+/// container installs often lack, and rustls runs on ring so source builds on
+/// small ARM boards need no extra toolchain.
+pub(crate) fn http_client_builder() -> reqwest::ClientBuilder {
+    static TLS: LazyLock<rustls::ClientConfig> = LazyLock::new(|| {
+        let roots = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("ring supports the default TLS versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth()
+    });
+    reqwest::Client::builder().tls_backend_preconfigured(TLS.clone())
 }
 
 /// A random 16-character hex identifier for jobs and scratch work.
