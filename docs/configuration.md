@@ -58,7 +58,7 @@ min_download_free_gib = 2
 allowed_origins =
 
 # Folder containing your audiobook files.
-library_root = /Users/you/Audiobooks
+library_root = /path/to/audiobooks
 
 # Server data directory and legacy JSON import paths.
 data_dir = data

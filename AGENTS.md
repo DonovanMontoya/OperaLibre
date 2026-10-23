@@ -83,7 +83,7 @@ get a human decision before breaking it.
 
 ## Setup
 
-Requires Node.js 22.12+ and a Rust toolchain. Install with `npm ci` from the
+Requires Node.js 22.12+ and Rust 1.89 or newer. Install with `npm ci` from the
 checked-in lockfile.
 
 `server.config` is local and gitignored. If it is missing, copy

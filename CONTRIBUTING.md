@@ -15,7 +15,7 @@ improvements, and features are all welcome.
 
 ## Development setup
 
-You need Node.js 22.12+, Rust, and a folder with a few audiobook files.
+You need Node.js 22.12+, Rust 1.89 or newer, and a folder with a few audiobook files.
 
 ```bash
 git clone https://github.com/DonovanMontoya/OperaLibre.git   # or: jj git clone ...

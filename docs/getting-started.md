@@ -29,10 +29,12 @@ Use the following steps if you want to develop OperaLibre or build it yourself i
 
 | Tool | Version | Used for |
 | --- | --- | --- |
-| [Rust](https://rustup.rs/) | stable (1.85+, edition 2024) | Building and running the server |
+| [Rust](https://rustup.rs/) | 1.89 or newer (edition 2024) | Building and running the server |
 | [Node.js](https://nodejs.org/) | 22.12 or newer | Building and serving `apps/web` |
 | npm | bundled with Node | Workspace + dev scripts |
 | A folder of audiobooks | — | The library the server will scan |
+
+The server and the launcher both need Rust 1.89 or newer. Install the current stable toolchain from rustup.
 
 > **Tip:** If `cargo --version` and `node --version` both work, you have everything you need. On a Mac, install Apple’s Command Line Tools too by running `xcode-select --install` once.
 
@@ -58,7 +60,7 @@ On Windows PowerShell, use this instead:
 Copy-Item server.config.example server.config
 ```
 
-Open `server.config` in a text editor and replace `/Users/you/Audiobooks` with the full path to the folder that contains your books. Keep the rest as-is for now. On Windows, use a full path such as `C:\Users\you\Audiobooks`.
+Open `server.config` in a text editor and replace `/path/to/audiobooks` with the full path to the folder that contains your books. Keep the rest as-is for now. On Windows, use a full path such as `C:\Users\you\Audiobooks`.
 
 ```config
 deployment_mode = local
@@ -69,7 +71,7 @@ max_book_download_gib = 25
 max_concurrent_book_downloads = 1
 download_temp_dir = data/download-temp
 min_download_free_gib = 2
-library_root = /Users/you/Audiobooks
+library_root = /path/to/audiobooks
 ```
 
 ### 3. Start OperaLibre
@@ -128,6 +130,8 @@ Start the server with:
 ```
 
 Now open [http://localhost:4920](http://localhost:4920). The server and web app share one address, which is simpler to bookmark and use on another device. To make it start automatically when the computer restarts, follow the macOS or Linux instructions in [Deployment](deployment.md).
+
+A server you compile yourself reports the version in `apps/server/Cargo.toml` (currently `0.2.6`) under **Administration → Overview → OperaLibre software**, unless `OPERALIBRE_VERSION` was set for that compile. Published release builds set `OPERALIBRE_VERSION` to the release, so a source build shows that Cargo package version rather than the version stamped on a downloaded package. A web bundle built without `OPERALIBRE_VERSION` is marked **Development**.
 
 ## Type-checking everything
 

@@ -84,13 +84,15 @@ through [`992ce885`](https://github.com/DonovanMontoya/OperaLibre/commit/992ce88
   [36c0907](https://github.com/DonovanMontoya/OperaLibre/commit/36c0907),
   [8853273](https://github.com/DonovanMontoya/OperaLibre/commit/8853273))
 
-## 1.3.0 (planned)
+## 1.3.0
 
-Prepared from the changes on main since the recorded 1.2.6 (2) app baseline,
+Not released as its own build. These notes were prepared from the changes on
+main since the recorded 1.2.6 (2) app baseline,
 [`db31b5fb`](https://github.com/DonovanMontoya/OperaLibre/commit/db31b5fb2528f2a0530bbe2d7447b59c596dd358),
-through [`ca1f7a52`](https://github.com/DonovanMontoya/OperaLibre/commit/ca1f7a524a003ff27186f7dc7d0fbf9b1aefe464).
-This entry replaces the planned 1.2.7 notes. The distributed build number,
-channel, date, and archived source commit are pending confirmation.
+through [`6a473c91`](https://github.com/DonovanMontoya/OperaLibre/commit/6a473c9190056cc8239bb087a3e6dcbdc8dd5845),
+the merge of #283 on main. This entry replaces the planned 1.2.7 notes. No
+1.3.0 build number, channel, date, or archived source commit was recorded.
+The release confirmed after this range is 1.3.1.
 
 - Added iPhone Duo support: the shelf, player, reader, Settings, Ledger, and
   Games adapt to folding and rotation. Controls stay clear of the active

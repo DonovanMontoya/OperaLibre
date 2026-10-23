@@ -34,7 +34,8 @@ These require physical devices and are not covered by Chromium. Use disposable a
 | --- | --- |
 | Lock screen / background / foreground | Audio follows the platform's playback policy; returning does not jump backwards or start a second player. |
 | Call or audio interruption; headphone disconnect | Playback pauses or ducks appropriately; resume uses the same book and position. |
-| Bluetooth / CarPlay / Android Auto controls | Play, pause, seek and chapter controls affect one active player and persist progress. |
+| Bluetooth / CarPlay controls | Play, pause, seek and chapter controls affect one active player and persist progress. |
+| Android Auto | Not supported yet. |
 | Wi-Fi to cellular to airplane mode and back | Buffered/downloaded audio behaves predictably; reconnect preserves the newest position. |
 | Close or terminate app, then relaunch | Account and downloads survive; playback resumes from the latest recoverable checkpoint. |
 | Pause, resume or cancel a download; run out of storage | Incomplete downloads are not presented as playable; existing downloads and library files remain intact. |

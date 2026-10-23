@@ -344,9 +344,19 @@ In installed apps, open **Settings → Book stores → Audible**; on the web, op
 
 Choose **Add to server** to import a purchase into the shared library. Download it to your device separately for offline listening. Administrators with direct-download access can enable **Automatically add new purchases** per account; existing purchases and Audible Plus titles stay manual. Queued imports resume after a server restart, and approved reader requests retain their approval. Detailed setup and troubleshooting are in [Libation / Audible Import](libation.md).
 
+## Reading achievements
+
+Open **Reader's ledger** from the account menu, or the **Ledger** tab in the iPhone and Android apps. The ledger is part of an OperaLibre library, including books kept on the device. A Jellyfin connection has no ledger.
+
+**Achievements** on that page are calculated from the books you can open and from your recorded listening. OperaLibre does not store a separate award or the date one was earned. Finishing a book, or changing its author, narrator, genre, or series, can change the set you have earned. Hours of listening are measured time. A finished book's length is its original runtime, at any playback speed. Books that live only on the device count when the ledger is showing that on-device library.
+
+The milestones are books finished (1, then 10, 25, and 100), a finished book of at least 24, 48, or 72 hours, five authors, five genres, and three books by one author, with one narrator, or in one series. Streaks use your longest run of consecutive listening days (7, 30, and 100). Total listening has marks at 24, 100, and 500 hours. Filter the grid with **All**, **Earned**, and **In progress**. A card that names a book opens that book.
+
+**Reading together**, under the grid, compares your place with other readers who share their activity: who is further through a book you have both started, and who has finished more volumes of a series. A tie is left off the list, and the list is the current library rather than a history of who passed whom. It shows up to six standings. Turn on **Share my reading activity** on the ledger, or under **Shared reading** in **Settings** on the phone apps. Standings need a connection to the OperaLibre server.
+
 ## Games
 
-The installed iPhone and Android apps include a games tab with small on-device diversions — a daily word puzzle and a match-three board. It appears in the bottom navigation by default, and you can hide it in **Settings**. The games run entirely on the device and send nothing to the server.
+The installed iPhone and Android apps include a **Games** tab. **Word Grid** is a five-letter word puzzle: it starts on the day's word, takes six guesses, and can be replaced with another word. **Chapter Match** is a board where you swap adjacent symbols to line up three or more. The tab is in the bottom navigation by default. Turn it off with **Games tab** under **Settings → Behavior**. The games run on the device and send nothing to the server.
 
 ## Check for application updates
 

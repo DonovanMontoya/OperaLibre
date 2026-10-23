@@ -105,6 +105,12 @@ Sessions are stored in the server database (`data/operalibre.db`) and survive re
 
 The easiest fix is to serve the built web app from OperaLibre itself by setting `web_dist_dir` in `server.config`; then the site and API use one address. If you intentionally host them on different addresses, put the web app’s full origin (for example `https://books.example.com`) in the comma-separated `allowed_origins` setting and restart the server. See [Configuration](configuration.md#network).
 
+## HTTPS inspection
+
+Update checks, release downloads, the follow-along add-on package, and Libro.fm all use the Mozilla root certificates bundled with the server. Certificates installed on the computer, including a private root added by a proxy or security appliance, are not consulted. A browser on the same machine can still open those sites when it trusts the appliance. OperaLibre's own connections then fail: **Check for updates** cannot reach the release service, and Libro.fm sign-in and import report that they could not reach Libro.fm. Listening to books already on the server does not make these outbound connections.
+
+Audible import runs in [Libation](libation.md), a separate program with its own connection to Audible. That path is outside this certificate bundle.
+
 ## Where are the logs?
 
 Release installations started with the Open launcher or the installer's helper scripts write to `data/server.log` inside the installation folder. When you run the binary yourself, the server logs to stdout/stderr. With `systemd`:
