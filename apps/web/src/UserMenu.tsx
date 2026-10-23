@@ -1,3 +1,4 @@
+import { ClippingSetting } from "./ClippingSetting";
 import { BehaviorSection } from "./BehaviorSection";
 import { AgentAccessMenuItem } from "./AgentAccess";
 import { BookPreviewSetting } from "./BookPreviewSetting";
@@ -229,6 +230,7 @@ export function renderUserMenu({
       ) : null}
       {!native ? <BehaviorSection>
         <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
+        {capabilities.clips ? <ClippingSetting enabled={readerPreferences.clippingEnabled} onToggle={readerPreferences.toggleClippingEnabled} /> : null}
         {isOperaLibre && !demoMode && !localMode ? <BookPreviewSetting enabled={bookPreviewsEnabled} onToggle={toggleBookPreviewsEnabled} /> : null}
         {sentenceFollowAvailable ? (
           <div className="user-menu-follow-aggressiveness" role="group" aria-labelledby="menu-follow-aggressiveness-label">

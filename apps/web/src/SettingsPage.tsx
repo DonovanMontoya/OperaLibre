@@ -155,6 +155,8 @@ export function SettingsPage({
     removeOfflineDownload
   } = offlineDownloads;
   const {
+    clippingEnabled,
+    toggleClippingEnabled,
     followAggressiveness,
     pageTurnAnimationEnabled,
     togglePageTurnAnimation,
@@ -217,6 +219,9 @@ export function SettingsPage({
         /> : null}
 
         <BehaviorSettings
+          clippingEnabled={clippingEnabled}
+          clippingAvailable={capabilities.clips}
+          toggleClippingEnabled={toggleClippingEnabled}
           bookPreviewsAvailable={isOperaLibre && !demoMode && !localMode}
           bookPreviewsEnabled={bookPreviewsEnabled}
           toggleBookPreviewsEnabled={toggleBookPreviewsEnabled}
