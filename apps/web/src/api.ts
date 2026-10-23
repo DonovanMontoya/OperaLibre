@@ -919,7 +919,7 @@ export async function updateProgressSharing(
   });
 }
 
-export type AgentScope = "library" | "progress" | "history" | "text";
+export type AgentScope = "library" | "progress" | "history" | "text" | "getBooks";
 
 export type AgentToken = {
   id: string;
