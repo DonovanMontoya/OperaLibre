@@ -63,6 +63,7 @@ use walkdir::WalkDir;
 
 mod abs;
 mod activity;
+mod agent;
 mod alignment;
 mod app;
 mod auth;
@@ -105,6 +106,7 @@ mod works;
 
 use abs::*;
 use activity::*;
+use agent::*;
 use app::*;
 use auth::*;
 use backup::*;
@@ -636,6 +638,11 @@ fn build_app_state(
             database.clone(),
             StoreShape::Document(LIBATION_ACCOUNTS_DOCUMENT),
             snapshot.libation_accounts,
+        )),
+        agent_tokens: Arc::new(AgentTokens::new(
+            database.clone(),
+            StoreShape::Document(AGENT_TOKENS_DOCUMENT),
+            snapshot.agent_tokens,
         )),
         libation_login_sessions: Arc::new(Mutex::new(HashMap::new())),
         libation_status_accounts: Arc::new(RwLock::new(Vec::new())),

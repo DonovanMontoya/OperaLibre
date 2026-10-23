@@ -224,8 +224,8 @@ fn overlay_work_id(
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ReadingLogQuery {
-    limit: Option<usize>,
-    since: Option<String>,
+    pub(crate) limit: Option<usize>,
+    pub(crate) since: Option<String>,
 }
 
 const DEFAULT_READING_LOG_PAGE: usize = 200;

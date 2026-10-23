@@ -1160,6 +1160,7 @@ pub(crate) struct CachedSnapshot {
     pub(crate) libation_accounts: ManagedLibationAccountStore,
     pub(crate) reading_history: ReadingHistory,
     pub(crate) works: WorkStore,
+    pub(crate) agent_tokens: AgentTokenStore,
 }
 
 pub(crate) fn read_cached_snapshot(
@@ -1175,5 +1176,6 @@ pub(crate) fn read_cached_snapshot(
         libation_accounts: read_document_store(connection, LIBATION_ACCOUNTS_DOCUMENT)?,
         reading_history: read_document_store(connection, READING_HISTORY_DOCUMENT)?,
         works: read_document_store(connection, WORKS_DOCUMENT)?,
+        agent_tokens: read_document_store(connection, AGENT_TOKENS_DOCUMENT)?,
     })
 }

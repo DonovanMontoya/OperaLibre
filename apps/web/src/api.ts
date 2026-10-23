@@ -919,6 +919,53 @@ export async function updateProgressSharing(
   });
 }
 
+export type AgentScope = "library" | "progress" | "history" | "text";
+
+export type AgentToken = {
+  id: string;
+  name: string;
+  scopes: AgentScope[];
+  createdAt: string;
+  lastUsedAt: string | null;
+};
+
+/** The listener's own connected AI agents. Never includes a secret. */
+export async function listAgentTokens() {
+  return request<AgentToken[]>("/api/me/agent-tokens");
+}
+
+/** The returned `token` is shown this once; the server keeps only a digest. */
+export async function createAgentToken(name: string, scopes: AgentScope[]) {
+  return request<{ token: string; agentToken: AgentToken }>("/api/me/agent-tokens", {
+    method: "POST",
+    body: JSON.stringify({ name, scopes })
+  });
+}
+
+export async function revokeAgentToken(id: string) {
+  await request<void>(`/api/me/agent-tokens/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** The AI assistants experiment as administrators see it: counts, never who. */
+export type AgentAccessStatus = { enabled: boolean; assistants: number; listeners: number };
+
+export async function getAgentAccessStatus() {
+  return request<AgentAccessStatus>("/api/experimental-features/agent-access");
+}
+
+export async function setAgentAccessEnabled(enabled: boolean) {
+  return request<AgentAccessStatus>(
+    "/api/experimental-features/agent-access/enabled",
+    { method: "PUT", body: JSON.stringify({ enabled }) }
+  );
+}
+
+/** Where an AI agent connects: this server's MCP endpoint, as this device reaches it. */
+export function agentEndpointUrl() {
+  const base = currentApiBase() || (typeof window === "undefined" ? "" : window.location.origin);
+  return `${base.replace(/\/+$/, "")}/api/agent/mcp`;
+}
+
 /** `null` goes back to the account's initial. */
 export async function updateAvatar(avatar: string | null) {
   return request<AuthUser>("/api/me/avatar", {

@@ -1474,6 +1474,7 @@ pub(crate) async fn delete_user(
         })
         .await?;
 
+    revoke_agent_tokens_for_user(&state, &user_id).await?;
     state.progress.remove_user(&user_id).await?;
     state.book_settings.remove_user(&user_id).await?;
     // Dropped before the history purge, so a flush of the buffered sessions
@@ -1585,6 +1586,12 @@ pub(crate) async fn change_password(
             Ok(())
         })
         .await?;
+    // Someone else setting the password is how an account is recovered, so
+    // the agents it holds go with its other sign-ins. A listener changing
+    // their own keeps them: they can see and remove each one in Settings.
+    if !changing_self {
+        revoke_agent_tokens_for_user(&state, &target_id).await?;
+    }
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }

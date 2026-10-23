@@ -13670,6 +13670,27 @@ html.native-app.platform-ios.dark-mode .timeline input[type="range"]::-webkit-sl
   grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
+.server-alias-form.agent-secret-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.agent-created,
+.agent-connect {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+
+.agent-created > strong {
+  font-family: "Fraunces", serif;
+  font-weight: 500;
+}
+
+.agent-secret-row input[readonly] {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+}
+
 .server-alias-form input {
   min-width: 0;
   padding: 9px 10px;
@@ -21730,3 +21751,21 @@ html .book-heading .book-cover-column > .large-cover { width: 100%; }
 }
 .book-sample-continue svg { flex: none; }
 .book-sample .book-sample-status { margin: 5px 0; color: var(--ink-soft); font-size: 0.72rem; line-height: 1.4; }
+
+.agent-access-dialog {
+  position: relative;
+}
+
+.agent-access-dialog > .settings-card {
+  border: 0;
+  padding: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.agent-access-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  color: var(--ink-faded);
+}

@@ -1860,6 +1860,11 @@ exit 0
         upload_lock: super::Arc::new(super::Mutex::new(())),
         libro: super::Arc::new(super::LibroImports::default()),
         backup_lock: super::Arc::new(super::Mutex::new(super::BackupLifecycle::default())),
+        agent_tokens: super::Arc::new(super::AgentTokens::new(
+            database.clone(),
+            super::StoreShape::Document(super::AGENT_TOKENS_DOCUMENT),
+            super::AgentTokenStore::default(),
+        )),
     };
     (state, log_path)
 }

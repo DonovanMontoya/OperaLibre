@@ -17,6 +17,7 @@ import {
   ServerDownloadSettings
 } from "./SettingsCards";
 import { ProgressSharingCard } from "./ProgressSharing";
+import { AgentAccessCard } from "./AgentAccess";
 import type { AuthUser, Book } from "./types";
 import type { DeviceNotice } from "./ConfirmDialogs";
 import type { NativeTab, StoreSettingsTarget } from "./nativeTabs";
@@ -269,6 +270,11 @@ export function SettingsPage({
             onSharingChanged={() => void loadBooks()}
           />
         ) : null}
+
+        {/* Agents read from the server itself, so only a signed-in OperaLibre
+            connection has any; a demo or device-only library has nothing to
+            connect them to. */}
+        {capabilities.sharedActivity ? <AgentAccessCard /> : null}
 
         <DeviceLibrarySettings
           deleteDeviceBook={deleteDeviceBook}
