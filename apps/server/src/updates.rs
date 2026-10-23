@@ -1,3 +1,4 @@
+use crate::http_client_builder;
 use anyhow::{Context, anyhow, bail};
 use reqwest::Client;
 use semver::Version;
@@ -246,7 +247,7 @@ impl UpdateManager {
         web_dist_dir: Option<PathBuf>,
         port: u16,
     ) -> anyhow::Result<Self> {
-        let client = Client::builder()
+        let client = http_client_builder()
             .user_agent(format!("OperaLibre/{}", current_version()))
             .connect_timeout(Duration::from_secs(10))
             .build()?;

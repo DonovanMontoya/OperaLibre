@@ -256,7 +256,7 @@ impl Api {
             reqwest::header::ACCEPT,
             reqwest::header::HeaderValue::from_static("application/json"),
         );
-        let client = reqwest::Client::builder()
+        let client = http_client_builder()
             .default_headers(headers)
             .user_agent("okhttp/5.3.2")
             .timeout(Duration::from_secs(20))
@@ -669,7 +669,7 @@ async fn download(
             ));
         }
         // Pin validated DNS answers on every redirect; URLs never carry our bearer token.
-        let client = reqwest::Client::builder()
+        let client = http_client_builder()
             .no_proxy()
             .connect_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(3600))
@@ -1043,7 +1043,7 @@ mod tests {
         let task = tokio::spawn(async move {
             let api = Api {
                 root: format!("http://{address}/"),
-                client: reqwest::Client::new(),
+                client: http_client_builder().build().unwrap(),
             };
             acquire_book_with_api(
                 &worker_state,
@@ -1176,7 +1176,7 @@ mod tests {
         let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         let api = Api {
             root: format!("http://{address}/"),
-            client: reqwest::Client::new(),
+            client: http_client_builder().build().unwrap(),
         };
         let result = api.library("fixture-token").await;
         task.abort();
