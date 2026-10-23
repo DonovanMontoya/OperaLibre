@@ -407,7 +407,7 @@ pub(crate) async fn agent_auth_middleware(
 
 const MCP_PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-const MCP_INSTRUCTIONS: &str = "OperaLibre is the listener's own private audiobook server. Everything here is read-only. When recapping a book, use only the text get_text_so_far returns: it stops exactly where the listener is. Do not add plot details from your own knowledge of the book or its series, because that could spoil what they have not heard yet. Book ids come from search_library, get_currently_listening, and the history tools.";
+const MCP_INSTRUCTIONS: &str = "OperaLibre is the listener's own private audiobook server. Everything here is read-only. When recommending what to read next, get_series_progress shows where the listener is in each series. When recapping a book, use only the text get_text_so_far returns: it stops exactly where the listener is. Do not add plot details from your own knowledge of the book or its series, because that could spoil what they have not heard yet. Book ids come from search_library, get_currently_listening, and the history tools.";
 
 pub(crate) async fn mcp_endpoint(
     State(state): State<AppState>,
@@ -537,17 +537,21 @@ enum AgentTool {
     GetListeningSessions,
     GetFinishedBooks,
     GetListeningStats,
+    GetAchievements,
+    GetSeriesProgress,
     GetTextSoFar,
 }
 
 impl AgentTool {
-    const ALL: [AgentTool; 7] = [
+    const ALL: [AgentTool; 9] = [
         AgentTool::SearchLibrary,
         AgentTool::GetBook,
+        AgentTool::GetSeriesProgress,
         AgentTool::GetCurrentlyListening,
         AgentTool::GetListeningSessions,
         AgentTool::GetFinishedBooks,
         AgentTool::GetListeningStats,
+        AgentTool::GetAchievements,
         AgentTool::GetTextSoFar,
     ];
 
@@ -559,17 +563,22 @@ impl AgentTool {
             AgentTool::GetListeningSessions => "get_listening_sessions",
             AgentTool::GetFinishedBooks => "get_finished_books",
             AgentTool::GetListeningStats => "get_listening_stats",
+            AgentTool::GetAchievements => "get_achievements",
+            AgentTool::GetSeriesProgress => "get_series_progress",
             AgentTool::GetTextSoFar => "get_text_so_far",
         }
     }
 
     fn scope(self) -> AgentScope {
         match self {
-            AgentTool::SearchLibrary | AgentTool::GetBook => AgentScope::Library,
+            AgentTool::SearchLibrary | AgentTool::GetBook | AgentTool::GetSeriesProgress => {
+                AgentScope::Library
+            }
             AgentTool::GetCurrentlyListening => AgentScope::Progress,
             AgentTool::GetListeningSessions
             | AgentTool::GetFinishedBooks
-            | AgentTool::GetListeningStats => AgentScope::History,
+            | AgentTool::GetListeningStats
+            | AgentTool::GetAchievements => AgentScope::History,
             AgentTool::GetTextSoFar => AgentScope::Text,
         }
     }
@@ -658,6 +667,30 @@ impl AgentTool {
                     }),
                     &["bookId"],
                 ),
+                AgentTool::GetAchievements => (
+                    "Achievements",
+                    "The listener's achievements, as their profile shows them: each milestone with how far they are toward it and whether it is earned.".to_string(),
+                    serde_json::json!({
+                        "tzOffsetMinutes": { "type": "integer", "description": "The listener's offset from UTC in minutes, east positive, so listening streaks count their days." },
+                    }),
+                    &[],
+                ),
+                AgentTool::GetSeriesProgress => (
+                    "Series progress",
+                    format!(
+                        "Each series on the server with its books in order and the positions the server is missing.{}",
+                        if caller.allows(AgentScope::Progress) {
+                            " Includes how many the listener has finished and the book to read next, most recently listened series first."
+                        } else {
+                            ""
+                        }
+                    ),
+                    serde_json::json!({
+                        "series": { "type": "string", "description": "Only series whose name contains this, case-insensitively." },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 },
+                    }),
+                    &[],
+                ),
             };
         serde_json::json!({
             "name": self.name(),
@@ -696,6 +729,8 @@ impl AgentTool {
             }
             AgentTool::GetFinishedBooks => get_finished_books(state, caller, arguments).await,
             AgentTool::GetListeningStats => get_listening_stats(state, caller, arguments).await,
+            AgentTool::GetAchievements => get_achievements(state, caller, arguments).await,
+            AgentTool::GetSeriesProgress => get_series_progress(state, caller, arguments).await,
             AgentTool::GetTextSoFar => get_text_so_far(state, caller, arguments).await,
         }
     }
@@ -1211,6 +1246,410 @@ async fn caller_stats(
     .await
     .map_err(tool_failure)?;
     Ok(stats)
+}
+
+async fn get_achievements(
+    state: &AppState,
+    caller: &AgentCaller,
+    arguments: &serde_json::Value,
+) -> ToolOutcome {
+    ensure_startup_scan_finished(state)
+        .await
+        .map_err(tool_failure)?;
+    let books = books_with_progress(state, &caller.user)
+        .await
+        .map_err(tool_failure)?;
+    let stats = caller_stats(state, caller, arguments).await?;
+    let achievements = reading_achievements(&books, &stats);
+    Ok(serde_json::json!({
+        "earned": achievements.iter().filter(|achievement| achievement["earned"] == true).count(),
+        "total": achievements.len(),
+        "achievements": achievements,
+    }))
+}
+
+/// The achievements on the listener's profile. This mirrors
+/// `readingAchievements` in apps/web/src/readingAchievements.ts, which the
+/// app keeps for itself because it also runs offline and against Jellyfin;
+/// change the two together.
+fn reading_achievements(books: &[Book], stats: &ProfileStats) -> Vec<serde_json::Value> {
+    let finished: Vec<&Book> = books
+        .iter()
+        .filter(|book| book_status(book) == BookProgressStatus::Finished)
+        .collect();
+    let duration = |book: &Book| {
+        book.duration_seconds
+            .filter(|seconds| seconds.is_finite())
+            .unwrap_or(0.0)
+            .max(0.0)
+    };
+    let longest = finished.iter().copied().reduce(|longest, book| {
+        if duration(book) > duration(longest) {
+            book
+        } else {
+            longest
+        }
+    });
+    let longest_hours = longest.map_or(0.0, |book| duration(book) / 3_600.0);
+    let authors = most_finished(&finished, |book| book.author.iter().cloned().collect());
+    let narrators = most_finished(&finished, |book| book.narrator.iter().cloned().collect());
+    let genres = most_finished(&finished, |book| book.genres.clone());
+    let series = most_finished(&finished, |book| {
+        book.metadata.series.iter().cloned().collect()
+    });
+
+    let mut achievements = Vec::new();
+    let mut add = |id: String,
+                   title: &str,
+                   description: String,
+                   category: &str,
+                   current: f64,
+                   target: u32,
+                   unit: &str,
+                   evidence: Option<&Book>| {
+        let current = if current.is_finite() {
+            current.max(0.0)
+        } else {
+            0.0
+        };
+        achievements.push(serde_json::json!({
+            "id": id,
+            "title": title,
+            "description": description,
+            "category": category,
+            "current": rounded(current, 1),
+            "target": target,
+            "unit": unit,
+            "earned": current >= f64::from(target),
+            "book": evidence.map(|book| serde_json::json!({ "id": book.id, "title": book.title })),
+        }));
+    };
+    for (target, title) in [
+        (1, "The first of many"),
+        (10, "Shelf made"),
+        (25, "Well read"),
+        (100, "Living library"),
+    ] {
+        let description = if target == 1 {
+            "Finish your first book.".to_string()
+        } else {
+            format!("Finish {target} books.")
+        };
+        add(
+            format!("finished-{target}"),
+            title,
+            description,
+            "Milestones",
+            finished.len() as f64,
+            target,
+            "books",
+            None,
+        );
+    }
+    for (target, title) in [
+        (24, "A day in another world"),
+        (48, "The long way home"),
+        (72, "Epic endurance"),
+    ] {
+        add(
+            format!("epic-{target}"),
+            title,
+            format!(
+                "Finish a book at least {target} hours long. Original runtime, at any playback speed."
+            ),
+            "Milestones",
+            longest_hours,
+            target,
+            "hours",
+            longest,
+        );
+    }
+    add(
+        "authors".into(),
+        "Literary passport",
+        "Finish books by 5 different authors.".into(),
+        "Exploration",
+        authors.len() as f64,
+        5,
+        "authors",
+        None,
+    );
+    add(
+        "genres".into(),
+        "Beyond your borders",
+        "Finish books spanning 5 different genres.".into(),
+        "Exploration",
+        genres.len() as f64,
+        5,
+        "genres",
+        None,
+    );
+    fn top<'a>(groups: &[(usize, &'a Book)]) -> (f64, Option<&'a Book>) {
+        groups
+            .first()
+            .map_or((0.0, None), |(count, book)| (*count as f64, Some(*book)))
+    }
+    let (count, book) = top(&authors);
+    add(
+        "author-loyalty".into(),
+        "An old friend",
+        "Finish 3 books by the same author.".into(),
+        "Exploration",
+        count,
+        3,
+        "books",
+        book,
+    );
+    let (count, book) = top(&narrators);
+    add(
+        "narrator-loyalty".into(),
+        "A familiar voice",
+        "Finish 3 books with the same narrator credit.".into(),
+        "Exploration",
+        count,
+        3,
+        "books",
+        book,
+    );
+    let (count, book) = top(&series);
+    add(
+        "series".into(),
+        "Deep in the saga",
+        "Finish 3 books in one series.".into(),
+        "Exploration",
+        count,
+        3,
+        "books",
+        book,
+    );
+    for (target, title) in [
+        (7, "A week of worlds"),
+        (30, "Part of the day"),
+        (100, "Unbroken thread"),
+    ] {
+        add(
+            format!("streak-{target}"),
+            title,
+            format!("Listen on {target} consecutive days. Uses your longest recorded streak."),
+            "Rituals",
+            f64::from(stats.longest_streak_days),
+            target,
+            "days",
+            None,
+        );
+    }
+    for (target, title) in [
+        (24, "Time well spent"),
+        (100, "Centurion"),
+        (500, "A life in stories"),
+    ] {
+        add(
+            format!("listening-{target}"),
+            title,
+            format!("Log {target} hours of measured listening."),
+            "Rituals",
+            stats.total_hours_read,
+            target,
+            "hours",
+            None,
+        );
+    }
+    achievements
+}
+
+/// How many finished books share each label, most first, with the latest
+/// finished book carrying it. Labels compare trimmed and case-insensitively.
+fn most_finished<'a>(
+    finished: &[&'a Book],
+    labels: impl Fn(&Book) -> Vec<String>,
+) -> Vec<(usize, &'a Book)> {
+    let mut index = HashMap::<String, usize>::new();
+    let mut groups: Vec<(usize, &Book)> = Vec::new();
+    for book in finished {
+        let mut seen = HashSet::new();
+        for label in labels(book) {
+            let label = label.trim().to_lowercase();
+            if label.is_empty() || !seen.insert(label.clone()) {
+                continue;
+            }
+            match index.get(&label) {
+                Some(&at) => groups[at] = (groups[at].0 + 1, book),
+                None => {
+                    index.insert(label, groups.len());
+                    groups.push((1, book));
+                }
+            }
+        }
+    }
+    // Stable, so ties keep the label finished first.
+    groups.sort_by_key(|(count, _)| std::cmp::Reverse(*count));
+    groups
+}
+
+/// A series position as a number to order by: "2", "2.5", and "Book 2" all
+/// count; anything without a number sorts last.
+fn series_order(position: Option<&str>) -> Option<f64> {
+    position?
+        .split(|character: char| !(character.is_ascii_digit() || character == '.'))
+        .find(|part| !part.is_empty())
+        .and_then(|part| part.parse().ok())
+}
+
+struct SeriesProgress<'a> {
+    name: String,
+    /// In reading order.
+    books: Vec<&'a Book>,
+    /// Whole-number positions below the highest one that no book here holds.
+    missing_positions: Vec<u32>,
+    /// The book in progress, or else the first unfinished one after the last
+    /// finished one. `None` for a series not started or already done.
+    next: Option<&'a Book>,
+}
+
+/// Group books by their series, in reading order.
+fn series_progress(books: &[Book]) -> Vec<SeriesProgress<'_>> {
+    let mut index = HashMap::<String, usize>::new();
+    let mut groups: Vec<(String, Vec<&Book>)> = Vec::new();
+    for book in books {
+        let Some(name) = book
+            .metadata
+            .series
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            continue;
+        };
+        let key = name.to_lowercase();
+        match index.get(&key) {
+            Some(&at) => groups[at].1.push(book),
+            None => {
+                index.insert(key, groups.len());
+                groups.push((name.to_string(), vec![book]));
+            }
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(name, mut books)| {
+            books.sort_by(|left, right| {
+                let order = |book: &Book| series_order(book.metadata.series_position.as_deref());
+                match (order(left), order(right)) {
+                    (Some(left), Some(right)) => left.total_cmp(&right),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+                .then_with(|| left.title.cmp(&right.title))
+            });
+            let held: HashSet<u32> = books
+                .iter()
+                .filter_map(|book| series_order(book.metadata.series_position.as_deref()))
+                .filter(|position| {
+                    position.fract() == 0.0 && *position >= 1.0 && *position <= 1_000.0
+                })
+                .map(|position| position as u32)
+                .collect();
+            let highest = held.iter().copied().max().unwrap_or(0);
+            let missing_positions = (1..highest)
+                .filter(|position| !held.contains(position))
+                .collect();
+            let next = books
+                .iter()
+                .copied()
+                .find(|book| book_status(book) == BookProgressStatus::InProgress)
+                .or_else(|| {
+                    let last_finished = books
+                        .iter()
+                        .rposition(|book| book_status(book) == BookProgressStatus::Finished)?;
+                    books[last_finished + 1..]
+                        .iter()
+                        .copied()
+                        .find(|book| book_status(book) != BookProgressStatus::Finished)
+                });
+            SeriesProgress {
+                name,
+                books,
+                missing_positions,
+                next,
+            }
+        })
+        .collect()
+}
+
+async fn get_series_progress(
+    state: &AppState,
+    caller: &AgentCaller,
+    arguments: &serde_json::Value,
+) -> ToolOutcome {
+    let filter = string_argument(arguments, "series").map(|series| series.to_lowercase());
+    let limit = count_argument(arguments, "limit", 25, 100).max(1);
+    let with_progress = caller.allows(AgentScope::Progress);
+    let books = caller_books_where(state, caller, |book| {
+        book.metadata
+            .series
+            .as_deref()
+            .is_some_and(|series| !series.trim().is_empty())
+    })
+    .await?;
+    let mut series: Vec<SeriesProgress> = series_progress(&books)
+        .into_iter()
+        .filter(|series| {
+            filter
+                .as_deref()
+                .is_none_or(|filter| series.name.to_lowercase().contains(filter))
+        })
+        .collect();
+    if with_progress {
+        let last_listened = |series: &SeriesProgress| {
+            series
+                .books
+                .iter()
+                .filter_map(|book| book.progress.as_ref())
+                .filter(|progress| progress.status != BookProgressStatus::NotStarted)
+                .map(|progress| progress_timestamp_millis(&progress.updated_at))
+                .max()
+                .unwrap_or(0)
+        };
+        series.sort_by_cached_key(|series| std::cmp::Reverse(last_listened(series)));
+    } else {
+        series.sort_by_cached_key(|series| series.name.to_lowercase());
+    }
+    let total = series.len();
+    Ok(serde_json::json!({
+        "total": total,
+        "series": series
+            .iter()
+            .take(limit)
+            .map(|series| {
+                let mut entry = serde_json::json!({
+                    "name": series.name,
+                    "books": series.books.iter().map(|book| {
+                        let mut volume = serde_json::json!({
+                            "id": book.id,
+                            "title": book.title,
+                            "position": book.metadata.series_position,
+                        });
+                        if with_progress {
+                            volume["status"] = serde_json::json!(book_status(book));
+                        }
+                        volume
+                    }).collect::<Vec<_>>(),
+                    "missingPositions": series.missing_positions,
+                });
+                if with_progress {
+                    let count = |status| series.books.iter().filter(|book| book_status(book) == status).count();
+                    entry["finished"] = count(BookProgressStatus::Finished).into();
+                    entry["inProgress"] = count(BookProgressStatus::InProgress).into();
+                    entry["next"] = series
+                        .next
+                        .map(|book| serde_json::json!({ "id": book.id, "title": book.title }))
+                        .into();
+                }
+                entry
+            })
+            .collect::<Vec<_>>(),
+    }))
 }
 
 async fn get_text_so_far(

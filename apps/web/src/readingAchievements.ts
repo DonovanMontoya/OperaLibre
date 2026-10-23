@@ -21,7 +21,11 @@ const key = (value: string) => value.trim().toLocaleLowerCase();
 const positive = (value: number | null | undefined) =>
   Number.isFinite(value) ? Math.max(0, value ?? 0) : 0;
 
-/** Derived from the accessible server library; no stored awards or invented unlock dates. */
+/**
+ * Derived from the accessible server library; no stored awards or invented unlock dates.
+ * The server answers AI assistants with the same list (`reading_achievements` in
+ * apps/server/src/agent.rs); change the two together.
+ */
 export function readingAchievements(
   books: Book[],
   stats: ProfileStats,

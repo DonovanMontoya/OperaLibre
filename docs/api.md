@@ -456,10 +456,12 @@ It accepts only an agent token from `POST /api/me/agent-tokens`, sent as `Author
 | --- | --- | --- |
 | `search_library` | `library` | Books the user can open, filtered by `query`, `author`, `series`, `genre`, and, with `progress`, `status`. Paged with `limit` and `offset`. |
 | `get_book` | `library` | One book's details. Chapter titles are listed only up to the user's position, and only with `progress`. |
+| `get_series_progress` | `library` | Each series with its books in order and the whole-number positions the server lacks. With `progress`, also the user's finished count and next book. Accepts `series` and `limit`. |
 | `get_currently_listening` | `progress` | Started, unfinished books, most recently played first. |
 | `get_listening_sessions` | `history` | The user's reading sessions, newest first. Accepts `since` and `limit`. |
 | `get_finished_books` | `history` | The user's completions with their edition snapshots. Accepts `since` and `limit`. |
 | `get_listening_stats` | `history` | The listening statistics from `/api/profile/stats`, without cover links. Accepts `tzOffsetMinutes`. |
+| `get_achievements` | `history` | The profile's achievements, each with `current`, `target`, and `earned`. Accepts `tzOffsetMinutes`. |
 | `get_text_so_far` | `text` | A book's sync-map sentences that end at or before the user's position, grouped by audio chapter. Finished books return all of them. Accepts `chapter` and `maxCharacters`; a longer chapter keeps its latest text. Books without an aligned sync map return a tool error. |
 
 Agent access is an experiment, off until an owner turns it on. While it is off, `GET` and `POST /api/me/agent-tokens` answer 404 and this endpoint answers 403. Successful tool results carry the JSON both as `structuredContent` and as text. `tools/list` includes only the tools the token's scopes allow, and calling any other tool is a JSON-RPC `-32602` error. Removing a token, deleting its user, an administrator resetting its user's password, and a backup restore all revoke it. `lastUsedAt` is updated at most every ten minutes.

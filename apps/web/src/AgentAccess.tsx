@@ -30,7 +30,7 @@ const SCOPES: { scope: AgentScope; title: string; detail: string }[] = [
   {
     scope: "history",
     title: "Listening history",
-    detail: "When you listened, what you finished, and your listening stats."
+    detail: "When you listened, what you finished, your listening stats, and your achievements."
   },
   {
     scope: "text",
@@ -348,7 +348,7 @@ export function AgentAccessExperiment({ isOwner }: { isOwner: boolean }) {
       </div>
       <p>
         Lets each listener connect an AI assistant they already use, such as Claude or Codex, for
-        spoiler-free recaps, what to read next, and questions about their listening. Each listener chooses what their assistant may
+        spoiler-free recaps, what to read next, and their series and achievements. Each listener chooses what their assistant may
         do in Settings, and an assistant never sees other listeners. What it reads is sent to the
         company that runs it. Built into the server, so there is nothing to install.
       </p>
