@@ -169,6 +169,7 @@ import { describeSyncJob } from "./syncJobProgress";
 import { renderCompanionTabs, renderEpubReader, renderReadalongPanel, renderReaderSyncActions, renderReaderSyncMessages } from "./ReaderPanel";
 import { AudibleManagement } from "./AudibleManagement";
 import { SettingsPage } from "./SettingsPage";
+import { AgentAccessDialog } from "./AgentAccess";
 import { MiniPlayer } from "./MiniPlayer";
 import { PlayerPane } from "./PlayerPane";
 import { LibraryPane } from "./LibraryPane";
@@ -719,6 +720,7 @@ function MainApp({
   useEffect(() => { setPreviewBook(null); }, [selectedBookId, nativePlayerView, nativeTab, libraryOpen]);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [usersModalOpen, setUsersModalOpen] = useState(false);
+  const [agentAccessOpen, setAgentAccessOpen] = useState(false);
   const uploads = useUploads({
     books,
     reconcileServerBookGains,
@@ -2026,7 +2028,8 @@ function MainApp({
     setLibrarySource,
     setProfileOpen,
     setUserMenuOpen,
-    setUsersModalOpen
+    setUsersModalOpen,
+    setAgentAccessOpen
   });
   const {
     syncJobForBook,
@@ -2536,6 +2539,8 @@ function MainApp({
           deviceOnly={localMode}
         />
       ) : null}
+
+      {!native && agentAccessOpen ? <AgentAccessDialog onClose={() => setAgentAccessOpen(false)} /> : null}
 
       {capabilities.administration && !native && usersModalOpen ? (
         <AdminPanel

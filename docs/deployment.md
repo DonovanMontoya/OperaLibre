@@ -348,7 +348,7 @@ The portable export does not include audiobook or companion files, uploaded cove
 
 For a complete filesystem backup, stop OperaLibre before copying `data_dir` (default `./data/`), the library, and `server.config`, then restart it. Do not copy a running SQLite database with a normal file-copy command: recent writes may still be in its journal. Use the app's export for a portable backup while listening continues.
 
-**Restore backup** on the same card replaces server-owned data with the selected JSON snapshot; it does not change library files or configuration. OperaLibre saves the current state under `data_dir/restore-backups/` first. Other readers must sign in again afterward, and the restoring owner may also need to sign in if the restored account differs. After restoring or moving a server, check accounts, book access, listening positions, and library matching before discarding the old installation.
+**Restore backup** on the same card replaces server-owned data with the selected JSON snapshot; it does not change library files or configuration. OperaLibre saves the current state under `data_dir/restore-backups/` first. Other readers must sign in again afterward, and the restoring owner may also need to sign in if the restored account differs. Connected AI assistants are disconnected and must be connected again; whether the AI assistants experiment is on comes back with the backup. After restoring or moving a server, check accounts, book access, listening positions, and library matching before discarding the old installation.
 
 ## Updating
 

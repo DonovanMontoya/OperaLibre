@@ -70,7 +70,10 @@ export default defineConfig(({ command, isPreview }) => {
                 proxyRequest.setHeader("referer", `${proxyTarget}/`);
               }
               if (injectSession && request.url?.startsWith("/api/auth/login")) injectSession = false;
-              if (injectSession) {
+              // An AI agent pointed at this address brings its own token.
+              const agentRequest = String(proxyRequest.getHeader("authorization") ?? "")
+                .startsWith("Bearer olagent_");
+              if (injectSession && !agentRequest) {
                 proxyRequest.removeHeader("cookie");
                 proxyRequest.setHeader("authorization", `Bearer ${sessionToken}`);
               }

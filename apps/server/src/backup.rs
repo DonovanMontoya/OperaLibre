@@ -13,6 +13,10 @@
 //! in. A restore signs everyone out except the owner performing it. Since
 //! schema 3 the exported sessions are keyed by digest, so a backup file holds
 //! no token that could be presented to any server; older backups do.
+//!
+//! Agent tokens are treated the same way: a restore removes every one, and
+//! listeners connect their agents again. Whether assistants are turned on is
+//! restored like any other setting.
 
 use crate::*;
 use rusqlite::OptionalExtension;
@@ -516,6 +520,14 @@ fn restore_database(
         )?;
     }
     for (name, value) in &data.documents {
+        if name == AGENT_TOKENS_DOCUMENT && matches!(mode, RestoreMode::DeliberateRestore) {
+            // Whether the owner allows assistants comes back; tokens never do.
+            let mut store: AgentTokenStore =
+                serde_json::from_value(value.clone()).unwrap_or_default();
+            store.tokens.clear();
+            db::write_document(&transaction, name, &serde_json::to_string(&store)?)?;
+            continue;
+        }
         db::write_document(&transaction, name, &serde_json::to_string(value)?)?;
     }
 
@@ -570,4 +582,8 @@ async fn adopt_snapshot(state: &AppState, snapshot: CachedSnapshot) {
         .adopt_restored(snapshot.reading_history)
         .await;
     state.works.adopt_restored(snapshot.works).await;
+    state
+        .agent_tokens
+        .adopt_restored(snapshot.agent_tokens)
+        .await;
 }

@@ -1,4 +1,5 @@
 import { BehaviorSection } from "./BehaviorSection";
+import { AgentAccessMenuItem } from "./AgentAccess";
 import { BookPreviewSetting } from "./BookPreviewSetting";
 import { ContinueReadingSetting } from "./ContinueReadingSetting";
 import type { usePurchases } from "./usePurchases";
@@ -123,7 +124,8 @@ export function renderUserMenu({
   setLibrarySource,
   setProfileOpen,
   setUserMenuOpen,
-  setUsersModalOpen
+  setUsersModalOpen,
+  setAgentAccessOpen
 }: {
   continueReadingAutoplay: boolean;
   toggleContinueReadingAutoplay: () => void;
@@ -148,6 +150,7 @@ export function renderUserMenu({
   setProfileOpen: Dispatch<SetStateAction<boolean>>;
   setUserMenuOpen: Dispatch<SetStateAction<boolean>>;
   setUsersModalOpen: Dispatch<SetStateAction<boolean>>;
+  setAgentAccessOpen: Dispatch<SetStateAction<boolean>>;
 }) {
   const {
     brokenLibationAccounts
@@ -184,6 +187,15 @@ export function renderUserMenu({
         >
           <ScrollText size={16} /> Reader's ledger
         </button>
+      ) : null}
+      {/* The apps show assistants in Settings; a browser has no Settings page. */}
+      {!native && capabilities.sharedActivity ? (
+        <AgentAccessMenuItem
+          onOpen={() => {
+            setUserMenuOpen(false);
+            setAgentAccessOpen(true);
+          }}
+        />
       ) : null}
       {capabilities.administration ? (
         <button

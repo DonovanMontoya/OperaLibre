@@ -97,6 +97,9 @@ The archive includes accounts, permissions, progress, per-book settings, reading
 | `PUT` | `/api/me/avatar` | Choose the current user's picture with `{ "avatar": "owl" }`, or `{ "avatar": null }` to go back to their initial. The value is an identifier of up to 32 lowercase letters, digits, and hyphens; the pictures themselves are drawn by the apps, and one an app does not recognise is shown as the initial. Returns the updated account. Accounts carry it as `avatar`, `null` when unset. |
 | `GET` | `/api/activity/finishes` | The shared "who finished what" feed, newest first, capped at 50: `{ entries, unseenCount, latestId }`. Empty unless the caller both shares progress and has `notifyFinishes` on. Excludes the caller's own finishes, anyone not currently announcing, and books the caller cannot access. |
 | `POST` | `/api/activity/finishes/seen` | Mark the feed read up to `{ "eventId": string }` — normally the `latestId` from a prior read. Only ever moves forward. Returns the refreshed feed. |
+| `GET` | `/api/me/agent-tokens` | The current user's connected AI agents, newest first: `[{ id, name, scopes, createdAt, lastUsedAt }]`. Secrets are never returned. |
+| `POST` | `/api/me/agent-tokens` | Connect an agent with `{ "name": string, "scopes": [...] }`, where scopes are any of `library`, `progress`, `history`, and `text`. Returns `{ token, agentToken }`; `token` is the secret, returned this once. At most 10 per user. |
+| `DELETE` | `/api/me/agent-tokens/{token_id}` | Disconnect one of the current user's agents. Returns 204. |
 
 #### Library
 
@@ -121,6 +124,8 @@ The archive includes accounts, permissions, progress, per-book settings, reading
 | `POST` | `/api/experimental-features/readalong-sync/install` | Download, verify, and install or update the official platform package. Owner only; managed release installations only. |
 | `PUT` | `/api/experimental-features/readalong-sync/enabled` | Enable or disable an installed managed add-on with `{ "enabled": bool }`. Owner only. |
 | `DELETE` | `/api/experimental-features/readalong-sync` | Disable the managed add-on and move its installed files into recoverable update storage. Existing sync maps are retained. Owner only. |
+| `GET` | `/api/experimental-features/agent-access` | Whether [agent access](#agent-access-mcp) is on, and how many agents are connected by how many users: `{ enabled, assistants, listeners }`. Admin only. |
+| `PUT` | `/api/experimental-features/agent-access/enabled` | Turn agent access on or off with `{ "enabled": bool }`. Owner only. Turning it off keeps connected agents' tokens but refuses them until it is turned back on. |
 | `GET` | `/api/books/{book_id}/download` | Zip download of all the book's files. Subject to `max_book_download_gib` and `max_concurrent_book_downloads`. |
 | `DELETE` | `/api/books/{book_id}/download` | Delete the server's local copy. Admin only; Libation catalog state, progress, metadata overrides, and access grants are retained for later redownload. |
 | `GET` | `/api/books/{book_id}/progress` | Playback progress for the current user and book. |
@@ -440,6 +445,24 @@ Author IDs advertised by item metadata and filter data are safe to append as one
 Audiobookshelf clients do not send OperaLibre's seek flags. Fresh backwards progress updates of less than 30 minutes are treated as rewinds, including small jumps into the first minute. Stale updates and near-zero writes that erase more than 5 minutes of progress are still refused.
 
 Cover and stream URLs are also mirrored at `/abs/api/books/{book_id}/cover` and `/abs/api/books/{book_id}/tracks/{track_id}/stream` (media token accepted), because some clients resolve content URLs against the `/abs` base while others resolve against the origin. Book-access restrictions apply exactly as on the native API.
+
+## Agent access (MCP)
+
+`POST /api/agent/mcp` is a [Model Context Protocol](https://modelcontextprotocol.io/) server using the Streamable HTTP transport. It answers each JSON-RPC message with a plain JSON response, keeps no MCP session, and returns 405 to a `GET` event stream. It supports `initialize`, `ping`, `tools/list`, and `tools/call`.
+
+It accepts only an agent token from `POST /api/me/agent-tokens`, sent as `Authorization: Bearer olagent_...`; session tokens, cookies, and `?token=` are refused with 401. Agent tokens are refused everywhere else. A token acts for the user who created it with that user's current permissions and book access, narrowed further by its scopes. It reads only that user's own data; other users' progress and the finish feed are never exposed. No tool writes anything.
+
+| Tool | Scope | Returns |
+| --- | --- | --- |
+| `search_library` | `library` | Books the user can open, filtered by `query`, `author`, `series`, `genre`, and, with `progress`, `status`. Paged with `limit` and `offset`. |
+| `get_book` | `library` | One book's details. Chapter titles are listed only up to the user's position, and only with `progress`. |
+| `get_currently_listening` | `progress` | Started, unfinished books, most recently played first. |
+| `get_listening_sessions` | `history` | The user's reading sessions, newest first. Accepts `since` and `limit`. |
+| `get_finished_books` | `history` | The user's completions with their edition snapshots. Accepts `since` and `limit`. |
+| `get_listening_stats` | `history` | The listening statistics from `/api/profile/stats`, without cover links. Accepts `tzOffsetMinutes`. |
+| `get_text_so_far` | `text` | A book's sync-map sentences that end at or before the user's position, grouped by audio chapter. Finished books return all of them. Accepts `chapter` and `maxCharacters`; a longer chapter keeps its latest text. Books without an aligned sync map return a tool error. |
+
+Agent access is an experiment, off until an owner turns it on. While it is off, `GET` and `POST /api/me/agent-tokens` answer 404 and this endpoint answers 403. Successful tool results carry the JSON both as `structuredContent` and as text. `tools/list` includes only the tools the token's scopes allow, and calling any other tool is a JSON-RPC `-32602` error. Removing a token, deleting its user, an administrator resetting its user's password, and a backup restore all revoke it. `lastUsedAt` is updated at most every ten minutes.
 
 ## Conventions
 

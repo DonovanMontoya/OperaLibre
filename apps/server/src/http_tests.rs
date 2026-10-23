@@ -360,8 +360,12 @@ struct TestServer {
 
 /// Minimal valid WAV the library scanner can read a duration from.
 fn fixture_wav() -> Vec<u8> {
-    // 16_000 bytes per second at this format, so this is ten seconds.
-    let samples = vec![0u8; 160_000];
+    silent_wav(10)
+}
+
+fn silent_wav(seconds: usize) -> Vec<u8> {
+    // 16_000 bytes per second at this format.
+    let samples = vec![0u8; 16_000 * seconds];
     let mut wav = Vec::new();
     wav.extend_from_slice(b"RIFF");
     wav.extend_from_slice(&(36u32 + samples.len() as u32).to_le_bytes());
@@ -479,6 +483,11 @@ impl TestServer {
                 database.clone(),
                 StoreShape::Document(LIBATION_ACCOUNTS_DOCUMENT),
                 ManagedLibationAccountStore::default(),
+            )),
+            agent_tokens: Arc::new(AgentTokens::new(
+                database.clone(),
+                StoreShape::Document(AGENT_TOKENS_DOCUMENT),
+                AgentTokenStore::default(),
             )),
             libation_login_sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
             libation_status_accounts: Arc::new(RwLock::new(Vec::new())),
@@ -4621,6 +4630,7 @@ async fn catalogue_listings_are_unavailable_until_the_startup_scan_finishes() {
         libation_accounts: ManagedLibationAccountStore::default(),
         reading_history: ReadingHistory::default(),
         works: WorkStore::default(),
+        agent_tokens: AgentTokenStore::default(),
     };
     let state = build_app_state(
         &config,
@@ -7850,4 +7860,564 @@ async fn chapter_reruns_need_a_current_generated_map_and_survive_restarts() {
         "Only maps OperaLibre generated",
     );
     assert!(server.state.jobs.read().await.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Agent access
+// ---------------------------------------------------------------------------
+
+/// Create an agent for the signed-in listener and return its secret.
+/// Connect an agent for whoever `token` signs in, with assistants turned on
+/// as an owner would under Experiments.
+async fn create_agent(server: &TestServer, token: &str, scopes: &[&str]) -> String {
+    server
+        .state
+        .agent_tokens
+        .mutate(|store| {
+            store.enabled = true;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let created = server
+        .send_json(
+            "POST",
+            "/api/me/agent-tokens",
+            token,
+            serde_json::json!({ "name": "Test assistant", "scopes": scopes }),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    created.json()["token"].as_str().unwrap().to_string()
+}
+
+async fn mcp_request(
+    server: &TestServer,
+    secret: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> TestResponse {
+    server
+        .send_json(
+            "POST",
+            "/api/agent/mcp",
+            secret,
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }),
+        )
+        .await
+}
+
+/// Call a tool and return whether it failed and what it said, parsed as JSON
+/// when it answered with JSON.
+async fn call_agent_tool(
+    server: &TestServer,
+    secret: &str,
+    name: &str,
+    arguments: serde_json::Value,
+) -> (bool, serde_json::Value) {
+    let response = mcp_request(
+        server,
+        secret,
+        "tools/call",
+        serde_json::json!({ "name": name, "arguments": arguments }),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    let result = response.json()["result"].clone();
+    assert!(!result.is_null(), "{}", response.text());
+    let text = result["content"][0]["text"].as_str().unwrap().to_string();
+    let failed = result["isError"].as_bool().unwrap();
+    let said = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+    if !failed {
+        assert_eq!(result["structuredContent"], said);
+    }
+    (failed, said)
+}
+
+async fn tool_names(server: &TestServer, secret: &str) -> Vec<String> {
+    let listed = mcp_request(server, secret, "tools/list", serde_json::json!({})).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text());
+    listed.json()["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn an_agent_token_reaches_only_the_agent_endpoint() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let secret = create_agent(&server, &owner, &["library", "progress"]).await;
+    let (book, track) = server.first_book_and_track(&owner).await;
+
+    // Not the app's routes, read or write, even for an owner's agent.
+    for uri in [
+        "/api/books",
+        "/api/auth/me",
+        "/api/users",
+        "/api/admin/backup",
+    ] {
+        assert_eq!(
+            server.get(uri, &secret).await.status,
+            StatusCode::UNAUTHORIZED,
+            "{uri}"
+        );
+    }
+    let write = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/progress"),
+            &secret,
+            serde_json::json!({ "trackId": track, "positionSeconds": 0.0, "bookPositionSeconds": 0.0 }),
+        )
+        .await;
+    assert_eq!(write.status, StatusCode::UNAUTHORIZED);
+    let mint = server
+        .send_json(
+            "POST",
+            "/api/me/agent-tokens",
+            &secret,
+            serde_json::json!({ "name": "Escalated", "scopes": ["text"] }),
+        )
+        .await;
+    assert_eq!(mint.status, StatusCode::UNAUTHORIZED);
+
+    // And a session token is not an agent token.
+    let session = mcp_request(&server, &owner, "tools/list", serde_json::json!({})).await;
+    assert_eq!(session.status, StatusCode::UNAUTHORIZED);
+
+    let initialized = mcp_request(
+        &server,
+        &secret,
+        "initialize",
+        serde_json::json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "1" } }),
+    )
+    .await;
+    assert_eq!(initialized.status, StatusCode::OK, "{}", initialized.text());
+    assert_eq!(
+        initialized.json()["result"]["protocolVersion"],
+        "2025-06-18"
+    );
+    let notified = server
+        .send_json(
+            "POST",
+            "/api/agent/mcp",
+            &secret,
+            serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+        )
+        .await;
+    assert_eq!(notified.status, StatusCode::ACCEPTED);
+
+    // The secret is shown once and never listed.
+    let listed = server.get("/api/me/agent-tokens", &owner).await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(
+        listed.json()[0]["scopes"],
+        serde_json::json!(["library", "progress"])
+    );
+    assert!(!listed.text().contains(&secret));
+    assert!(!listed.text().contains(&secret["olagent_".len()..]));
+}
+
+#[tokio::test]
+async fn scopes_decide_which_tools_an_agent_has() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let library_only = create_agent(&server, &owner, &["library"]).await;
+    assert_eq!(
+        tool_names(&server, &library_only).await,
+        ["search_library", "get_book"]
+    );
+
+    let denied = mcp_request(
+        &server,
+        &library_only,
+        "tools/call",
+        serde_json::json!({ "name": "get_listening_sessions", "arguments": {} }),
+    )
+    .await;
+    assert_eq!(denied.json()["error"]["code"], -32602);
+
+    // Without progress access a library listing says nothing about listening.
+    let (failed, found) = call_agent_tool(
+        &server,
+        &library_only,
+        "search_library",
+        serde_json::json!({}),
+    )
+    .await;
+    assert!(!failed, "{found}");
+    assert_eq!(found["total"], 1);
+    assert!(found["books"][0].get("status").is_none());
+    assert!(found["books"][0].get("percentComplete").is_none());
+    let (failed, _) = call_agent_tool(
+        &server,
+        &library_only,
+        "search_library",
+        serde_json::json!({ "status": "inProgress" }),
+    )
+    .await;
+    assert!(failed);
+
+    let everything =
+        create_agent(&server, &owner, &["library", "progress", "history", "text"]).await;
+    assert_eq!(tool_names(&server, &everything).await.len(), 7);
+
+    let unknown = server
+        .send_json(
+            "POST",
+            "/api/me/agent-tokens",
+            &owner,
+            serde_json::json!({ "name": "Typo", "scopes": ["libary"] }),
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
+    let none = server
+        .send_json(
+            "POST",
+            "/api/me/agent-tokens",
+            &owner,
+            serde_json::json!({ "name": "Nothing", "scopes": [] }),
+        )
+        .await;
+    assert_eq!(none.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn an_agent_sees_what_its_listener_sees_now_and_no_more() {
+    let server = TestServer::start(2).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "restricted-agent-owner").await;
+    let books = server.get("/api/books", &owner).await.json();
+    let allowed = books[0]["id"].as_str().unwrap().to_string();
+    let hidden = books[1]["id"].as_str().unwrap().to_string();
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let access_uri = format!("/api/users/{reader_id}/book-access");
+    let grant = |ids: serde_json::Value| {
+        server.send_json(
+            "PUT",
+            &access_uri,
+            &owner,
+            serde_json::json!({ "allowedBookIds": ids }),
+        )
+    };
+    assert_eq!(
+        grant(serde_json::json!([allowed])).await.status,
+        StatusCode::OK
+    );
+
+    let secret = create_agent(&server, &reader, &["library", "progress", "text"]).await;
+    let (_, found) =
+        call_agent_tool(&server, &secret, "search_library", serde_json::json!({})).await;
+    assert_eq!(found["total"], 1);
+    assert_eq!(found["books"][0]["id"], allowed.as_str());
+    for tool in ["get_book", "get_text_so_far"] {
+        let (failed, said) = call_agent_tool(
+            &server,
+            &secret,
+            tool,
+            serde_json::json!({ "bookId": hidden }),
+        )
+        .await;
+        assert!(failed, "{tool}: {said}");
+        assert_eq!(
+            said,
+            "No book with that id. Use search_library to find one."
+        );
+    }
+
+    // Narrowing the listener narrows the agent they already connected.
+    assert_eq!(grant(serde_json::json!([])).await.status, StatusCode::OK);
+    let (_, found) =
+        call_agent_tool(&server, &secret, "search_library", serde_json::json!({})).await;
+    assert_eq!(found["total"], 0);
+
+    // Another listener's position in a shared book never reaches the agent.
+    assert_eq!(
+        grant(serde_json::json!([allowed])).await.status,
+        StatusCode::OK
+    );
+    let (_, track) = server.first_book_and_track(&owner).await;
+    save_position(
+        &server,
+        &owner,
+        &allowed,
+        &track,
+        6.0,
+        serde_json::json!({}),
+    )
+    .await;
+    let (_, details) = call_agent_tool(
+        &server,
+        &secret,
+        "get_book",
+        serde_json::json!({ "bookId": allowed }),
+    )
+    .await;
+    assert_eq!(details["status"], "notStarted");
+    assert!(!details.to_string().contains("owner"), "{details}");
+}
+
+/// A map of three-second sentences starting at `starts`, each naming its own
+/// index, so the cut-off point is plain to see.
+fn numbered_sync_sidecar(starts: &[f64]) -> Vec<u8> {
+    let fragments = starts
+        .iter()
+        .enumerate()
+        .map(|(index, start)| {
+            serde_json::json!({
+                "startSeconds": start,
+                "endSeconds": start + 3.0,
+                "href": "text/ch1.xhtml",
+                "text": format!("Sentence number {index}."),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_vec(&serde_json::json!({
+        "version": alignment::SYNC_MAP_VERSION,
+        "generator": "echogarden",
+        "precision": "sentence",
+        "fragments": fragments,
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn text_so_far_stops_at_the_last_sentence_the_listener_heard() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    // Minute-long tracks, so a position mid-book is not within the last
+    // thirty seconds that count as finished.
+    for track in ["01 Track.wav", "02 Track.wav"] {
+        std::fs::write(
+            server.library_root.join("Book 00").join(track),
+            silent_wav(60),
+        )
+        .unwrap();
+    }
+    server
+        .add_companions_to_first_book(
+            &owner,
+            &[
+                (
+                    "Book 00.epub",
+                    alignment::build_test_epub_with_text(
+                        &long_chapter_text(),
+                        "<h1>Chapter 2</h1><p>The river ran fast and cold.</p>",
+                    ),
+                ),
+                (
+                    "Book 00.sync.json",
+                    numbered_sync_sidecar(&[0.0, 3.0, 6.0, 9.0, 60.0, 63.0]),
+                ),
+            ],
+        )
+        .await;
+    let books = server.get("/api/books", &owner).await.json();
+    let book = books[0]["id"].as_str().unwrap().to_string();
+    let second_track = books[0]["tracks"][1]["id"].as_str().unwrap().to_string();
+    let secret = create_agent(&server, &owner, &["text"]).await;
+
+    let (failed, said) = call_agent_tool(
+        &server,
+        &secret,
+        "get_text_so_far",
+        serde_json::json!({ "bookId": book }),
+    )
+    .await;
+    assert!(failed);
+    assert_eq!(said, "The listener has not started this book yet.");
+
+    // 64 seconds in: the two tracks are the chapters, and sentence 4
+    // (60–63 s) is the last one finished. Sentence 5 is underway.
+    let saved = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/progress"),
+            &owner,
+            serde_json::json!({ "trackId": second_track, "positionSeconds": 4.0, "bookPositionSeconds": 64.0 }),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+
+    let (failed, latest) = call_agent_tool(
+        &server,
+        &secret,
+        "get_text_so_far",
+        serde_json::json!({ "bookId": book }),
+    )
+    .await;
+    assert!(!failed, "{latest}");
+    assert_eq!(latest["chapter"]["index"], 1);
+    assert_eq!(latest["chapter"]["text"], "Sentence number 4.");
+    assert_eq!(latest["chapter"]["heardInFull"], false);
+    assert_eq!(latest["chapters"][0]["heardInFull"], true);
+    assert!(
+        !latest.to_string().contains("Sentence number 5"),
+        "{latest}"
+    );
+
+    let (_, earlier) = call_agent_tool(
+        &server,
+        &secret,
+        "get_text_so_far",
+        serde_json::json!({ "bookId": book, "chapter": 0 }),
+    )
+    .await;
+    assert_eq!(
+        earlier["chapter"]["text"],
+        "Sentence number 0. Sentence number 1. Sentence number 2. Sentence number 3."
+    );
+
+    // Nothing ahead of the listener can be asked for by index either.
+    let (failed, _) = call_agent_tool(
+        &server,
+        &secret,
+        "get_text_so_far",
+        serde_json::json!({ "bookId": book, "chapter": 2 }),
+    )
+    .await;
+    assert!(failed);
+}
+
+#[tokio::test]
+async fn removing_resetting_or_restoring_disconnects_agents() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+
+    let first = create_agent(&server, &owner, &["library"]).await;
+    let id = server.get("/api/me/agent-tokens", &owner).await.json()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let revoked = server
+        .send(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/me/agent-tokens/{id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    let gone = mcp_request(&server, &first, "tools/list", serde_json::json!({})).await;
+    assert_eq!(gone.status, StatusCode::UNAUTHORIZED);
+
+    // An administrator setting a reader's password takes their agents too.
+    let reader = server.add_reader(&owner, "reset-reader").await;
+    let reader_agent = create_agent(&server, &reader, &["library"]).await;
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let reset = server
+        .send_json(
+            "POST",
+            &format!("/api/users/{reader_id}/password"),
+            &owner,
+            serde_json::json!({ "newPassword": "a-brand-new-password" }),
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::OK, "{}", reset.text());
+    let gone = mcp_request(&server, &reader_agent, "tools/list", serde_json::json!({})).await;
+    assert_eq!(gone.status, StatusCode::UNAUTHORIZED);
+
+    // A restored backup does not bring agents back, including its own.
+    let kept = create_agent(&server, &owner, &["library"]).await;
+    let exported = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(exported.status, StatusCode::OK);
+    let restored = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/backup")
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(exported.body))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.text());
+    let gone = mcp_request(&server, &kept, "tools/list", serde_json::json!({})).await;
+    assert_eq!(gone.status, StatusCode::UNAUTHORIZED);
+    // Assistants are still turned on, so the list answers, empty.
+    assert_eq!(
+        server.get("/api/me/agent-tokens", &owner).await.json(),
+        serde_json::json!([])
+    );
+}
+
+#[tokio::test]
+async fn assistants_are_an_experiment_only_the_owner_turns_on() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "experiment-reader").await;
+    let status = "/api/experimental-features/agent-access";
+    let toggle = "/api/experimental-features/agent-access/enabled";
+    let set = |token: String, enabled: bool| {
+        let server = &server;
+        async move {
+            server
+                .send_json(
+                    "PUT",
+                    toggle,
+                    &token,
+                    serde_json::json!({ "enabled": enabled }),
+                )
+                .await
+        }
+    };
+
+    // Off on a new server: no card, and nothing to connect.
+    assert_eq!(server.get(status, &owner).await.json()["enabled"], false);
+    assert_eq!(
+        server.get("/api/me/agent-tokens", &reader).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let refused = server
+        .send_json(
+            "POST",
+            "/api/me/agent-tokens",
+            &reader,
+            serde_json::json!({ "name": "Early", "scopes": ["library"] }),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        set(reader.clone(), true).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        server.get(status, &reader).await.status,
+        StatusCode::FORBIDDEN
+    );
+
+    let turned_on = set(owner.clone(), true).await;
+    assert_eq!(turned_on.status, StatusCode::OK, "{}", turned_on.text());
+    let secret = create_agent(&server, &reader, &["library"]).await;
+    let counted = server.get(status, &owner).await.json();
+    assert_eq!(counted["assistants"], 1);
+    assert_eq!(counted["listeners"], 1);
+
+    // Turned off, connected assistants are refused but kept, and turning it
+    // back on reconnects them.
+    assert_eq!(set(owner.clone(), false).await.status, StatusCode::OK);
+    assert_eq!(
+        mcp_request(&server, &secret, "tools/list", serde_json::json!({}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        server.get("/api/me/agent-tokens", &reader).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(set(owner.clone(), true).await.status, StatusCode::OK);
+    assert_eq!(tool_names(&server, &secret).await.len(), 2);
 }

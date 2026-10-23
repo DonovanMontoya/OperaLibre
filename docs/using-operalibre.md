@@ -303,6 +303,38 @@ Development and manually managed installations may instead set `alignment_cli_pa
 
 Audible titles often come with a PDF of maps or illustrations rather than the book's text. OperaLibre opens each companion during a scan and tells the two apart, so a picture PDF is offered as **Extras** instead of being presented as the book. A book can have both: the reader then shows tabs above the page for the ebook, each supplement, and a gallery of any loose pictures in the book's folder (in the phone reader these are listed under **Other files** in the Contents sheet). A book with only extras shows a **View extras** invitation in place of the reader.
 
+## Connect an AI assistant
+
+An AI assistant you already use can read from your server: to recap a book you set down weeks ago without spoiling what comes next, suggest what to read next from your own shelf, or answer questions about your listening. Nothing is shared until you connect one, and each listener connects their own.
+
+AI assistants are an experiment the owner turns on under **Administration → Experiments**. While it is off, nobody can connect one. Once it is on, each listener finds **AI assistants** in **Settings** in the phone and Mac apps, or in the account menu in a browser. Choose **Connect an assistant**, give it a name, and choose what it may read:
+
+- **Your library**: the books you can open, with their descriptions.
+- **Where you are**: how far through each book you are.
+- **Listening history**: when you listened, what you finished, and your stats.
+- **Book text so far**: a book's text up to the sentence you have reached.
+
+OperaLibre then shows an address and a token. The token is shown only once. Add both to the assistant as an MCP server. In Claude Code:
+
+```bash
+claude mcp add --transport http operalibre http://192.168.1.20:4920/api/agent/mcp \
+  --header "Authorization: Bearer olagent_..."
+```
+
+In Codex, put the token in an environment variable such as `OPERALIBRE_AGENT_TOKEN` and add this to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.operalibre]
+url = "http://192.168.1.20:4920/api/agent/mcp"
+bearer_token_env_var = "OPERALIBRE_AGENT_TOKEN"
+```
+
+Other assistants that accept an MCP server address with a bearer token connect the same way. The assistant must be able to reach the address, so use your LAN, Tailscale, or HTTPS address as you would for the app. Assistants whose connector settings offer only an OAuth sign-in, such as the ChatGPT app, cannot connect yet.
+
+An assistant can only read. It cannot change your progress or anything else, it never sees other listeners' activity, and it sees no more than you can in the app: if an administrator narrows your access, the assistant's narrows with it. Whatever it reads is sent to the company that runs the assistant. Remove an assistant from the **AI assistants** card to disconnect it. Assistants are also disconnected when someone else resets your password, when your account is removed, and when the owner restores a backup. If the owner turns the experiment off, connected assistants stop working until it is turned back on.
+
+Recaps need a book with its text and a follow-along map (see [Read along with the ebook](#read-along-with-the-ebook)), because the map marks exactly where you are in the text. The assistant gets nothing past that point, and it is asked not to fill in the plot from its own knowledge of the book.
+
 ## Import Audible books with Libation (optional)
 
 Install a recent [Libation](https://github.com/rmcrackan/Libation) CLI on the same computer as OperaLibre, or use the OperaLibre installer's optional Audible setup. Add the CLI path and `libation_files_dir` for an existing installation to `server.config`, then restart.

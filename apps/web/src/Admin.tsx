@@ -21,6 +21,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AgentAccessExperiment } from "./AgentAccess";
 import { AvatarFace } from "./Avatar";
 import {
   changePassword,
@@ -961,10 +962,11 @@ export function AdminPanel({
             <div className="admin-software-head">
               <div className="admin-software-copy">
                 <span className="section-label"><FlaskConical size={13} /> Experimental features</span>
-                <h2>Optional server add-ons</h2>
+                <h2>Optional server features</h2>
                 <p>
-                  Install capabilities separately without making the normal OperaLibre server larger
-                  or more demanding. Experimental add-ons may change while their behavior is refined.
+                  Off until an owner turns them on. Add-ons install separately so the normal
+                  OperaLibre server stays small. Experimental features may change while their
+                  behavior is refined.
                 </p>
               </div>
               <div className="admin-software-actions">
@@ -1060,6 +1062,7 @@ export function AdminPanel({
                   <SyncJobMonitor books={books} onOpenBook={onOpenBook} syncEnabled={syncAddon?.enabled === true} />
                 </ExperimentSection>
               </article>
+              <AgentAccessExperiment isOwner={currentUser.isOwner} />
             </div>
           </section>
         </div>

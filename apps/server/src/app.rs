@@ -61,6 +61,8 @@ pub(crate) struct AppState {
     pub(crate) libation_requests: Arc<LibationRequests>,
     pub(crate) libation_refreshes: Arc<LibationRefreshes>,
     pub(crate) libation_accounts: Arc<LibationAccounts>,
+    /// Read-only credentials listeners have created for AI agents.
+    pub(crate) agent_tokens: Arc<AgentTokens>,
     pub(crate) libation_login_sessions: Arc<Mutex<HashMap<String, PendingLibationLogin>>>,
     /// Last probed account rows, served while Libation is writing its profile.
     pub(crate) libation_status_accounts: Arc<RwLock<Vec<LibationAccount>>>,
@@ -193,6 +195,14 @@ pub(crate) fn build_router(
             "/api/experimental-features/readalong-sync/enabled",
             put(set_readalong_sync_addon_enabled),
         )
+        .route(
+            "/api/experimental-features/agent-access",
+            get(agent_access_experiment),
+        )
+        .route(
+            "/api/experimental-features/agent-access/enabled",
+            put(set_agent_access_enabled),
+        )
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/{user_id}", delete(delete_user))
         .route("/api/users/{user_id}/password", post(change_password))
@@ -208,6 +218,14 @@ pub(crate) fn build_router(
         )
         .route("/api/me/progress-sharing", put(update_progress_sharing))
         .route("/api/me/avatar", put(update_avatar))
+        .route(
+            "/api/me/agent-tokens",
+            get(list_agent_tokens).post(create_agent_token),
+        )
+        .route(
+            "/api/me/agent-tokens/{token_id}",
+            delete(revoke_agent_token),
+        )
         .route("/api/activity/finishes", get(finish_feed))
         .route("/api/activity/finishes/seen", post(mark_finish_feed_seen))
         .route("/api/books", get(list_books))
@@ -410,6 +428,22 @@ pub(crate) fn build_router(
             auth_middleware,
         ));
 
+    // Agent tokens reach this alone, and session tokens never do: the two
+    // middlewares only recognize their own credentials.
+    let agent_routes = Router::new()
+        .route("/api/agent/mcp", post(mcp_endpoint))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(REQUEST_TIMEOUT_SECONDS),
+        ))
+        .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
+        // A route layer, so unmatched paths keep the 404 the other routers give
+        // instead of meeting a credential check they were never meant for.
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            agent_auth_middleware,
+        ));
+
     let origins = OFFICIAL_APP_ORIGINS
         .iter()
         .copied()
@@ -428,7 +462,8 @@ pub(crate) fn build_router(
 
     let mut app = public_routes
         .merge(protected_routes)
-        .merge(long_running_routes);
+        .merge(long_running_routes)
+        .merge(agent_routes);
     if let Some(dist_dir) = web_dist_dir {
         if dist_dir.join("index.html").is_file() {
             tracing::info!("serving web app from {}", dist_dir.display());
@@ -713,7 +748,7 @@ pub(crate) async fn install_readalong_sync_addon(
 
 #[derive(Deserialize)]
 pub(crate) struct ExperimentalFeatureEnabled {
-    enabled: bool,
+    pub(crate) enabled: bool,
 }
 
 pub(crate) async fn set_readalong_sync_addon_enabled(
