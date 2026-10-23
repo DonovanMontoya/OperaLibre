@@ -8028,7 +8028,7 @@ async fn scopes_decide_which_tools_an_agent_has() {
     let library_only = create_agent(&server, &owner, &["library"]).await;
     assert_eq!(
         tool_names(&server, &library_only).await,
-        ["search_library", "get_book"]
+        ["search_library", "get_book", "get_series_progress"]
     );
 
     let denied = mcp_request(
@@ -8063,7 +8063,7 @@ async fn scopes_decide_which_tools_an_agent_has() {
 
     let everything =
         create_agent(&server, &owner, &["library", "progress", "history", "text"]).await;
-    assert_eq!(tool_names(&server, &everything).await.len(), 7);
+    assert_eq!(tool_names(&server, &everything).await.len(), 9);
 
     let unknown = server
         .send_json(
@@ -8404,6 +8404,110 @@ async fn removing_resetting_or_restoring_disconnects_agents() {
 }
 
 #[tokio::test]
+async fn achievements_and_series_follow_what_the_listener_finished() {
+    let server = TestServer::start(3).await;
+    let owner = server.setup_owner().await;
+    let books = server.get("/api/books", &owner).await.json();
+    let ids: Vec<String> = books
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|book| book["id"].as_str().unwrap().to_string())
+        .collect();
+    // Out of order on purpose, and with book three missing from the server.
+    for (id, title, position) in [
+        (&ids[0], "Caliban's War", "2"),
+        (&ids[1], "Leviathan Wakes", "1"),
+        (&ids[2], "Cibola Burn", "4"),
+    ] {
+        let edited = server
+            .send_json(
+                "PUT",
+                &format!("/api/books/{id}/metadata"),
+                &owner,
+                serde_json::json!({
+                    "title": title,
+                    "author": "James S. A. Corey",
+                    "genres": ["Science Fiction"],
+                    "series": "The Expanse",
+                    "seriesPosition": position,
+                }),
+            )
+            .await;
+        assert_eq!(edited.status, StatusCode::OK, "{}", edited.text());
+    }
+    rescan_library(&server.state).await.unwrap();
+    let marked = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{}/completion", ids[1]),
+            &owner,
+            serde_json::json!({"finished": true}),
+        )
+        .await;
+    assert_eq!(marked.status, StatusCode::OK, "{}", marked.text());
+
+    let secret = create_agent(&server, &owner, &["library", "progress", "history"]).await;
+    let (failed, found) = call_agent_tool(
+        &server,
+        &secret,
+        "get_series_progress",
+        serde_json::json!({}),
+    )
+    .await;
+    assert!(!failed, "{found}");
+    let series = &found["series"][0];
+    assert_eq!(series["name"], "The Expanse");
+    let titles: Vec<&str> = series["books"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|book| book["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Leviathan Wakes", "Caliban's War", "Cibola Burn"]);
+    assert_eq!(series["missingPositions"], serde_json::json!([3]));
+    assert_eq!(series["finished"], 1);
+    assert_eq!(series["next"]["title"], "Caliban's War");
+
+    let (failed, found) =
+        call_agent_tool(&server, &secret, "get_achievements", serde_json::json!({})).await;
+    assert!(!failed, "{found}");
+    let achievement = |id: &str| {
+        found["achievements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|achievement| achievement["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(achievement("finished-1")["earned"], true);
+    assert_eq!(achievement("finished-10")["current"], 1.0);
+    assert_eq!(achievement("finished-10")["earned"], false);
+    assert_eq!(achievement("author-loyalty")["current"], 1.0);
+    assert_eq!(
+        achievement("author-loyalty")["book"]["title"],
+        "Leviathan Wakes"
+    );
+    assert_eq!(found["earned"], 1);
+
+    // Without progress access the series are still listed, but not where the
+    // listener is in them.
+    let library_only = create_agent(&server, &owner, &["library"]).await;
+    let (failed, found) = call_agent_tool(
+        &server,
+        &library_only,
+        "get_series_progress",
+        serde_json::json!({}),
+    )
+    .await;
+    assert!(!failed, "{found}");
+    assert!(found["series"][0].get("finished").is_none());
+    assert!(found["series"][0].get("next").is_none());
+    assert!(found["series"][0]["books"][0].get("status").is_none());
+}
+
+#[tokio::test]
 async fn assistants_are_an_experiment_only_the_owner_turns_on() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;
@@ -8469,5 +8573,5 @@ async fn assistants_are_an_experiment_only_the_owner_turns_on() {
         StatusCode::NOT_FOUND
     );
     assert_eq!(set(owner.clone(), true).await.status, StatusCode::OK);
-    assert_eq!(tool_names(&server, &secret).await.len(), 2);
+    assert_eq!(tool_names(&server, &secret).await.len(), 3);
 }

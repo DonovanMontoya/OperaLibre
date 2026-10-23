@@ -305,13 +305,13 @@ Audible titles often come with a PDF of maps or illustrations rather than the bo
 
 ## Connect an AI assistant
 
-An AI assistant you already use can read from your server: to recap a book you set down weeks ago without spoiling what comes next, suggest what to read next from your own shelf, or answer questions about your listening. Nothing is shared until you connect one, and each listener connects their own.
+An AI assistant you already use can read from your server: to recap a book you set down weeks ago without spoiling what comes next, suggest what to read next from your own shelf, track a series or your achievements, or answer questions about your listening. Nothing is shared until you connect one, and each listener connects their own.
 
 AI assistants are an experiment the owner turns on under **Administration → Experiments**. While it is off, nobody can connect one. Once it is on, each listener finds **AI assistants** in **Settings** in the phone and Mac apps, or in the account menu in a browser. Choose **Connect an assistant**, give it a name, and choose what it may read:
 
-- **Your library**: the books you can open, with their descriptions.
+- **Your library**: the books you can open, with their descriptions and series.
 - **Where you are**: how far through each book you are.
-- **Listening history**: when you listened, what you finished, and your stats.
+- **Listening history**: when you listened, what you finished, your stats, and your achievements.
 - **Book text so far**: a book's text up to the sentence you have reached.
 
 OperaLibre then shows an address and a token. The token is shown only once. Add both to the assistant as an MCP server. In Claude Code:
