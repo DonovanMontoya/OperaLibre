@@ -526,9 +526,13 @@ fn tool_result(outcome: ToolOutcome) -> serde_json::Value {
     }
 }
 
+/// A request's own mistakes are worth telling the agent. A server-side
+/// failure is not: a store command's error carries its raw output, which is
+/// the owner's to read in the log, not something to send to the agent's
+/// provider.
 fn tool_failure(error: ApiError) -> String {
-    if error.status == StatusCode::INTERNAL_SERVER_ERROR {
-        tracing::error!(error = %error.message, "agent tool failed");
+    if error.status.is_server_error() {
+        tracing::error!(status = %error.status, error = %error.message, "agent tool failed");
         "The server could not answer that. Try again later.".to_string()
     } else {
         error.message
@@ -2223,5 +2227,18 @@ async fn get_book_onto_server(
             &book.title,
             "The owner already approved this book, so it is downloading from Audible.",
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agents_hear_request_mistakes_but_not_server_failures() {
+        let invalid = ApiError::bad_request("Invalid Audible product id.");
+        assert_eq!(tool_failure(invalid), "Invalid Audible product id.");
+        let upstream = ApiError::bad_gateway("libationcli: account me@example.com expired");
+        assert!(!tool_failure(upstream).contains("example.com"));
     }
 }
