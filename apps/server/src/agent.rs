@@ -1970,6 +1970,13 @@ fn short_description(description: &str) -> Option<String> {
     Some(format!("{shortened}…"))
 }
 
+/// Store errors can carry a command's raw output, which is the owner's to
+/// read in the server log, not something to send to the agent's provider.
+fn store_unavailable(store: &str, error: ApiError) -> String {
+    tracing::warn!(error = %error.message, "{store} purchases could not be listed for an agent");
+    format!("{store} purchases could not be read just now; the listener can check Get books.")
+}
+
 /// The listener's purchases in `only` that store, or in both.
 async fn store_catalog(
     state: &AppState,
@@ -2002,7 +2009,7 @@ async fn store_catalog(
             }
             Err(error) => catalog
                 .unavailable
-                .push(format!("Audible: {}", tool_failure(error))),
+                .push(store_unavailable("Audible", error)),
         }
     }
     if wanted(Store::LibroFm) {
@@ -2015,7 +2022,7 @@ async fn store_catalog(
             }
             Err(error) => catalog
                 .unavailable
-                .push(format!("Libro.fm: {}", tool_failure(error))),
+                .push(store_unavailable("Libro.fm", error)),
         }
     }
     Ok(catalog)
