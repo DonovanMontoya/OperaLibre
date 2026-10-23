@@ -6,7 +6,7 @@
 //! sessions, `library` for scanning and metadata, `media` for streaming,
 //! `progress` for playback positions, and `libation` for Audible imports.
 
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
+use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use axum::{
     Extension, Json, Router,
     body::Body,
@@ -33,7 +33,6 @@ use lofty::{
 };
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use rand::RngExt;
-use rand_core::OsRng as PasswordOsRng;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;

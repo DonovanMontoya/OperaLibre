@@ -385,16 +385,15 @@ pub(crate) static DUMMY_PASSWORD_HASH: LazyLock<String> =
     LazyLock::new(|| hash_password(&generate_session_token()).unwrap_or_default());
 
 pub(crate) fn hash_password(password: &str) -> Result<String, ApiError> {
-    let salt = SaltString::generate(&mut PasswordOsRng);
     Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|hash| hash.to_string())
         .map_err(|error| ApiError::internal(format!("Password hashing failed: {error}")))
 }
 
 pub(crate) fn verify_password(password: &str, hash: &str) -> bool {
-    PasswordHash::new(hash)
-        .and_then(|parsed| Argon2::default().verify_password(password.as_bytes(), &parsed))
+    Argon2::default()
+        .verify_password(password.as_bytes(), hash)
         .is_ok()
 }
 
