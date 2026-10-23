@@ -2,7 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-// Echogarden 3.3.0's timeline converter dereferences element zero of an empty
+// Echogarden 3.4.0's timeline converter dereferences element zero of an empty
 // word list. Silence must produce an empty timeline so the caller can recover.
 export async function patchEmptyTimeline(file) {
   const source = await readFile(file, 'utf8');
