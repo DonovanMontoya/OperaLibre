@@ -8213,7 +8213,7 @@ async fn text_so_far_stops_at_the_last_sentence_the_listener_heard() {
                 ),
                 (
                     "Book 00.sync.json",
-                    numbered_sync_sidecar(&[0.0, 3.0, 6.0, 9.0, 60.0, 63.0]),
+                    numbered_sync_sidecar(&[0.0, 3.0, 6.0, 9.0, 60.0, 63.0, 100.0]),
                 ),
             ],
         )
@@ -8255,6 +8255,9 @@ async fn text_so_far_stops_at_the_last_sentence_the_listener_heard() {
     assert!(!failed, "{latest}");
     assert_eq!(latest["chapter"]["index"], 1);
     assert_eq!(latest["chapter"]["text"], "Sentence number 4.");
+    // A text-only agent is not told the exact position.
+    assert!(latest["positionMinutes"].is_null());
+    assert!(latest["percentComplete"].is_null());
     assert_eq!(latest["chapter"]["heardInFull"], false);
     assert_eq!(latest["chapters"][0]["heardInFull"], true);
     assert!(
@@ -8283,6 +8286,53 @@ async fn text_so_far_stops_at_the_last_sentence_the_listener_heard() {
     )
     .await;
     assert!(failed);
+
+    // 95 seconds in, the last 25 count as finished, but the sentence at
+    // 100 seconds has still not been heard.
+    let saved = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/progress"),
+            &owner,
+            serde_json::json!({ "trackId": second_track, "positionSeconds": 35.0, "bookPositionSeconds": 95.0 }),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    let (failed, near_end) = call_agent_tool(
+        &server,
+        &secret,
+        "get_text_so_far",
+        serde_json::json!({ "bookId": book }),
+    )
+    .await;
+    assert!(!failed, "{near_end}");
+    assert_eq!(near_end["finished"], true);
+    assert_eq!(
+        near_end["chapter"]["text"],
+        "Sentence number 4. Sentence number 5."
+    );
+
+    // Marking it finished says they know how it ends.
+    let marked = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/completion"),
+            &owner,
+            serde_json::json!({ "finished": true }),
+        )
+        .await;
+    assert_eq!(marked.status, StatusCode::OK, "{}", marked.text());
+    let (_, marked_finished) = call_agent_tool(
+        &server,
+        &secret,
+        "get_text_so_far",
+        serde_json::json!({ "bookId": book }),
+    )
+    .await;
+    assert_eq!(
+        marked_finished["chapter"]["text"],
+        "Sentence number 4. Sentence number 5. Sentence number 6."
+    );
 }
 
 #[tokio::test]

@@ -776,6 +776,18 @@ fn status_named(name: &str) -> Option<BookProgressStatus> {
     .find(|status| serde_json::json!(status) == name)
 }
 
+/// How far into the book the listener has heard. Only finishing a book on
+/// purpose unlocks all of it: progress also counts a book finished in its last
+/// thirty seconds or half a percent, and in a long book that is minutes of
+/// ending the listener has not heard.
+fn heard_through(progress: &BookProgress) -> f64 {
+    if progress.finished_override == Some(true) {
+        f64::INFINITY
+    } else {
+        progress.book_position_seconds
+    }
+}
+
 fn add_position(details: &mut serde_json::Value, progress: &BookProgress) {
     details["positionMinutes"] = minutes(progress.book_position_seconds).into();
     details["remainingHours"] = progress.remaining_seconds.map(hours).into();
@@ -965,12 +977,9 @@ async fn get_book(
     // like "The Betrayal" is a spoiler too. Without progress there is no way
     // to know how far that is, so none are listed.
     let progress = book.progress.as_ref().filter(|_| with_progress);
-    let reached = match progress {
-        Some(progress) if progress.status == BookProgressStatus::Finished => book.chapters.len(),
-        Some(progress) => chapter_index_at(&book.chapters, progress.book_position_seconds)
-            .map_or(0, |index| index + 1),
-        None => 0,
-    };
+    let reached = progress.map_or(0, |progress| {
+        chapter_index_at(&book.chapters, heard_through(progress)).map_or(0, |index| index + 1)
+    });
     details["chapters"] = book
         .chapters
         .iter()
@@ -1227,7 +1236,7 @@ async fn get_text_so_far(
     if !finished && position <= 0.0 {
         return Err("The listener has not started this book yet.".into());
     }
-    let heard_through = if finished { f64::INFINITY } else { position };
+    let heard_through = progress.map_or(0.0, heard_through);
 
     // A long book's map is several megabytes of JSON.
     let map = tokio::task::spawn_blocking(move || -> anyhow::Result<alignment::SyncMap> {
@@ -1275,8 +1284,14 @@ async fn get_text_so_far(
         "title": book.title,
         "author": book.author,
         "finished": finished,
-        "positionMinutes": (!finished).then(|| minutes(position)),
-        "percentComplete": progress.and_then(|progress| progress.percent_complete).map(|percent| rounded(percent, 1)),
+        // Where the text stops already hints at the position; the exact
+        // figures are for agents that may also read progress.
+        "positionMinutes": (caller.allows(AgentScope::Progress) && heard_through.is_finite())
+            .then(|| minutes(position)),
+        "percentComplete": progress
+            .and_then(|progress| progress.percent_complete)
+            .filter(|_| caller.allows(AgentScope::Progress))
+            .map(|percent| rounded(percent, 1)),
         "chapters": text_chapters
             .iter()
             .map(|chapter| serde_json::json!({
