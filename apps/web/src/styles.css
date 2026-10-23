@@ -10531,7 +10531,11 @@ html:not(.native-app) .web-shell.player-view-now .has-native-player > .library-o
   left: 22px;
 }
 
+/* The visualizer's canvas and switches are placed over the cover by script.
+   Beside the controls the canvas bleeds a little past the cover; on the stage
+   it fills the cover's area and sits behind it. */
 html:not(.native-app) .native-now-artwork {
+  position: relative;
   display: flex;
   justify-content: center;
 }
@@ -10550,6 +10554,255 @@ html:not(.native-app) .native-now-artwork .large-cover {
 
 html:not(.native-app) .native-now-artwork .large-cover::after {
   display: none;
+}
+
+.player-visualizer-canvas,
+.player-visualizer-frame {
+  position: absolute;
+  pointer-events: none;
+}
+
+.is-visualizer-stage .player-visualizer-canvas {
+  z-index: 0;
+}
+
+/* Sized by script to the cover, or the stage; a narrow cover drops the
+   style's name and keeps its icon. */
+.player-visualizer-frame {
+  z-index: 2;
+  container-type: size;
+}
+
+@container (max-width: 170px) {
+  .player-visualizer-toggle:not(:disabled) span {
+    display: none;
+  }
+}
+
+.player-visualizer-switches {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 6px;
+}
+
+.player-visualizer-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 1px solid rgba(241, 231, 208, 0.22);
+  border-radius: 999px;
+  color: var(--paper);
+  background: rgba(14, 10, 7, 0.88);
+  font: 0.56rem "JetBrains Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: opacity 0.16s ease, background 0.16s ease;
+}
+
+.player-visualizer-toggle.is-on {
+  border-color: rgba(217, 181, 116, 0.5);
+  color: var(--gold-soft);
+}
+
+.player-visualizer-toggle:hover:not(:disabled) {
+  background: rgba(14, 10, 7, 0.96);
+}
+
+.player-visualizer-toggle:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.player-visualizer-toggle:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  outline-offset: 2px;
+}
+
+/* Opening and closing the stage morphs the card: the cover, under the page's
+   own `web-cover` name, and each row of controls carry their own snapshot to
+   their new place. The rows are named only for that moment, so they never
+   join the page's other transitions. */
+
+/* Only the chapter title carries across: the book's title and author leave
+   the stage, and morphing the whole block would smear one into the other.
+   Hugging its text, it scales with the type rather than with its column. */
+html[data-visualizer-transition] .native-now-playing .native-now-copy h2 {
+  width: fit-content;
+  view-transition-name: visualizer-title;
+}
+
+html[data-visualizer-transition] .native-now-playing .native-now-timeline {
+  view-transition-name: visualizer-timeline;
+}
+
+html[data-visualizer-transition] .native-now-playing .native-now-transport {
+  view-transition-name: visualizer-transport;
+}
+
+html[data-visualizer-transition] .native-now-playing .native-now-utility {
+  view-transition-name: visualizer-utility;
+}
+
+html[data-visualizer-transition]::view-transition-group(*) {
+  animation-duration: 0.46s;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* The control rows change width between the layouts but not what they hold,
+   so each slides across as it is, at its own size: stretching would swell
+   the text, and a crossfade would show the row twice. */
+html[data-visualizer-transition]::view-transition-new(visualizer-timeline),
+html[data-visualizer-transition]::view-transition-new(visualizer-transport),
+html[data-visualizer-transition]::view-transition-new(visualizer-utility) {
+  width: 100%;
+  height: 100%;
+  object-fit: none;
+  animation: none;
+}
+
+html[data-visualizer-transition]::view-transition-old(visualizer-timeline),
+html[data-visualizer-transition]::view-transition-old(visualizer-transport),
+html[data-visualizer-transition]::view-transition-old(visualizer-utility) {
+  display: none;
+}
+
+html[data-visualizer-transition]::view-transition {
+  pointer-events: none;
+}
+
+html[data-visualizer-transition]::view-transition-old(root),
+html[data-visualizer-transition]::view-transition-new(root) {
+  animation-duration: 0.3s;
+}
+
+/* The drawing does not stretch between the two shapes: the old one goes at
+   once and the new one grows out of the cover once it lands, drawn live (see
+   PlayerVisualizer.tsx). */
+html[data-visualizer-transition] .player-visualizer-canvas {
+  view-transition-name: visualizer-canvas;
+}
+
+html[data-visualizer-transition]::view-transition-group(visualizer-canvas),
+html[data-visualizer-transition]::view-transition-new(visualizer-canvas) {
+  animation: none;
+}
+
+html[data-visualizer-transition]::view-transition-old(visualizer-canvas) {
+  display: none;
+}
+
+/* The stage: the cover's area takes whatever the card has left after the
+   playback controls, which stay docked beneath it, and the supporting cards
+   step aside. One column wherever there is the height for it, so the drawing
+   has the full span. */
+html:not(.native-app) .native-now-playing.is-visualizer-stage {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-auto-rows: auto;
+  grid-template-areas: "art" "copy" "timeline" "transport" "utility";
+  align-content: stretch;
+  row-gap: clamp(8px, 1.4vh, 14px);
+}
+
+html:not(.native-app) .is-visualizer-stage .native-now-timeline { grid-area: timeline; }
+html:not(.native-app) .is-visualizer-stage .native-now-transport { grid-area: transport; }
+html:not(.native-app) .is-visualizer-stage .native-now-utility { grid-area: utility; }
+
+html:not(.native-app) .is-visualizer-stage .native-now-artwork {
+  grid-area: art;
+  min-height: 0;
+  height: 100%;
+  align-items: center;
+}
+
+html:not(.native-app) .is-visualizer-stage .native-now-artwork .large-cover {
+  z-index: 1;
+  width: clamp(110px, 20vmin, 220px);
+  max-width: none;
+}
+
+/* The chapter is enough to say where the listener is; the book's own title
+   and author are on the cover in the middle of the stage. */
+html:not(.native-app) .is-visualizer-stage .native-now-copy {
+  grid-area: copy;
+  text-align: center;
+}
+
+html:not(.native-app) .is-visualizer-stage .native-now-copy > :not(h2) {
+  display: none;
+}
+
+html:not(.native-app) .is-visualizer-stage .native-now-copy h2 {
+  font-size: clamp(1.2rem, 2.4vw, 1.6rem);
+}
+
+html:not(.native-app) .is-visualizer-stage :is(.native-now-copy, .native-now-timeline, .native-now-transport, .native-now-utility) {
+  width: min(100%, 720px);
+  justify-self: center;
+}
+
+html:not(.native-app) .is-visualizer-stage .web-now-extras {
+  display: none;
+}
+
+/* Too short to stack the stage above the controls, as on a phone turned on
+   its side: the drawing takes the card's left and the controls stand beside it. */
+@media (min-width: 621px) and (max-height: 640px) {
+  html:not(.native-app) .native-now-playing.is-visualizer-stage {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-template-areas:
+      "art copy"
+      "art timeline"
+      "art transport"
+      "art utility";
+    align-content: center;
+    column-gap: clamp(16px, 3vw, 32px);
+  }
+
+  html:not(.native-app) .is-visualizer-stage .native-now-artwork .large-cover {
+    width: clamp(96px, 24vmin, 180px);
+  }
+}
+
+/* Out of the way until the pointer reaches the cover, or the stage; touch
+   screens have no hover to reveal them, so they stay visible there. */
+@media (hover: hover) {
+  .player-visualizer-switches .player-visualizer-toggle {
+    opacity: 0;
+  }
+
+  .native-now-artwork:hover .player-visualizer-toggle,
+  .player-visualizer-switches:has(:focus-visible) .player-visualizer-toggle {
+    opacity: 1;
+  }
+}
+
+/* Compact on the cover, but each still answers a fingertip: the hit area
+   reaches 44px tall beyond the pill. */
+@media (pointer: coarse) {
+  .player-visualizer-switches {
+    gap: 8px;
+  }
+
+  .player-visualizer-toggle {
+    position: relative;
+    min-width: 32px;
+    min-height: 32px;
+    justify-content: center;
+    padding: 0 11px;
+  }
+
+  .player-visualizer-toggle::after {
+    content: "";
+    position: absolute;
+    inset: -6px -4px;
+  }
 }
 
 html:not(.native-app) .native-now-copy {
