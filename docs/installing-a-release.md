@@ -132,6 +132,16 @@ If the browser does not open automatically on any platform, open <http://localho
 
 The launcher exits after OperaLibre is ready. No command or Terminal window needs to remain open, and closing the browser does not stop the server. Use the same Open action whenever you want to return.
 
+### Launcher environment
+
+These variables affect the Open launcher. For the data folder and the port, a value in `server.config` still wins, for the launcher and for the server it starts. They are separate from the installer's variables above.
+
+| Variable | Effect |
+| --- | --- |
+| `OPERALIBRE_NO_BROWSER` | Set to any value, such as `1`, to start the server without opening a browser. |
+| `OPERALIBRE_DATA_DIR` | Data folder used when `data_dir` is absent or blank. Relative paths are resolved from the installation folder. The default is `data` beside the server. The launcher writes `server.log` and the process id file here. |
+| `PORT` | Port used when `port` is absent or blank. The launcher waits for this port and opens it in the browser. The default is `4920`. |
+
 ## Stop OperaLibre
 
 You can normally leave the server running in the background. Before moving its folder, changing important settings, or installing an update, use the included Stop action:
@@ -215,7 +225,7 @@ If `library_root` or `data_dir` points somewhere else, back up those folders ins
 
 On macOS and Linux, running the one-line installer again is the simplest update. It stops the server and waits for it to exit, stages the newest release beside the installation before replacing the old files, and preserves `data`, `audiobooks`, and `server.config`.
 
-OperaLibre checks the latest release's signed update manifest when an administrator opens **Administration**. Every administrator sees an update banner when a newer server is available. An owner can choose **Update server** to download the package for the server computer, verify its release signature and SHA-256 digest, install it, restart OperaLibre, and reconnect the page.
+OperaLibre checks the latest release's signed update manifest when an administrator opens **Administration**. Every administrator sees an update banner when a newer server is available. An owner can choose **Update server** to download the package for the server computer, verify its release signature and SHA-256 digest, install it, restart OperaLibre, and reconnect the page. Those connections trust the Mozilla roots bundled with the server. A network that intercepts HTTPS is described in [Troubleshooting](troubleshooting.md#https-inspection).
 
 ### Stable and nightly
 
