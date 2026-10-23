@@ -8065,6 +8065,23 @@ async fn scopes_decide_which_tools_an_agent_has() {
         create_agent(&server, &owner, &["library", "progress", "history", "text"]).await;
     assert_eq!(tool_names(&server, &everything).await.len(), 9);
 
+    // Getting books is its own grant, and the one tool that acts says so.
+    let shopper = create_agent(&server, &owner, &["getBooks"]).await;
+    let listed = mcp_request(&server, &shopper, "tools/list", serde_json::json!({})).await;
+    let tools = listed.json()["result"]["tools"].clone();
+    let read_only = |name: &str| {
+        tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap()["annotations"]["readOnlyHint"]
+            .clone()
+    };
+    assert_eq!(read_only("find_store_books"), true);
+    assert_eq!(read_only("get_book_onto_server"), false);
+    assert_eq!(tools.as_array().unwrap().len(), 2);
+
     let unknown = server
         .send_json(
             "POST",
@@ -8505,6 +8522,110 @@ async fn achievements_and_series_follow_what_the_listener_finished() {
     assert!(found["series"][0].get("finished").is_none());
     assert!(found["series"][0].get("next").is_none());
     assert!(found["series"][0]["books"][0].get("status").is_none());
+}
+
+#[tokio::test]
+async fn an_agent_gets_a_libro_purchase_onto_the_server_as_its_listener_could() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "agent-purchaser").await;
+    let me = server.get("/api/auth/me", &reader).await.json();
+    let user_id = me["id"].as_str().unwrap();
+    let restricted = server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{user_id}/book-access"),
+            &owner,
+            serde_json::json!({"allowedBookIds":[]}),
+        )
+        .await;
+    assert_eq!(restricted.status, StatusCode::OK, "{}", restricted.text());
+    let book = serde_json::json!({"isbn":"9780000000001","title":"Purchased book","authors":["Libro Author"],"description":"<p>A <b>made-up</b>\n listing.</p>","audiobook_info":{"narrators":["Libro Narrator"],"duration":7200}});
+    let folder = server.library_root.join("Libro.fm [9780000000001]");
+    std::fs::rename(server.library_root.join("Book 00"), &folder).unwrap();
+    std::fs::write(folder.join(".libro-book.json"), book.to_string()).unwrap();
+    let key: String = Sha256::digest(user_id.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let account_path = server
+        ._root
+        .path()
+        .join("data/libro-accounts")
+        .join(format!("{key}.json"));
+    write_json_atomic(&account_path, &serde_json::json!({"email":"purchaser@example.test","token":"fixture-token-never-sent","books":[book],"synced_at":null})).await.unwrap();
+
+    let secret = create_agent(&server, &reader, &["getBooks"]).await;
+    let listing = mcp_request(
+        &server,
+        &secret,
+        "tools/call",
+        serde_json::json!({ "name": "find_store_books", "arguments": {} }),
+    )
+    .await;
+    // Neither the store's sign-in nor the account's email reaches the agent.
+    assert!(!listing.text().contains("fixture-token-never-sent"));
+    assert!(!listing.text().contains("purchaser@example.test"));
+    let (failed, found) =
+        call_agent_tool(&server, &secret, "find_store_books", serde_json::json!({})).await;
+    assert!(!failed, "{found}");
+    assert_eq!(found["audible"], "notSetUp");
+    assert_eq!(found["libroFm"], "add");
+    assert_eq!(found["books"][0]["id"], "9780000000001");
+    assert_eq!(found["books"][0]["durationHours"], 2.0);
+    assert_eq!(found["books"][0]["description"], "A made-up listing.");
+
+    let (failed, said) = call_agent_tool(
+        &server,
+        &secret,
+        "get_book_onto_server",
+        serde_json::json!({ "store": "audible", "id": "B000000000" }),
+    )
+    .await;
+    assert!(failed, "{said}");
+    let (failed, said) = call_agent_tool(
+        &server,
+        &secret,
+        "get_book_onto_server",
+        serde_json::json!({ "store": "libroFm", "id": "9780000000002" }),
+    )
+    .await;
+    assert!(failed, "{said}");
+
+    let (failed, said) = call_agent_tool(
+        &server,
+        &secret,
+        "get_book_onto_server",
+        serde_json::json!({ "store": "libroFm", "id": "9780000000001" }),
+    )
+    .await;
+    assert!(!failed, "{said}");
+    assert_eq!(said["result"], "adding");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let book_id = loop {
+        let books = server.get("/api/books", &reader).await.json();
+        if let Some(book) = books.as_array().unwrap().first() {
+            break book["id"].as_str().unwrap().to_string();
+        }
+        assert!(tokio::time::Instant::now() < deadline, "import timed out");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+
+    // Once it is on the server it drops out of the default listing, and
+    // asking again points at the book instead of importing it twice.
+    let (_, found) =
+        call_agent_tool(&server, &secret, "find_store_books", serde_json::json!({})).await;
+    assert_eq!(found["total"], 0);
+    let (failed, said) = call_agent_tool(
+        &server,
+        &secret,
+        "get_book_onto_server",
+        serde_json::json!({ "store": "libroFm", "id": "9780000000001" }),
+    )
+    .await;
+    assert!(!failed, "{said}");
+    assert_eq!(said["result"], "alreadyOnServer");
+    assert_eq!(said["bookId"], book_id.as_str());
 }
 
 #[tokio::test]

@@ -6,7 +6,10 @@
 //! `/api/agent/mcp`. It resolves its account on every request, so it can never
 //! see more than its creator can see in the app at that moment: a demotion or
 //! a narrowed book grant applies to the token at once. Scopes only narrow that
-//! further. Nothing here writes listening progress or anything else.
+//! further. Nothing here writes listening progress. The one thing an agent can
+//! do rather than read is get a book onto the server, under its own scope and
+//! through the same checks as the listener's Get books page: a reader whose
+//! Audible downloads need approval only ever files a request.
 //!
 //! Other listeners' activity is out of reach whatever the scopes say. A token
 //! acts for one listener, and their shared view of others is theirs to read in
@@ -41,6 +44,9 @@ pub(crate) enum AgentScope {
     History,
     /// A book's text up to the listener's position, for spoiler-free recaps.
     Text,
+    /// The listener's Audible and Libro.fm purchases, and adding one to the
+    /// server or asking for it, as they could on Get books.
+    GetBooks,
     /// A scope written by a newer server. Never granted by this one.
     #[serde(other)]
     Unknown,
@@ -407,7 +413,7 @@ pub(crate) async fn agent_auth_middleware(
 
 const MCP_PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-const MCP_INSTRUCTIONS: &str = "OperaLibre is the listener's own private audiobook server. Everything here is read-only. When recommending what to read next, get_series_progress shows where the listener is in each series. When recapping a book, use only the text get_text_so_far returns: it stops exactly where the listener is. Do not add plot details from your own knowledge of the book or its series, because that could spoil what they have not heard yet. Book ids come from search_library, get_currently_listening, and the history tools.";
+const MCP_INSTRUCTIONS: &str = "OperaLibre is the listener's own private audiobook server. Everything here is read-only except get_book_onto_server, which adds a book the listener already owns or asks the server's owner for it; call it only when the listener asks for that book. When recommending what to read next, get_series_progress and find_store_books show what they already own. When recapping a book, use only the text get_text_so_far returns: it stops exactly where the listener is. Do not add plot details from your own knowledge of the book or its series, because that could spoil what they have not heard yet. Book ids come from search_library, get_currently_listening, and the history tools.";
 
 pub(crate) async fn mcp_endpoint(
     State(state): State<AppState>,
@@ -520,9 +526,13 @@ fn tool_result(outcome: ToolOutcome) -> serde_json::Value {
     }
 }
 
+/// A request's own mistakes are worth telling the agent. A server-side
+/// failure is not: a store command's error carries its raw output, which is
+/// the owner's to read in the log, not something to send to the agent's
+/// provider.
 fn tool_failure(error: ApiError) -> String {
-    if error.status == StatusCode::INTERNAL_SERVER_ERROR {
-        tracing::error!(error = %error.message, "agent tool failed");
+    if error.status.is_server_error() {
+        tracing::error!(status = %error.status, error = %error.message, "agent tool failed");
         "The server could not answer that. Try again later.".to_string()
     } else {
         error.message
@@ -540,10 +550,12 @@ enum AgentTool {
     GetAchievements,
     GetSeriesProgress,
     GetTextSoFar,
+    FindStoreBooks,
+    GetBookOntoServer,
 }
 
 impl AgentTool {
-    const ALL: [AgentTool; 9] = [
+    const ALL: [AgentTool; 11] = [
         AgentTool::SearchLibrary,
         AgentTool::GetBook,
         AgentTool::GetSeriesProgress,
@@ -553,6 +565,8 @@ impl AgentTool {
         AgentTool::GetListeningStats,
         AgentTool::GetAchievements,
         AgentTool::GetTextSoFar,
+        AgentTool::FindStoreBooks,
+        AgentTool::GetBookOntoServer,
     ];
 
     fn name(self) -> &'static str {
@@ -566,6 +580,8 @@ impl AgentTool {
             AgentTool::GetAchievements => "get_achievements",
             AgentTool::GetSeriesProgress => "get_series_progress",
             AgentTool::GetTextSoFar => "get_text_so_far",
+            AgentTool::FindStoreBooks => "find_store_books",
+            AgentTool::GetBookOntoServer => "get_book_onto_server",
         }
     }
 
@@ -580,6 +596,7 @@ impl AgentTool {
             | AgentTool::GetListeningStats
             | AgentTool::GetAchievements => AgentScope::History,
             AgentTool::GetTextSoFar => AgentScope::Text,
+            AgentTool::FindStoreBooks | AgentTool::GetBookOntoServer => AgentScope::GetBooks,
         }
     }
 
@@ -691,7 +708,29 @@ impl AgentTool {
                     }),
                     &[],
                 ),
+                AgentTool::FindStoreBooks => (
+                    "Find books the listener owns",
+                    "Books the listener owns on Audible or Libro.fm, as their Get books page lists them, and whether they can add each one to the server themselves or must ask the owner. Books already on the server are left out unless includeOnServer is set.".to_string(),
+                    serde_json::json!({
+                        "query": { "type": "string", "description": "Matches title, author, narrator, or series." },
+                        "includeOnServer": { "type": "boolean", "default": false },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 },
+                        "offset": { "type": "integer", "minimum": 0, "default": 0 },
+                    }),
+                    &[],
+                ),
+                AgentTool::GetBookOntoServer => (
+                    "Get a book onto the server",
+                    "Add a book from find_store_books to the server, or, when the listener's Audible downloads need approval, ask the server's owner for it. Only do this when the listener asks for the book. Imports take a few minutes; the book then appears in search_library.".to_string(),
+                    serde_json::json!({
+                        "store": { "type": "string", "enum": ["audible", "libroFm"] },
+                        "id": { "type": "string", "description": "The id find_store_books gave the book." },
+                        "accountId": { "type": "string", "description": "The accountId find_store_books gave an Audible book." },
+                    }),
+                    &["store", "id"],
+                ),
             };
+        let acts = self == AgentTool::GetBookOntoServer;
         serde_json::json!({
             "name": self.name(),
             "title": title,
@@ -704,10 +743,11 @@ impl AgentTool {
             },
             "annotations": {
                 "title": title,
-                "readOnlyHint": true,
+                "readOnlyHint": !acts,
                 "destructiveHint": false,
+                // Asking twice for the same book reuses the first import or request.
                 "idempotentHint": true,
-                "openWorldHint": false,
+                "openWorldHint": acts,
             },
         })
     }
@@ -732,6 +772,8 @@ impl AgentTool {
             AgentTool::GetAchievements => get_achievements(state, caller, arguments).await,
             AgentTool::GetSeriesProgress => get_series_progress(state, caller, arguments).await,
             AgentTool::GetTextSoFar => get_text_so_far(state, caller, arguments).await,
+            AgentTool::FindStoreBooks => find_store_books(state, caller, arguments).await,
+            AgentTool::GetBookOntoServer => get_book_onto_server(state, caller, arguments).await,
         }
     }
 }
@@ -1823,4 +1865,380 @@ fn tail_characters(text: &str, max: usize) -> (String, bool) {
         .find(char::is_whitespace)
         .map_or(tail, |space| tail[space..].trim_start());
     (tail.to_string(), true)
+}
+
+// ---------------------------------------------------------------------------
+// Get books
+// ---------------------------------------------------------------------------
+//
+// Both tools go through the Get books page's own handlers with the listener's
+// account, so an agent sees the Audible and Libro.fm purchases they see and
+// can do with them only what they could: add a book directly, or file the
+// request the owner approves.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum Store {
+    Audible,
+    LibroFm,
+}
+
+struct StoreBook {
+    store: Store,
+    id: String,
+    /// The Audible account a title belongs to, or for Libro.fm the
+    /// listener's own account, which the agent is not shown.
+    account_id: Option<String>,
+    title: String,
+    subtitle: Option<String>,
+    /// As the store wrote it; shortened only for the books an answer lists.
+    description: Option<String>,
+    author: Option<String>,
+    narrator: Option<String>,
+    series: Option<String>,
+    series_position: Option<String>,
+    duration_hours: Option<f64>,
+    /// Set only when the listener can open the book already.
+    on_server_book_id: Option<String>,
+    audible_plus: bool,
+}
+
+struct StoreCatalog {
+    books: Vec<StoreBook>,
+    /// `None` when this server has no Audible downloads set up.
+    audible_access: Option<LibationAccess>,
+    libro_connected: bool,
+    /// Stores that could not be read just now, as the agent should say it.
+    unavailable: Vec<String>,
+}
+
+fn libation_store_book(book: LibationBook) -> StoreBook {
+    StoreBook {
+        store: Store::Audible,
+        id: book.asin,
+        account_id: Some(book.profile_id),
+        title: book.title,
+        subtitle: book.subtitle.filter(|subtitle| !subtitle.trim().is_empty()),
+        description: book.description,
+        author: book.authors,
+        narrator: book.narrators,
+        series: None,
+        series_position: None,
+        duration_hours: book
+            .length_minutes
+            .map(|minutes| hours(minutes as f64 * 60.0)),
+        on_server_book_id: book.local_book_id,
+        audible_plus: book.is_audible_plus,
+    }
+}
+
+fn libro_store_book(purchase: CatalogBook) -> StoreBook {
+    let book = purchase.book;
+    StoreBook {
+        store: Store::LibroFm,
+        id: book.isbn,
+        account_id: Some(purchase.account_email),
+        title: book.title,
+        subtitle: None,
+        description: Some(book.description),
+        author: (!book.authors.is_empty()).then(|| book.authors.join(", ")),
+        narrator: (!book.audiobook_info.narrators.is_empty())
+            .then(|| book.audiobook_info.narrators.join(", ")),
+        series: book.series,
+        series_position: book.series_num.map(|position| match position {
+            serde_json::Value::String(position) => position,
+            other => other.to_string(),
+        }),
+        duration_hours: book.audiobook_info.duration.map(hours),
+        on_server_book_id: purchase.local_book_id,
+        audible_plus: false,
+    }
+}
+
+/// Enough of a store's blurb to judge a book by, as plain text. Listings run
+/// to hundreds of books, so a full description each would swamp the agent.
+fn short_description(description: &str) -> Option<String> {
+    const MAX_CHARACTERS: usize = 300;
+    // Spaced tags keep "</p><p>" from running two sentences together.
+    let plain = clean_metadata_text(description.replace('>', "> "));
+    if plain.chars().count() <= MAX_CHARACTERS {
+        return (!plain.is_empty()).then_some(plain);
+    }
+    let cut = plain
+        .char_indices()
+        .nth(MAX_CHARACTERS)
+        .map_or(plain.len(), |(offset, _)| offset);
+    let shortened = plain[..cut]
+        .rfind(' ')
+        .map_or(&plain[..cut], |space| &plain[..space]);
+    Some(format!("{shortened}…"))
+}
+
+/// Store errors can carry a command's raw output, which is the owner's to
+/// read in the server log, not something to send to the agent's provider.
+fn store_unavailable(store: &str, error: ApiError) -> String {
+    tracing::warn!(error = %error.message, "{store} purchases could not be listed for an agent");
+    format!("{store} purchases could not be read just now; the listener can check Get books.")
+}
+
+/// The listener's purchases in `only` that store, or in both.
+async fn store_catalog(
+    state: &AppState,
+    caller: &AgentCaller,
+    only: Option<Store>,
+) -> Result<StoreCatalog, String> {
+    ensure_startup_scan_finished(state)
+        .await
+        .map_err(tool_failure)?;
+    let mut catalog = StoreCatalog {
+        books: Vec::new(),
+        audible_access: None,
+        libro_connected: false,
+        unavailable: Vec::new(),
+    };
+    let wanted = |store| only.is_none_or(|only| only == store);
+    if wanted(Store::Audible) && state.libation_config.enabled() {
+        catalog.audible_access = Some(caller.user.libation_access);
+        match list_libation_books(State(state.clone()), Extension(caller.user.clone())).await {
+            Ok(Json(books)) => {
+                // A title shared by two Audible accounts is listed once per
+                // account; either can download it.
+                let mut seen = HashSet::new();
+                catalog.books.extend(
+                    books
+                        .into_iter()
+                        .filter(|book| seen.insert(book.asin.to_ascii_uppercase()))
+                        .map(libation_store_book),
+                );
+            }
+            Err(error) => catalog
+                .unavailable
+                .push(store_unavailable("Audible", error)),
+        }
+    }
+    if wanted(Store::LibroFm) {
+        match get_libro_account(State(state.clone()), Extension(caller.user.clone())).await {
+            Ok(Json(account)) => {
+                catalog.libro_connected = account.connected;
+                catalog
+                    .books
+                    .extend(account.books.into_iter().map(libro_store_book));
+            }
+            Err(error) => catalog
+                .unavailable
+                .push(store_unavailable("Libro.fm", error)),
+        }
+    }
+    Ok(catalog)
+}
+
+/// The newest Audible request of the listener's own for each title.
+async fn own_audible_requests(state: &AppState, caller: &AgentCaller) -> HashMap<String, String> {
+    let Json(requests) =
+        list_libation_requests(State(state.clone()), Extension(caller.user.clone())).await;
+    let mut latest = HashMap::<String, (String, String)>::new();
+    for request in requests
+        .into_iter()
+        .filter(|request| request.user_id == caller.user.id)
+    {
+        let asin = request.asin.to_ascii_uppercase();
+        if latest
+            .get(&asin)
+            .is_none_or(|(requested_at, _)| request.requested_at > *requested_at)
+        {
+            latest.insert(asin, (request.requested_at, request.status));
+        }
+    }
+    latest
+        .into_iter()
+        .map(|(asin, (_, status))| (asin, status))
+        .collect()
+}
+
+async fn find_store_books(
+    state: &AppState,
+    caller: &AgentCaller,
+    arguments: &serde_json::Value,
+) -> ToolOutcome {
+    let query = string_argument(arguments, "query").map(|query| query.to_lowercase());
+    let include_on_server = arguments
+        .get("includeOnServer")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let limit = count_argument(arguments, "limit", 25, 100).max(1);
+    let offset = count_argument(arguments, "offset", 0, usize::MAX);
+
+    let catalog = store_catalog(state, caller, None).await?;
+    let requests = if catalog.audible_access == Some(LibationAccess::Approval) {
+        own_audible_requests(state, caller).await
+    } else {
+        HashMap::new()
+    };
+    let matches: Vec<&StoreBook> = catalog
+        .books
+        .iter()
+        .filter(|book| include_on_server || book.on_server_book_id.is_none())
+        .filter(|book| {
+            query.as_deref().is_none_or(|query| {
+                contains_folded(Some(&book.title), query)
+                    || contains_folded(book.author.as_deref(), query)
+                    || contains_folded(book.narrator.as_deref(), query)
+                    || contains_folded(book.series.as_deref(), query)
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "audible": match catalog.audible_access {
+            None => "notSetUp",
+            Some(LibationAccess::Direct) => "add",
+            Some(LibationAccess::Approval) => "askOwner",
+        },
+        "libroFm": if catalog.libro_connected { "add" } else { "notConnected" },
+        "unavailable": catalog.unavailable,
+        "total": matches.len(),
+        "offset": offset,
+        "books": matches
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .map(|book| {
+                let audible = book.store == Store::Audible;
+                serde_json::json!({
+                    "store": book.store,
+                    "id": book.id,
+                    "accountId": book.account_id.as_ref().filter(|_| audible),
+                    "title": book.title,
+                    "subtitle": book.subtitle,
+                    "description": book.description.as_deref().and_then(short_description),
+                    "author": book.author,
+                    "narrator": book.narrator,
+                    "series": book.series,
+                    "seriesPosition": book.series_position,
+                    "durationHours": book.duration_hours,
+                    "audiblePlus": book.audible_plus,
+                    "onServerBookId": book.on_server_book_id,
+                    "requestStatus": audible
+                        .then(|| requests.get(&book.id.to_ascii_uppercase()))
+                        .flatten(),
+                })
+            })
+            .collect::<Vec<_>>(),
+    }))
+}
+
+fn store_outcome(result: &str, title: &str, message: &str) -> ToolOutcome {
+    Ok(serde_json::json!({ "result": result, "title": title, "message": message }))
+}
+
+async fn get_book_onto_server(
+    state: &AppState,
+    caller: &AgentCaller,
+    arguments: &serde_json::Value,
+) -> ToolOutcome {
+    let store: Store = arguments
+        .get("store")
+        .cloned()
+        .and_then(|store| serde_json::from_value(store).ok())
+        .ok_or("store must be audible or libroFm.")?;
+    let id = string_argument(arguments, "id").ok_or("id is required.")?;
+    let account_id = string_argument(arguments, "accountId");
+    if store == Store::Audible && !state.libation_config.enabled() {
+        return Err("Audible downloads are not set up on this server.".into());
+    }
+
+    let catalog = store_catalog(state, caller, Some(store)).await?;
+    let Some(book) = catalog.books.into_iter().find(|book| {
+        book.id.eq_ignore_ascii_case(&id)
+            && (store == Store::LibroFm
+                || account_id.is_none()
+                || book.account_id.as_deref() == account_id.as_deref())
+    }) else {
+        let mut message =
+            "The listener does not own that book in that store. Use find_store_books for an id."
+                .to_string();
+        for unavailable in &catalog.unavailable {
+            message.push(' ');
+            message.push_str(unavailable);
+        }
+        return Err(message);
+    };
+    if let Some(book_id) = &book.on_server_book_id {
+        return Ok(serde_json::json!({
+            "result": "alreadyOnServer",
+            "bookId": book_id,
+            "title": book.title,
+        }));
+    }
+
+    if store == Store::LibroFm {
+        // Libro.fm purchases are the listener's own, so any account may add them.
+        let Json(JobCreated { .. }) = import_libro_purchase(
+            State(state.clone()),
+            Extension(caller.user.clone()),
+            Path(book.id.clone()),
+            Query(AccountSelection {
+                email: book.account_id.clone(),
+            }),
+        )
+        .await
+        .map_err(tool_failure)?;
+        return store_outcome(
+            "adding",
+            &book.title,
+            "Downloading from Libro.fm. It appears in the library when the import finishes.",
+        );
+    }
+
+    let profile_id = book.account_id.clone().unwrap_or_default();
+    if caller.user.libation_access == LibationAccess::Direct {
+        let Json(JobCreated { .. }) = liberate_profile_libation_book(
+            State(state.clone()),
+            Extension(caller.user.clone()),
+            Path((profile_id, book.id.clone())),
+        )
+        .await
+        .map_err(tool_failure)?;
+        return store_outcome(
+            "adding",
+            &book.title,
+            "Downloading from Audible. It appears in the library when the import finishes.",
+        );
+    }
+    let Json(request) = create_libation_download_request(
+        State(state.clone()),
+        Extension(caller.user.clone()),
+        Path(book.id.clone()),
+        Json(CreateLibationDownloadRequest {
+            title: book.title.clone(),
+            profile_id: Some(profile_id),
+        }),
+    )
+    .await
+    .map_err(tool_failure)?;
+    if request.status == "pending" {
+        store_outcome(
+            "requested",
+            &book.title,
+            "Asked the server's owner for this book. It is added once they approve the request.",
+        )
+    } else {
+        store_outcome(
+            "adding",
+            &book.title,
+            "The owner already approved this book, so it is downloading from Audible.",
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agents_hear_request_mistakes_but_not_server_failures() {
+        let invalid = ApiError::bad_request("Invalid Audible product id.");
+        assert_eq!(tool_failure(invalid), "Invalid Audible product id.");
+        let upstream = ApiError::bad_gateway("libationcli: account me@example.com expired");
+        assert!(!tool_failure(upstream).contains("example.com"));
+    }
 }

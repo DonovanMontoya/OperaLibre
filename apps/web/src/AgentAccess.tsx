@@ -16,35 +16,48 @@ import { ApiError } from "./apiError";
 import { errorMessage } from "./formatting";
 import { useModalFocus } from "./useModalFocus";
 
-const SCOPES: { scope: AgentScope; title: string; detail: string }[] = [
+const SCOPES: { scope: AgentScope; title: string; detail: string; reads: boolean }[] = [
   {
     scope: "library",
     title: "Your library",
-    detail: "Titles, authors, series, and descriptions of the books you can open."
+    detail: "Titles, authors, series, and descriptions of the books you can open.",
+    reads: true
   },
   {
     scope: "progress",
     title: "Where you are",
-    detail: "How far through each book you are and what you are listening to now."
+    detail: "How far through each book you are and what you are listening to now.",
+    reads: true
   },
   {
     scope: "history",
     title: "Listening history",
-    detail: "When you listened, what you finished, your listening stats, and your achievements."
+    detail: "When you listened, what you finished, your listening stats, and your achievements.",
+    reads: true
   },
   {
     scope: "text",
     title: "Book text so far",
-    detail: "A book's text up to the sentence you have reached, for spoiler-free recaps. Only books with a follow-along map have it."
+    detail: "A book's text up to the sentence you have reached, for spoiler-free recaps. Only books with a follow-along map have it.",
+    reads: true
+  },
+  {
+    scope: "getBooks",
+    title: "Get books for you",
+    detail: "See what you own on Audible and Libro.fm, and add a book to this server when you ask. If your Audible downloads need approval, it asks the owner instead.",
+    reads: false
   }
 ];
 
-const DEFAULT_SCOPES = SCOPES.map((entry) => entry.scope);
+// Getting books acts for the listener, so it is never on until they choose it.
+const DEFAULT_SCOPES = SCOPES.filter((entry) => entry.reads).map((entry) => entry.scope);
 
 function describeScopes(scopes: AgentScope[]) {
-  return `Reads ${SCOPES.filter((entry) => scopes.includes(entry.scope))
+  const reads = SCOPES.filter((entry) => entry.reads && scopes.includes(entry.scope))
     .map((entry) => entry.title.toLowerCase())
-    .join(", ")}`;
+    .join(", ");
+  const getsBooks = scopes.includes("getBooks") ? "Gets books for you" : "";
+  return [reads ? `Reads ${reads}` : "", getsBooks].filter(Boolean).join(" · ");
 }
 
 function describeLastUsed(token: AgentToken) {
@@ -143,7 +156,7 @@ export function AgentAccessCard({ labelId }: { labelId?: string }) {
       <span className="section-label" id={labelId}><Bot size={13} /> AI assistants</span>
       <p className="settings-hint">
         Let an assistant you already use read from this server, to recap a book without spoilers
-        or suggest what to read next. It can only read what you allow here, never change your
+        or suggest what to read next. It can only do what you allow here, never change your
         listening, and never see other listeners. Whatever it reads is sent to the company that
         runs the assistant.
       </p>
@@ -348,7 +361,8 @@ export function AgentAccessExperiment({ isOwner }: { isOwner: boolean }) {
       </div>
       <p>
         Lets each listener connect an AI assistant they already use, such as Claude or Codex, for
-        spoiler-free recaps, what to read next, and their series and achievements. Each listener chooses what their assistant may
+        spoiler-free recaps, what to read next, series and achievements, and, if they allow it,
+        getting books they own onto this server. Each listener chooses what their assistant may
         do in Settings, and an assistant never sees other listeners. What it reads is sent to the
         company that runs it. Built into the server, so there is nothing to install.
       </p>

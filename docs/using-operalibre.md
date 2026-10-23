@@ -307,12 +307,13 @@ Audible titles often come with a PDF of maps or illustrations rather than the bo
 
 An AI assistant you already use can read from your server: to recap a book you set down weeks ago without spoiling what comes next, suggest what to read next from your own shelf, track a series or your achievements, or answer questions about your listening. Nothing is shared until you connect one, and each listener connects their own.
 
-AI assistants are an experiment the owner turns on under **Administration → Experiments**. While it is off, nobody can connect one. Once it is on, each listener finds **AI assistants** in **Settings** in the phone and Mac apps, or in the account menu in a browser. Choose **Connect an assistant**, give it a name, and choose what it may read:
+AI assistants are an experiment the owner turns on under **Administration → Experiments**. While it is off, nobody can connect one. Once it is on, each listener finds **AI assistants** in **Settings** in the phone and Mac apps, or in the account menu in a browser. Choose **Connect an assistant**, give it a name, and choose what it may do:
 
 - **Your library**: the books you can open, with their descriptions and series.
 - **Where you are**: how far through each book you are.
 - **Listening history**: when you listened, what you finished, your stats, and your achievements.
 - **Book text so far**: a book's text up to the sentence you have reached.
+- **Get books for you**: what you own on Audible and Libro.fm, and adding one of those books to the server when you ask. It can do only what you could on **Get books**: if your Audible downloads need the owner's approval, it sends them a request. This one starts switched off.
 
 OperaLibre then shows an address and a token. The token is shown only once. Add both to the assistant as an MCP server. In Claude Code:
 
@@ -331,7 +332,7 @@ bearer_token_env_var = "OPERALIBRE_AGENT_TOKEN"
 
 Other assistants that accept an MCP server address with a bearer token connect the same way. The assistant must be able to reach the address, so use your LAN, Tailscale, or HTTPS address as you would for the app. Assistants whose connector settings offer only an OAuth sign-in, such as the ChatGPT app, cannot connect yet.
 
-An assistant can only read. It cannot change your progress or anything else, it never sees other listeners' activity, and it sees no more than you can in the app: if an administrator narrows your access, the assistant's narrows with it. Whatever it reads is sent to the company that runs the assistant. Remove an assistant from the **AI assistants** card to disconnect it. Assistants are also disconnected when someone else resets your password, when your account is removed, and when the owner restores a backup. If the owner turns the experiment off, connected assistants stop working until it is turned back on.
+Apart from getting books, an assistant can only read. It cannot change your progress or anything else, it never sees other listeners' activity, and it sees no more than you can in the app: if an administrator narrows your access, the assistant's narrows with it. Whatever it reads is sent to the company that runs the assistant. Remove an assistant from the **AI assistants** card to disconnect it. Assistants are also disconnected when someone else resets your password, when your account is removed, and when the owner restores a backup. If the owner turns the experiment off, connected assistants stop working until it is turned back on.
 
 Recaps need a book with its text and a follow-along map (see [Read along with the ebook](#read-along-with-the-ebook)), because the map marks exactly where you are in the text. The assistant gets nothing past that point, and it is asked not to fill in the plot from its own knowledge of the book.
 

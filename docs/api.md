@@ -98,7 +98,7 @@ The archive includes accounts, permissions, progress, per-book settings, reading
 | `GET` | `/api/activity/finishes` | The shared "who finished what" feed, newest first, capped at 50: `{ entries, unseenCount, latestId }`. Empty unless the caller both shares progress and has `notifyFinishes` on. Excludes the caller's own finishes, anyone not currently announcing, and books the caller cannot access. |
 | `POST` | `/api/activity/finishes/seen` | Mark the feed read up to `{ "eventId": string }` — normally the `latestId` from a prior read. Only ever moves forward. Returns the refreshed feed. |
 | `GET` | `/api/me/agent-tokens` | The current user's connected AI agents, newest first: `[{ id, name, scopes, createdAt, lastUsedAt }]`. Secrets are never returned. |
-| `POST` | `/api/me/agent-tokens` | Connect an agent with `{ "name": string, "scopes": [...] }`, where scopes are any of `library`, `progress`, `history`, and `text`. Returns `{ token, agentToken }`; `token` is the secret, returned this once. At most 10 per user. |
+| `POST` | `/api/me/agent-tokens` | Connect an agent with `{ "name": string, "scopes": [...] }`, where scopes are any of `library`, `progress`, `history`, `text`, and `getBooks`. Returns `{ token, agentToken }`; `token` is the secret, returned this once. At most 10 per user. |
 | `DELETE` | `/api/me/agent-tokens/{token_id}` | Disconnect one of the current user's agents. Returns 204. |
 
 #### Library
@@ -450,7 +450,7 @@ Cover and stream URLs are also mirrored at `/abs/api/books/{book_id}/cover` and 
 
 `POST /api/agent/mcp` is a [Model Context Protocol](https://modelcontextprotocol.io/) server using the Streamable HTTP transport. It answers each JSON-RPC message with a plain JSON response, keeps no MCP session, and returns 405 to a `GET` event stream. It supports `initialize`, `ping`, `tools/list`, and `tools/call`.
 
-It accepts only an agent token from `POST /api/me/agent-tokens`, sent as `Authorization: Bearer olagent_...`; session tokens, cookies, and `?token=` are refused with 401. Agent tokens are refused everywhere else. A token acts for the user who created it with that user's current permissions and book access, narrowed further by its scopes. It reads only that user's own data; other users' progress and the finish feed are never exposed. No tool writes anything.
+It accepts only an agent token from `POST /api/me/agent-tokens`, sent as `Authorization: Bearer olagent_...`; session tokens, cookies, and `?token=` are refused with 401. Agent tokens are refused everywhere else. A token acts for the user who created it with that user's current permissions and book access, narrowed further by its scopes. It reads only that user's own data; other users' progress and the finish feed are never exposed. Only `get_book_onto_server` changes anything, and only through the same checks as the user's own Audible and Libro.fm routes.
 
 | Tool | Scope | Returns |
 | --- | --- | --- |
@@ -463,6 +463,8 @@ It accepts only an agent token from `POST /api/me/agent-tokens`, sent as `Author
 | `get_listening_stats` | `history` | The listening statistics from `/api/profile/stats`, without cover links. Accepts `tzOffsetMinutes`. |
 | `get_achievements` | `history` | The profile's achievements, each with `current`, `target`, and `earned`. Accepts `tzOffsetMinutes`. |
 | `get_text_so_far` | `text` | A book's sync-map sentences that end at or before the user's position, grouped by audio chapter. Finished books return all of them. Accepts `chapter` and `maxCharacters`; a longer chapter keeps its latest text. Books without an aligned sync map return a tool error. |
+| `find_store_books` | `getBooks` | The user's Audible titles (from `/api/libation/books`) and Libro.fm purchases with short plain-text descriptions, without account emails, and whether they can add Audible titles directly or must request them. Books the user can already open are left out unless `includeOnServer` is set. Accepts `query`, `limit`, and `offset`. |
+| `get_book_onto_server` | `getBooks` | Takes `store` (`audible` or `libroFm`), `id`, and for Audible `accountId`. Starts the import the user could start, files an Audible request when their access is `approval`, or returns `alreadyOnServer` with the book's id. |
 
 Agent access is an experiment, off until an owner turns it on. While it is off, `GET` and `POST /api/me/agent-tokens` answer 404 and this endpoint answers 403. Successful tool results carry the JSON both as `structuredContent` and as text. `tools/list` includes only the tools the token's scopes allow, and calling any other tool is a JSON-RPC `-32602` error. Removing a token, deleting its user, an administrator resetting its user's password, and a backup restore all revoke it. `lastUsedAt` is updated at most every ten minutes.
 

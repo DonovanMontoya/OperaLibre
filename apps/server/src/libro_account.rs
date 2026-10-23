@@ -59,10 +59,10 @@ struct Account {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AccountStatus {
     accounts: Vec<AccountSummary>,
-    connected: bool,
+    pub(crate) connected: bool,
     email: Option<String>,
     synced_at: Option<String>,
-    books: Vec<CatalogBook>,
+    pub(crate) books: Vec<CatalogBook>,
     jobs: Vec<JobStatus>,
 }
 
@@ -76,16 +76,16 @@ struct AccountSummary {
 
 #[derive(Default, Deserialize)]
 pub(crate) struct AccountSelection {
-    email: Option<String>,
+    pub(crate) email: Option<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CatalogBook {
+pub(crate) struct CatalogBook {
     #[serde(flatten)]
-    book: LibroBook,
-    account_email: String,
-    local_book_id: Option<String>,
+    pub(crate) book: LibroBook,
+    pub(crate) account_email: String,
+    pub(crate) local_book_id: Option<String>,
 }
 
 #[derive(Deserialize)]
