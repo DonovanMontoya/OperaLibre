@@ -67,12 +67,15 @@ export function usePlayerNavigation({
   const shelfScrollBeforeDetails = useRef<number | null>(null);
   const restoreShelfScroll = useRef(false);
 
+  // The remembered place belongs to one trip into details. Leaving it any
+  // other way (playing the book, another tab) forgets it, so a later details
+  // page opened from elsewhere cannot return to a stale position.
   useLayoutEffect(() => {
-    if (!restoreShelfScroll.current || nativePlayerView === "details") return;
-    restoreShelfScroll.current = false;
-    if (libraryPaneRef.current && shelfScrollBeforeDetails.current !== null) {
+    if (nativePlayerView === "details") return;
+    if (restoreShelfScroll.current && libraryPaneRef.current && shelfScrollBeforeDetails.current !== null) {
       libraryPaneRef.current.scrollTop = shelfScrollBeforeDetails.current;
     }
+    restoreShelfScroll.current = false;
     shelfScrollBeforeDetails.current = null;
   }, [nativePlayerView, libraryPaneRef]);
 
