@@ -13,8 +13,8 @@ independently of the server releases.
 ## Unreleased
 
 - On an open iPhone Duo, **Cover on outer screen** in **Settings → Behavior**
-  shows the loaded book's cover on the outer screen. It is off by default.
-  iOS allows the outer screen only alongside a camera preview, so the rear
+  shows the loaded book's cover on the outer screen. It is off by default,
+  and turning it on first explains what it needs. iOS allows the outer screen only alongside a camera preview, so the rear
   camera runs at low quality behind a small viewfinder; nothing is recorded
   or saved.
 

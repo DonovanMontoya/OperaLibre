@@ -7781,6 +7781,15 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane.purchase-browsin
   line-height: 1.55;
 }
 
+.outer-cover-copy {
+  display: grid;
+  gap: 0.75em;
+}
+
+.outer-cover-copy p {
+  margin: 0;
+}
+
 .unplayed-confirm-copy strong {
   color: var(--ink);
   font-weight: 650;
