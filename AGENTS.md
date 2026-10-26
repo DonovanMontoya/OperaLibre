@@ -104,6 +104,22 @@ isolate a server started beside an existing `server.config`.
 
 Stop what you started, by the PID you tracked.
 
+## Cursor Cloud specific instructions
+
+Cloud Agent images ship Rust 1.83. This repository needs Rust 1.89 or newer
+(`edition = "2024"`). Environment install selects the rustup stable toolchain
+with rustfmt and clippy, runs `npm ci`, fetches the server and launcher
+crates, and builds the debug server. Node.js 22 and ffmpeg are already on
+the image; `npm run testenv` uses ffmpeg to generate its library.
+
+Boot runs `npm run testenv` when that environment is not already answering.
+The web app is <http://localhost:5197>, signed in as the owner. The API is
+<http://127.0.0.1:4957>. Accounts, the generated library, and `server.config`
+live in `~/.operalibre-testenv`, outside the checkout. A second `npm run
+testenv` exits while one is up. `npm run dev` is a separate pair (server port
+4920, web port 5173) and reads a checkout `server.config` when one exists.
+Test account passwords are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Hit every surface
 
 The most common defect is a change that works on the path you tested and is
