@@ -71,7 +71,8 @@ function Fixture() {
       syncTarget={chapterSync
         ? { id: `chapter-${chapter}`, title: `Chapter ${chapter}` }
         : null}
-      syncFragments={narration ? fragments : null} positionSeconds={position} onSeekTo={setPosition} />}
+      syncFragments={narration ? fragments : null} positionSeconds={position} onSeekTo={setPosition}
+      pageTurnAnimation={params.has("page-turn")} />}
   </>;
 }
 createRoot(document.getElementById("root")!).render(<React.StrictMode><Fixture /></React.StrictMode>);
