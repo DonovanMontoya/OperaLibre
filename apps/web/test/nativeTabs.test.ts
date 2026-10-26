@@ -65,6 +65,7 @@ test("tapping Shelf scrolls the library pane to the top only when its list is al
     const scrolled: unknown[] = [];
     const libraryPaneRef = { current: { scrollTo: (options: unknown) => scrolled.push(options) } };
     const { openNativeTab } = loadHook("usePlayerNavigation", {
+      "react": { useRef: (value: unknown) => ({ current: value }), useLayoutEffect: () => {} },
       "react-dom": { flushSync: (update: () => void) => update() },
       "./native": { haptic: () => {} },
       "./nativeNavigation": { isLeftEdgeBackSwipe: () => false },

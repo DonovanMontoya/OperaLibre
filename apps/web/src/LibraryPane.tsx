@@ -84,6 +84,9 @@ export function LibraryPane({
   finishFeedState,
   ipad,
   isLoading,
+  isPlaying,
+  playPending,
+  togglePlayback,
   isOffline,
   isOperaLibre,
   lastPurchaseSource,
@@ -138,6 +141,9 @@ export function LibraryPane({
   finishFeedState: ReturnType<typeof useFinishFeed>;
   ipad: boolean;
   isLoading: boolean;
+  isPlaying: boolean;
+  playPending: boolean;
+  togglePlayback: () => void;
   isOffline: boolean;
   isOperaLibre: boolean;
   lastPurchaseSource: RefObject<"audible" | "libro" | "all">;
@@ -1039,6 +1045,10 @@ export function LibraryPane({
               books={queueBooks}
               onOpenBook={openQueuedBook}
               onContinue={continueReadingBook}
+              playbackBookId={playbackBook?.id ?? null}
+              isPlaying={isPlaying}
+              playPending={playPending}
+              onTogglePlayback={togglePlayback}
             />
           ) : null}
 
