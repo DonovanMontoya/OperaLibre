@@ -30,9 +30,12 @@ if git -C "$REPO" diff -U0 HEAD -- "$PBXPROJ" "$GRADLE" | grep -E '^[-+][^-+]' |
   fail "the $TAG checkout changes more than the build number in the Xcode or Android project."
 fi
 
+# HEAD is rewritten when a checkout changes it, but a branch can advance under
+# an unchanged HEAD (pull, reset); the reflog records every move.
 BUNDLE="$REPO/apps/web/ios/App/App/public/VERSION.txt"
-if [ "$(cat "$BUNDLE" 2>/dev/null)" != "$VERSION" ] ||
-  [ "$BUNDLE" -ot "$(git -C "$REPO" rev-parse --absolute-git-dir)/HEAD" ]; then
+GIT_DIR="$(git -C "$REPO" rev-parse --absolute-git-dir)"
+if [ "$(cat "$BUNDLE" 2>/dev/null)" != "$VERSION" ] || [ "$BUNDLE" -ot "$GIT_DIR/HEAD" ] ||
+  { [ -e "$GIT_DIR/logs/HEAD" ] && [ "$BUNDLE" -ot "$GIT_DIR/logs/HEAD" ]; }; then
   fail "the web bundle was not built for $TAG in this checkout; run $SYNC."
 fi
 echo "Archiving $VERSION (${CURRENT_PROJECT_VERSION:-?}) from release tag $TAG"
