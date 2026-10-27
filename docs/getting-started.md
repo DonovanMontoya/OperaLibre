@@ -131,7 +131,7 @@ Start the server with:
 
 Now open [http://localhost:4920](http://localhost:4920). The server and web app share one address, which is simpler to bookmark and use on another device. To make it start automatically when the computer restarts, follow the macOS or Linux instructions in [Deployment](deployment.md).
 
-A server you compile yourself reports the version in `apps/server/Cargo.toml` (currently `0.2.6`) under **Administration → Overview → OperaLibre software**, unless `OPERALIBRE_VERSION` was set for that compile. Published release builds set `OPERALIBRE_VERSION` to the release, so a source build shows that Cargo package version rather than the version stamped on a downloaded package. A web bundle built without `OPERALIBRE_VERSION` is marked **Development**.
+A server you compile yourself reports the release its source belongs to, from `apps/server/Cargo.toml`, under **Administration → Overview → OperaLibre software**, unless `OPERALIBRE_VERSION` was set for that compile. Published release builds set `OPERALIBRE_VERSION` to the release tag, so nightlies report their full nightly version. A web bundle built without `OPERALIBRE_VERSION` is marked **Development**.
 
 ## Type-checking everything
 

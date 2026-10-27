@@ -248,6 +248,27 @@ explicit; a release or dependency version bump alone is not a reason to remap.
   include outdated maps while respecting the saved limit. Keep
   `docs/using-operalibre.md` and `docs/api.md` accurate when these contracts change.
 
+### Versions
+
+The server, launcher, web bundle, iOS, Android, and macOS apps share one
+version: the stable release tag they ship as (for example `1.3.2`). Nightlies
+between releases are tagged with the next patch, `1.3.3-nightly.<date>.<run>`.
+The read-along add-on is published separately and keeps its own version.
+
+Change versions only with `node script/version.mjs`, never by editing
+`Cargo.toml`, `build.gradle`, or the Xcode project by hand:
+
+- `set X.Y.Z` writes the next release's version everywhere and restarts the
+  app build number at 1. Land it on main before dispatching that release.
+- `check` verifies every file agrees; CI runs it, and a stable release checks
+  the version against its new tag.
+- App builds come from the release tag. Check out `X.Y.Z`, then `npm ci` and
+  `npm run sync:ios`, and archive build 1. To upload the same release again,
+  run `build` at the tag for build 2, and so on. iOS and Android share the build number; Android's `versionCode`
+  is `major·1000000 + minor·10000 + patch·100 + build`.
+
+Record each shipped app build as **version (build)** in `docs/ios-changelog.md`.
+
 ### Configuration compatibility
 
 New `server.config` keys need safe defaults so existing installs keep working.
@@ -334,10 +355,12 @@ These apply only to maintainers with write access.
 - Before version bumps or releases, apply [Read-along mapping revisions and
   recovery](#read-along-mapping-revisions-and-recovery); state any remapping
   recommendation in the release notes.
-- Releases: dispatch `.github/workflows/release.yml` from `main` with a blank
-  `tag` (the workflow picks the next patch) and notes written from the actual
-  diff since the previous release, passed as a file or structured input. Use an
-  explicit tag only for a rebuild or deliberate version jump. The source commit
-  must be in `origin/main`. Native clients can be versioned separately; check
-  their version files. Follow the run to completion and verify the published
-  release and assets. A `docs/**` push to `main` redeploys the docs site.
+- Releases: first set the release's version on main (see
+  [Versions](#versions)). Then dispatch `.github/workflows/release.yml` from
+  `main` with a blank `tag` (the workflow picks the next patch) and notes
+  written from the actual diff since the previous release, passed as a file or
+  structured input. Use an explicit tag only for a rebuild or deliberate
+  version jump. The source commit must be in `origin/main`, and a new stable
+  tag must match the version on main. Follow the run to completion and verify
+  the published release and assets. A `docs/**` push to `main` redeploys the
+  docs site.
