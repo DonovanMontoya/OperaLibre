@@ -7,12 +7,51 @@ nav_order: 12
 # iOS release changelog
 
 Release history for the OperaLibre iPhone and iPad app, starting with **1.1.0 (0)**.
-Entries use **version (build)** and appear newest first. iOS versions are tracked
-independently of the server releases.
+Entries use **version (build)** and appear newest first. From 1.3.2, the app
+shares its version with the server release it was built from, and the build
+number counts uploads of that release from 1. Earlier versions were numbered
+separately from the server.
 
 ## Unreleased
 
-No unreleased changes recorded.
+### 1.3.2 (1) (planned)
+
+Built from the 1.3.2 server release, the first release that shares its
+version with the app. Prepared from changes on main after the 1.3.1 range,
+[`992ce885`](https://github.com/DonovanMontoya/OperaLibre/commit/992ce8857687da9e5a9a63ed6361b64b01a9724f),
+through [`35947af9`](https://github.com/DonovanMontoya/OperaLibre/commit/35947af9e41b3b5e73323a58a980ad5b8569fd94),
+the merge of #376 on main. The distribution channel and release date are
+pending confirmation.
+
+- The Shelf's listening queue shows the book that is playing, ahead of
+  planned books, with its own play or pause control. Returning from book
+  details restores your place on the Shelf, and book details no longer
+  repeats the **Now playing** link while the mini player is showing.
+  ([#375](https://github.com/DonovanMontoya/OperaLibre/pull/375),
+  [#364](https://github.com/DonovanMontoya/OperaLibre/pull/364))
+- Sliding a finger off a button before lifting it cancels the press, as in
+  other iPhone apps. A brushed skip, restart, or play/pause no longer moves
+  your place in the book.
+  ([#365](https://github.com/DonovanMontoya/OperaLibre/pull/365))
+- On an open iPhone Duo, the player's Details, Chapters, and Sleep timer
+  sheets, the reader's sheets, and the metadata editor open as cards on one
+  side of the fold instead of across it. The reader's Follow and close
+  buttons keep working after switching screens, rotating, or leaving the app
+  in the middle of a page turn.
+  ([#359](https://github.com/DonovanMontoya/OperaLibre/pull/359),
+  [#376](https://github.com/DonovanMontoya/OperaLibre/pull/376))
+- Connect an AI assistant you already use to your own account from the
+  **AI assistants** card in **Settings**. Each assistant gets its own token and only
+  the access you choose: your library, where you are in each book, listening
+  history, book text up to your position, and, if you allow it, getting books
+  you own onto the server. This requires matching server support and the
+  owner turning on the experiment.
+  ([#368](https://github.com/DonovanMontoya/OperaLibre/pull/368),
+  [#369](https://github.com/DonovanMontoya/OperaLibre/pull/369),
+  [#370](https://github.com/DonovanMontoya/OperaLibre/pull/370))
+- Updated the native file storage component, which fixes a check that could
+  reject new files in some storage locations.
+  ([#366](https://github.com/DonovanMontoya/OperaLibre/pull/366))
 
 ## 1.3.1
 
