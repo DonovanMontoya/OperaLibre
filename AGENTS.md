@@ -263,12 +263,17 @@ Change versions only with `node script/version.mjs`, never by editing
   release, and in any case before dispatching this one. A nightly can be
   promoted only if it was built after that change.
 - `check` verifies every file agrees; CI runs it, and a stable release checks
-  the version against its new tag.
-- App builds come from the release tag. Check out `X.Y.Z`, then `npm ci` and
-  `npm run sync:ios`, and archive build 1. Xcode refuses to archive anywhere
-  else. To upload the same release again, run `build` at the tag for build 2,
-  and so on. iOS and Android share the build number; Android's `versionCode`
-  is `major·1000000 + minor·10000 + patch·100 + build`.
+  the version against its new tag. A blank dispatch `tag` picks the next
+  patch, so after a minor or major `set` (and for 1.3.2, the first shared
+  version) dispatch with that version as the `tag`.
+- App builds come from the release tag. Check out `X.Y.Z`, then run `npm ci`
+  and `OPERALIBRE_VERSION=X.Y.Z npm run sync:ios`, and archive build 1. Xcode
+  refuses to archive anywhere else, or with a web bundle built for another
+  version or before the checkout. To upload the same release again, run
+  `build` at the tag for build 2, and so on; in a fresh checkout pass the
+  number (`build 3`), since bumps made at a tag are not committed. iOS and
+  Android share the build number; Android's `versionCode` is
+  `major·1000000 + minor·10000 + patch·100 + build`.
 
 Record each shipped app build as **version (build)** in `docs/ios-changelog.md`.
 

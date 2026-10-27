@@ -49,9 +49,9 @@ export function androidVersionCode(version, build) {
 const CARGO_VERSION = /^(version = ")([^"]+)(")/m;
 const FIELDS = {
   server: [CARGO_VERSION, "server"],
-  serverLock: [/(name = "operalibre-server"\nversion = ")([^"]+)(")/, "serverLock"],
+  serverLock: [/(name = "operalibre-server"\r?\nversion = ")([^"]+)(")/, "serverLock"],
   launcher: [CARGO_VERSION, "launcher"],
-  launcherLock: [/(name = "operalibre-launcher"\nversion = ")([^"]+)(")/, "launcherLock"],
+  launcherLock: [/(name = "operalibre-launcher"\r?\nversion = ")([^"]+)(")/, "launcherLock"],
   androidName: [/(versionName ")([^"]+)(")/, "android"],
   androidCode: [/(versionCode )(\d+)()/, "android"],
   iosVersion: [/(MARKETING_VERSION = )([^;]+)(;)/g, "ios"],
@@ -94,7 +94,11 @@ export function versionProblems(fields, tag) {
     problems.push(`Android versionCode is ${fields.androidCode}, expected ${androidVersionCode(version, build)} for ${version} build ${build}.`);
   }
   if (tag && tagVersion(tag) !== version) {
-    problems.push(`The release tag is ${tag} but this source is version ${version}. Run \`node script/version.mjs set ${tagVersion(tag)}\` on main first.`);
+    // A blank dispatch tag picks the next patch, which is behind main after a
+    // minor or major bump, so point at the tag rather than at moving main back.
+    problems.push(RELEASE_TAG.test(tag) && compareStableTags(version, tag) > 0
+      ? `The release tag is ${tag} but this source is version ${version}. Dispatch the release with tag ${version}.`
+      : `The release tag is ${tag} but this source is version ${version}. Run \`node script/version.mjs set ${tagVersion(tag)}\` on main first.`);
   }
   return problems;
 }
@@ -143,6 +147,8 @@ function main([command, ...args]) {
     if (highest && compareStableTags(version, highest) <= 0) {
       fail(`${version} is not newer than the latest release tag ${highest}. Fetch tags if that looks wrong.`);
     }
+    // Store versions and Android version codes can only rise.
+    if (compareStableTags(version, fields.server) < 0) fail(`${version} is older than this source's version ${fields.server}.`);
     const changes = { ...Object.fromEntries(VERSION_FIELDS.map((name) => [name, version])), ...buildFields(version, 1) };
     save(texts, writeFields(texts, changes));
     console.log(`Set every package to ${version}, app build 1.`);

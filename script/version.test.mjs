@@ -45,3 +45,13 @@ test("release tags are compared without their optional v prefix", () => {
   assert.deepEqual(versionProblems(readFields(texts), "v1.3.2"), []);
   assert.equal(versionProblems(readFields(texts), "v1.3.3").length, 1);
 });
+
+test("a tag behind the source points at dispatching the source's version", () => {
+  assert.match(versionProblems(readFields(texts), "1.3.1").join(), /Dispatch the release with tag 1.3.2/);
+  assert.match(versionProblems(readFields(texts), "1.4.0").join(), /set 1.4.0/);
+});
+
+test("Windows line endings in lockfiles are still read", () => {
+  const crlf = { ...texts, serverLock: texts.serverLock.replaceAll("\n", "\r\n") };
+  assert.equal(readFields(crlf).serverLock, "1.3.2");
+});
