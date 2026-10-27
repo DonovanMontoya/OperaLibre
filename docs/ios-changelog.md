@@ -16,16 +16,16 @@ separately from the server.
 
 ### 1.3.2 (1) (planned)
 
-Built from the 1.3.2 server release, the first release that shares its
-version with the app. Prepared from changes on main after the 1.3.1 range,
+Built from the 1.3.2 release. Prepared from changes on main after the 1.3.1
+range,
 [`992ce885`](https://github.com/DonovanMontoya/OperaLibre/commit/992ce8857687da9e5a9a63ed6361b64b01a9724f),
 through [`35947af9`](https://github.com/DonovanMontoya/OperaLibre/commit/35947af9e41b3b5e73323a58a980ad5b8569fd94),
 the merge of #376 on main. The distribution channel and release date are
 pending confirmation.
 
-- The Shelf's listening queue shows the book that is playing, ahead of
-  planned books, with its own play or pause control. Returning from book
-  details restores your place on the Shelf, and book details no longer
+- While a book plays, the Shelf's **Now listening** section puts it first,
+  with a pause button, and lists the rest under **Up next**. Returning from
+  book details restores your place on the Shelf, and book details no longer
   repeats the **Now playing** link while the mini player is showing.
   ([#375](https://github.com/DonovanMontoya/OperaLibre/pull/375),
   [#364](https://github.com/DonovanMontoya/OperaLibre/pull/364))
@@ -33,25 +33,26 @@ pending confirmation.
   other iPhone apps. A brushed skip, restart, or play/pause no longer moves
   your place in the book.
   ([#365](https://github.com/DonovanMontoya/OperaLibre/pull/365))
-- On an open iPhone Duo, the player's Details, Chapters, and Sleep timer
-  sheets, the reader's sheets, and the metadata editor open as cards on one
-  side of the fold instead of across it. The reader's Follow and close
-  buttons keep working after switching screens, rotating, or leaving the app
-  in the middle of a page turn.
-  ([#359](https://github.com/DonovanMontoya/OperaLibre/pull/359),
-  [#376](https://github.com/DonovanMontoya/OperaLibre/pull/376))
+- The reader's Follow and close buttons keep working when a dragged page turn
+  is interrupted by switching apps, rotating, or folding.
+  ([#376](https://github.com/DonovanMontoya/OperaLibre/pull/376))
+- On an open iPhone Duo, the mini player stays on the Shelf while a book
+  plays. The player's Details, Chapters, and Sleep timer sheets, the reader's
+  sheets, and the metadata editor open as cards on one side of the fold
+  instead of across it. The Up Next strip fades at the page edge instead of
+  cutting a card in half, and the Shared reading list stays beside its bell.
+  ([#375](https://github.com/DonovanMontoya/OperaLibre/pull/375),
+  [#359](https://github.com/DonovanMontoya/OperaLibre/pull/359))
 - Connect an AI assistant you already use to your own account from the
-  **AI assistants** card in **Settings**. Each assistant gets its own token and only
-  the access you choose: your library, where you are in each book, listening
-  history, book text up to your position, and, if you allow it, getting books
-  you own onto the server. This requires matching server support and the
-  owner turning on the experiment.
+  **AI assistants** card in **Settings**. Each assistant gets its own token
+  and only the access you choose: your library, where you are in each book,
+  listening history, book text up to your position (for books with Follow
+  Along), and, if you allow it, getting books you own onto the server. The
+  card appears when you are connected to a 1.3.2 OperaLibre server whose
+  owner has turned on AI assistants under **Administration → Experiments**.
   ([#368](https://github.com/DonovanMontoya/OperaLibre/pull/368),
   [#369](https://github.com/DonovanMontoya/OperaLibre/pull/369),
   [#370](https://github.com/DonovanMontoya/OperaLibre/pull/370))
-- Updated the native file storage component, which fixes a check that could
-  reject new files in some storage locations.
-  ([#366](https://github.com/DonovanMontoya/OperaLibre/pull/366))
 
 ## 1.3.1
 
