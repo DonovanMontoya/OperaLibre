@@ -75,17 +75,10 @@ jobs:
       # nightly built from a stable release's own source never does.
       - name: Check source version
         if: steps.release-ref.outputs.channel == 'stable' && (steps.release-ref.outputs.tag_exists != 'true' || inputs.release_event == 'push')
-        shell: bash
         env:
           RELEASE_TAG: ${{ steps.release-ref.outputs.tag }}
           SOURCE_NIGHTLY: ${{ inputs.source_nightly }}
-        run: |
-          if ! node script/version.mjs check --tag "${RELEASE_TAG}"; then
-            if [[ -n "${SOURCE_NIGHTLY}" ]]; then
-              echo "${SOURCE_NIGHTLY} was built before main was set to ${RELEASE_TAG}; promote a nightly built after that change." >&2
-            fi
-            exit 1
-          fi
+        run: node script/version.mjs check --tag "${RELEASE_TAG}" --nightly "${SOURCE_NIGHTLY}"
 
       - name: Check nightly compatibility baseline
         if: steps.release-ref.outputs.channel == 'nightly' && steps.release-ref.outputs.publish == 'true'
