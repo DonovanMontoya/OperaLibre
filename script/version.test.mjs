@@ -55,3 +55,9 @@ test("Windows line endings in lockfiles are still read", () => {
   const crlf = { ...texts, serverLock: texts.serverLock.replaceAll("\n", "\r\n") };
   assert.equal(readFields(crlf).serverLock, "1.3.2");
 });
+
+test("a promoted nightly that predates the version change is named", () => {
+  const nightly = "1.3.3-nightly.20261028.101";
+  assert.match(versionProblems(readFields(texts), "1.3.3", nightly).join(), /1.3.3-nightly.20261028.101 was built before main was set to 1.3.3/);
+  assert.match(versionProblems(readFields(texts), "0.5.1", nightly).join(), /Dispatch the release with tag 1.3.2/);
+});
