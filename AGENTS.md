@@ -259,7 +259,9 @@ Change versions only with `node script/version.mjs`, never by editing
 `Cargo.toml`, `build.gradle`, or the Xcode project by hand:
 
 - `set X.Y.Z` writes the next release's version everywhere and restarts the
-  app build number at 1. Land it on main before dispatching that release.
+  app build number at 1. Land it on main right after the previous stable
+  release, and in any case before dispatching this one. A nightly can be
+  promoted only if it was built after that change.
 - `check` verifies every file agrees; CI runs it, and a stable release checks
   the version against its new tag.
 - App builds come from the release tag. Check out `X.Y.Z`, then `npm ci` and
