@@ -374,5 +374,6 @@ These apply only to maintainers with write access.
   must be in `origin/main`. The release stamps its tag into the server and web
   builds; the native apps are versioned separately (see [Versions](#versions)).
   Follow the run to completion and verify the published release and assets.
-  Afterward, run `node script/version.mjs set server <tag>` on main. A
+  Afterward, run `node script/version.mjs set server <tag>` in a follow-up PR
+  to main. A
   `docs/**` push to `main` redeploys the docs site.

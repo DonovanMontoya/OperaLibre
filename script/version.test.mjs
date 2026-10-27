@@ -64,6 +64,7 @@ test("set app restarts the build at 1 and can only go up", () => {
   assert.throws(() => setApp(fields, "1.3.2"), /not above/);
   assert.throws(() => setApp(fields, "1.3.1"), /not above/);
   assert.throws(() => setApp(fields, "0.5.1"), /not above/);
+  assert.throws(() => setApp({ ...fields, iosVersion: "garbage" }, "1.4.0"), /is not X.Y.Z/);
 });
 
 test("build raises the shared build number without touching versions", () => {
@@ -73,7 +74,8 @@ test("build raises the shared build number without touching versions", () => {
   assert.equal(next.iosVersion, "1.3.2");
   assert.equal(apply(bumpBuild(fields, "5")).androidCode, "1030205");
   assert.throws(() => bumpBuild(fields, "1"), /not above/);
-  assert.throws(() => bumpBuild(fields, "abc"), /not above/);
+  assert.throws(() => bumpBuild(fields, "abc"), /not a whole number/);
+  assert.throws(() => bumpBuild(fields, "2.5"), /not a whole number/);
   assert.throws(() => bumpBuild(apply(bumpBuild(fields, "99"))), /1 to 99/);
 });
 

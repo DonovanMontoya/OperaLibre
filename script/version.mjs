@@ -120,6 +120,11 @@ export function setServer(fields, version) {
 // version must be above the current one.
 export function setApp(fields, version) {
   androidVersionCode(version, 1);
+  try {
+    parseVersion(fields.iosVersion);
+  } catch {
+    throw new Error(`The current app version ${fields.iosVersion} is not X.Y.Z; fix the iOS project before setting a new one.`);
+  }
   if (compareStableTags(version, fields.iosVersion) <= 0) {
     throw new Error(`App version ${version} is not above the current ${fields.iosVersion}; store versions can only rise.`);
   }
@@ -129,7 +134,10 @@ export function setApp(fields, version) {
 export function bumpBuild(fields, requested) {
   const current = Number(fields.iosBuild);
   const build = requested === undefined ? current + 1 : Number(requested);
-  if (!Number.isInteger(build) || build <= current) {
+  if (!Number.isInteger(build)) {
+    throw new Error(`Build ${requested} is not a whole number.`);
+  }
+  if (build <= current) {
     throw new Error(`Build ${requested ?? build} is not above the current build ${current}; each upload of ${fields.iosVersion} needs a higher number.`);
   }
   return appBuild(fields.iosVersion, build);
@@ -186,6 +194,7 @@ function main([command, ...args]) {
     // The server line follows the release tags; a version with no tag yet is
     // allowed (the release stamps the tag into its builds) but worth a note.
     if (!releaseTags().includes(version)) console.warn(`Note: no ${version} release tag here yet. Fetch tags if that looks wrong.`);
+    if (compareStableTags(version, fields.server) < 0) console.warn(`Note: ${version} is below the current server version ${fields.server}.`);
   } else if (command === "set" && args[0] === "app" && args[1]) {
     changes = setApp(fields, args[1]);
   } else if (command === "build" && args.length <= 1) {
