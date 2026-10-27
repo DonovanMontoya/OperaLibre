@@ -40,3 +40,8 @@ test("setting a version changes every package and nothing else", () => {
   assert.match(next.server, /\[dependencies.foo\]\nversion = "9.9.9"/);
   assert.equal(next.ios.match(/MARKETING_VERSION = 1.4.0/g).length, 2);
 });
+
+test("release tags are compared without their optional v prefix", () => {
+  assert.deepEqual(versionProblems(readFields(texts), "v1.3.2"), []);
+  assert.equal(versionProblems(readFields(texts), "v1.3.3").length, 1);
+});
