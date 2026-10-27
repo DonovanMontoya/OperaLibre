@@ -7,17 +7,15 @@ nav_order: 12
 # iOS release changelog
 
 Release history for the OperaLibre iPhone and iPad app, starting with **1.1.0 (0)**.
-Entries use **version (build)** and appear newest first. From 1.3.2, the app
-shares its version with the server release it was built from, and the build
-number counts uploads of that release from 1. Earlier versions were numbered
-separately from the server.
+Entries use **version (build)** and appear newest first. iOS versions are tracked
+independently of the server releases. From 1.3.2, the build number counts
+uploads of each app version from 1, and Android uses the same build number.
 
 ## Unreleased
 
 ### 1.3.2 (1) (planned)
 
-Built from the 1.3.2 release. Prepared from changes on main after the 1.3.1
-range,
+Prepared from changes on main after the 1.3.1 range,
 [`992ce885`](https://github.com/DonovanMontoya/OperaLibre/commit/992ce8857687da9e5a9a63ed6361b64b01a9724f),
 through [`35947af9`](https://github.com/DonovanMontoya/OperaLibre/commit/35947af9e41b3b5e73323a58a980ad5b8569fd94),
 the merge of #376 on main. The distribution channel and release date are
