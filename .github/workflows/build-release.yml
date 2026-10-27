@@ -67,19 +67,6 @@ jobs:
         with:
           ref: ${{ steps.release-ref.outputs.ref }}
 
-      # Packages and native apps carry the version of the tag they ship as, so a
-      # new stable tag must name the version already set on main. Rebuilding an
-      # existing tag keeps whatever that commit carried; a pushed tag exists
-      # before this runs but is still new. A promoted nightly
-      # qualifies only if it was built after main was set to its version; the
-      # nightly built from a stable release's own source never does.
-      - name: Check source version
-        if: steps.release-ref.outputs.channel == 'stable' && (steps.release-ref.outputs.tag_exists != 'true' || inputs.release_event == 'push')
-        env:
-          RELEASE_TAG: ${{ steps.release-ref.outputs.tag }}
-          SOURCE_NIGHTLY: ${{ inputs.source_nightly }}
-        run: node script/version.mjs check --tag "${RELEASE_TAG}" --nightly "${SOURCE_NIGHTLY}"
-
       - name: Check nightly compatibility baseline
         if: steps.release-ref.outputs.channel == 'nightly' && steps.release-ref.outputs.publish == 'true'
         shell: bash

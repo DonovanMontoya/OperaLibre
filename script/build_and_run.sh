@@ -22,7 +22,6 @@ APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
-APP_VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$ROOT_DIR/apps/server/Cargo.toml" | head -n 1)"
 APP_ICON_SOURCE="$ROOT_DIR/apps/macos/Resources/OperaLibre.icns"
 if [[ ! -f "$APP_ICON_SOURCE" ]]; then
   APP_ICON_SOURCE="$ROOT_DIR/apps/web/ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png"
@@ -60,7 +59,7 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>$APP_VERSION</string>
+  <string>0.1.0</string>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>LSMinimumSystemVersion</key>
