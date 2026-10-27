@@ -48,8 +48,9 @@ pending confirmation.
   and only the access you choose: your library, where you are in each book,
   listening history, book text up to your position (for books with Follow
   Along), and, if you allow it, getting books you own onto the server. The
-  card appears when you are connected to a 1.3.2 OperaLibre server whose
-  owner has turned on AI assistants under **Administration → Experiments**.
+  card appears when you are connected to an OperaLibre server, 1.3.2 or
+  newer, whose owner has turned on AI assistants under
+  **Administration → Experiments**.
   ([#368](https://github.com/DonovanMontoya/OperaLibre/pull/368),
   [#369](https://github.com/DonovanMontoya/OperaLibre/pull/369),
   [#370](https://github.com/DonovanMontoya/OperaLibre/pull/370))
