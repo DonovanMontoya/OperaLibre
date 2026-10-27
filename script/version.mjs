@@ -2,9 +2,10 @@
 // version of the stable release tag it ships as; this script writes and checks
 // all of them together. AGENTS.md "Versions" describes the release flow.
 //
-//   node script/version.mjs check [--tag X.Y.Z]  every file agrees (and matches the tag)
-//   node script/version.mjs set X.Y.Z            next release; app builds restart at 1
-//   node script/version.mjs build [N]            re-upload the same release as build N
+//   node script/version.mjs check [--tag X.Y.Z] [--nightly TAG]
+//       every file agrees, and matches a release tag (promoted from nightly TAG)
+//   node script/version.mjs set X.Y.Z    next release; app builds restart at 1
+//   node script/version.mjs build [N]    re-upload the same release as build N
 //
 // iOS and Android share the build number: the iOS bundle version is N, and
 // Android's versionCode packs version and build into one rising integer.
@@ -76,7 +77,7 @@ export function readFields(texts) {
 }
 
 // Returns the problems with a checkout's versions; empty when they all agree.
-export function versionProblems(fields, tag) {
+export function versionProblems(fields, tag, sourceNightly) {
   const problems = [];
   const version = fields.server;
   try {
@@ -96,9 +97,12 @@ export function versionProblems(fields, tag) {
   if (tag && tagVersion(tag) !== version) {
     // A blank dispatch tag picks the next patch, which is behind main after a
     // minor or major bump, so point at the tag rather than at moving main back.
-    problems.push(RELEASE_TAG.test(tag) && compareStableTags(version, tag) > 0
-      ? `The release tag is ${tag} but this source is version ${version}. Dispatch the release with tag ${version}.`
-      : `The release tag is ${tag} but this source is version ${version}. Run \`node script/version.mjs set ${tagVersion(tag)}\` on main first.`);
+    // A promoted nightly's source cannot change, so behind it is only a hint.
+    const behind = !(RELEASE_TAG.test(tag) && compareStableTags(version, tag) > 0);
+    problems.push(`The release tag is ${tag} but this source is version ${version}. ${
+      !behind ? `Dispatch the release with tag ${version}.`
+        : sourceNightly ? `${sourceNightly} was built before main was set to ${tagVersion(tag)}; promote a nightly built after that change.`
+          : `Run \`node script/version.mjs set ${tagVersion(tag)}\` on main first.`}`);
   }
   return problems;
 }
@@ -135,8 +139,8 @@ function main([command, ...args]) {
   const texts = load();
   const fields = readFields(texts);
   if (command === "check") {
-    const tagIndex = args.indexOf("--tag");
-    const problems = versionProblems(fields, tagIndex >= 0 ? args[tagIndex + 1] : undefined);
+    const option = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined) || undefined;
+    const problems = versionProblems(fields, option("--tag"), option("--nightly"));
     if (problems.length) fail(problems.join("\n"));
     console.log(`${fields.server} (build ${fields.iosBuild})`);
   } else if (command === "set") {
@@ -160,7 +164,7 @@ function main([command, ...args]) {
     save(texts, writeFields(texts, buildFields(version, build)));
     console.log(`${version} app build ${build}. Record it in docs/ios-changelog.md on main.`);
   } else {
-    fail("usage: node script/version.mjs check [--tag X.Y.Z] | set X.Y.Z | build [N]");
+    fail("usage: node script/version.mjs check [--tag X.Y.Z [--nightly TAG]] | set X.Y.Z | build [N]");
   }
 }
 
