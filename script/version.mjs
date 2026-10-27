@@ -1,14 +1,18 @@
-// The one place OperaLibre's version is changed. Every package carries the
-// version of the stable release tag it ships as; this script writes and checks
-// all of them together. AGENTS.md "Versions" describes the release flow.
+// The one place OperaLibre's versions are changed. There are two independent
+// lines; AGENTS.md "Versions" describes them.
 //
-//   node script/version.mjs check [--tag X.Y.Z] [--nightly TAG]
-//       every file agrees, and matches a release tag (promoted from nightly TAG)
-//   node script/version.mjs set X.Y.Z    next release; app builds restart at 1
-//   node script/version.mjs build [N]    re-upload the same release as build N
+//   server: the server and launcher crates. It follows the stable release
+//           tags (0.5.0, then 0.5.1-nightly.* until 0.5.1). Release builds
+//           report the tag they ship as; the crate version is what a source
+//           build reports.
+//   app:    the iOS and Android apps, versioned for the stores (1.3.2). Both
+//           share one build number; Android's versionCode packs version and
+//           build into one rising integer.
 //
-// iOS and Android share the build number: the iOS bundle version is N, and
-// Android's versionCode packs version and build into one rising integer.
+//   node script/version.mjs check            each line agrees with itself
+//   node script/version.mjs set server X.Y.Z
+//   node script/version.mjs set app X.Y.Z    app builds restart at 1
+//   node script/version.mjs build [N]        next app build, or build N
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -17,9 +21,7 @@ import { compareStableTags } from "./resolve_release.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const STABLE = /^(\d+)\.(\d+)\.(\d+)$/;
-// Release tags may carry a leading v (see resolve_release.mjs); versions never do.
-const RELEASE_TAG = /^v?\d+\.\d+\.\d+$/;
-const tagVersion = (tag) => tag.replace(/^v/, "");
+const MAX_BUILD = 99;
 
 const FILES = {
   server: "apps/server/Cargo.toml",
@@ -32,15 +34,14 @@ const FILES = {
 
 export function parseVersion(version) {
   const match = STABLE.exec(version);
-  if (!match) throw new Error(`${version} is not a stable version such as 1.3.2.`);
-  const parts = match.slice(1).map(Number);
-  if (parts[1] > 99 || parts[2] > 99) throw new Error(`${version}: minor and patch must stay below 100 for Android version codes.`);
-  return parts;
+  if (!match) throw new Error(`${version} is not a version such as 1.3.2.`);
+  return match.slice(1).map(Number);
 }
 
 export function androidVersionCode(version, build) {
   const [major, minor, patch] = parseVersion(version);
-  if (!Number.isInteger(build) || build < 1 || build > 99) throw new Error("App build numbers run from 1 to 99.");
+  if (minor > 99 || patch > 99) throw new Error(`${version}: minor and patch must stay below 100 for Android version codes.`);
+  if (!Number.isInteger(build) || build < 1 || build > MAX_BUILD) throw new Error(`App build numbers run from 1 to ${MAX_BUILD}.`);
   return major * 1_000_000 + minor * 10_000 + patch * 100 + build;
 }
 
@@ -58,12 +59,12 @@ const FIELDS = {
   iosVersion: [/(MARKETING_VERSION = )([^;]+)(;)/g, "ios"],
   iosBuild: [/(CURRENT_PROJECT_VERSION = )([^;]+)(;)/g, "ios"]
 };
-// Fields that must all equal the release version; the rest carry the build.
-const VERSION_FIELDS = ["server", "serverLock", "launcher", "launcherLock", "androidName", "iosVersion"];
-
-function buildFields(version, build) {
-  return { androidCode: androidVersionCode(version, build), iosBuild: build };
-}
+// The fields that carry each line's version. The app line's build lives in
+// iosBuild and androidCode.
+export const LINES = {
+  server: ["server", "serverLock", "launcher", "launcherLock"],
+  app: ["iosVersion", "androidName"]
+};
 
 export function readFields(texts) {
   const fields = {};
@@ -76,35 +77,66 @@ export function readFields(texts) {
   return fields;
 }
 
-// Returns the problems with a checkout's versions; empty when they all agree.
-export function versionProblems(fields, tag, sourceNightly) {
+// Returns the problems within each line; empty when each line agrees with
+// itself. The two lines are not compared with each other or with git tags.
+export function versionProblems(fields) {
   const problems = [];
-  const version = fields.server;
-  try {
-    parseVersion(version);
-  } catch (error) {
-    return [error.message];
+  for (const [line, names] of Object.entries(LINES)) {
+    const version = fields[names[0]];
+    try {
+      parseVersion(version);
+    } catch (error) {
+      problems.push(`${line}: ${error.message}`);
+      continue;
+    }
+    for (const name of names.slice(1)) {
+      if (fields[name] !== version) problems.push(`${line}: ${name} is ${fields[name]}, expected ${version} like ${names[0]}.`);
+    }
   }
-  for (const name of VERSION_FIELDS) {
-    if (fields[name] !== version) problems.push(`${name} is ${fields[name]}, expected ${version}.`);
-  }
-  const build = Number(fields.iosBuild);
-  if (!/^[1-9]\d?$/.test(fields.iosBuild)) {
-    problems.push(`iOS build is ${fields.iosBuild}; app builds run from 1 to 99.`);
-  } else if (Number(fields.androidCode) !== androidVersionCode(version, build)) {
-    problems.push(`Android versionCode is ${fields.androidCode}, expected ${androidVersionCode(version, build)} for ${version} build ${build}.`);
-  }
-  if (tag && tagVersion(tag) !== version) {
-    // A blank dispatch tag picks the next patch, which is behind main after a
-    // minor or major bump, so point at the tag rather than at moving main back.
-    // A promoted nightly's source cannot change, so behind it is only a hint.
-    const behind = !(RELEASE_TAG.test(tag) && compareStableTags(version, tag) > 0);
-    problems.push(`The release tag is ${tag} but this source is version ${version}. ${
-      !behind ? `Dispatch the release with tag ${version}.`
-        : sourceNightly ? `${sourceNightly} was built before main was set to ${tagVersion(tag)}; promote a nightly built after that change.`
-          : `Run \`node script/version.mjs set ${tagVersion(tag)}\` on main first.`}`);
+  const version = fields.iosVersion;
+  if (!/^[1-9]\d*$/.test(fields.iosBuild) || Number(fields.iosBuild) > MAX_BUILD) {
+    problems.push(`app: iOS build is ${fields.iosBuild}; app builds run from 1 to ${MAX_BUILD}.`);
+  } else if (STABLE.test(version)) {
+    try {
+      const expected = androidVersionCode(version, Number(fields.iosBuild));
+      if (Number(fields.androidCode) !== expected) {
+        problems.push(`app: Android versionCode is ${fields.androidCode}, expected ${expected} for ${version} build ${fields.iosBuild}.`);
+      }
+    } catch (error) {
+      problems.push(`app: ${error.message}`);
+    }
   }
   return problems;
+}
+
+// The changes for `set server`, `set app`, and `build`. Each throws when the
+// request would break its line's rules.
+export function setServer(fields, version) {
+  parseVersion(version);
+  return Object.fromEntries(LINES.server.map((name) => [name, version]));
+}
+
+// Store versions and Android version codes can only rise, so a new app
+// version must be above the current one.
+export function setApp(fields, version) {
+  androidVersionCode(version, 1);
+  if (compareStableTags(version, fields.iosVersion) <= 0) {
+    throw new Error(`App version ${version} is not above the current ${fields.iosVersion}; store versions can only rise.`);
+  }
+  return { iosVersion: version, androidName: version, ...appBuild(version, 1) };
+}
+
+export function bumpBuild(fields, requested) {
+  const current = Number(fields.iosBuild);
+  const build = requested === undefined ? current + 1 : Number(requested);
+  if (!Number.isInteger(build) || build <= current) {
+    throw new Error(`Build ${requested ?? build} is not above the current build ${current}; each upload of ${fields.iosVersion} needs a higher number.`);
+  }
+  return appBuild(fields.iosVersion, build);
+}
+
+function appBuild(version, build) {
+  return { androidCode: androidVersionCode(version, build), iosBuild: build };
 }
 
 export function writeFields(texts, changes) {
@@ -126,52 +158,51 @@ function save(before, after) {
   }
 }
 
-function git(...args) {
-  return execFileSync("git", ["-C", ROOT, ...args], { encoding: "utf8" }).trim();
+function releaseTags() {
+  try {
+    const output = execFileSync("git", ["-C", ROOT, "tag", "--list"], { encoding: "utf8" });
+    return output.split("\n").map((tag) => tag.trim().replace(/^v/, "")).filter((tag) => STABLE.test(tag));
+  } catch {
+    return [];
+  }
 }
 
-function fail(message) {
-  console.error(message);
-  process.exit(1);
-}
+const USAGE = "usage: node script/version.mjs check | set server X.Y.Z | set app X.Y.Z | build [N]";
 
 function main([command, ...args]) {
   const texts = load();
   const fields = readFields(texts);
+  const summary = (f) => `server ${f.server}, app ${f.iosVersion} (build ${f.iosBuild})`;
   if (command === "check") {
-    const option = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined) || undefined;
-    const problems = versionProblems(fields, option("--tag"), option("--nightly"));
-    if (problems.length) fail(problems.join("\n"));
-    console.log(`${fields.server} (build ${fields.iosBuild})`);
-  } else if (command === "set") {
-    const version = tagVersion(args[0] ?? "");
-    parseVersion(version);
-    const released = git("tag", "--list").split("\n").filter((tag) => RELEASE_TAG.test(tag));
-    const highest = released.sort(compareStableTags).at(-1);
-    if (highest && compareStableTags(version, highest) <= 0) {
-      fail(`${version} is not newer than the latest release tag ${highest}. Fetch tags if that looks wrong.`);
-    }
-    // Store versions and Android version codes can only rise.
-    if (compareStableTags(version, fields.server) < 0) fail(`${version} is older than this source's version ${fields.server}.`);
-    const changes = { ...Object.fromEntries(VERSION_FIELDS.map((name) => [name, version])), ...buildFields(version, 1) };
-    save(texts, writeFields(texts, changes));
-    console.log(`Set every package to ${version}, app build 1.`);
-  } else if (command === "build") {
-    const version = fields.server;
-    const tags = git("tag", "--points-at", "HEAD").split("\n").map(tagVersion);
-    if (!tags.includes(version)) fail(`App builds come from a release tag; check out ${version} first.`);
-    const build = args[0] ? Number(args[0]) : Number(fields.iosBuild) + 1;
-    save(texts, writeFields(texts, buildFields(version, build)));
-    console.log(`${version} app build ${build}. Record it in docs/ios-changelog.md on main.`);
-  } else {
-    fail("usage: node script/version.mjs check [--tag X.Y.Z [--nightly TAG]] | set X.Y.Z | build [N]");
+    const problems = versionProblems(fields);
+    if (problems.length) throw new Error(problems.join("\n"));
+    console.log(summary(fields));
+    return;
   }
+  let changes;
+  if (command === "set" && args[0] === "server" && args[1]) {
+    const version = args[1].replace(/^v/, "");
+    changes = setServer(fields, version);
+    // The server line follows the release tags; a version with no tag yet is
+    // allowed (the release stamps the tag into its builds) but worth a note.
+    if (!releaseTags().includes(version)) console.warn(`Note: no ${version} release tag here yet. Fetch tags if that looks wrong.`);
+  } else if (command === "set" && args[0] === "app" && args[1]) {
+    changes = setApp(fields, args[1]);
+  } else if (command === "build" && args.length <= 1) {
+    changes = bumpBuild(fields, args[0]);
+  } else {
+    throw new Error(USAGE);
+  }
+  const next = writeFields(texts, changes);
+  save(texts, next);
+  console.log(summary(readFields(next)));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     main(process.argv.slice(2));
   } catch (error) {
-    fail(error.message);
+    console.error(error.message);
+    process.exit(1);
   }
 }

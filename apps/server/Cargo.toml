@@ -1,6 +1,6 @@
 [package]
 name = "operalibre-server"
-version = "1.3.2"
+version = "0.5.0"
 edition = "2024"
 # Locked dependencies require 1.89 (aes 0.9.3, lofty 0.25.4, and related crates).
 rust-version = "1.89"
