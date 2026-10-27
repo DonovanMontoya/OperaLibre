@@ -3,19 +3,36 @@ set -eu
 
 # Xcode runs this for every build; only an archive (ACTION=install), which is
 # what reaches TestFlight or the App Store, has to come from the release tag
-# named by MARKETING_VERSION. `node script/version.mjs build` may change the
-# build number in the Xcode and Android projects at that tag; anything else
-# uncommitted fails.
+# named by MARKETING_VERSION. The checkout must match the tag except for the
+# build numbers `node script/version.mjs build` changes, and the web bundle
+# (gitignored, so git cannot vouch for it) must be built for this version
+# after the tag was checked out.
 [ "${ACTION:-}" = install ] || exit 0
 VERSION="${MARKETING_VERSION:?MARKETING_VERSION is not set}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-if ! git -C "$REPO" tag --points-at HEAD | grep -qx "v\{0,1\}$VERSION"; then
-  echo "error: archive $VERSION from its release tag: git checkout $VERSION (then npm ci and npm run sync:ios)." >&2
+SYNC="OPERALIBRE_VERSION=$VERSION npm run sync:ios"
+fail() {
+  echo "error: $1" >&2
   exit 1
+}
+
+TAGS="$(git -C "$REPO" tag --points-at HEAD)" || fail "cannot read git tags in $REPO."
+TAG="$(printf '%s\n' "$TAGS" | grep -Fx -e "$VERSION" -e "v$VERSION" | head -n 1)"
+[ -n "$TAG" ] || fail "archive $VERSION from its release tag: git checkout $VERSION, then npm ci and $SYNC."
+
+PBXPROJ=apps/web/ios/App/App.xcodeproj/project.pbxproj
+GRADLE=apps/web/android/app/build.gradle
+if [ -n "$(git -C "$REPO" status --porcelain -- . ":!$PBXPROJ" ":!$GRADLE")" ]; then
+  fail "the $TAG checkout has uncommitted or untracked files; archive the tag as released."
 fi
-if [ -n "$(git -C "$REPO" status --porcelain --untracked-files=no -- . \
-  ':!apps/web/ios/App/App.xcodeproj/project.pbxproj' ':!apps/web/android/app/build.gradle')" ]; then
-  echo "error: the $VERSION checkout has uncommitted changes; archive the tag as released." >&2
-  exit 1
+if git -C "$REPO" diff -U0 HEAD -- "$PBXPROJ" "$GRADLE" | grep -E '^[-+][^-+]' |
+  grep -Evq '^[-+][[:space:]]*(CURRENT_PROJECT_VERSION = [0-9]+;|versionCode [0-9]+)$'; then
+  fail "the $TAG checkout changes more than the build number in the Xcode or Android project."
 fi
-echo "Archiving $VERSION (${CURRENT_PROJECT_VERSION:-?}) from release tag $VERSION"
+
+BUNDLE="$REPO/apps/web/ios/App/App/public/VERSION.txt"
+if [ "$(cat "$BUNDLE" 2>/dev/null)" != "$VERSION" ] ||
+  [ "$BUNDLE" -ot "$(git -C "$REPO" rev-parse --absolute-git-dir)/HEAD" ]; then
+  fail "the web bundle was not built for $TAG in this checkout; run $SYNC."
+fi
+echo "Archiving $VERSION (${CURRENT_PROJECT_VERSION:-?}) from release tag $TAG"
