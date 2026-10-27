@@ -16,6 +16,9 @@ import { compareStableTags } from "./resolve_release.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const STABLE = /^(\d+)\.(\d+)\.(\d+)$/;
+// Release tags may carry a leading v (see resolve_release.mjs); versions never do.
+const RELEASE_TAG = /^v?\d+\.\d+\.\d+$/;
+const tagVersion = (tag) => tag.replace(/^v/, "");
 
 const FILES = {
   server: "apps/server/Cargo.toml",
@@ -90,9 +93,8 @@ export function versionProblems(fields, tag) {
   } else if (Number(fields.androidCode) !== androidVersionCode(version, build)) {
     problems.push(`Android versionCode is ${fields.androidCode}, expected ${androidVersionCode(version, build)} for ${version} build ${build}.`);
   }
-  const tagVersion = tag?.replace(/^v/, "");
-  if (tagVersion && tagVersion !== version) {
-    problems.push(`The release tag is ${tag} but this source is version ${version}. Run \`node script/version.mjs set ${tagVersion}\` on main first.`);
+  if (tag && tagVersion(tag) !== version) {
+    problems.push(`The release tag is ${tag} but this source is version ${version}. Run \`node script/version.mjs set ${tagVersion(tag)}\` on main first.`);
   }
   return problems;
 }
@@ -134,9 +136,9 @@ function main([command, ...args]) {
     if (problems.length) fail(problems.join("\n"));
     console.log(`${fields.server} (build ${fields.iosBuild})`);
   } else if (command === "set") {
-    const version = args[0]?.replace(/^v/, "");
+    const version = tagVersion(args[0] ?? "");
     parseVersion(version);
-    const released = git("tag", "--list").split("\n").filter((tag) => STABLE.test(tag));
+    const released = git("tag", "--list").split("\n").filter((tag) => RELEASE_TAG.test(tag));
     const highest = released.sort(compareStableTags).at(-1);
     if (highest && compareStableTags(version, highest) <= 0) {
       fail(`${version} is not newer than the latest release tag ${highest}. Fetch tags if that looks wrong.`);
@@ -146,7 +148,7 @@ function main([command, ...args]) {
     console.log(`Set every package to ${version}, app build 1.`);
   } else if (command === "build") {
     const version = fields.server;
-    const tags = git("tag", "--points-at", "HEAD").split("\n");
+    const tags = git("tag", "--points-at", "HEAD").split("\n").map(tagVersion);
     if (!tags.includes(version)) fail(`App builds come from a release tag; check out ${version} first.`);
     const build = args[0] ? Number(args[0]) : Number(fields.iosBuild) + 1;
     save(texts, writeFields(texts, buildFields(version, build)));
