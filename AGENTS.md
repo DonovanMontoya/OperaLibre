@@ -263,8 +263,9 @@ Change versions only with `node script/version.mjs`, never by editing
 - `check` verifies every file agrees; CI runs it, and a stable release checks
   the version against its new tag.
 - App builds come from the release tag. Check out `X.Y.Z`, then `npm ci` and
-  `npm run sync:ios`, and archive build 1. To upload the same release again,
-  run `build` at the tag for build 2, and so on. iOS and Android share the build number; Android's `versionCode`
+  `npm run sync:ios`, and archive build 1. Xcode refuses to archive anywhere
+  else. To upload the same release again, run `build` at the tag for build 2,
+  and so on. iOS and Android share the build number; Android's `versionCode`
   is `major·1000000 + minor·10000 + patch·100 + build`.
 
 Record each shipped app build as **version (build)** in `docs/ios-changelog.md`.

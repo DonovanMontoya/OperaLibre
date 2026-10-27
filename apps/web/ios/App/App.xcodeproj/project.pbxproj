@@ -137,6 +137,7 @@
 				504EC3011FED79650016851F /* Frameworks */,
 				504EC3021FED79650016851F /* Resources */,
 				E17C00012E32000100B6D001 /* Check export compliance */,
+				E17C00022E32000100B6D001 /* Check release source */,
 			);
 			buildRules = (
 			);
@@ -222,6 +223,22 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "/bin/sh \"$SRCROOT/../../../../script/check_ios_export_compliance.sh\" \"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\n";
+		};
+		E17C00022E32000100B6D001 /* Check release source */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../../../script/check_ios_release_source.sh",
+			);
+			name = "Check release source";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"$SRCROOT/../../../../script/check_ios_release_source.sh\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
