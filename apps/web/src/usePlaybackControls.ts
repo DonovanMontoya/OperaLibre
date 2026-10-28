@@ -863,7 +863,10 @@ export function usePlaybackControls({
       playWhenTrackLoads.current = false;
       setPlayPending(false);
       setIsPlaying(false);
-      if (playbackBook && currentTrack) {
+      // A preview only stops short of the end while the page runs. A locked
+      // iPhone can play on to it, and the preview then returns the listener
+      // to their place instead of finishing the book.
+      if (playbackBook && currentTrack && clipPreviewBookIdRef.current !== playbackBook.id) {
         const mediaDuration = audioRef.current?.duration;
         const finalTrackPosition = Math.max(
           0,
