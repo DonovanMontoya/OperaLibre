@@ -28,6 +28,15 @@ if [[ ! -f "$APP_ICON_SOURCE" ]]; then
 fi
 
 cd "$ROOT_DIR"
+
+# The macOS app follows the server line (AGENTS.md "Versions"), so it reports
+# the server crate's version. Bundle versions must be plain X.Y.Z.
+APP_VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' apps/server/Cargo.toml | head -n 1)"
+APP_VERSION="${APP_VERSION%%-*}"
+if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "could not read the server version from apps/server/Cargo.toml" >&2
+  exit 1
+fi
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
 npm run build -w @operalibre/web
@@ -59,9 +68,9 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>$APP_VERSION</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>$APP_VERSION</string>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
   <key>NSPrincipalClass</key>
