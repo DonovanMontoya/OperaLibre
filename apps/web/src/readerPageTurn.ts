@@ -183,8 +183,10 @@ export function beginPageTurnDrag(
   let released: boolean | null = null;
   let settling = false;
   let turned = false;
+  let ended = false;
 
   const show = () => {
+    if (ended) return;
     for (const animation of animations ?? []) {
       const duration = Number(animation.effect?.getComputedTiming().duration) || 0;
       animation.currentTime = progress * duration;
@@ -230,9 +232,20 @@ export function beginPageTurnDrag(
     turned = true;
     return turn();
   });
+  // A turn begun before this one settles takes over its pseudo-elements, and
+  // the browser hands it the animations held still here; it cannot finish
+  // while they stay paused. Stop steering them and let them run.
+  const end = () => {
+    ended = true;
+    for (const animation of animations ?? []) {
+      if (animation.playState === "paused") animation.play();
+    }
+  };
+  void transition.finished.then(end, end);
   transition.ready.then(
     () => {
-      animations = document.getAnimations().filter((animation) =>
+      // Already replaced by a newer turn: its animations are not ours to hold.
+      animations = ended ? [] : document.getAnimations().filter((animation) =>
         (animation.effect as KeyframeEffect | null)?.pseudoElement?.includes("(reader-page"));
       for (const animation of animations) animation.pause();
       show();

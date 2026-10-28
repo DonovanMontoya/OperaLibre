@@ -2295,6 +2295,9 @@ function MainApp({
         finishFeedState={finishFeedState}
         ipad={ipad}
         isLoading={isLoading}
+        isPlaying={isPlaying}
+        playPending={playPending}
+        togglePlayback={togglePlayback}
         isOffline={isOffline}
         isOperaLibre={isOperaLibre}
         lastPurchaseSource={lastPurchaseSource}
