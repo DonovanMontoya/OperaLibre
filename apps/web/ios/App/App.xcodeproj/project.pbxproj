@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		B17000012E32000100B6D001 /* LibroDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = B17000022E32000100B6D001 /* LibroDevice.swift */; };
 		D0F01D012F10000100A1B2C3 /* DeviceFold.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F01D022F10000100A1B2C3 /* DeviceFold.swift */; };
+		D0F01D032F10000100A1B2C3 /* OuterCover.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F01D042F10000100A1B2C3 /* OuterCover.swift */; };
 		B17100012E32000100B6D001 /* LibroDeviceResponse.swift in Sources */ = {isa = PBXBuildFile; fileRef = B17100022E32000100B6D001 /* LibroDeviceResponse.swift */; };
 		B17000032E32000100B6D001 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = B17000042E32000100B6D001 /* ZIPFoundation */; };
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
@@ -37,6 +38,7 @@
 /* Begin PBXFileReference section */
 		B17000022E32000100B6D001 /* LibroDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibroDevice.swift; sourceTree = "<group>"; };
 		D0F01D022F10000100A1B2C3 /* DeviceFold.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceFold.swift; sourceTree = "<group>"; };
+		D0F01D042F10000100A1B2C3 /* OuterCover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OuterCover.swift; sourceTree = "<group>"; };
 		B17100022E32000100B6D001 /* LibroDeviceResponse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibroDeviceResponse.swift; sourceTree = "<group>"; };
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
 		50379B222058CBB4000EE86E /* capacitor.config.json */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.json; path = capacitor.config.json; sourceTree = "<group>"; };
@@ -102,6 +104,7 @@
 				A17B00102E32000100B6D001 /* BackgroundDownloads.swift */,
 				B17000022E32000100B6D001 /* LibroDevice.swift */,
 				D0F01D022F10000100A1B2C3 /* DeviceFold.swift */,
+				D0F01D042F10000100A1B2C3 /* OuterCover.swift */,
 				B17100022E32000100B6D001 /* LibroDeviceResponse.swift */,
 				A17B00162E32000100B6D001 /* BackgroundDownloadPolicy.swift */,
 				A17B00122E32000100B6D001 /* ViewController.swift */,
@@ -234,6 +237,7 @@
 				A17B00112E32000100B6D001 /* BackgroundDownloads.swift in Sources */,
 				B17000012E32000100B6D001 /* LibroDevice.swift in Sources */,
 				D0F01D012F10000100A1B2C3 /* DeviceFold.swift in Sources */,
+				D0F01D032F10000100A1B2C3 /* OuterCover.swift in Sources */,
 				B17100012E32000100B6D001 /* LibroDeviceResponse.swift in Sources */,
 				A17B00172E32000100B6D001 /* BackgroundDownloadPolicy.swift in Sources */,
 				A17B00132E32000100B6D001 /* ViewController.swift in Sources */,

@@ -40,6 +40,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>On iPhone Duo, iOS shows the book cover on the outer screen only while a camera preview is running. OperaLibre runs it at low quality for that preview and never records or saves anything.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>OperaLibre connects to your audiobook server on the local network.</string>
 	<!--

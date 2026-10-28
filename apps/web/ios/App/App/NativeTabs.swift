@@ -194,6 +194,9 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         tabsOverlay.addGestureRecognizer(barTouch)
         view.addSubview(tabsOverlay)
         layoutContent(in: self)
+        // This controller fills the inner display, which is where the outer
+        // display's camera accessory has to be offered from.
+        OuterCoverController.shared.attach(to: self)
     }
 
     override var childForStatusBarStyle: UIViewController? { navigationVisible ? nil : content }

@@ -22,6 +22,7 @@ import {
 import { supportsLibroDevice } from "./libroDevice";
 import { LibroCatalog } from "./LibroCatalog";
 import { getDeviceBooks, mergeDeviceAndServerBooks } from "./localLibrary";
+import { OuterCoverSetting } from "./OuterCoverSetting";
 import { PageTurnSetting } from "./PageTurnSetting";
 import { FOLLOW_AGGRESSIVENESS_LABELS, type FollowAggressiveness } from "./readalongPreferences";
 import { Fragment, useEffect, useRef } from "react";
@@ -275,6 +276,7 @@ export function BehaviorSettings({
           </button>
         </div>
         <PageTurnSetting enabled={pageTurnAnimation} onToggle={togglePageTurnAnimation} />
+        <OuterCoverSetting />
         {sentenceFollowAvailable ? (
           <div className="settings-follow-group">
             <div className="settings-toggle-row">

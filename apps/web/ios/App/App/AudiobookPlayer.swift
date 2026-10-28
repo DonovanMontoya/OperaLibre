@@ -109,6 +109,8 @@ extension AudiobookPlayerMonitor {
 /// recovery checkpoint whichever of them the listener is using.
 public final class AudiobookPlayer {
     static let shared = AudiobookPlayer()
+    /// Posted on main when `artworkImage` changes.
+    static let artworkDidChange = Notification.Name("OperaLibreArtworkDidChange")
 
     weak var observer: AudiobookPlayerObserver?
     weak var monitor: AudiobookPlayerMonitor?
@@ -163,6 +165,8 @@ public final class AudiobookPlayer {
     private var suppliedNowPlayingChapter: NativeNowPlayingChapter?
     private var activeNowPlayingChapterIndex: Int?
     private var nowPlayingArtwork: MPMediaItemArtwork?
+    /// The loaded book's cover, for surfaces other than Now Playing.
+    private(set) var artworkImage: UIImage?
     private var artworkGeneration = 0
     private let checkpointKey = "operalibre.native-audio-checkpoint.v1"
     private var recoveryScopeKey: String?
@@ -1544,6 +1548,7 @@ public final class AudiobookPlayer {
         artworkGeneration += 1
         let requestedGeneration = artworkGeneration
         nowPlayingArtwork = nil
+        setArtworkImage(nil)
         guard let source, let url = resolveNativeAudioSourceURL(source) else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard
@@ -1556,9 +1561,16 @@ public final class AudiobookPlayer {
             DispatchQueue.main.async {
                 guard let self, requestedGeneration == self.artworkGeneration else { return }
                 self.nowPlayingArtwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                self.setArtworkImage(image)
                 self.updateNowPlayingInfo()
             }
         }
+    }
+
+    private func setArtworkImage(_ image: UIImage?) {
+        guard image !== artworkImage else { return }
+        artworkImage = image
+        NotificationCenter.default.post(name: Self.artworkDidChange, object: self)
     }
 
     private func emitState() {
