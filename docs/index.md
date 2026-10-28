@@ -62,6 +62,14 @@ Windows and manual installs are covered in [Install a Release](installing-a-rele
 13. [Libro.fm Import](libro.md) — server imports, watched folders, and device downloads
 14. [Client compatibility](client-compatibility.md) — third-party client coverage and limitations
 
+## Support and feedback
+
+Use [GitHub Issues](https://github.com/DonovanMontoya/OperaLibre/issues) for
+public bug reports and feature discussions. For private support questions or
+beta feedback, email [operalibre@agentmail.to](mailto:operalibre@agentmail.to).
+Security vulnerabilities should go through the [private GitHub security
+advisory process](https://github.com/DonovanMontoya/OperaLibre/security/advisories/new).
+
 ## Architecture
 
 ```text
