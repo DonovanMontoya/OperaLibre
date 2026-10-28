@@ -357,6 +357,18 @@ pub(crate) fn build_router(
         )
         .route("/api/books/{book_id}/volume", put(update_book_volume))
         .route(
+            "/api/books/{book_id}/clips",
+            get(list_clips).post(create_clip),
+        )
+        .route(
+            "/api/books/{book_id}/clips/{clip_id}",
+            put(update_clip).delete(delete_clip),
+        )
+        .route(
+            "/api/books/{book_id}/clips/{clip_id}/audio",
+            get(clip_audio),
+        )
+        .route(
             "/api/books/{book_id}/tracks/{track_id}/stream",
             get(stream_track),
         )

@@ -49,6 +49,7 @@ const START_OVER_PROGRESS_CHECK_MS = 2_500;
  * playing book, over either the web audio element or the native player.
  */
 export function usePlaybackControls({
+  clipPreviewBookIdRef,
   activeChapter,
   activeTrackIndex,
   audioRef,
@@ -121,6 +122,7 @@ export function usePlaybackControls({
   volume,
   wantsAutoplayRef
 }: {
+  clipPreviewBookIdRef: RefObject<string | null>;
   activeChapter: ChapterSegment | null;
   activeTrackIndex: number;
   audioRef: RefObject<HTMLAudioElement | null>;
@@ -264,6 +266,7 @@ export function usePlaybackControls({
       setRestoredPlaybackBookId(resolvedBookId);
     }
     if (deliberateSeek && bookId) {
+      if (clipPreviewBookIdRef.current === bookId) clipPreviewBookIdRef.current = null;
       recordProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, bookId, seekTargetBookPosition);
       intentionalSeekGenerationRef.current.set(
         bookId,
@@ -537,12 +540,12 @@ export function usePlaybackControls({
     wantsAutoplayRef.current = autoPlay;
   }
 
-  function seekBookPosition(value: number, autoPlay = false) {
+  function seekBookPosition(value: number, autoPlay = false, temporary = false) {
     if (!playbackBook) {
       return;
     }
 
-    seekBookPositionInBook(playbackBook, value, autoPlay);
+    seekBookPositionInBook(playbackBook, value, autoPlay, undefined, !temporary);
   }
 
   // Start when the active engine has a source. The native control element
@@ -860,7 +863,10 @@ export function usePlaybackControls({
       playWhenTrackLoads.current = false;
       setPlayPending(false);
       setIsPlaying(false);
-      if (playbackBook && currentTrack) {
+      // A preview only stops short of the end while the page runs. A locked
+      // iPhone can play on to it, and the preview then returns the listener
+      // to their place instead of finishing the book.
+      if (playbackBook && currentTrack && clipPreviewBookIdRef.current !== playbackBook.id) {
         const mediaDuration = audioRef.current?.duration;
         const finalTrackPosition = Math.max(
           0,
