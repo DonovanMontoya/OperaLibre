@@ -141,7 +141,7 @@ import {
   type NativePlayerSheet
 } from "./PlayerSheets";
 import { ClipsSheet } from "./ClipsSheet";
-import type { Clip } from "./clips";
+import { clipPreviewFlag, type Clip } from "./clips";
 import { AudiobookUploadDialog, EbookUploadDialog } from "./UploadDialogs";
 import { MetadataEditorDialog } from "./MetadataEditorDialog";
 import { CompletionConfirmationDialog, SyncConfirmationDialog, UnplayedConfirmationDialog, type DeviceNotice } from "./ConfirmDialogs";
@@ -638,7 +638,10 @@ function MainApp({
   // Mirrored in a ref so persistProgress (called from pagehide/visibility
   // listeners holding stale closures) always sees the live value.
   const pendingSeekRef = useRef<PendingSeek | null>(null);
-  const clipPreviewBookIdRef = useRef<string | null>(null);
+  const clipPreviewBookIdRef = useMemo(
+    () => clipPreviewFlag(progressSeekStorage(), () => ({ serverKey: getServerStorageKey(), userId: currentUser.id })),
+    [currentUser.id]
+  );
   const setPendingSeek = (value: PendingSeek | null) => {
     pendingSeekRef.current = value;
     setPendingSeekState(value);

@@ -4,8 +4,11 @@ import {
   CLIP_MAX_SECONDS,
   clipAround,
   clipFileName,
+  clipPreviewFlag,
   clipsForBook,
   deliverQueuedClips,
+  forgetInterruptedClipPreview,
+  interruptedClipPreviewStart,
   newClipId,
   pendingClipStorageKey,
   readPendingClips,
@@ -158,4 +161,50 @@ test("a clip whose book is gone does not hold back the rest of the queue", async
     return outcomes.get(candidate.id) ?? "saved";
   });
   assert.deepEqual(attempted, ["gone", "next", "offline"]);
+});
+
+test("a preview the app never returned from is still known after a restart", () => {
+  const storage = memoryStorage();
+  const scope = () => ({ serverKey: "server", userId: "reader" });
+  const flag = clipPreviewFlag(storage, scope);
+  const before = Date.now();
+  flag.current = "book";
+  const startedAt = interruptedClipPreviewStart(storage, "server", "reader", "book");
+  assert.ok(startedAt !== null && startedAt >= before);
+  // Moving to another clip in the same book keeps the first start.
+  flag.current = "book";
+  assert.equal(interruptedClipPreviewStart(storage, "server", "reader", "book"), startedAt);
+  assert.equal(interruptedClipPreviewStart(storage, "server", "other reader", "book"), null);
+
+  // A fresh launch starts with no preview running but keeps the stored start.
+  const relaunched = clipPreviewFlag(storage, scope);
+  assert.equal(relaunched.current, null);
+  assert.equal(interruptedClipPreviewStart(storage, "server", "reader", "book"), startedAt);
+  forgetInterruptedClipPreview(storage, "server", "reader", "book");
+  assert.equal(interruptedClipPreviewStart(storage, "server", "reader", "book"), null);
+});
+
+test("a preview that returns, or moves to another book, leaves nothing behind", () => {
+  const storage = memoryStorage();
+  const flag = clipPreviewFlag(storage, () => ({ serverKey: "server", userId: "reader" }));
+  flag.current = "first";
+  flag.current = "second";
+  assert.equal(interruptedClipPreviewStart(storage, "server", "reader", "first"), null);
+  assert.notEqual(interruptedClipPreviewStart(storage, "server", "reader", "second"), null);
+  flag.current = null;
+  assert.equal(interruptedClipPreviewStart(storage, "server", "reader", "second"), null);
+  assert.equal(flag.current, null);
+});
+
+test("an unavailable store still keeps the preview flag for this session", () => {
+  const failing = {
+    getItem: () => { throw new Error("denied"); },
+    setItem: () => { throw new Error("full"); },
+    removeItem: () => { throw new Error("denied"); }
+  };
+  const flag = clipPreviewFlag(failing, () => ({ serverKey: "server", userId: "reader" }));
+  flag.current = "book";
+  assert.equal(flag.current, "book");
+  assert.equal(interruptedClipPreviewStart(failing, "server", "reader", "book"), null);
+  assert.equal(clipPreviewFlag(null, () => { throw new Error("unused"); }).current, null);
 });

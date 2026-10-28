@@ -100,6 +100,57 @@ export function writePendingClips(storage: ClipStorage, key: string, clips: read
   }
 }
 
+function clipPreviewStorageKey(serverKey: string, userId: string, bookId: string): string {
+  return `operalibre.clipPreview:${serverKey}:${userId}:${bookId}`;
+}
+
+/**
+ * The book whose clip is playing as a preview, mirrored to storage. On iPhone
+ * the native player keeps saving its own recovery position while a preview
+ * plays, so if the app is closed mid-preview that position is the clip's, not
+ * the listener's. The stored start lets the next launch tell the two apart.
+ */
+export function clipPreviewFlag(storage: ClipStorage | null, scope: () => { serverKey: string; userId: string }) {
+  let bookId: string | null = null;
+  return {
+    get current() {
+      return bookId;
+    },
+    set current(next: string | null) {
+      // Going from one clip straight to another keeps the first start.
+      if (next === bookId) return;
+      const previous = bookId;
+      bookId = next;
+      if (!storage) return;
+      const { serverKey, userId } = scope();
+      try {
+        if (previous) storage.removeItem(clipPreviewStorageKey(serverKey, userId, previous));
+        if (next) storage.setItem(clipPreviewStorageKey(serverKey, userId, next), String(Date.now()));
+      } catch {
+        // The in-memory flag still keeps preview positions out of saves.
+      }
+    }
+  };
+}
+
+/** When a preview of this book began without the app returning from it, if one did. */
+export function interruptedClipPreviewStart(storage: ClipStorage, serverKey: string, userId: string, bookId: string): number | null {
+  try {
+    const startedAt = Number(storage.getItem(clipPreviewStorageKey(serverKey, userId, bookId)) ?? NaN);
+    return Number.isFinite(startedAt) ? startedAt : null;
+  } catch {
+    return null;
+  }
+}
+
+export function forgetInterruptedClipPreview(storage: ClipStorage, serverKey: string, userId: string, bookId: string): void {
+  try {
+    storage.removeItem(clipPreviewStorageKey(serverKey, userId, bookId));
+  } catch {
+    // Left behind, the next restore of this book skips native recovery again.
+  }
+}
+
 /**
  * What became of one attempt to send a queued clip: delivered, stuck behind a
  * server that is out of reach, held because the server cannot find its book
