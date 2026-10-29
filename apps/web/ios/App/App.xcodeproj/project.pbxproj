@@ -32,6 +32,7 @@
 		A17B002B2E32000100B6D001 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B002A2E32000100B6D001 /* SceneDelegate.swift */; };
 		A17B00312E32000100B6D001 /* AudiobookShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00302E32000100B6D001 /* AudiobookShortcuts.swift */; };
 		A17B00332E32000100B6D001 /* NativeTabs.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00322E32000100B6D001 /* NativeTabs.swift */; };
+		A17B00412E32000100B6D001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A17B00402E32000100B6D001 /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -62,6 +63,7 @@
 		A17B00302E32000100B6D001 /* AudiobookShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudiobookShortcuts.swift; sourceTree = "<group>"; };
 		A17B002C2E32000100B6D001 /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
 		A17B00322E32000100B6D001 /* NativeTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTabs.swift; sourceTree = "<group>"; };
+		A17B00402E32000100B6D001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -119,6 +121,7 @@
 				504EC30E1FED79650016851F /* Assets.xcassets */,
 				504EC3101FED79650016851F /* LaunchScreen.storyboard */,
 				504EC3131FED79650016851F /* Info.plist */,
+				A17B00402E32000100B6D001 /* PrivacyInfo.xcprivacy */,
 				A17B002C2E32000100B6D001 /* App.entitlements */,
 				2FAD9762203C412B000D30F8 /* config.xml */,
 				50B271D01FEDC1A000F3C39B /* public */,
@@ -200,6 +203,7 @@
 				50379B232058CBB4000EE86E /* capacitor.config.json in Resources */,
 				504EC30D1FED79650016851F /* Main.storyboard in Resources */,
 				2FAD9763203C412B000D30F8 /* config.xml in Resources */,
+				A17B00412E32000100B6D001 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
