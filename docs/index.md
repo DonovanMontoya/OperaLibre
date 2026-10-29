@@ -40,6 +40,7 @@ Windows and manual installs are covered in [Install a Release](installing-a-rele
 - **Web and native mobile apps** — installable PWA plus Capacitor projects for Android and iPhone
 - **Offline listening** — download books in the native apps, or import audio and a matching EPUB into an on-device library without a server
 - **CarPlay** — browse and play your library from the car screen; downloaded books play without a network
+- **Desk view** — stand a folded iPhone Duo on its edges like a tent with the cover screen sideways, and the playing book fills the screen in a CarPlay-style Now Playing view with large playback controls
 - **Third-party clients** — a subset of the Audiobookshelf API for compatible clients, plus an OPDS catalog; see [Client compatibility](client-compatibility.md)
 - **Optional Audible import** — drive a local [Libation](https://github.com/rmcrackan/Libation) install from the web UI
 - **Optional Libro.fm import** — import your purchases into the server, or download them directly in the native apps
@@ -61,6 +62,14 @@ Windows and manual installs are covered in [Install a Release](installing-a-rele
 12. [Update Manifest](update-manifest.md) — how installations find and verify updates
 13. [Libro.fm Import](libro.md) — server imports, watched folders, and device downloads
 14. [Client compatibility](client-compatibility.md) — third-party client coverage and limitations
+
+## Support and feedback
+
+Use [GitHub Issues](https://github.com/DonovanMontoya/OperaLibre/issues) for
+public bug reports and feature discussions. For private support questions or
+beta feedback, email [operalibre@agentmail.to](mailto:operalibre@agentmail.to).
+Security vulnerabilities should go through the [private GitHub security
+advisory process](https://github.com/DonovanMontoya/OperaLibre/security/advisories/new).
 
 ## Architecture
 

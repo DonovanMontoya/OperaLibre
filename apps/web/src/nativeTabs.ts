@@ -17,6 +17,9 @@ export type NativeTabsState = {
   /** `#rrggbb` tint for the floating bar's glass, so it passes for a pane of
    *  the page it floats over. */
   bar?: string;
+  /** Change the bar's visibility without holding the last frame over the
+   *  page, for a page that fills the screen and does not reflow with it. */
+  uncovered?: boolean;
 };
 
 /** The shell publishes each screen's tones as custom properties. Reading them

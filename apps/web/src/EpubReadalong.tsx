@@ -1,4 +1,4 @@
-import { isBookPosture, useDeviceFold } from "./deviceFold";
+import { isBookPosture, isFlatSidePosture, useDeviceFold } from "./deviceFold";
 import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { restrictEpubContent } from "./readerContentPolicy";
 import { Capacitor } from "@capacitor/core";
@@ -61,7 +61,12 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { createPortal } from "react-dom";
 import type { Chapter, SyncFragment, SyncRecoveryGap } from "./types";
 import { readStoredValue, writeStoredValue } from "./appStorage";
-import { readReaderFollowEnabled, writeReaderFollowEnabled } from "./readalongPreferences";
+import {
+  readFlatSpreadEnabled,
+  readReaderFollowEnabled,
+  writeFlatSpreadEnabled,
+  writeReaderFollowEnabled
+} from "./readalongPreferences";
 import { useLandscapeOrientation, useReadingRoomWindow, useWideSpreadWindow } from "./useOrientation";
 import { errorMessage } from "./formatting";
 
@@ -451,7 +456,8 @@ export function EpubReadalong({
   useEffect(() => watchAppPrefersDark(setAppDark), []);
   const readerTheme = resolveReaderTheme(readerThemeChoice, appDark);
   // Held open like a book, the reader sets a page on each half, the gap
-  // between them on the fold. The change re-lays the chapter out, so it turns
+  // between them on the fold. Laid flat on its side it does the same unless
+  // the reader chose a single page. The change re-lays the chapter out, so it turns
   // back to the remembered place the way a resize does.
   const deviceFold = useDeviceFold();
   const readerLandscape = useLandscapeOrientation();
@@ -492,7 +498,14 @@ export function EpubReadalong({
   // Immersive is the native reader; only the web reader's focus mode borrows
   // the spread from a wide window.
   const webSpreadWindow = useWideSpreadWindow() && !immersive && !Capacitor.isNativePlatform();
-  const bookSpread = fullscreen && (isBookPosture(deviceFold) || webSpreadWindow);
+  const [flatSpread, setFlatSpreadState] = useState(readFlatSpreadEnabled);
+  const setFlatSpread = useCallback((enabled: boolean) => {
+    setFlatSpreadState(enabled);
+    writeFlatSpreadEnabled(enabled);
+  }, []);
+  const flatSide = isFlatSidePosture(deviceFold);
+  const bookSpread = fullscreen
+    && (isBookPosture(deviceFold) || (flatSide && flatSpread) || webSpreadWindow);
   useEffect(() => {
     const rendition = renditionRef.current;
     if (!isReady || !rendition) return;
@@ -2048,7 +2061,7 @@ export function EpubReadalong({
 
   const reader = (
     <div
-      className={`epub-reader theme-${readerTheme} ${fullscreen ? "fullscreen" : "room"} ${!fullscreen && roomAside ? "has-aside" : ""} ${immersive ? "immersive" : ""} ${fullscreen && chromeHidden ? "chrome-hidden" : ""}`}
+      className={`epub-reader theme-${readerTheme} ${fullscreen ? "fullscreen" : "room"} ${!fullscreen && roomAside ? "has-aside" : ""} ${immersive ? "immersive" : ""} ${fullscreen && chromeHidden ? "chrome-hidden" : ""} ${bookSpread ? "book-spread" : ""}`}
       tabIndex={0}
       onKeyDown={handleReaderKeyDown}
     >
@@ -2277,6 +2290,23 @@ export function EpubReadalong({
                 <h3>Appearance</h3>
                 <div className="epub-sheet-row">{themeOptions}</div>
                 <div className="epub-sheet-row">{fontControls}</div>
+                {fullscreen && flatSide ? (
+                  <div className="epub-sheet-row">
+                    <div className="epub-theme-options" role="group" aria-label="Pages when fully open">
+                      {([[false, "One page"], [true, "Two pages"]] as const).map(([enabled, label]) => (
+                        <button
+                          type="button"
+                          key={label}
+                          className={flatSpread === enabled ? "selected" : ""}
+                          aria-pressed={flatSpread === enabled}
+                          onClick={() => setFlatSpread(enabled)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 {fullscreen || !roomAside ? (
                   <>
                     <h3>Reading place</h3>
