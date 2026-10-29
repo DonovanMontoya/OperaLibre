@@ -5,7 +5,9 @@ nav_order: 11
 
 # Troubleshooting
 
-Common problems and how to fix them. If you hit something not listed here, open an issue with the relevant lines from the server's stdout/stderr.
+Common problems and how to fix them. If you hit something not listed here, open
+an issue with the relevant lines from the server's stdout/stderr. For private
+support questions, email [operalibre@agentmail.to](mailto:operalibre@agentmail.to).
 
 ## `Error: spawn npm ENOENT` on Windows
 

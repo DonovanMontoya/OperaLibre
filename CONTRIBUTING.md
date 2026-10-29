@@ -8,6 +8,9 @@ improvements, and features are all welcome.
 - **Bugs:** search existing issues first. A good report includes your OperaLibre
   version, server OS, the client (web browser, iPhone, Android, macOS, or a
   third-party app), steps to reproduce, and relevant server logs.
+- **Private support and beta feedback:** email
+  [operalibre@agentmail.to](mailto:operalibre@agentmail.to). Use GitHub Issues
+  when the report or discussion can be public.
 - **Features and larger changes:** open an issue to discuss the approach before
   writing a lot of code, so your work fits the project's direction.
 - **Security issues:** do not open a public issue. Report privately through

@@ -93,6 +93,14 @@ The server owns scanning, authentication, metadata, cover art, readalong files, 
 - [Client compatibility](docs/client-compatibility.md) — third-party client coverage and limitations
 - [Troubleshooting](docs/troubleshooting.md)
 
+## Support and feedback
+
+Use [GitHub Issues](https://github.com/DonovanMontoya/OperaLibre/issues) for
+public bug reports and feature discussions. For private support questions or
+beta feedback, email [operalibre@agentmail.to](mailto:operalibre@agentmail.to).
+Do not send security vulnerabilities there; report them through the [private
+GitHub security advisory process](https://github.com/DonovanMontoya/OperaLibre/security/advisories/new).
+
 ## Development
 
 For repeatable web, server, and native iOS checks and before/after measurements, see the
