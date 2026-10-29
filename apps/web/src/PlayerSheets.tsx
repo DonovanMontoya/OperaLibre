@@ -13,6 +13,7 @@ import {
 import type { Dispatch, FormEvent, SetStateAction } from "react";
 import { useModalFocus } from "./useModalFocus";
 import type { ChapterSegment } from "./chapters";
+import { displayPublishedDate } from "./bookMetadata";
 import { CoverArt } from "./CoverArt";
 import { bookSubtitle, durationFromTracks, formatDurationLabel, formatTime } from "./formatting";
 import { haptic } from "./native";
@@ -100,7 +101,7 @@ export function BookDetailsSheet({
           </div>
           <div>
             <span>Published</span>
-            <strong>{playbackBook.publishedDate ?? "—"}</strong>
+            <strong>{displayPublishedDate(playbackBook.publishedDate) ?? "—"}</strong>
           </div>
           <div>
             <span>Tracks</span>
