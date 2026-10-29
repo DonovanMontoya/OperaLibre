@@ -45,13 +45,23 @@ export function displayBookDescription(book: Book) {
   return description && !descriptionEchoesBook(book, description) ? description : null;
 }
 
+function stripTags(value: string) {
+  // Repeat until stable so removing one tag cannot leave another behind.
+  let previous;
+  do {
+    previous = value;
+    value = value.replace(/<[^>]+>/g, "");
+  } while (value !== previous);
+  return value;
+}
+
 /** Convert catalog HTML to plain text, keeping paragraph and line breaks. */
 export function cleanCatalogDescription(value: string | null) {
-  const description = cleanDescriptionSpaces(value)
+  const text = cleanDescriptionSpaces(value)
     ?.replace(/\s+/g, " ")
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(?:p|div|li|h[1-6])\s*>/gi, "\n\n")
-    .replace(/<[^>]+>/g, "")
+    .replace(/<\/(?:p|div|li|h[1-6])\s*>/gi, "\n\n");
+  const description = text && stripTags(text)
     .replace(/&(#x[\da-f]+|#\d+|[a-z]+);/gi, decodeEntity)
     // Strip any markup reconstructed from malformed tags or decoded entities.
     .replace(/[<>]/g, "")
