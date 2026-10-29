@@ -110,6 +110,8 @@ jobs:
           node --test script/release_signing.test.mjs
           node --test script/resolve_release.test.mjs
           node --test script/publish_release.test.mjs
+          node --test script/version.test.mjs
+          node script/version.mjs check
           python3 script/test_installer_libation.py
 
       - name: Install dependencies

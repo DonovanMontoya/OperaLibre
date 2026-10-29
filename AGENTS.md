@@ -248,6 +248,39 @@ explicit; a release or dependency version bump alone is not a reason to remap.
   include outdated maps while respecting the saved limit. Keep
   `docs/using-operalibre.md` and `docs/api.md` accurate when these contracts change.
 
+### Versions
+
+There are two version lines, and they are independent of each other:
+
+- **Server line**: the server and launcher crates (and their lockfiles). It
+  follows the stable release tags, such as `0.5.0`; nightlies between releases
+  are `0.5.1-nightly.<date>.<run>`. Release builds take their version from the
+  tag (`OPERALIBRE_VERSION`), which also stamps the web bundle, so the crate
+  version only shows in source builds. Keep it at the latest stable release.
+- **App line**: the iOS and Android apps, versioned for the stores (iOS 1.3.1
+  is on the App Store; the next app release is 1.3.2). iOS and Android share
+  one build number. Android's `versionCode` is
+  `major·1000000 + minor·10000 + patch·100 + build`, so it rises across builds
+  and versions.
+
+The read-along add-on is published separately and keeps its own version.
+
+Change versions only with `node script/version.mjs`, never by editing
+`Cargo.toml`, `build.gradle`, or the Xcode project by hand:
+
+- `set server X.Y.Z` after a stable release, so source builds report it. It is
+  not needed before a release, and it doesn't block one.
+- `set app X.Y.Z` for the next app release. It only accepts a version above the
+  current one and restarts the build at 1.
+- `build` raises the app build number for another upload of the same app
+  version (`build 4` sets it to 4). It works on any branch, including test
+  builds for TestFlight. The stores need each upload's number above the last
+  one, so if a build was uploaded from a branch that isn't merged, pass the
+  next number explicitly.
+- `check` verifies each line agrees with itself; CI runs it.
+
+Record each shipped app build as **version (build)** in `docs/ios-changelog.md`.
+
 ### Configuration compatibility
 
 New `server.config` keys need safe defaults so existing installs keep working.
@@ -338,6 +371,9 @@ These apply only to maintainers with write access.
   `tag` (the workflow picks the next patch) and notes written from the actual
   diff since the previous release, passed as a file or structured input. Use an
   explicit tag only for a rebuild or deliberate version jump. The source commit
-  must be in `origin/main`. Native clients can be versioned separately; check
-  their version files. Follow the run to completion and verify the published
-  release and assets. A `docs/**` push to `main` redeploys the docs site.
+  must be in `origin/main`. The release stamps its tag into the server and web
+  builds; the native apps are versioned separately (see [Versions](#versions)).
+  Follow the run to completion and verify the published release and assets.
+  Afterward, run `node script/version.mjs set server <tag>` in a follow-up PR
+  to main. A
+  `docs/**` push to `main` redeploys the docs site.

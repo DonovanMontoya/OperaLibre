@@ -84,6 +84,9 @@ export function LibraryPane({
   finishFeedState,
   ipad,
   isLoading,
+  isPlaying,
+  playPending,
+  togglePlayback,
   isOffline,
   isOperaLibre,
   lastPurchaseSource,
@@ -138,6 +141,9 @@ export function LibraryPane({
   finishFeedState: ReturnType<typeof useFinishFeed>;
   ipad: boolean;
   isLoading: boolean;
+  isPlaying: boolean;
+  playPending: boolean;
+  togglePlayback: () => void;
   isOffline: boolean;
   isOperaLibre: boolean;
   lastPurchaseSource: RefObject<"audible" | "libro" | "all">;
@@ -290,12 +296,15 @@ export function LibraryPane({
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [native, setUserMenuOpen, userMenuOpen]);
-  const queueActionsRef = useRef({ openBookDetails, setLibraryOpen });
-  queueActionsRef.current = { openBookDetails, setLibraryOpen };
+  // Playback state renders App on every media tick; the memoized Up Next
+  // only sees these through handlers whose identity never changes.
+  const queueActionsRef = useRef({ openBookDetails, setLibraryOpen, togglePlayback });
+  queueActionsRef.current = { openBookDetails, setLibraryOpen, togglePlayback };
   const openQueuedBook = useCallback((id: string) => {
     queueActionsRef.current.openBookDetails(id);
     queueActionsRef.current.setLibraryOpen(false);
   }, []);
+  const toggleQueuedPlayback = useCallback(() => queueActionsRef.current.togglePlayback(), []);
   // Up Next is the reader's plan, so searching or filtering the shelf below
   // leaves it alone.
   const queueBooks = useMemo(() => isOffline
@@ -1039,6 +1048,10 @@ export function LibraryPane({
               books={queueBooks}
               onOpenBook={openQueuedBook}
               onContinue={continueReadingBook}
+              playbackBookId={playbackBook?.id ?? null}
+              isPlaying={isPlaying}
+              playPending={playPending}
+              onTogglePlayback={toggleQueuedPlayback}
             />
           ) : null}
 

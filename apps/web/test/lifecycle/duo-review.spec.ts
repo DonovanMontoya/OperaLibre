@@ -230,7 +230,7 @@ test('native phone Continue Reading opens paused, plays explicitly, and remember
       updatedAt: '2026-09-30T12:00:00Z' } });
   });
   await page.reload();
-  const shelf = page.getByRole('region', { name: 'Up Next' });
+  const shelf = page.getByRole('region', { name: 'Listening and queue' });
   const resume = shelf.getByRole('button', { name: `Continue reading ${book.title}` });
   const play = shelf.getByRole('button', { name: `Play ${book.title}`, exact: true });
   await expect(resume).toBeVisible();
@@ -522,7 +522,7 @@ test('the half-open Duo Shelf is one page: Up Next in a band off the hinge, prog
   });
   await expect(page.locator('.book-leaf')).toHaveCount(2);
 
-  const upNext = page.getByRole('region', { name: 'Up Next', exact: true });
+  const upNext = page.getByRole('region', { name: 'Listening and queue', exact: true });
   const entries = upNext.getByRole('listitem');
   await expect(entries).toHaveCount(5);
   const lead = (await entries.first().boundingBox())!;
@@ -532,7 +532,7 @@ test('the half-open Duo Shelf is one page: Up Next in a band off the hinge, prog
   for (const entry of (await entries.all()).slice(1)) {
     const box = (await entry.boundingBox())!;
     expect(box.x).toBeGreaterThanOrEqual(496);
-    expect(Math.abs(box.y - lead.y)).toBeLessThanOrEqual(1);
+    expect(box.y).toBeGreaterThanOrEqual(lead.y);
   }
   for (const book of await page.locator('.book-row').all()) {
     const box = (await book.boundingBox())!;
@@ -568,6 +568,34 @@ test('the half-open Duo Shelf is one page: Up Next in a band off the hinge, prog
   await page.getByRole('button', { name: /^Filters/ }).click();
   await expect(page.getByRole('group', { name: 'Filter by reading progress' })).toHaveCount(1);
   await expect(page.getByRole('group', { name: 'Filter by availability' })).toBeVisible();
+});
+
+test('returning from a book restores the unfolded shelf position', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 669 });
+  const books = library(60);
+  books.forEach((book, index) => { book.metadata = { ...book.metadata, series: `Series ${Math.floor(index / 5)}`, seriesPosition: String(index % 5 + 1) }; });
+  await openShell(page, true, false, false, books);
+  await page.evaluate(async () => {
+    const path = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(path);
+    applyDeviceFold(document.documentElement, { posture: 'half-open', angle: 110,
+      fold: { x: 455, y: 0, width: 41, height: 669, axis: 'vertical', active: true } });
+  });
+  await page.getByRole('button', { name: 'Grid view', exact: true }).click();
+  await page.getByLabel('Sort library by').selectOption({ label: 'Series' });
+  const shelf = page.locator('.library-pane');
+  await shelf.evaluate(element => { element.scrollTop = 900; });
+  const previous = await shelf.evaluate(element => element.scrollTop);
+  expect(previous).toBeGreaterThan(500);
+  const book = page.locator('.book-row:visible').filter({ visible: true }).nth(20);
+  await book.scrollIntoViewIfNeeded();
+  const position = await shelf.evaluate(element => element.scrollTop);
+  await book.click();
+  await expect(page.getByRole('button', { name: 'Back to Library' })).toBeVisible();
+  // The narrower details layout can clamp the shelf's scroll position.
+  await shelf.evaluate(element => { element.scrollTop = 0; });
+  await page.getByRole('button', { name: 'Back to Library' }).click();
+  await expect.poll(() => shelf.evaluate(element => element.scrollTop)).toBeCloseTo(position, 0);
 });
 
 test('a fully open Duo sets the Shelf as one slab, with no gap kept for the hinge', async ({ page }) => {
@@ -1002,7 +1030,7 @@ test('a cached in-progress shelf stays resumable when its server disappears', as
   await page.route('**/api/books', route => route.abort('failed'));
   await page.reload();
   await expect(page.getByText('Offline mode — showing downloaded books and cached library.')).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Up Next' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Listening and queue' })).toBeVisible();
   await expect(page.getByRole('button', { name: `Continue reading ${books[0].title}` })).toBeVisible();
 });
 

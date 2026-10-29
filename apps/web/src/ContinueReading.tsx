@@ -1,5 +1,5 @@
 import { memo, useMemo, useState } from "react";
-import { ArrowUp, Play, X } from "lucide-react";
+import { ArrowUp, Pause, Play, X } from "lucide-react";
 import { CoverArt } from "./CoverArt";
 import { bookProgressLabel } from "./formatting";
 import { progressTimestamp } from "./reliability";
@@ -10,6 +10,10 @@ import type { Book } from "./types";
 export const ContinueReading = memo(function ContinueReading({
   books,
   onContinue,
+  playbackBookId,
+  isPlaying,
+  playPending,
+  onTogglePlayback,
   storageKey,
   onOpenBook
 }: {
@@ -17,10 +21,14 @@ export const ContinueReading = memo(function ContinueReading({
   storageKey: string;
   onOpenBook: (id: string) => void;
   onContinue: (book: Book, play?: boolean) => void;
+  playbackBookId: string | null;
+  isPlaying: boolean;
+  playPending: boolean;
+  onTogglePlayback: () => void;
 }) {
   const reading = useMemo(() => books
     .filter((book) => book.progress?.status === "inProgress")
-    .sort((a, b) => progressTimestamp(b.progress!.updatedAt) - progressTimestamp(a.progress!.updatedAt)), [books]);
+    .sort((a, b) => Number(b.id === playbackBookId) - Number(a.id === playbackBookId) || progressTimestamp(b.progress!.updatedAt) - progressTimestamp(a.progress!.updatedAt)), [books, playbackBookId]);
 
   const [ids, saveIds] = useReadingQueue(storageKey);
   const [notice, setNotice] = useState("");
@@ -66,10 +74,10 @@ export const ContinueReading = memo(function ContinueReading({
           <button
             type="button"
             className="continue-reading-play"
-            aria-label={`Play ${book.title}`}
-            onClick={() => onContinue(book, true)}
+            aria-label={`${book.id === playbackBookId && (isPlaying || playPending) ? "Pause" : "Play"} ${book.title}`}
+            onClick={() => book.id === playbackBookId ? onTogglePlayback() : onContinue(book, true)}
           >
-            <Play size={14} fill="currentColor" aria-hidden="true" />
+            {book.id === playbackBookId && (isPlaying || playPending) ? <Pause size={14} fill="currentColor" aria-hidden="true" /> : <Play size={14} fill="currentColor" aria-hidden="true" />}
           </button>
         </li>
       );
@@ -107,15 +115,15 @@ export const ContinueReading = memo(function ContinueReading({
 
   return (
     <>
-      {rows.length + unavailable > 0 ? <section className="continue-reading" aria-labelledby="up-next-title">
+      {rows.length + unavailable > 0 ? <section className="continue-reading" aria-label="Listening and queue">
         <header className="continue-reading-heading">
-          <h2 id="up-next-title">Up Next</h2>
-          <span>{rows.length}</span>
+          <h2>{reading.length ? "Now listening" : "Up next"}</h2>
+          {!reading.length ? <span>{rows.length}</span> : null}
         </header>
         {/* The first book stands apart so the open Duo can give it a leaf while the
             rest scroll in a row beside it. */}
         {rows.length > 0 ? <ul className="continue-reading-list continue-reading-lead">{rows[0]}</ul> : null}
-        {rows.length > 1 ? <ul className="continue-reading-list continue-reading-rest">{rows.slice(1)}</ul> : null}
+        {rows.length > 1 ? <div className="continue-reading-up-next">{reading.length ? <h3>Up next <span>{rows.length - 1}</span></h3> : null}<ul className="continue-reading-list continue-reading-rest">{rows.slice(1)}</ul></div> : null}
         {rows.length === 1 ? <p className="queue-hint">Open a book and choose Add to Up Next to line it up here.</p> : null}
         {unavailable > 0 ? <p className="queue-unavailable">{unavailable === 1 ? "1 planned book isn’t available right now." : `${unavailable} planned books aren’t available right now.`} {unavailable === 1 ? "It stays" : "They stay"} in your plan.</p> : null}
         {noticeLine}

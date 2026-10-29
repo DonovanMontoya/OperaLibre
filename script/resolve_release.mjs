@@ -23,7 +23,7 @@ export function resolveRelease({ channel, tag = "", stableTag, date, run, source
   return result;
 }
 
-function compareStableTags(left, right) {
+export function compareStableTags(left, right) {
   const a = left.match(STABLE).slice(1).map(Number);
   const b = right.match(STABLE).slice(1).map(Number);
   return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];

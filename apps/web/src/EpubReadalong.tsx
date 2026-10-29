@@ -765,6 +765,8 @@ export function EpubReadalong({
   // A horizontal swipe on the overlay turns the page as well.
   const overlaySwipeRef = useRef<{ x: number; y: number; at: number } | null>(null);
   const overlayDragRef = useRef<{ direction: PageTurnDirection; drag: PageTurnDrag } | null>(null);
+  // The finger the overlay's gesture belongs to, until it lifts.
+  const overlayPointerRef = useRef<number | null>(null);
   const beginOverlayGesture = useCallback((clientX: number, clientY: number) => {
     overlaySwipeRef.current = { x: clientX, y: clientY, at: performance.now() };
   }, []);
@@ -789,6 +791,7 @@ export function EpubReadalong({
     (clientX: number, clientY: number) => {
       const start = overlaySwipeRef.current;
       overlaySwipeRef.current = null;
+      overlayPointerRef.current = null;
       const dragging = overlayDragRef.current;
       overlayDragRef.current = null;
       const stage = viewerRef.current?.getBoundingClientRect();
@@ -819,6 +822,7 @@ export function EpubReadalong({
     [handleOverlayTap, turnPage]
   );
   const handleOverlayPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    overlayPointerRef.current = event.pointerId;
     beginOverlayGesture(event.clientX, event.clientY);
     // Keep the lift on this layer even if the finger ends over the bars.
     try {
@@ -832,6 +836,7 @@ export function EpubReadalong({
     [moveOverlayGesture]
   );
   const handleOverlayPointerCancel = useCallback(() => {
+    overlayPointerRef.current = null;
     overlaySwipeRef.current = null;
     overlayDragRef.current?.drag.release(false);
     overlayDragRef.current = null;
@@ -845,11 +850,28 @@ export function EpubReadalong({
   // transition's snapshots, addressed to the root element, instead of to the
   // overlay beneath them. Paging quickly must not lose those touches, so a
   // gesture that starts over the overlay then is resolved as one made on it.
+  //
+  // The same happens to the rest of a drag the overlay has already captured:
+  // its lift, or the system's cancel when the app is left or the device is
+  // folded, can arrive at the root. A dragged turn holds the page until it is
+  // let go, and every tap meanwhile, the reader's bars included, lands on the
+  // root and does nothing, so those must still reach the drag.
   const tapzonesRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const root = document.documentElement;
     let tracking = false;
+    const strayed = (event: PointerEvent) =>
+      event.pointerId === overlayPointerRef.current && !tapzonesRef.current?.contains(event.target as Node | null);
+    const letGo = () => {
+      tracking = false;
+      handleOverlayPointerCancel();
+    };
     const handlePointerDown = (event: PointerEvent) => {
+      // A new first finger means the last one has lifted, even if the web
+      // view never said so: lay its page down rather than hold it.
+      if (event.isPrimary && overlayPointerRef.current !== null && event.pointerId !== overlayPointerRef.current) {
+        letGo();
+      }
       const zone = tapzonesRef.current?.getBoundingClientRect();
       if (event.target !== root || !root.dataset.pageTurn || !zone
         || event.clientX < zone.left || event.clientX > zone.right
@@ -857,27 +879,36 @@ export function EpubReadalong({
         return;
       }
       tracking = true;
+      overlayPointerRef.current = event.pointerId;
       beginOverlayGesture(event.clientX, event.clientY);
     };
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!tracking && strayed(event)) moveOverlayGesture(event.clientX, event.clientY);
+    };
     const handlePointerUp = (event: PointerEvent) => {
-      if (!tracking) return;
+      if (!tracking && !strayed(event)) return;
       tracking = false;
       endOverlayGesture(event.clientX, event.clientY);
     };
-    const handlePointerCancel = () => {
-      if (!tracking) return;
-      tracking = false;
-      handleOverlayPointerCancel();
+    const handlePointerCancel = (event: PointerEvent) => {
+      if (tracking || strayed(event)) letGo();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") letGo();
     };
     document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("pointermove", handlePointerMove, true);
     document.addEventListener("pointerup", handlePointerUp, true);
     document.addEventListener("pointercancel", handlePointerCancel, true);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("pointermove", handlePointerMove, true);
       document.removeEventListener("pointerup", handlePointerUp, true);
       document.removeEventListener("pointercancel", handlePointerCancel, true);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [beginOverlayGesture, endOverlayGesture, handleOverlayPointerCancel]);
+  }, [beginOverlayGesture, endOverlayGesture, handleOverlayPointerCancel, moveOverlayGesture]);
 
   useEffect(() => {
     if (!viewerRef.current) {
