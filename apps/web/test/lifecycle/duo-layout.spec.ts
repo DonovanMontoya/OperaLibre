@@ -229,7 +229,7 @@ test('unfolded spread keeps the mini player in the side rail, off the fold', asy
   await page.setContent(`<html class="native-app side-rail" data-fold-posture="flat" data-fold-axis="vertical" data-fold-active><head>
     <link rel="stylesheet" href="${url}src/styles.css?direct">
     </head><body><main class="native-shell tab-shelf has-mini-player shelf-landscape">
-    <section class="library-pane"></section><section class="player-pane"></section>
+    <section class="library-pane"></section><section class="player-pane has-native-player"></section>
     <aside class="mini-player" aria-label="Mini player">
       <button class="mini-cover-button" aria-label="Open current book">Book</button>
       <div class="mini-actions"><button class="mini-play" aria-label="Pause">Pause</button></div>
@@ -246,6 +246,8 @@ test('unfolded spread keeps the mini player in the side rail, off the fold', asy
   expect(player.x + player.width).toBeLessThanOrEqual(951);
   expect(player.y).toBeGreaterThanOrEqual(120);
   expect(player.y + player.height).toBeLessThanOrEqual(380);
+  await expect(page.locator('.player-pane')).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
 });
 
 test('wide Duo gives Shelf both leaves while Reading keeps the player spread', async ({ page }) => {
@@ -394,7 +396,7 @@ test('Get Books keeps controls on the left leaf and books on the right leaf', as
   await page.setViewportSize({ width: 951, height: 669 });
   await page.setContent(`<html class="native-app side-rail" data-fold-posture="flat" data-fold-axis="vertical"><head>
     <link rel="stylesheet" href="${url}src/styles.css?direct">
-    </head><body><main class="native-shell tab-shelf shelf-landscape device-ipad">
+    </head><body><main class="native-shell tab-shelf shelf-split shelf-landscape device-ipad has-mini-player">
       <aside class="library-pane purchase-browsing">
         <header class="pane-title"><h1>OperaLibre</h1></header>
         <div class="library-toolbar">
@@ -405,16 +407,20 @@ test('Get Books keeps controls on the left leaf and books on the right leaf', as
         <div class="purchase-results">
           <div class="purchase-settings-pane"><details class="purchase-console"><summary>Activity</summary><section style="height:900px">Download activity</section></details></div>
           <div class="purchase-books-pane">
-            <ol class="libro-purchases purchase-book-list purchase-book-list--list"><li class="purchase-book-row"><span class="libro-purchase-cover"></span><span class="libro-purchase-copy"><h3>Taipei Story</h3><p>Author</p></span><button>Import</button></li></ol>
+            <section class="libro-catalog"><header class="libro-catalog-head"><h2>Libro.fm</h2></header><ol class="libro-purchases purchase-book-list purchase-book-list--list"><li class="purchase-book-row"><span class="libro-purchase-cover"></span><span class="libro-purchase-copy"><h3>Taipei Story</h3><p>Author</p></span><button>Import</button></li></ol></section>
+            <section class="libro-catalog"><header class="libro-catalog-head"><h2>Audible</h2></header></section>
             <div class="audible-list purchase-book-list purchase-book-list--list"><div class="audible-row purchase-book-row"><span class="audible-cover"></span><span class="audible-copy"><strong>12 Rules for Life</strong><span>Author</span></span><button>Download</button></div></div>
           </div>
         </div>
       </aside>
+      <section class="player-pane has-native-player"></section>
+      <aside class="mini-player" aria-label="Mini player"><button class="mini-cover-button">Book</button><div class="mini-actions"><button>Pause</button></div></aside>
     </main></body></html>`);
   await page.evaluate(() => {
     const root = document.documentElement;
     for (const [name, value] of Object.entries({ '--fold-x': '460px', '--fold-width': '31px',
-      '--status-h': '44px', '--tabs-h': '0px', '--native-viewport-height': '669px' })) {
+      '--status-h': '44px', '--tabs-h': '0px', '--native-viewport-height': '669px',
+      '--rail-x': '895px', '--rail-width': '56px', '--rail-top': '240px', '--rail-bottom': '480px' })) {
       root.style.setProperty(name, value);
     }
   });
@@ -436,10 +442,21 @@ test('Get Books keeps controls on the left leaf and books on the right leaf', as
   expect(storeTabs.width).toBeGreaterThan(350);
   const books = (await page.locator('.purchase-books-pane').boundingBox())!;
   expect(books.x).toBeGreaterThanOrEqual(491);
+  await expect(page.locator('.player-pane')).toBeHidden();
+  await expect(page.getByLabel('Mini player')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+  const player = (await page.getByLabel('Mini player').boundingBox())!;
+  expect(player.x).toBeGreaterThanOrEqual(491);
   await expect(page.locator('.purchase-settings-pane')).toHaveCSS('overflow-y', 'auto');
   await expect(page.locator('.purchase-books-pane')).toHaveCSS('overflow-y', 'auto');
   const libroRow = (await page.locator('.libro-purchases .purchase-book-row').boundingBox())!;
   const audibleRow = (await page.locator('.audible-list .purchase-book-row').boundingBox())!;
+  for (const row of await page.locator('.purchase-book-list .purchase-book-row').all()) {
+    await expect(row).toHaveCSS('border-top-width', '0px');
+  }
+  for (const heading of await page.locator('.purchase-books-pane .libro-catalog-head').all()) {
+    await expect(heading).toHaveCSS('border-bottom-width', '1px');
+  }
   expect(libroRow.width).toBe(audibleRow.width);
   expect((await page.locator('.libro-purchase-cover').boundingBox())!.width)
     .toBe((await page.locator('.audible-cover').boundingBox())!.width);

@@ -1464,6 +1464,13 @@ html:not(.native-app) .web-shell > .player-pane {
   margin-top: 9px;
 }
 
+.continue-reading-up-next h3 {
+  margin: 12px 0 0;
+  color: var(--gold-soft);
+  font: 400 1.2rem/1.2 "Instrument Serif", serif;
+}
+.continue-reading-up-next h3 span { font: 0.65rem "JetBrains Mono", monospace; }
+
 .continue-reading-row {
   position: relative;
 }
@@ -6011,9 +6018,12 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-readin
   grid-row: 1;
 }
 
-html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-rest {
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-up-next {
   grid-column: 3 / -1;
   grid-row: 1;
+  min-width: 0;
+}
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-rest {
   grid-auto-flow: column;
   grid-auto-columns: calc((100% - var(--shelf-gutter)) / 2);
   gap: var(--shelf-gutter);
@@ -17527,6 +17537,20 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .player-pane ~ .mini-player {
+  display: grid;
+  left: calc(var(--fold-x) + var(--fold-width) + 12px);
+  right: max(12px, env(safe-area-inset-right));
+}
+
+html.native-app.side-rail[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .player-pane ~ .mini-player {
+  display: flex;
+  left: calc(var(--rail-x) + (var(--rail-width) - 56px) / 2);
+  right: auto;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf > .library-pane.purchase-browsing {
   position: relative;
   inset: auto;
@@ -17692,6 +17716,12 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   margin: 0;
   padding: 0 4px;
   border-bottom: 1px solid rgba(217, 181, 116, 0.14);
+}
+
+/* The provider heading already separates the first purchase from the title. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-books-pane :is(.libro-catalog:has(.libro-catalog-head) .purchase-book-list, .libro-catalog:has(.libro-catalog-head) ~ .purchase-book-list) > .purchase-book-row:first-child {
+  border-top: 0;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -17944,8 +17974,6 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest {
-  grid-column: 2;
-  grid-row: 1;
   display: flex;
   gap: 0;
   margin: 0;
@@ -17958,6 +17986,22 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
      cutting a card's controls in half. */
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
   mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-up-next {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-up-next h3 {
+  margin: 0 0 8px;
+  color: rgba(241, 231, 208, 0.6);
+  font: 0.65rem/1.5 "JetBrains Mono", monospace;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])

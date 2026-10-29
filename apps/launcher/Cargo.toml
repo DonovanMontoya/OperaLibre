@@ -1,6 +1,6 @@
 [package]
 name = "operalibre-launcher"
-version = "0.2.6"
+version = "0.5.0"
 edition = "2024"
 # `File::lock` stabilized in 1.89. `let` chains in this crate need 1.88.
 rust-version = "1.89"
