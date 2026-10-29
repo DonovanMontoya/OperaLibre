@@ -811,6 +811,23 @@ test('reader survives folding, rotating, flattening and closing without replacin
   await expect(page.locator('html')).not.toHaveAttribute('data-fold-active');
 });
 
+test('choosing one page keeps the flat reader single while half open still splits', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('operalibre.reader.flatSpread', '0'));
+  await page.setViewportSize({ width: 951, height: 669 });
+  await page.goto(`${url}test/reader-catch-up.html?immersive`);
+  await expect(page.locator('.epub-stage iframe')).toHaveCount(1);
+  const rendition = await page.evaluateHandle(() => (window as any).__operalibreReader.rendition);
+  const fold = (state: DeviceFoldState) => page.evaluate(async state => {
+    const modulePath = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(modulePath);
+    applyDeviceFold(document.documentElement, state);
+  }, state);
+  await fold({ posture: 'flat', angle: 180, fold: { x: 475, y: 0, width: 1, height: 669, axis: 'vertical', active: false } });
+  await expect.poll(() => rendition.evaluate(value => value.settings.spread)).toBe('none');
+  await fold({ posture: 'half-open', angle: 110, fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } });
+  await expect.poll(() => rendition.evaluate(value => value.settings.spread)).toBe('always');
+});
+
 test('fully opening the reader redraws the active follow-along highlight', async ({ page }) => {
   await page.setViewportSize({ width: 669, height: 951 });
   await page.addInitScript(() => localStorage.setItem('operalibre.readerFollow', '1'));
