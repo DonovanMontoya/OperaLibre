@@ -1,3 +1,4 @@
+import { PrivacyPolicyLink } from "./PrivacyPolicyLink";
 import type { useDisplaySettings } from "./useDisplaySettings";
 import type { useOfflineDownloads } from "./useOfflineDownloads";
 import type { usePurchases } from "./usePurchases";
@@ -323,6 +324,9 @@ export function SettingsPage({
           switchToAlias={switchToAlias}
           switchingAliasId={switchingAliasId}
         />
+        <section className="settings-card" aria-label="Privacy">
+          <PrivacyPolicyLink />
+        </section>
         </div>
       </div>
     </section>

@@ -1,3 +1,4 @@
+import { PrivacyPolicyLink } from "./PrivacyPolicyLink";
 import { Capacitor } from "@capacitor/core";
 import { BookOpen, ChevronRight, ExternalLink, LogIn, ShieldCheck, Smartphone } from "lucide-react";
 import { useRef, useState } from "react";
@@ -150,6 +151,7 @@ export function ServerSetup({
         ) : null}
 
         <div className="connect-more">
+          <PrivacyPolicyLink />
           <button
             type="button"
             onClick={() => switchServerType(jellyfin ? "operalibre" : "jellyfin")}
@@ -313,6 +315,7 @@ export function AuthGate({
             </button>
           </p>
         ) : null}
+        <p className="auth-server-meta"><PrivacyPolicyLink /></p>
       </form>
     </main>
   );

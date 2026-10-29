@@ -7435,6 +7435,15 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane.purchase-browsin
   }
 }
 
+.privacy-policy-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  color: var(--ink);
+  text-underline-offset: 3px;
+}
+
 .user-menu-wrap {
   position: relative;
 }
@@ -7635,7 +7644,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane.purchase-browsin
   line-height: 1.35;
 }
 
-.user-menu button[role="menuitem"] {
+.user-menu :is(button, a)[role="menuitem"] {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -7647,15 +7656,16 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane.purchase-browsin
   cursor: pointer;
   color: var(--ink);
   text-align: left;
+  text-decoration: none;
 }
 
-.user-menu button[role="menuitem"] svg {
+.user-menu :is(button, a)[role="menuitem"] svg {
   flex: none;
   color: var(--ink-faded);
 }
 
-.user-menu button[role="menuitem"]:hover,
-.user-menu button[role="menuitem"]:focus-visible {
+.user-menu :is(button, a)[role="menuitem"]:hover,
+.user-menu :is(button, a)[role="menuitem"]:focus-visible {
   background: rgba(184, 137, 58, 0.18);
 }
 
@@ -12306,7 +12316,7 @@ html.native-app .user-menu .avatar-picker-reset {
   min-height: 44px;
 }
 
-html.native-app .user-menu button[role="menuitem"] {
+html.native-app .user-menu :is(button, a)[role="menuitem"] {
   min-height: 52px;
   padding: 0.6rem 0.8rem;
   gap: 0.7rem;
@@ -12314,7 +12324,7 @@ html.native-app .user-menu button[role="menuitem"] {
   font-size: 1.02rem;
 }
 
-html.native-app .user-menu button[role="menuitem"]:active {
+html.native-app .user-menu :is(button, a)[role="menuitem"]:active {
   background: rgba(184, 137, 58, 0.18);
 }
 

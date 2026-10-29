@@ -1,3 +1,4 @@
+import { PrivacyPolicyLink } from "./PrivacyPolicyLink";
 import { BehaviorSection } from "./BehaviorSection";
 import { AgentAccessMenuItem } from "./AgentAccess";
 import { BookPreviewSetting } from "./BookPreviewSetting";
@@ -172,6 +173,7 @@ export function renderUserMenu({
           : currentUser.isAdmin ? "Jellyfin administrator" : "Jellyfin account"}
         onUserChanged={onCurrentUserChanged}
       />
+      {!native ? <PrivacyPolicyLink role="menuitem" /> : null}
       {capabilities.statistics ? (
         <button
           type="button"
