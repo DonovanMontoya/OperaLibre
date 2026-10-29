@@ -171,6 +171,7 @@ import { AudibleManagement } from "./AudibleManagement";
 import { SettingsPage } from "./SettingsPage";
 import { AgentAccessDialog } from "./AgentAccess";
 import { MiniPlayer } from "./MiniPlayer";
+import { DeskView, useDeskView } from "./DeskView";
 import { PlayerPane } from "./PlayerPane";
 import { LibraryPane } from "./LibraryPane";
 import { usePlayerNavigation } from "./usePlayerNavigation";
@@ -1975,7 +1976,9 @@ function MainApp({
     setSelectedBookId
   });
 
+  const deskView = useDeskView(native, ipad, !!(playbackBook && currentTrack), readalongOpen);
   const nativeChrome = useNativeChrome({
+    deskView,
     startupViewReady,
     launchCoverLifted,
     appearanceMode,
@@ -2429,6 +2432,20 @@ function MainApp({
           seekTo={seekTo}
           setScrubPreview={setScrubPreview}
           sliderMax={sliderMax}
+          togglePlayback={togglePlayback}
+        />
+      ) : null}
+
+      {deskView && playbackBook && currentTrack ? (
+        <DeskView
+          activeChapter={activeChapter}
+          chapterDuration={chapterDuration}
+          chapterElapsed={displayChapterElapsed}
+          currentTrack={currentTrack}
+          isPlaying={isPlaying}
+          playPending={playPending}
+          playbackBook={playbackBook}
+          seekBy={seekBy}
           togglePlayback={togglePlayback}
         />
       ) : null}

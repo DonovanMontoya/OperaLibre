@@ -184,6 +184,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         content.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(content.view)
         content.didMove(toParent: self)
+        paintWebView()
         contentConstraints = [
             content.view.topAnchor.constraint(equalTo: view.topAnchor),
             content.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -209,7 +210,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { content.preferredInterfaceOrientationForPresentation }
 
     func configure(items: [JSObject], selected: String, visible: Bool, blocked: Bool, appearance: String,
-                   chrome: String?, bar: String?) {
+                   chrome: String?, bar: String?, uncovered: Bool = false) {
         loadViewIfNeeded()
         // The page may have reloaded and lost the clearance it was sent.
         sentTopClearance = -1
@@ -222,7 +223,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         // tap.
         let reselecting = requestedSelection != nil && selected != requestedSelection
         if !reselecting { applyChrome(chrome, bar: bar) }
-        if visible != navigationVisible && navigation.parent != nil {
+        if visible != navigationVisible && navigation.parent != nil && !uncovered {
             // Showing or hiding the bar resizes the web view, and the page
             // reflows over several frames as its safe area and viewport catch
             // up. Hold the last frame until the page reveals itself.
@@ -370,9 +371,20 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         applyBarTint()
         let paint = {
             self.view.backgroundColor = color
+            self.paintWebView()
             self.setNeedsStatusBarAppearanceUpdate()
         }
         if first { paint() } else { UIView.animate(withDuration: 0.26, animations: paint) }
+    }
+
+    /// The web view shows its own background wherever the page has not drawn
+    /// yet, most visibly mid-rotation before the page lays out at the new
+    /// size. Capacitor gives it the launch parchment; the screen's own tone
+    /// keeps a dark screen dark while it turns.
+    private func paintWebView() {
+        guard let chrome, let webView = content.webView else { return }
+        webView.backgroundColor = chrome
+        webView.scrollView.backgroundColor = chrome
     }
 
     func hide() {
@@ -395,7 +407,8 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     }
 
     private func coverContent() {
-        guard cover == nil, let snapshot = view.snapshotView(afterScreenUpdates: false) else { return }
+        guard cover == nil, !view.bounds.isEmpty else { return }
+        let snapshot = view.frozenSnapshot()
         snapshot.frame = view.bounds
         snapshot.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(snapshot)
@@ -726,7 +739,8 @@ public final class NativeTabsPlugin: CAPPlugin, CAPBridgedPlugin {
                                  visible: call.getBool("visible") ?? false,
                                  blocked: call.getBool("blocked") ?? false,
                                  appearance: call.getString("appearance") ?? "system",
-                                 chrome: call.getString("chrome"), bar: call.getString("bar"))
+                                 chrome: call.getString("chrome"), bar: call.getString("bar"),
+                                 uncovered: call.getBool("uncovered") ?? false)
             call.resolve()
         }
     }
