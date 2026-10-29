@@ -959,6 +959,7 @@ export function LibraryPane({
 
       </div>
       <div className="purchase-books-pane">
+      {error ? <div className="empty-state error" role="alert">{error}</div> : null}
       <DeviceImportNotice notice={downloadStatus} busy={deviceImport !== null} onRetry={importFromDevice} />
 
       {librarySource === "libro" || librarySource === "all" ? (
@@ -1010,7 +1011,6 @@ export function LibraryPane({
             </section>
           ) : null}
           {isLoading ? <div className="empty-state">Loading library…</div> : null}
-          {error ? <div className="empty-state error">{error}</div> : null}
           {!isLoading && !error && books.length === 0 ? (
             <div className="empty-state device-empty-state">
               <span>{localMode ? "Your shelf is ready. Pick audiobook files from this device to start listening." : !isOperaLibre ? "No audiobooks are available to this account. Add audiobooks to a Books library in Jellyfin and check this account’s library access. Music libraries are not included." : "No audiobooks found in the configured library folder."}</span>
