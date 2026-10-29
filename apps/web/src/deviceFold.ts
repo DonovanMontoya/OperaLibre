@@ -15,13 +15,9 @@ export type DeviceFoldState = {
 interface DeviceFoldPlugin {
   getState(): Promise<DeviceFoldState>;
   addListener(event: "change", listener: (state: DeviceFoldState) => void): Promise<PluginListenerHandle>;
-  trace(options: { message: string }): Promise<void>;
 }
 const DeviceFold = registerPlugin<DeviceFoldPlugin>("DeviceFold");
-// TEMP-TRACE
-export function foldTrace(message: string): void {
-  if (Capacitor.getPlatform() === "ios") void DeviceFold.trace({ message }).catch(() => undefined);
-}
+
 
 // The last state published, for layouts that must be told in script (the
 // reader's page spread) rather than by the stylesheet.
@@ -164,10 +160,6 @@ export function applyDeviceFold(root: HTMLElement, state: DeviceFoldState): void
     && staysOnInnerDisplay
     && isFoldTransitionChange(previous, layoutState);
 
-  // TEMP-TRACE
-  if (previous.posture !== layoutState.posture || previous.fold?.active !== layoutState.fold?.active) {
-    foldTrace(`fold ${previous.posture} -> ${layoutState.posture} raw ${state.posture} ${state.angle ?? "-"} fold ${layoutState.fold ? `${layoutState.fold.axis} active ${layoutState.fold.active}` : "none"} animate ${shouldAnimate}`);
-  }
   if (!shouldAnimate) {
     publishDeviceFold(root, layoutState);
     return;

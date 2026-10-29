@@ -1,7 +1,7 @@
 import { Pause, Play, RotateCcw, RotateCw } from "lucide-react";
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { CoverArt } from "./CoverArt";
-import { foldTrace, holdsCoverThroughHandoff, isHingeParted, useDeviceFold } from "./deviceFold";
+import { holdsCoverThroughHandoff, isHingeParted, useDeviceFold } from "./deviceFold";
 import { formatTime } from "./formatting";
 import { createScreenAwakeController } from "./screenAwake";
 import { SHORT_LANDSCAPE_QUERY } from "./useOrientation";
@@ -51,12 +51,7 @@ export function useDeskView(native: boolean, ipad: boolean, hasBook: boolean, re
   const showing = screen.onCover
     ? screen.sideways && tent
     : holdsCoverThroughHandoff(fold, screen.coverWasSideways);
-  const result = native && !ipad && showing && hasBook && !readerOpen;
-  // TEMP-TRACE
-  useEffect(() => {
-    foldTrace(`desk ${result} onCover ${screen.onCover} sideways ${screen.sideways} coverWasSideways ${screen.coverWasSideways} tent ${tent} posture ${fold.posture} angle ${fold.angle ?? "-"} viewport ${innerWidth}x${innerHeight}`);
-  }, [result, screen, tent, fold]);
-  return result;
+  return native && !ipad && showing && hasBook && !readerOpen;
 }
 
 // How long a long title rests on its ellipsis between scrolls.

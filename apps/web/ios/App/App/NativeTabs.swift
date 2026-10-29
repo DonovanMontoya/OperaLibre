@@ -219,7 +219,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         // tap.
         let reselecting = requestedSelection != nil && selected != requestedSelection
         if !reselecting { applyChrome(chrome, bar: bar) }
-        if visible != navigationVisible { FoldTrace.log("tabs visible \(visible) uncovered \(uncovered) cover \(navigation.parent != nil && !uncovered)") }
         if visible != navigationVisible && navigation.parent != nil && !uncovered {
             // Showing or hiding the bar resizes the web view, and the page
             // reflows over several frames as its safe area and viewport catch
@@ -395,7 +394,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
 
     func reveal() {
         guard let cover else { return }
-        FoldTrace.log("tabs reveal")
         self.cover = nil
         UIView.animate(withDuration: 0.22, delay: 0, options: .curveEaseOut) {
             cover.alpha = 0
@@ -406,13 +404,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
 
     private func coverContent() {
         guard cover == nil, !view.bounds.isEmpty else { return }
-        // A real bitmap: snapshotView(afterScreenUpdates:) of a web view keeps
-        // mirroring its live layers, so the reflow it is meant to hide would
-        // show straight through.
-        let image = UIGraphicsImageRenderer(bounds: view.bounds).image { _ in
-            view.drawHierarchy(in: view.bounds, afterScreenUpdates: false)
-        }
-        let snapshot = UIImageView(image: image)
+        let snapshot = view.frozenSnapshot()
         snapshot.frame = view.bounds
         snapshot.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(snapshot)
