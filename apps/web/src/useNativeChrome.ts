@@ -7,6 +7,7 @@ import type { ShelfLayout } from "./shelfSort";
 import type { AppearanceMode } from "./appearance";
 
 export function useNativeChrome({
+  deskView,
   startupViewReady,
   launchCoverLifted,
   appearanceMode,
@@ -28,6 +29,8 @@ export function useNativeChrome({
   shelfSpread,
   shellRef
 }: {
+  /** The sideways dashboard takes the whole screen, tab bar included. */
+  deskView: boolean;
   startupViewReady: boolean;
   launchCoverLifted: boolean;
   appearanceMode: AppearanceMode;
@@ -73,10 +76,16 @@ export function useNativeChrome({
     // Showing the bar moves the page's safe area. Lay it out at the same
     // restoration boundary that readies the page, while the launch cover is
     // still up, so the page is in place before anyone sees it.
-    visible: startupViewReady && (!readalongOpen || readerClosing),
+    visible: startupViewReady && !deskView && (!readalongOpen || readerClosing),
     appearance: appearanceMode,
-    chrome,
-    bar: barTint
+    // Behind the desk view's black, so turning into or out of it never shows
+    // another tone at the edges mid-rotation.
+    chrome: deskView ? "#000000" : chrome,
+    bar: barTint,
+    // The desk view covers the screen as it hides the bar. A held frame would
+    // be whatever the page last drew, which after the hinge opens can be the
+    // inner screen's layout.
+    uncovered: deskView
     // UIKit sits above the web launch cover; draw the bar only once it lifts.
   }, openNativeTab, !launchCoverLifted);
   useEffect(() => {

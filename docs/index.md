@@ -40,6 +40,7 @@ Windows and manual installs are covered in [Install a Release](installing-a-rele
 - **Web and native mobile apps** — installable PWA plus Capacitor projects for Android and iPhone
 - **Offline listening** — download books in the native apps, or import audio and a matching EPUB into an on-device library without a server
 - **CarPlay** — browse and play your library from the car screen; downloaded books play without a network
+- **Desk view** — stand a folded iPhone Duo on its edges like a tent with the cover screen sideways, and the playing book fills the screen in a CarPlay-style Now Playing view with large playback controls
 - **Third-party clients** — a subset of the Audiobookshelf API for compatible clients, plus an OPDS catalog; see [Client compatibility](client-compatibility.md)
 - **Optional Audible import** — drive a local [Libation](https://github.com/rmcrackan/Libation) install from the web UI
 - **Optional Libro.fm import** — import your purchases into the server, or download them directly in the native apps
