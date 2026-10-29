@@ -106,6 +106,7 @@ jobs:
 
       - name: Test release packaging
         run: |
+          node --test script/file-picker/patch.test.mjs
           node --test script/package_release.test.mjs
           node --test script/release_signing.test.mjs
           node --test script/resolve_release.test.mjs
