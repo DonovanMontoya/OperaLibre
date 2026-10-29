@@ -71,7 +71,9 @@ export function MetadataSuggestionInput({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Escape") {
+    if (event.key === "Escape" && matches.length) {
+      event.preventDefault();
+      event.stopPropagation();
       setOpen(false);
       setActiveIndex(-1);
     } else if (matches.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {

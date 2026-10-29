@@ -23,6 +23,9 @@ export function containModalFocus(dialog: HTMLElement, onDismiss: () => void) {
   const onKey = (event: KeyboardEvent) => {
     if (!isTopmost()) return;
     if (event.key === 'Escape') {
+      // An open combobox consumes its first Escape to dismiss suggestions.
+      if (event.target instanceof HTMLElement && dialog.contains(event.target)
+        && event.target.matches('[role="combobox"][aria-expanded="true"]')) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       onDismiss();
