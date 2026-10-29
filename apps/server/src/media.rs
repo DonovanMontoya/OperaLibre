@@ -626,6 +626,25 @@ pub(crate) fn download_volume_has_capacity(available: u64, source: u64, reserve:
         .is_some_and(|required| available >= required)
 }
 
+fn unique_download_entry_name(file_name: &str, used: &mut HashSet<String>) -> String {
+    let name = sanitize_zip_entry(file_name);
+    if used.insert(name.clone()) {
+        return name;
+    }
+    let (stem, extension) = name.rsplit_once('.').unwrap_or((&name, ""));
+    for suffix in 2.. {
+        let candidate = if extension.is_empty() {
+            format!("{stem} ({suffix})")
+        } else {
+            format!("{stem} ({suffix}).{extension}")
+        };
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!()
+}
+
 pub(crate) async fn download_book(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -722,12 +741,17 @@ pub(crate) async fn download_book(
             let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored)
                 .large_file(true);
+            let mut entry_names = HashSet::new();
             for (file_name, path) in tracks {
                 // Re-open per entry so only one track handle is live at a time;
                 // the containment check runs again against the same roots.
                 let (mut source, _) =
                     open_contained_file(&path, std::slice::from_ref(&library_root))?;
-                writer.start_file(sanitize_zip_entry(&file_name), options)?;
+                // Distinct source names can become identical after sanitizing.
+                writer.start_file(
+                    unique_download_entry_name(&file_name, &mut entry_names),
+                    options,
+                )?;
                 std::io::copy(&mut source, &mut writer)?;
             }
             writer.finish()?;
