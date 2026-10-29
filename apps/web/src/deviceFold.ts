@@ -46,6 +46,11 @@ export function isBookPosture(state: DeviceFoldState): boolean {
   return usesFoldLayout(state) && state.fold?.axis === "vertical";
 }
 
+/** Laid fully open on its side, the fold top to bottom but no crease to keep off. */
+export function isFlatSidePosture(state: DeviceFoldState): boolean {
+  return !isBookPosture(state) && state.posture === "flat" && state.fold?.axis === "vertical";
+}
+
 // The halves count as parted past the first angle and closed again only
 // below the second, so a hinge reporting angles around one cutoff while it
 // opens cannot flip the screen back and forth.
