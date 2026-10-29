@@ -34,6 +34,9 @@ test('large shelf search and real playback remain functional', async ({ page }, 
     requests[key] = (requests[key] ?? 0) + 1;
     let body: unknown;
     if (path === '/api/auth/status') body = { setupRequired: false, user, mediaToken: 'fixture' };
+    else if (path === '/api/health' && request.method() === 'GET') body = {
+      ok: true, serverId: 'perf-server', scanning: false, ready: true, catalogueError: false,
+    };
     else if (path === '/api/auth/me') body = user;
     else if (path === '/api/books') body = books;
     else if (path === '/api/libation/books') body = [];
