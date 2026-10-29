@@ -42,10 +42,14 @@ export function usePullToRefresh(enabled: boolean, onRefresh: () => Promise<unkn
     updatePull(delta > 0 ? Math.min(96, delta * 0.45) : 0);
   }
 
-  function settle() {
-    const distance = pullDistance.current;
+  function cancel() {
     startY.current = null;
     updatePull(0);
+  }
+
+  function settle() {
+    const distance = pullDistance.current;
+    cancel();
     if (!refreshing && distance >= PULL_REFRESH_THRESHOLD) {
       haptic("medium");
       setRefreshing(true);
@@ -59,6 +63,6 @@ export function usePullToRefresh(enabled: boolean, onRefresh: () => Promise<unkn
   return {
     pull,
     refreshing,
-    handlers: { onTouchStart, onTouchMove, onTouchEnd: settle, onTouchCancel: settle }
+    handlers: { onTouchStart, onTouchMove, onTouchEnd: settle, onTouchCancel: cancel }
   };
 }
