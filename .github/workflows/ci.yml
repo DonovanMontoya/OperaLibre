@@ -8,8 +8,41 @@ on:
     branches: ["main"]
   pull_request:
 
+# Only obsolete PR runs are cancelled; main, scheduled and manual runs are unique.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changes:
+    name: Select affected checks
+    runs-on: ubuntu-latest
+    outputs:
+      server: ${{ steps.select.outputs.server }}
+      server_windows: ${{ steps.select.outputs.server_windows }}
+      launcher: ${{ steps.select.outputs.launcher }}
+      web: ${{ steps.select.outputs.web }}
+      playback: ${{ steps.select.outputs.playback }}
+      android: ${{ steps.select.outputs.android }}
+      apple: ${{ steps.select.outputs.apple }}
+      carplay: ${{ steps.select.outputs.carplay }}
+      bookplayer: ${{ steps.select.outputs.bookplayer }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Test change selection
+        run: python3 -m unittest discover -s script/ci -p 'test_*.py'
+      - name: Select checks
+        id: select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 script/ci/select_checks.py
+
   server:
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
     name: Server (Rust)
     runs-on: ubuntu-latest
     defaults:
@@ -39,6 +72,8 @@ jobs:
         run: cargo test --locked
 
   server-windows:
+    needs: changes
+    if: needs.changes.outputs.server_windows == 'true'
     name: Server Windows (Rust)
     runs-on: windows-latest
     defaults:
@@ -63,6 +98,8 @@ jobs:
         run: cargo test --locked libation_download::windows_tests -- --nocapture
 
   launcher:
+    needs: changes
+    if: needs.changes.outputs.launcher == 'true'
     name: Release launcher (Rust)
     runs-on: ubuntu-latest
     defaults:
@@ -92,6 +129,8 @@ jobs:
           python3 ../../script/test_managed_handoff.py target/debug/operalibre-launcher
 
   web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     name: Web (TypeScript)
     runs-on: ubuntu-latest
     steps:
@@ -157,6 +196,8 @@ jobs:
           if-no-files-found: ignore
 
   playback:
+    needs: changes
+    if: needs.changes.outputs.playback == 'true'
     name: Playback lifecycle (browser)
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -202,6 +243,8 @@ jobs:
           if-no-files-found: ignore
 
   android:
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
     name: Android APK (unsigned)
     runs-on: ubuntu-latest
     steps:
@@ -242,8 +285,10 @@ jobs:
           path: apps/web/android/app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
 
-  macos:
-    name: macOS app (Swift)
+  apple:
+    needs: changes
+    if: needs.changes.outputs.apple == 'true'
+    name: Apple build and policies
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -280,6 +325,15 @@ jobs:
       - name: Test simulator runtime selection
         run: python3 script/test_simulator_runtime.py
 
+  carplay:
+    needs: changes
+    if: needs.changes.outputs.carplay == 'true'
+    name: CarPlay artwork
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
       - name: Test iOS CarPlay cover cache
         id: car_artwork
         run: python3 script/test_car_artwork.py
@@ -291,6 +345,15 @@ jobs:
           name: operalibre-carplay-cover-test-results
           path: output/car-artwork-tests/*.xcresult
           if-no-files-found: warn
+
+  bookplayer:
+    needs: changes
+    if: needs.changes.outputs.bookplayer == 'true'
+    name: BookPlayer compatibility
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Rust for BookPlayer contract test
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -312,3 +375,25 @@ jobs:
         env:
           BOOKPLAYER_CHECKOUT: ${{ github.workspace }}/.bookplayer-contract
         run: cargo test --locked --manifest-path apps/server/Cargo.toml bookplayer_live_contract -- --ignored --nocapture
+
+  macos:
+    # Preserve the existing required check while covering selection failures and
+    # every selected job, including the native checks split out above.
+    name: macOS app (Swift)
+    if: always()
+    needs: [changes, server, server-windows, launcher, web, playback, android, apple, carplay, bookplayer]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful selected checks
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          assert results['changes']['result'] == 'success', 'Change selection failed'
+          for name, job in results.items():
+              selected = results['changes']['outputs'].get(name.replace('-', '_')) == 'true'
+              allowed = ('success',) if selected or name == 'changes' else ('success', 'skipped')
+              assert job['result'] in allowed, f'{name}: {job["result"]}'
+          PYTHON
