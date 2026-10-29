@@ -106,7 +106,7 @@ An OperaLibre server may store usernames, password hashes, session tokens, libra
 
 The reading log is more detailed than a playback position: it records when a reader was listening and for how long, which over time describes their daily routine. It is stored on the server the reader signs in to, is never sent anywhere else, and is readable only by that reader — an administrator's own view of other readers remains limited to the optional shared-progress feature, which shows a percentage and a status by mutual opt-in.
 
-The server operator controls retention. An OperaLibre administrator can remove a reader account, which deletes its progress and reading log. The server operator can remove library files and other stored data directly from the server.
+You can permanently delete your OperaLibre account in **Settings → Delete account** after confirming your password. Deletion removes your account and associated personal records, including progress and its backups, reading history, listening totals, preferences, avatar, download requests, server-stored Libro.fm credentials, and access tokens. The final owner must transfer ownership to another existing account first. Shared library files, server configuration, and other accounts remain. Server backups and legacy exports are controlled by the server operator and are not rewritten; restoring one can restore old account data.
 
 ### On a Jellyfin server
 
@@ -138,10 +138,10 @@ You can:
 - sign out or change the selected server;
 - delete downloaded books and imported on-device books in the App;
 - uninstall the App to remove its locally stored data, subject to normal device backup behavior;
-- ask the operator of an OperaLibre server to delete your reader account, listening progress, and reading log; or
+- permanently delete your OperaLibre account through **Settings → Delete account**, including its listening progress and reading log; or
 - use the account and data-management options provided by your Jellyfin server or contact its operator.
 
-Because the developer does not receive or centrally store your server account or listening data, requests concerning data held by a self-hosted server must be directed to that server’s operator.
+Local and demo modes have no server account to delete. Deleting an OperaLibre account does not delete device downloads, external provider accounts, or copies previously shared with others. Because the developer does not centrally store your server data, requests concerning server backups, legacy exports, or shared library files must be directed to that server’s operator.
 
 ## Children’s privacy
 
