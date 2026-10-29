@@ -17,8 +17,8 @@ uploads of each app version from 1, and Android uses the same build number.
 
 Prepared from changes on main after the 1.3.1 range,
 [`992ce885`](https://github.com/DonovanMontoya/OperaLibre/commit/992ce8857687da9e5a9a63ed6361b64b01a9724f),
-through [`35947af9`](https://github.com/DonovanMontoya/OperaLibre/commit/35947af9e41b3b5e73323a58a980ad5b8569fd94),
-the merge of #376 on main. The distribution channel and release date are
+through [`998f5f46`](https://github.com/DonovanMontoya/OperaLibre/commit/998f5f46bde42296f2a49f558376572ad0a004e4),
+the merge of #382 on main. The distribution channel and release date are
 pending confirmation.
 
 - While a book plays, the Shelf's **Now listening** section puts it first,
@@ -41,6 +41,14 @@ pending confirmation.
   cutting a card in half, and the Shared reading list stays beside its bell.
   ([#375](https://github.com/DonovanMontoya/OperaLibre/pull/375),
   [#359](https://github.com/DonovanMontoya/OperaLibre/pull/359))
+- On an iPhone Duo lying fully open and flat, the reader keeps its two-page
+  spread, and its controls line up with the tab bar and clock.
+  ([#382](https://github.com/DonovanMontoya/OperaLibre/pull/382))
+- Stand a folded iPhone Duo on its edges like a tent, with the cover screen
+  sideways, and the playing book fills the cover in a full-screen desk view
+  with large skip and play controls. The screen stays awake while the book
+  plays. Rotating in dark mode no longer flashes a light screen.
+  ([#383](https://github.com/DonovanMontoya/OperaLibre/pull/383))
 - Connect an AI assistant you already use to your own account from the
   **AI assistants** card in **Settings**. Each assistant gets its own token
   and only the access you choose: your library, where you are in each book,
