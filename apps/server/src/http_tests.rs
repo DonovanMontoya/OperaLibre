@@ -2774,6 +2774,56 @@ async fn deleting_a_folder_book_never_removes_books_nested_inside_it() {
     assert!(author.join("intro.wav").exists());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn book_downloads_preserve_tracks_with_colliding_sanitized_names() {
+    use std::io::Read;
+
+    let server = TestServer::start(0).await;
+    let token = server.setup_owner().await;
+    let book_dir = server.library_root.join("Colliding names");
+    std::fs::create_dir(&book_dir).unwrap();
+    // These are distinct Unix filenames but collide after archive sanitizing.
+    // A pre-existing suffix must remain unique too.
+    let names = [
+        "Chapter?.wav",
+        "Chapter_.wav",
+        "Chapter_ (2).wav",
+        "Plain.wav",
+    ];
+    let mut expected = Vec::new();
+    for (index, name) in names.iter().enumerate() {
+        let mut bytes = fixture_wav();
+        *bytes.last_mut().unwrap() = index as u8;
+        std::fs::write(book_dir.join(name), &bytes).unwrap();
+        expected.push(bytes);
+    }
+    rescan_library(&server.state).await.unwrap();
+    let (book, _) = server.first_book_and_track(&token).await;
+    let response = server
+        .get(&format!("/api/books/{book}/download"), &token)
+        .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    let mut archive = zip::ZipArchive::new(io::Cursor::new(response.body)).unwrap();
+    assert_eq!(archive.len(), names.len());
+    let mut actual = Vec::new();
+    let mut entry_names = HashSet::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let name = entry.name().unwrap();
+        assert!(entry_names.insert(name.to_string()));
+        assert!(name.ends_with(".wav"));
+        assert!(!name.contains('?'));
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        actual.push(bytes);
+    }
+    assert!(entry_names.contains("Plain.wav"));
+    actual.sort();
+    expected.sort();
+    assert_eq!(actual, expected);
+}
+
 /// The request timeout must not sit in front of a book download: the archive
 /// is built before the response begins, and a large book takes minutes.
 #[tokio::test]
