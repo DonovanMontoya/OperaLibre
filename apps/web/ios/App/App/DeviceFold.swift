@@ -1,6 +1,23 @@
 import Capacitor
 import UIKit
 
+// TEMP-TRACE: timestamped log of the hinge handoff, pulled from the app container.
+enum FoldTrace {
+    private static let start = CACurrentMediaTime()
+    private static let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("fold-trace.log")
+    static func log(_ message: String) {
+        let line = String(format: "%8.3f ", CACurrentMediaTime() - start) + message + "\n"
+        DispatchQueue.main.async {
+            if let handle = try? FileHandle(forWritingTo: url) {
+                handle.seekToEndOfFile(); handle.write(Data(line.utf8)); try? handle.close()
+            } else {
+                try? Data(line.utf8).write(to: url)
+            }
+        }
+    }
+}
+
 /// Sits over the web view at its exact bounds, so its coordinate space is the
 /// page's CSS viewport. It takes no touches; it only notices when the fold may
 /// have moved (a rotation or resize lays it out again) and hosts the hinge
@@ -27,7 +44,14 @@ private final class FoldProbeView: UIView {
 public class DeviceFoldPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "DeviceFoldPlugin"
     public let jsName = "DeviceFold"
-    public let pluginMethods: [CAPPluginMethod] = [CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise)]
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "trace", returnType: CAPPluginReturnNone)
+    ]
+
+    @objc func trace(_ call: CAPPluginCall) {
+        FoldTrace.log("web " + (call.getString("message") ?? ""))
+    }
     private var probe: FoldProbeView?
     private var posture = "unknown"
     private var angle: Double?
@@ -51,7 +75,10 @@ public class DeviceFoldPlugin: CAPPlugin, CAPBridgedPlugin {
         probe.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         probe.isUserInteractionEnabled = false
         probe.backgroundColor = .clear
-        probe.onChange = { [weak self] in self?.refresh(notify: true) }
+        probe.onChange = { [weak self, weak probe] in
+            FoldTrace.log("layout probe \(probe?.bounds.size ?? .zero) screen \(probe?.window?.screen.bounds.size ?? .zero)")
+            self?.refresh(notify: true)
+        }
         webView.addSubview(probe)
         self.probe = probe
         #if compiler(>=6.4)
@@ -65,6 +92,7 @@ public class DeviceFoldPlugin: CAPPlugin, CAPBridgedPlugin {
                     self.posture = "unknown"
                     self.angle = nil
                 }
+                FoldTrace.log("hinge \(self.posture) \(self.angle.map { String(format: "%.1f", $0) } ?? "-") probe \(probe.bounds.size) screen \(probe.window?.screen.bounds.size ?? .zero)")
                 self.refresh(notify: true)
             })
         }
