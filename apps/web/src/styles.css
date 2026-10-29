@@ -19190,9 +19190,11 @@ html.native-app.side-rail .epub-reader.immersive .epub-tapzones {
 /* ===================== Reading along, half open =====================
    Held like a book (hinge down the middle), the reader sets a page on each
    half; epub.js centres the gap between them on the stage, so the stage is
-   padded evenly to centre it on the fold. The title keeps to the left page
-   and the tools to the right, off the crease. */
-html.native-app[data-fold-active][data-fold-axis="vertical"] .epub-reader.immersive .epub-stage-wrap {
+   padded evenly to centre it on the fold. Laid flat on its side it keeps the
+   same two pages. The title keeps to the left page and the tools to the
+   right, off the crease. */
+html.native-app:is([data-fold-active], [data-fold-posture="flat"])[data-fold-axis="vertical"]
+  .epub-reader.immersive .epub-stage-wrap {
   padding-inline: max(env(safe-area-inset-left), env(safe-area-inset-right));
 }
 

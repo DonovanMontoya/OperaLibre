@@ -45,6 +45,14 @@ export function isBookPosture(state: DeviceFoldState): boolean {
   return usesFoldLayout(state) && state.fold?.axis === "vertical";
 }
 
+/**
+ * Open on the inner display with the fold running top to bottom, held like a
+ * book or laid flat on its side: wide enough for a page on each half.
+ */
+export function holdsTwoPages(state: DeviceFoldState): boolean {
+  return isBookPosture(state) || (state.posture === "flat" && state.fold?.axis === "vertical");
+}
+
 export function usesFoldLayout(state: DeviceFoldState): boolean {
   return !!state.fold && (state.posture === "half-open" || state.fold.active);
 }

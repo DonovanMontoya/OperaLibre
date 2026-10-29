@@ -1,4 +1,4 @@
-import { isBookPosture, useDeviceFold } from "./deviceFold";
+import { holdsTwoPages, useDeviceFold } from "./deviceFold";
 import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { restrictEpubContent } from "./readerContentPolicy";
 import { Capacitor } from "@capacitor/core";
@@ -450,8 +450,8 @@ export function EpubReadalong({
   const [appDark, setAppDark] = useState(currentAppPrefersDark);
   useEffect(() => watchAppPrefersDark(setAppDark), []);
   const readerTheme = resolveReaderTheme(readerThemeChoice, appDark);
-  // Held open like a book, the reader sets a page on each half, the gap
-  // between them on the fold. The change re-lays the chapter out, so it turns
+  // Held open like a book or laid flat on its side, the reader sets a page on
+  // each half, the gap between them on the fold. The change re-lays the chapter out, so it turns
   // back to the remembered place the way a resize does.
   const deviceFold = useDeviceFold();
   const readerLandscape = useLandscapeOrientation();
@@ -492,7 +492,7 @@ export function EpubReadalong({
   // Immersive is the native reader; only the web reader's focus mode borrows
   // the spread from a wide window.
   const webSpreadWindow = useWideSpreadWindow() && !immersive && !Capacitor.isNativePlatform();
-  const bookSpread = fullscreen && (isBookPosture(deviceFold) || webSpreadWindow);
+  const bookSpread = fullscreen && (holdsTwoPages(deviceFold) || webSpreadWindow);
   useEffect(() => {
     const rendition = renditionRef.current;
     if (!isReady || !rendition) return;

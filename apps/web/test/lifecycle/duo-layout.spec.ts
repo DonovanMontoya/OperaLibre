@@ -791,7 +791,7 @@ test('reader survives folding, rotating, flattening and closing without replacin
       fold: { x: 0, y: 460, width: 669, height: 31, axis: 'horizontal', active: true } } },
     { width: 951, height: 669, spread: 'always', state: { posture: 'half-open', angle: 110,
       fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } } },
-    { width: 951, height: 669, spread: 'none', state: { posture: 'flat', angle: 180,
+    { width: 951, height: 669, spread: 'always', state: { posture: 'flat', angle: 180,
       fold: { x: 475, y: 0, width: 1, height: 669, axis: 'vertical', active: false } } },
     { width: 466, height: 678, spread: 'none', state: { posture: 'closed', angle: 0 } }
   ];

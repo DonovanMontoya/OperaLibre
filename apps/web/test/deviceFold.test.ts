@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyDeviceFold, isBookPosture, isFoldTransitionChange, resolveFoldLayoutState, type DeviceFoldState } from "../src/deviceFold.ts";
+import { applyDeviceFold, holdsTwoPages, isBookPosture, isFoldTransitionChange, resolveFoldLayoutState, type DeviceFoldState } from "../src/deviceFold.ts";
 
 function fakeRoot() {
   const properties = new Map<string, string>();
@@ -67,6 +67,17 @@ test("layout follows the active region even when hinge status arrives separately
   assert.equal(isBookPosture(inactive), true);
   // The inner-display geometry remains available for the flat layout.
   assert.equal(properties.get("--fold-x"), "460px");
+});
+
+test("the reader keeps two pages open flat on its side, not upright or closed", () => {
+  const fold = { x: 455, y: 0, width: 41, height: 669, axis: "vertical" as const, active: false };
+  assert.equal(holdsTwoPages({ posture: "flat", angle: 180, fold }), true);
+  assert.equal(holdsTwoPages({ posture: "half-open", angle: 110, fold: { ...fold, active: true } }), true);
+  assert.equal(holdsTwoPages({
+    posture: "flat", angle: 180, fold: { x: 0, y: 455, width: 669, height: 41, axis: "horizontal", active: false }
+  }), false);
+  assert.equal(holdsTwoPages({ posture: "flat", angle: 180 }), false);
+  assert.equal(holdsTwoPages({ posture: "closed", angle: 0, fold }), false);
 });
 
 test("rotation and closing clear the book spread and fold displacement", () => {

@@ -128,6 +128,10 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     // The side rail's free slot last handed to the page; nil when there is
     // none, and unset until the page has been told either way.
     private var sentRail: CGRect??
+    /// How far the visible bar's platter sits from its column's centre,
+    /// towards the page. The clock above it shares that offset, and the
+    /// reader's rail keeps it once the tabs are hidden.
+    private var platterInset: CGFloat = 0
     // A 44pt play/pause target plus padding can stay in the column even when
     // Now Playing expands the system status area. The page drops secondary
     // controls before giving up the rail.
@@ -523,6 +527,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                     // controls stand in line with it.
                     rail = CGRect(x: items.midX - column.width / 2 - view.bounds.minX, y: top,
                                   width: column.width, height: items.minY - top)
+                    platterInset = barOnLeading ? items.midX - column.midX : column.midX - items.midX
                     frame.origin.x = view.bounds.minX
                     frame.size.width = view.bounds.width
                     columnReserve = Self.sideColumnReserve(width: column.width, onLeft: barOnLeading,
@@ -540,7 +545,12 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                 // Reader transport and its secondary actions need 248pt,
                 // plus the web rail's 8pt padding at each end.
                 if bottom - top >= 264 {
-                    rail = CGRect(x: column.minX - frame.minX, y: top, width: column.width, height: bottom - top)
+                    // In line with the clock above it and the bar's items
+                    // before they were hidden, a few points off the centre.
+                    let onLeft = column.minX <= view.bounds.minX + 0.5
+                    let midX = column.midX + (onLeft ? platterInset : -platterInset)
+                    rail = CGRect(x: midX - column.width / 2 - frame.minX, y: top,
+                                  width: column.width, height: bottom - top)
                 }
             }
             #endif
