@@ -131,7 +131,7 @@ pub(crate) fn build_router(
 
     let protected_routes = Router::new()
         .route("/api/auth/logout", post(logout))
-        .route("/api/auth/me", get(me))
+        .route("/api/auth/me", get(me).delete(delete_account))
         .route("/api/profile/stats", get(profile_stats))
         .route("/api/metrics", get(metrics))
         // OPDS: the catalogue a third-party reader can browse. Authenticated

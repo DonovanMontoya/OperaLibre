@@ -8696,3 +8696,348 @@ async fn assistants_are_an_experiment_only_the_owner_turns_on() {
     assert_eq!(set(owner.clone(), true).await.status, StatusCode::OK);
     assert_eq!(tool_names(&server, &secret).await.len(), 3);
 }
+
+#[tokio::test]
+async fn self_deletion_requires_password_and_cannot_target_another_account() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "delete-reader").await;
+    let owner_id = server.get("/api/auth/me", &owner).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (token, payload, expected) in [
+        (
+            "",
+            serde_json::json!({"password":"reader-password-1234"}),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            reader.as_str(),
+            serde_json::json!({"password":"wrong"}),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            reader.as_str(),
+            serde_json::json!({"password":"reader-password-1234", "userId":owner_id}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            reader.as_str(),
+            serde_json::json!({"password":"reader-password-1234", "transferTo":"owner"}),
+            StatusCode::FORBIDDEN,
+        ),
+    ] {
+        assert_eq!(
+            server
+                .send_json("DELETE", "/api/auth/me", token, payload)
+                .await
+                .status,
+            expected
+        );
+    }
+    assert_eq!(
+        server
+            .send_json(
+                "DELETE",
+                &format!("/api/users/{owner_id}"),
+                &reader,
+                serde_json::json!({})
+            )
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        server.get("/api/auth/me", &owner).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        server.get("/api/auth/me", &reader).await.status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn self_deletion_cleans_personal_data_and_preserves_other_listeners() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "delete-reader").await;
+    let id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let owner_id = server.get("/api/auth/me", &owner).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let secret = create_agent(&server, &reader, &["library"]).await;
+    let (book, track) = server.first_book_and_track(&owner).await;
+    for user_id in [&id, &owner_id] {
+        server
+            .state
+            .progress
+            .set(
+                user_id,
+                &book,
+                Progress {
+                    book_id: book.clone(),
+                    track_id: track.clone(),
+                    position_seconds: 42.0,
+                    book_position_seconds: 42.0,
+                    duration_seconds: Some(60.0),
+                    updated_at: now_unix_string(),
+                    finished_override: None,
+                    recording: None,
+                },
+            )
+            .await
+            .unwrap();
+        server
+            .state
+            .activity
+            .add_seconds(user_id, "2026-10-29", 12.0)
+            .await
+            .unwrap();
+    }
+    let fixture_id = id.clone();
+    let fixture_book = book.clone();
+    server
+        .state
+        .database
+        .call(move |db| {
+            db.execute(
+                "INSERT INTO progress_backups VALUES (?1, ?2, 'now', '{}')",
+                rusqlite::params![fixture_id, fixture_book],
+            )?;
+            db.execute(
+                "INSERT INTO book_settings VALUES (?1, ?2, 2.0)",
+                rusqlite::params![fixture_id, fixture_book],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    server
+        .state
+        .reading_history
+        .mutate(|history| {
+            for user_id in [&id, &owner_id] {
+                history.sessions.push(ReadingSession {
+                    id: format!("session-{user_id}"),
+                    user_id: user_id.clone(),
+                    book_id: book.clone(),
+                    work_id: None,
+                    started_at_ms: 1,
+                    ended_at_ms: 2,
+                    listened_seconds: 1.0,
+                    start_position_seconds: 41.0,
+                    end_position_seconds: 42.0,
+                    speed: None,
+                    client: None,
+                    tz_offset_minutes: 0,
+                    started_on: "2026-10-29".into(),
+                });
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    server
+        .state
+        .libation_requests
+        .mutate(|store| {
+            store.requests.push(LibationDownloadRequest {
+                id: "delete-request".into(),
+                user_id: id.clone(),
+                username: "delete-reader".into(),
+                asin: "fixture".into(),
+                profile_id: None,
+                profile_name: None,
+                catalog_id: None,
+                title: "Fixture".into(),
+                status: "pending".into(),
+                requested_at: "now".into(),
+                decided_at: None,
+                decided_by: None,
+                job_id: None,
+            });
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let credential = libro_account::account_path(&server.state, &id);
+    std::fs::create_dir_all(credential.parent().unwrap()).unwrap();
+    std::fs::write(&credential, "[]").unwrap();
+    let deleted = server
+        .send_json(
+            "DELETE",
+            "/api/auth/me",
+            &reader,
+            serde_json::json!({"password":"reader-password-1234"}),
+        )
+        .await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.text());
+    assert!(deleted.header(header::SET_COOKIE).contains("Max-Age=0"));
+    assert!(!credential.exists());
+    assert_eq!(
+        server.get("/api/auth/me", &reader).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        mcp_request(&server, &secret, "tools/list", serde_json::json!({}))
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        server
+            .get(
+                &format!(
+                    "/api/books/{book}/tracks/{track}/stream?token={}",
+                    media_token_for_session(&reader)
+                ),
+                ""
+            )
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        server.get("/api/auth/me", &owner).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(server.state.reading_history.read().await.sessions.len(), 1);
+    assert_eq!(
+        server.state.reading_history.read().await.sessions[0].user_id,
+        owner_id
+    );
+    assert!(
+        server
+            .state
+            .libation_requests
+            .read()
+            .await
+            .requests
+            .is_empty()
+    );
+    let deleted_id = id.clone();
+    server
+        .state
+        .database
+        .call(move |db| {
+            for table in [
+                "progress",
+                "progress_backups",
+                "book_settings",
+                "activity",
+                "sessions",
+            ] {
+                let count: i64 = db.query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE user_id=?1"),
+                    [&deleted_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0, "{table}");
+            }
+            let position: f64 = db.query_row(
+                "SELECT position_seconds FROM progress WHERE user_id=?1",
+                [&owner_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(position, 42.0);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(
+        !server
+            .state
+            .agent_tokens
+            .read()
+            .await
+            .tokens
+            .iter()
+            .any(|token| token.user_id == id)
+    );
+    assert!(!server.state.activity.read().await.by_user.contains_key(&id));
+}
+
+#[tokio::test]
+async fn self_deletion_transfers_final_ownership_atomically() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    for transfer in [None, Some("owner"), Some("missing")] {
+        let result = server
+            .send_json(
+                "DELETE",
+                "/api/auth/me",
+                &owner,
+                serde_json::json!({"password":"owner-password-1234", "transferTo":transfer}),
+            )
+            .await;
+        assert!(result.status == StatusCode::CONFLICT || result.status == StatusCode::BAD_REQUEST);
+        assert_eq!(
+            server.get("/api/auth/me", &owner).await.status,
+            StatusCode::OK
+        );
+    }
+    let successor = server.add_reader(&owner, "successor").await;
+    let result = server
+        .send_json(
+            "DELETE",
+            "/api/auth/me",
+            &owner,
+            serde_json::json!({"password":"owner-password-1234", "transferTo":"successor"}),
+        )
+        .await;
+    assert_eq!(result.status, StatusCode::OK, "{}", result.text());
+    let me = server.get("/api/auth/me", &successor).await.json();
+    assert_eq!(me["isOwner"], true);
+    assert_eq!(me["isAdmin"], true);
+    assert_eq!(
+        server.get("/api/auth/me", &owner).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        server.get("/api/auth/status", "").await.json()["setupRequired"],
+        false
+    );
+    assert_eq!(
+        server
+            .get("/api/books", &successor)
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn self_deletion_database_failure_keeps_owner_and_sessions() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let successor = server.add_reader(&owner, "successor").await;
+    server.state.database.call(|db| {
+        db.execute_batch("CREATE TRIGGER fail_account_delete BEFORE DELETE ON users BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;")
+    }).await.unwrap();
+    let response = server
+        .send_json(
+            "DELETE",
+            "/api/auth/me",
+            &owner,
+            serde_json::json!({"password":"owner-password-1234", "transferTo":"successor"}),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        server.get("/api/auth/me", &owner).await.json()["isOwner"],
+        true
+    );
+    assert_eq!(
+        server.get("/api/auth/me", &successor).await.json()["isOwner"],
+        false
+    );
+}

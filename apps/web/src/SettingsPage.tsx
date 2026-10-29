@@ -17,6 +17,7 @@ import {
   ServerDownloadSettings
 } from "./SettingsCards";
 import { ProgressSharingCard } from "./ProgressSharing";
+import { AccountDeletion } from "./AccountDeletion";
 import { AgentAccessCard } from "./AgentAccess";
 import type { AuthUser, Book } from "./types";
 import type { DeviceNotice } from "./ConfirmDialogs";
@@ -295,6 +296,10 @@ export function SettingsPage({
           canDownload={capabilities.downloads}
           removeOfflineDownload={removeOfflineDownload}
         /> : null}
+
+        <AccountDeletion user={currentUser} supported={isOperaLibre && !localMode && !demoMode}
+          unavailableReason={localMode || demoMode ? "There is no server account to delete in local or demo mode." : "Jellyfin accounts are managed by your Jellyfin server. OperaLibre cannot delete them."}
+          onDeleted={async () => { pausePlayback(audioRef.current); await onLogout(); }} />
 
         <ConnectionSettings
           aliasError={aliasError}

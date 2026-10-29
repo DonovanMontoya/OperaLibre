@@ -704,6 +704,15 @@ export async function logout() {
   return currentBackend().logout();
 }
 
+export async function deleteAccount(password: string, transferTo?: string) {
+  if (isDemoMode()) throw new ApiError("Demo mode has no server account to delete.", 400);
+  return request<{ ok: boolean }>("/api/auth/me", {
+    method: "DELETE",
+    body: JSON.stringify({ password, transferTo }),
+    ignoreUnauthorized: true
+  });
+}
+
 export async function getMe() {
   if (isDemoMode()) return DEMO_USER;
   return currentBackend().user();

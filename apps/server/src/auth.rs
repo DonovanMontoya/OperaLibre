@@ -671,6 +671,21 @@ pub(crate) async fn auth_middleware(
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
+    // Deletion takes the exclusive side after password verification. All
+    // other authenticated requests finish before cleanup and reauthenticate
+    // afterwards, so an in-flight checkpoint cannot recreate deleted data.
+    let deleting = req.method() == Method::DELETE
+        && (req.uri().path() == "/api/auth/me"
+            || req
+                .uri()
+                .path()
+                .strip_prefix("/api/users/")
+                .is_some_and(|id| !id.contains('/')));
+    let _account_guard = if deleting {
+        None
+    } else {
+        Some(state.database.account_gate.read().await)
+    };
     enforce_cookie_csrf(&state, &req)?;
     let Some(credential) = extract_request_credential(&req) else {
         return Err(ApiError::unauthorized("Missing authentication token."));
@@ -913,6 +928,7 @@ pub(crate) async fn authenticate_and_open_session(
     headers: &HeaderMap,
     payload: LoginRequest,
 ) -> Result<(User, String), ApiError> {
+    let _account_guard = state.database.account_gate.read().await;
     let username = normalize_username(&payload.username);
     let client_ip = request_client_ip(peer_address, headers);
     let throttle_keys = LoginThrottleKeys::new(client_ip, &username);
@@ -1424,6 +1440,48 @@ pub(crate) async fn create_user(
     Ok(Json(UserPublic::from(&new_user)))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DeleteAccountRequest {
+    password: String,
+    transfer_to: Option<String>,
+}
+
+pub(crate) async fn delete_account(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(payload): Json<DeleteAccountRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let user = state
+        .users
+        .read()
+        .await
+        .users
+        .iter()
+        .find(|user| user.id == auth.id)
+        .cloned()
+        .ok_or(ApiError::unauthorized("Account no longer exists."))?;
+    if !verify_password_async(&state, payload.password, user.password_hash.clone()).await? {
+        return Err(ApiError::forbidden("The password is incorrect."));
+    }
+    remove_account(
+        &state,
+        &auth,
+        &auth.id,
+        Some((&user.password_hash, payload.transfer_to.as_deref())),
+    )
+    .await?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        SET_COOKIE,
+        HeaderValue::from_str(&expired_session_cookie(
+            state.deployment_mode.secure_cookies(),
+        ))
+        .map_err(|error| ApiError::internal(error.to_string()))?,
+    );
+    Ok((headers, Json(serde_json::json!({ "ok": true }))))
+}
+
 pub(crate) async fn delete_user(
     State(state): State<AppState>,
     AdminUser(auth): AdminUser,
@@ -1431,69 +1489,164 @@ pub(crate) async fn delete_user(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     if user_id == auth.id {
         return Err(ApiError::bad_request(
-            "You cannot delete your own account while signed in.",
+            "Use Delete account in Settings to delete your own account.",
         ));
     }
-
-    // Serialize deletion with provider login/refresh so credentials cannot be
-    // recreated by an in-flight request after the user has been removed.
-    let _libro_guard = libro_account::account_guard(&state, &user_id).await;
-    state
-        .users
-        .mutate(|users| {
-            let target = users
-                .users
-                .iter()
-                .find(|user| user.id == user_id)
-                .ok_or(ApiError::not_found("User not found."))?;
-            if (target.is_admin || target.is_owner) && !auth.is_owner {
-                return Err(ApiError::forbidden(
-                    "Only an owner can delete an administrator or owner.",
-                ));
-            }
-            if target.is_owner && users.users.iter().filter(|user| user.is_owner).count() <= 1 {
-                return Err(ApiError::conflict("The final owner cannot be deleted."));
-            }
-            // Remove the small credential file before committing user deletion;
-            // an I/O failure must leave an account that can still disconnect.
-            match std::fs::remove_file(libro_account::account_path(&state, &user_id)) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-            users.users.retain(|user| user.id != user_id);
-            Ok(())
-        })
-        .await?;
-
-    state
-        .sessions
-        .mutate(|sessions| {
-            sessions.retain(|_, session| session.user_id != user_id);
-            Ok(())
-        })
-        .await?;
-
-    revoke_agent_tokens_for_user(&state, &user_id).await?;
-    state.progress.remove_user(&user_id).await?;
-    state.book_settings.remove_user(&user_id).await?;
-    // Dropped before the history purge, so a flush of the buffered sessions
-    // cannot re-persist the account between the two steps.
-    state.open_sessions.lock().await.forget_user(&user_id);
-    state
-        .reading_history
-        .mutate(|history| {
-            history
-                .sessions
-                .retain(|session| session.user_id != user_id);
-            history
-                .completions
-                .retain(|completion| completion.user_id != user_id);
-            Ok(())
-        })
-        .await?;
-
+    remove_account(&state, &auth, &user_id, None).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn remove_account(
+    state: &AppState,
+    auth: &AuthUser,
+    user_id: &str,
+    self_deletion: Option<(&str, Option<&str>)>,
+) -> Result<(), ApiError> {
+    let _account_guard = state.database.account_gate.write().await;
+    let _libro_guard = libro_account::account_guard(state, user_id).await;
+    // Commit ownership and all database cleanup together; a failed write must
+    // not leave a deleted account whose personal records cannot be retried.
+    let _state_guard = state.database.quiesce_state().await;
+    let mut users = state.users.read().await.clone();
+    let caller = users
+        .users
+        .iter()
+        .find(|user| user.id == auth.id)
+        .ok_or(ApiError::unauthorized("Account no longer exists."))?;
+    let target = users
+        .users
+        .iter()
+        .find(|user| user.id == user_id)
+        .ok_or(ApiError::not_found("User not found."))?;
+    if let Some((hash, _)) = self_deletion {
+        if user_id != caller.id || target.password_hash != hash {
+            return Err(ApiError::conflict("Account changed. Please try again."));
+        }
+    } else if !caller.is_owner && (!caller.is_admin || target.is_admin || target.is_owner) {
+        return Err(ApiError::forbidden(
+            "Only an owner can delete an administrator or owner.",
+        ));
+    }
+    let transfer = self_deletion
+        .and_then(|(_, name)| name)
+        .filter(|name| !name.trim().is_empty());
+    if transfer.is_some() && !target.is_owner {
+        return Err(ApiError::forbidden("Only an owner can transfer ownership."));
+    }
+    let last_owner =
+        target.is_owner && users.users.iter().filter(|user| user.is_owner).count() == 1;
+    if last_owner && transfer.is_none() {
+        return Err(ApiError::conflict(
+            "Transfer ownership before deleting the final owner. Create a replacement account in Administration if needed, then enter its username here. The library and other accounts will remain.",
+        ));
+    }
+    if let Some(name) = transfer {
+        let successor = users
+            .users
+            .iter_mut()
+            .find(|user| user.id != user_id && user.username.eq_ignore_ascii_case(name.trim()))
+            .ok_or(ApiError::bad_request(
+                "Choose another existing account as the new owner.",
+            ))?;
+        successor.is_owner = true;
+        successor.is_admin = true;
+        successor.allowed_book_ids = None;
+        successor.libation_access = LibationAccess::Direct;
+        successor.can_approve_libation_requests = true;
+    }
+    let deleted_username = users
+        .users
+        .iter()
+        .find(|user| user.id == user_id)
+        .unwrap()
+        .username
+        .clone();
+    users.users.retain(|user| user.id != user_id);
+    let mut sessions = state.sessions.read().await.clone();
+    sessions.retain(|_, session| session.user_id != user_id);
+    let mut activity = state.activity.read().await.clone();
+    activity.by_user.remove(user_id);
+    let mut history = state.reading_history.read().await.clone();
+    history
+        .sessions
+        .retain(|session| session.user_id != user_id);
+    history
+        .completions
+        .retain(|completion| completion.user_id != user_id);
+    let mut tokens = state.agent_tokens.read().await.clone();
+    tokens.tokens.retain(|token| token.user_id != user_id);
+    let mut requests = state.libation_requests.read().await.clone();
+    requests
+        .requests
+        .retain(|request| request.user_id != user_id);
+    for request in &mut requests.requests {
+        if request.decided_by.as_deref() == Some(deleted_username.as_str()) {
+            request.decided_by = None;
+        }
+    }
+    let mut refreshes = state.libation_refreshes.read().await.clone();
+    refreshes.manual_refreshes.remove(user_id);
+    refreshes
+        .auto_imports
+        .retain(|_, import| import.enabled_by != user_id);
+    for download in &mut refreshes.pending_downloads {
+        if download.grant_to_user.as_deref() == Some(user_id) {
+            download.grant_to_user = None;
+        }
+    }
+    let documents = [
+        (READING_HISTORY_DOCUMENT, serde_json::to_string(&history)?),
+        (AGENT_TOKENS_DOCUMENT, serde_json::to_string(&tokens)?),
+        (
+            LIBATION_REQUESTS_DOCUMENT,
+            serde_json::to_string(&requests)?,
+        ),
+        (
+            LIBATION_REFRESHES_DOCUMENT,
+            serde_json::to_string(&refreshes)?,
+        ),
+    ];
+    let users_json = serde_json::to_string(&users)?;
+    let sessions_json = serde_json::to_string(&sessions)?;
+    let activity_json = serde_json::to_string(&activity)?;
+    match std::fs::remove_file(libro_account::account_path(state, user_id)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let deleted_id = user_id.to_string();
+    state
+        .database
+        .transaction_while_guarded(move |transaction| {
+            write_users_rows(transaction, &users_json)?;
+            write_sessions_rows(transaction, &sessions_json)?;
+            write_activity_rows(transaction, &activity_json)?;
+            for table in ["progress", "progress_backups", "book_settings"] {
+                transaction.execute(
+                    &format!("DELETE FROM {table} WHERE user_id = ?1"),
+                    rusqlite::params![deleted_id],
+                )?;
+            }
+            for (name, payload) in documents {
+                db::write_document(transaction, name, &payload)?;
+            }
+            Ok(())
+        })
+        .await?;
+    state.users.adopt_restored(users).await;
+    state.sessions.adopt_restored(sessions).await;
+    state.activity.adopt_restored(activity).await;
+    state.reading_history.adopt_restored(history).await;
+    state.agent_tokens.adopt_restored(tokens).await;
+    state.libation_requests.adopt_restored(requests).await;
+    state.libation_refreshes.adopt_restored(refreshes).await;
+    state.open_sessions.lock().await.forget_user(user_id);
+    state
+        .libation_login_sessions
+        .lock()
+        .await
+        .retain(|_, login| login.started_by != user_id);
+    Ok(())
 }
 
 /// Resetting a password lets the resetter sign in as that account. Direct

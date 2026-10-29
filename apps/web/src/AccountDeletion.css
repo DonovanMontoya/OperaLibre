@@ -1,0 +1,9 @@
+.account-deletion form,
+.account-deletion form > label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.account-deletion form { gap: 1rem; }
+.account-deletion input:not([type="checkbox"]) { width: 100%; box-sizing: border-box; }
+.account-deletion form > label:has(input[type="checkbox"]) { display: block; }

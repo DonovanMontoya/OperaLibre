@@ -426,7 +426,8 @@ export default function App() {
         setAuthState({ phase: "server", returnToLocal: true });
       }}
       onLogout={async () => {
-        await clearCarLibrary();
+        // Native cache failure must not retain a deleted account's sign-in.
+        await clearCarLibrary().catch(() => undefined);
         if (isLocalMode()) {
           exitLocalMode();
           setAuthState({ phase: "server" });

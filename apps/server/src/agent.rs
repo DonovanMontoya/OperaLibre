@@ -386,6 +386,7 @@ pub(crate) async fn agent_auth_middleware(
     mut req: Request,
     next: Next,
 ) -> Response {
+    let _account_guard = state.database.account_gate.read().await;
     if !state.agent_tokens.read().await.enabled {
         return ApiError::forbidden(AGENT_ACCESS_OFF).into_response();
     }

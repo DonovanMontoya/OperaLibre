@@ -47,6 +47,16 @@ Under **Users & access**, administrators can also give a reader the full library
 
 Each reader has independent progress, so a household can share one server without stepping on each other's bookmarks.
 
+## Delete your account
+
+In **Settings → Delete account**, enter your current password and confirm permanent deletion. This works for readers, administrators, and owners on an OperaLibre server. Deletion removes your account, progress and progress backups, reading history, daily listening totals, per-book settings, avatar, download requests, server-stored Libro.fm credentials, and access tokens. All your server sessions end, and this app signs out after the server confirms completion. If the server is unreachable or rejects the request, deletion has not been confirmed; reconnect and try again.
+
+A server must retain an owner. The final owner must transfer ownership to another existing account in the deletion form. Create a replacement account in **Administration → Users & access** first if needed. The named account gains full control of the server when deletion succeeds. You can cancel before confirming; deletion cannot be undone.
+
+Shared library files and server configuration remain, as do other listeners' accounts and progress. Deletion does not remove device downloads, external Audible/Libro.fm/Jellyfin accounts, copies already shared with third parties, or server backups and legacy exports. The person operating the server manages those backups and exports; restoring one can restore old account data.
+
+Local and demo modes have no server account to delete. OperaLibre cannot delete a Jellyfin account; manage it through your Jellyfin server. Signing out of an external server does not delete its account.
+
 ## Your picture
 
 Open the account menu and select your picture to choose one of the built-in ones, or go back to your initial. It is saved with your account, so it follows you to every device, and administrators see it beside your name under **Users & access**.

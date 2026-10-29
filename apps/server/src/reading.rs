@@ -95,6 +95,7 @@ pub(crate) fn schedule_reading_session_sweeper(state: AppState) {
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             timer.tick().await;
+            let _account_guard = state.database.account_gate.read().await;
             let sessions = state
                 .open_sessions
                 .lock()
@@ -107,6 +108,7 @@ pub(crate) fn schedule_reading_session_sweeper(state: AppState) {
 
 /// Persist the final tail after the server has stopped accepting requests.
 pub(crate) async fn drain_reading_sessions(state: &AppState) {
+    let _account_guard = state.database.account_gate.read().await;
     let sessions = state.open_sessions.lock().await.drain();
     persist_sessions(state, sessions).await;
 }

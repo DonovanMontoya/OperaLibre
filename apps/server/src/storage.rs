@@ -549,21 +549,6 @@ impl ProgressStore {
             .call(move |connection| upsert_progress(connection, &user_id, &book_id, &progress))
             .await
     }
-
-    /// Forget everything belonging to one listener.
-    pub(crate) async fn remove_user(&self, user_id: &str) -> Result<(), ApiError> {
-        let user_id = user_id.to_string();
-        self.db
-            .transaction(move |transaction| {
-                transaction.execute("DELETE FROM progress WHERE user_id = ?1", params![user_id])?;
-                transaction.execute(
-                    "DELETE FROM progress_backups WHERE user_id = ?1",
-                    params![user_id],
-                )?;
-                Ok(())
-            })
-            .await
-    }
 }
 
 /// Per-listener, per-book playback settings. Only volume gain today.
@@ -643,19 +628,6 @@ impl BookSettingsStore {
                         params![user_id, book_id, gain],
                     )?;
                 }
-                Ok(())
-            })
-            .await
-    }
-
-    pub(crate) async fn remove_user(&self, user_id: &str) -> Result<(), ApiError> {
-        let user_id = user_id.to_string();
-        self.db
-            .call(move |connection| {
-                connection.execute(
-                    "DELETE FROM book_settings WHERE user_id = ?1",
-                    params![user_id],
-                )?;
                 Ok(())
             })
             .await

@@ -32,6 +32,7 @@ The web app obtains a session token and a separate scoped media token via `POST 
 | --- | --- | --- |
 | `POST` | `/api/auth/logout` | Invalidate the current session. |
 | `GET` | `/api/auth/me` | Return the current user. |
+| `DELETE` | `/api/auth/me` | Permanently delete the authenticated account. Requires `{ "password": "current password" }`; owners may add `"transferTo": "existing username"` to transfer full ownership atomically. The final owner must name a successor. Unknown fields (including user IDs) are rejected. Deletes personal records and all sessions/tokens, expires the cookie, and returns `{ "ok": true }`. Shared library files and other accounts remain; backups and legacy exports are not rewritten. |
 | `GET` | `/api/profile/stats` | Listening stats for the current user. |
 | `GET` | `/api/profile/sessions` | The caller's own reading sessions, newest first. Accepts `limit` (default 200, max 1000) and `since=YYYY-MM-DD`. |
 | `GET` | `/api/profile/completions` | The caller's own completion history, newest first, with a frozen snapshot of each book as it was when finished. Same query parameters. |

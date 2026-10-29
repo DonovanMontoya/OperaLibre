@@ -290,6 +290,8 @@ pub(crate) struct Database {
     /// it exclusively so no state write can be drafted against the old caches
     /// and committed after the replacement database is installed.
     state_gate: Arc<RwLock<()>>,
+    /// Drain authenticated operations before deleting their account data.
+    pub(crate) account_gate: Arc<RwLock<()>>,
 }
 
 impl Database {
@@ -300,6 +302,7 @@ impl Database {
         Ok(Self {
             connection: Arc::new(std::sync::Mutex::new(connection)),
             state_gate: Arc::new(RwLock::new(())),
+            account_gate: Arc::new(RwLock::new(())),
         })
     }
 
