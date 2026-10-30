@@ -48,7 +48,7 @@ import { durationFromTracks, formatDurationLabel, formatTime } from "./formattin
 import { haptic } from "./native";
 import { Capacitor } from "@capacitor/core";
 import { bookDownloadUrl, mediaUrl } from "./api";
-import { tagsForBook } from "./bookMetadata";
+import { displayPublishedDate, tagsForBook } from "./bookMetadata";
 import { readerStatusLabel } from "./sharedProgress";
 import { READ_ALONG_MODE_LABELS } from "./readalong";
 import { formatSleepTimerMinutes, SLEEP_TIMER_MAX_MINUTES, SLEEP_TIMER_MIN_MINUTES } from "./sleepTimer";
@@ -797,7 +797,7 @@ export function PlayerPane({
                         ?? `${playbackBook.title}${playbackBook.author ? ` by ${playbackBook.author}` : ""}${playbackBook.narrator ? `, narrated by ${playbackBook.narrator}` : ""}.`}
                     </p>
                     <div className="web-now-tags" aria-label="Book metadata">
-                      {playbackBook.publishedDate ? <span>{playbackBook.publishedDate}</span> : null}
+                      {playbackBook.publishedDate ? <span>{displayPublishedDate(playbackBook.publishedDate)}</span> : null}
                       {playbackBook.metadata.publisher ? <span>{playbackBook.metadata.publisher}</span> : null}
                       {playbackBook.genres.slice(0, 3).map((genre) => <span key={genre}>{genre}</span>)}
                     </div>
@@ -1026,7 +1026,7 @@ export function PlayerPane({
                           ? `${selectedBook.metadata.series}${selectedBook.metadata.seriesPosition ? ` · #${selectedBook.metadata.seriesPosition}` : ""}`
                           : null
                       },
-                      { label: "Published", value: selectedBook.publishedDate || null },
+                      { label: "Published", value: displayPublishedDate(selectedBook.publishedDate) },
                       { label: "Publisher", value: selectedBook.metadata.publisher || null },
                       {
                         label: "Runtime",
@@ -1081,7 +1081,7 @@ export function PlayerPane({
                   {tag.name}{tag.position ? ` · #${tag.position}` : ""}
                 </span>
               ))}
-              {selectedBook.publishedDate ? <span>{selectedBook.publishedDate}</span> : null}
+              {selectedBook.publishedDate ? <span>{displayPublishedDate(selectedBook.publishedDate)}</span> : null}
               {selectedBook.metadata.publisher ? <span>{selectedBook.metadata.publisher}</span> : null}
               {selectedBook.genres.slice(0, 2).map((genre) => <span key={genre}>{genre}</span>)}
             </div>

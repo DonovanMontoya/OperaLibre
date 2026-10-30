@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { displayBookDescription, enrichBooksFromLibation } from "../src/bookMetadata.ts";
+import { displayBookDescription, displayPublishedDate, enrichBooksFromLibation } from "../src/bookMetadata.ts";
 import type { Book, LibationBook } from "../src/types.ts";
 
 const book = {
@@ -73,4 +73,22 @@ test("blank catalog placeholders do not replace missing metadata", () => {
     const books = [book];
     assert.equal(enrichBooksFromLibation(books, [{ ...catalogBook, description }]), books);
   }
+});
+
+test("HTML stored in a book's description displays as plain paragraphs", () => {
+  const description = "<p><b>The brand-new Miss Marple mystery from #1 <i>New York Times</i> author.</b></p>"
+    + "<p><i>The notorious actress.</i><br><i>The society wife.</i></p>\n<p>Who&#39;s next&hellip;</p>";
+  assert.equal(
+    displayBookDescription({ ...book, description }),
+    "The brand-new Miss Marple mystery from #1 New York Times author.\n\n"
+      + "The notorious actress.\nThe society wife.\n\nWho's next\u2026"
+  );
+});
+
+test("published timestamps display as a calendar date without shifting the day", () => {
+  const expected = new Date(Date.UTC(2026, 8, 22)).toLocaleDateString(undefined, { dateStyle: "medium", timeZone: "UTC" });
+  assert.equal(displayPublishedDate("2026-09-22T00:00:00.000Z"), expected);
+  assert.equal(displayPublishedDate("2026-09-22"), expected);
+  assert.equal(displayPublishedDate("1865"), "1865");
+  assert.equal(displayPublishedDate("  "), null);
 });

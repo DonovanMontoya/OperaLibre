@@ -22,27 +22,66 @@ function cleanDescriptionSpaces(value: string | null) {
     .trim() || null;
 }
 
+const HTML_TAG = /<\/?[a-z][^>]*>/i;
+const NAMED_ENTITIES: Record<string, string> = {
+  quot: '"', apos: "'", lt: "<", gt: ">", hellip: "\u2026", mdash: "\u2014", ndash: "\u2013",
+  lsquo: "\u2018", rsquo: "\u2019", ldquo: "\u201c", rdquo: "\u201d", copy: "\u00a9", reg: "\u00ae", trade: "\u2122"
+};
+
+function decodeEntity(entity: string, name: string) {
+  const code = /^#x([\da-f]+)$/i.exec(name)?.[1];
+  const decimal = /^#(\d+)$/.exec(name)?.[1];
+  const point = code ? parseInt(code, 16) : decimal ? Number(decimal) : null;
+  if (point !== null) return point > 0 && point <= 0x10ffff ? String.fromCodePoint(point) : "";
+  return NAMED_ENTITIES[name.toLowerCase()] ?? entity;
+}
+
 /** Hide blank descriptions and track/chapter labels stored as a comment. */
 export function displayBookDescription(book: Book) {
-  const description = cleanDescriptionSpaces(book.description);
+  // Tags and providers such as Audible and Jellyfin often store the blurb as HTML.
+  const description = book.description && HTML_TAG.test(book.description)
+    ? cleanCatalogDescription(book.description)
+    : cleanDescriptionSpaces(book.description);
   return description && !descriptionEchoesBook(book, description) ? description : null;
 }
 
+function stripTags(value: string) {
+  // Repeat until stable so removing one tag cannot leave another behind.
+  let previous;
+  do {
+    previous = value;
+    value = value.replace(/<[^>]+>/g, "");
+  } while (value !== previous);
+  return value;
+}
+
+/** Convert catalog HTML to plain text, keeping paragraph and line breaks. */
 export function cleanCatalogDescription(value: string | null) {
-  const description = cleanDescriptionSpaces(value)
-    ?.replace(/<br\s*\/?>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&quot;|&#34;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
+  const text = cleanDescriptionSpaces(value)
+    ?.replace(/\s+/g, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(?:p|div|li|h[1-6])\s*>/gi, "\n\n");
+  const description = text && stripTags(text)
+    .replace(/&(#x[\da-f]+|#\d+|[a-z]+);/gi, decodeEntity)
     // Strip any markup reconstructed from malformed tags or decoded entities.
     .replace(/[<>]/g, "")
     // Decode ampersands last so `&amp;lt;` cannot become a tag in this pass.
     .replace(/&amp;/gi, "&")
-    .replace(/\s+/g, " ")
+    .replace(/[ \t]*\n[ \t]*/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
     .trim();
   return description || null;
+}
+
+/** Show a full timestamp, as Jellyfin and some tags store it, as a calendar date. */
+export function displayPublishedDate(value: string | null) {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)?$/.exec(trimmed);
+  if (!match) return trimmed;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return date.toLocaleDateString(undefined, { dateStyle: "medium", timeZone: "UTC" });
 }
 
 /** Fill missing/invalid local tag descriptions from the matched Audible record. */

@@ -2531,6 +2531,12 @@ img.large-cover {
   margin: -12px 0 0;
 }
 
+.book-description,
+.details-sheet-description,
+.web-now-about > p {
+  white-space: pre-line;
+}
+
 .book-description {
   margin: 0;
   font-family: "Fraunces", serif;
