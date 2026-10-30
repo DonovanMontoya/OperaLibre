@@ -31,6 +31,10 @@ The setting is a boost, not a re-recording: past the point where a book’s loud
 
 Safari and other WebKit web players currently allow reductions only because routing audio through their boost engine can distort playback. This also applies to downloaded and imported books. Saved boosts remain available in supported players; Safari plays them at Original. To use boost, use the native iOS app or desktop Chrome or Firefox with a frontend served by OperaLibre.
 
+### Turn on the visualizer
+
+In the browser player a **Visualizer** switch sits on the cover’s corner; on a computer it appears when you point at the cover. Tap it to draw the voice around the cover and to step through the styles, and use the expand button beside it to give the drawing the whole top of the player, where a third style joins the cycle. **Esc** or the shrink button brings the player back. The choice is remembered on the device. The visualizer listens through the same engine as Book Volume, so it is only offered where that engine can lift a book: Safari and iOS browsers show it as **Not in Safari**, a separately hosted frontend has no switch, and the native apps leave it out.
+
 ### Set your own sleep timer
 
 **Nightfall**, on the book’s own page and behind the timer button in the phone player, offers the usual 5, 15, 30, 45, and 60 minute stops. **End of chapter** stops when the chapter you are listening to finishes, however long that takes; if you skip or pick another chapter, it waits for the end of the one you land in. It appears for books that have chapter markers. Choose **Custom** and type any length from 1 to 600 minutes when none of those matches the chapter you are in the middle of. Durations you type are kept on that device — the three most recent sit alongside the presets — so a length you use often is one tap away the next night. The countdown only runs while the book is playing.

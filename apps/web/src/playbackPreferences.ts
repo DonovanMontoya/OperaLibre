@@ -35,3 +35,25 @@ export function writeBookPreviewsEnabled(enabled: boolean, storage?: PreferenceS
     // The setting remains usable for this session when storage is unavailable.
   }
 }
+
+const PLAYER_VISUALIZER_KEY = "operalibre.player.visualizer";
+
+export const PLAYER_VISUALIZERS = ["off", "halo", "blocks", "bloom"] as const;
+export type PlayerVisualizerMode = (typeof PLAYER_VISUALIZERS)[number];
+
+export function readPlayerVisualizer(storage?: PreferenceStorage): PlayerVisualizerMode {
+  try {
+    const stored = (storage ?? window.localStorage).getItem(PLAYER_VISUALIZER_KEY);
+    return PLAYER_VISUALIZERS.find((mode) => mode === stored) ?? "off";
+  } catch {
+    return "off";
+  }
+}
+
+export function writePlayerVisualizer(mode: PlayerVisualizerMode, storage?: PreferenceStorage): void {
+  try {
+    (storage ?? window.localStorage).setItem(PLAYER_VISUALIZER_KEY, mode);
+  } catch {
+    // The visualizer still switches for this session when storage is unavailable.
+  }
+}
