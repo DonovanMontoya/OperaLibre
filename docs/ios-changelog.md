@@ -11,15 +11,13 @@ Entries use **version (build)** and appear newest first. iOS versions are tracke
 independently of the server releases. From 1.3.2, the build number counts
 uploads of each app version from 1, and Android uses the same build number.
 
-## Unreleased
+## 1.3.2 (1)
 
-### 1.3.2 (1) (planned)
-
-Prepared from changes on main after the 1.3.1 range,
-[`992ce885`](https://github.com/DonovanMontoya/OperaLibre/commit/992ce8857687da9e5a9a63ed6361b64b01a9724f),
-through [`998f5f46`](https://github.com/DonovanMontoya/OperaLibre/commit/998f5f46bde42296f2a49f558376572ad0a004e4),
-the merge of #382 on main. The distribution channel and release date are
-pending confirmation.
+Built from main at
+[`6dc8c7df`](https://github.com/DonovanMontoya/OperaLibre/commit/6dc8c7df1ba9),
+the merge of #393, covering changes after the 1.3.1 range ending at
+[`992ce885`](https://github.com/DonovanMontoya/OperaLibre/commit/992ce8857687da9e5a9a63ed6361b64b01a9724f).
+The distribution channel and release date are pending confirmation.
 
 - While a book plays, the Shelf's **Now listening** section puts it first,
   with a pause button, and lists the rest under **Up next**. Returning from
@@ -60,6 +58,22 @@ pending confirmation.
   ([#368](https://github.com/DonovanMontoya/OperaLibre/pull/368),
   [#369](https://github.com/DonovanMontoya/OperaLibre/pull/369),
   [#370](https://github.com/DonovanMontoya/OperaLibre/pull/370))
+- Book descriptions written in HTML show as readable text instead of raw
+  tags, and published dates show as dates instead of raw timestamps.
+  ([#393](https://github.com/DonovanMontoya/OperaLibre/pull/393))
+- When pulling down to refresh the Shelf or a purchase shelf fails, the app
+  says so instead of looking finished, and a pull interrupted by the system
+  no longer starts a refresh.
+  ([#390](https://github.com/DonovanMontoya/OperaLibre/pull/390))
+- Pressing Escape to dismiss metadata suggestions keeps what you typed and
+  leaves the editor open.
+  ([#389](https://github.com/DonovanMontoya/OperaLibre/pull/389))
+- **Settings** has a link to the privacy policy, which is also reachable from
+  the sign-in screen. The app includes Apple's privacy manifest and now
+  requires a 64-bit iPhone or iPad.
+  ([#384](https://github.com/DonovanMontoya/OperaLibre/pull/384),
+  [#385](https://github.com/DonovanMontoya/OperaLibre/pull/385),
+  [#386](https://github.com/DonovanMontoya/OperaLibre/pull/386))
 
 ## 1.3.1
 
