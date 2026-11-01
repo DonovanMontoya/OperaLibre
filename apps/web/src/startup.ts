@@ -61,7 +61,7 @@ export function shouldAcceptNativeTrackChange(startupReady: boolean, isPlaying: 
   return startupReady || isPlaying;
 }
 
-export type StartupDestination = { tab: "reading" | "shelf"; reveal: boolean };
+type StartupDestination = { tab: "reading" | "shelf"; reveal: boolean };
 
 /**
  * Where a library load sends the native launch cover, or null to leave it.

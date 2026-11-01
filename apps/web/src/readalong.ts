@@ -11,7 +11,7 @@ import type { Book, CompanionFile, SyncFragment, SyncMap, SyncRecoveryGap } from
 // Chapter labels
 // ---------------------------------------------------------------------------
 
-export type ParsedReadalongLabel = {
+type ParsedReadalongLabel = {
   number: number | null;
   /** The lettered series a number belongs to (`i` for an interlude written `I-3`); empty for chapters. */
   series: string;
@@ -309,7 +309,7 @@ export function normalizeSyncNeedle(value: string) {
   return out.trim();
 }
 
-export type SyncPrecision = "sentence";
+type SyncPrecision = "sentence";
 
 /**
  * What a loaded sync map can drive. Only a forced alignment is followed, so
@@ -328,7 +328,7 @@ export function syncMapPrecision(map: SyncMap | null | undefined): SyncPrecision
 // What a book offers
 // ---------------------------------------------------------------------------
 
-export type ReadAlongMode = SyncPrecision | "chapter" | "text";
+type ReadAlongMode = SyncPrecision | "chapter" | "text";
 
 /**
  * How closely the reader can follow this book's audio, from what the book
@@ -364,7 +364,7 @@ export const READ_ALONG_MODE_LABELS: Record<ReadAlongMode, { title: string; deta
   }
 };
 
-export type CompanionGroups = {
+type CompanionGroups = {
   text: CompanionFile[];
   supplements: CompanionFile[];
   images: CompanionFile[];
@@ -439,7 +439,7 @@ export function readerStorageKey(scope: string, bookId: string, field: "location
 }
 
 /** The remembered place, and whether the reader has settled on it. */
-export type AnchorUpdate = { anchor: string | null; arrived: boolean };
+type AnchorUpdate = { anchor: string | null; arrived: boolean };
 
 /**
  * Where the reader should reopen after a page of `page.start`…`page.end` is
@@ -496,7 +496,7 @@ export function shouldOpenPlayingChapter(
   return playingChapterId !== handledChapterId;
 }
 
-export type NarratedPageTurn = { cfi: string; from: string; layout: number };
+type NarratedPageTurn = { cfi: string; from: string; layout: number };
 
 /** Whether this exact page correction has already been attempted for this layout. */
 export function repeatedNarratedPageTurn(
