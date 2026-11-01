@@ -1,6 +1,6 @@
 import type { Book, ProfileStats } from "./types";
 
-export type CachedProfileStats = {
+type CachedProfileStats = {
   cachedAt: string;
   stats: ProfileStats;
 };

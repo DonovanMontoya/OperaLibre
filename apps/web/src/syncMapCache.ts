@@ -1,6 +1,6 @@
 import type { SyncMap } from "./types";
 
-export type SyncMapCache = { maps: Record<string, SyncMap | null>; revision: number };
+type SyncMapCache = { maps: Record<string, SyncMap | null>; revision: number };
 type Action =
   | { type: "loaded"; bookId: string; map: SyncMap | null }
   | { type: "invalidate"; bookId: string }

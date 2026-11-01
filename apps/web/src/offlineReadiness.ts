@@ -1,6 +1,6 @@
 import type { Book, CompanionFile, SyncMap } from "./types";
 
-export type OfflineAvailability = "available" | "missing" | "not-present" | "unsupported" | "needs-ebook";
+type OfflineAvailability = "available" | "missing" | "not-present" | "unsupported" | "needs-ebook";
 export type OfflineReadiness = {
   audio: boolean;
   ebook: OfflineAvailability;

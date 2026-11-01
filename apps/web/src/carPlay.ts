@@ -14,7 +14,7 @@ import {
   type CarPlaybackSession
 } from "./carLibrary.ts";
 
-export type CarPlayState = {
+type CarPlayState = {
   connected: boolean;
   /** Set while a book the car itself started is loaded in the native player. */
   carOwnedBookId: string | null;

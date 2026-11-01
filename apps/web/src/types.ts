@@ -200,7 +200,7 @@ export type SyncReport = {
 };
 
 /** `[startSeconds, endSeconds, offsetUtf16, lengthUtf16]` inside the fragment text. */
-export type SyncWord = [number, number, number, number];
+type SyncWord = [number, number, number, number];
 
 export type SyncFragment = {
   startSeconds: number;
