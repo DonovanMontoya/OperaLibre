@@ -8746,3 +8746,42 @@ async fn assistants_are_an_experiment_only_the_owner_turns_on() {
     assert_eq!(set(owner.clone(), true).await.status, StatusCode::OK);
     assert_eq!(tool_names(&server, &secret).await.len(), 3);
 }
+
+#[tokio::test]
+async fn concurrent_login_admission_is_bounded_even_when_password_workers_are_full() {
+    let server = TestServer::start(0).await;
+    let _workers = server
+        .state
+        .password_task_slots
+        .clone()
+        .acquire_many_owned(super::PASSWORD_TASK_CONCURRENCY as u32)
+        .await
+        .unwrap();
+    let mut pending = tokio::task::JoinSet::new();
+    for _ in 0..20 {
+        let state = server.state.clone();
+        pending.spawn(async move {
+            super::authenticate_and_open_session(
+                &state,
+                SocketAddr::from(([127, 0, 0, 1], 51234)),
+                &HeaderMap::new(),
+                super::LoginRequest {
+                    username: "unknown".into(),
+                    password: "wrong-password".into(),
+                },
+            )
+            .await
+        });
+    }
+    while let Some(result) = pending.join_next().await {
+        assert_eq!(
+            result.unwrap().unwrap_err().status,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    let keys = super::LoginThrottleKeys::new(std::net::IpAddr::from([127, 0, 0, 1]), "unknown");
+    let attempts = server.state.login_attempts.lock().await;
+    assert_eq!(attempts[&keys.account].failures, super::LOGIN_MAX_FAILURES);
+    assert_eq!(attempts[&keys.ip].failures, super::LOGIN_MAX_FAILURES);
+    assert!(server.state.sessions.read().await.is_empty());
+}
