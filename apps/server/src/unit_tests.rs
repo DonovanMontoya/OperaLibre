@@ -9072,6 +9072,8 @@ async fn libation_restart_recovers_approved_and_direct_downloads_with_restricted
                 .pending_downloads
                 .push(super::PendingLibationDownload {
                     id: "saved-direct".to_string(),
+                    initiated_by: None,
+                    job_id: None,
                     profile_id: Some("legacy".to_string()),
                     asin: "B000RECOV2".to_string(),
                     grant_to_user: None,
@@ -9613,6 +9615,7 @@ async fn libation_account_removal_cannot_accept_a_download_for_a_deleted_profile
             Some(profile_id),
             "B000RACE01".to_string(),
             None,
+            None,
         )
         .await
     });
@@ -9678,7 +9681,7 @@ async fn libation_startup_imports_wait_for_the_catalogue_and_reuse_manually_name
         book.join("Already present [B000LOCAL1].wav"),
     )
     .unwrap();
-    let direct = super::start_libation_download(&state, None, "B000LOCAL1".to_string(), None)
+    let direct = super::start_libation_download(&state, None, "B000LOCAL1".to_string(), None, None)
         .await
         .unwrap()
         .0;
@@ -9726,10 +9729,11 @@ async fn libation_shutdown_preserves_a_download_queued_behind_the_startup_catalo
     let root = tempfile::tempdir().unwrap();
     let (state, _) = fake_libation_state(root.path());
     state.library.write().await.catalogue_ready = false;
-    let created = super::start_libation_download(&state, None, "B000QUEUE1".to_string(), None)
-        .await
-        .unwrap()
-        .0;
+    let created =
+        super::start_libation_download(&state, None, "B000QUEUE1".to_string(), None, None)
+            .await
+            .unwrap()
+            .0;
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while state.shutdown.receiver_count() < 2 {
             tokio::task::yield_now().await;
@@ -9768,7 +9772,8 @@ async fn libation_shutdown_preserves_intent_when_the_observer_starts_after_the_s
     let registration_guard = state.libation_account_registration_lock.lock().await;
     let starting_state = state.clone();
     let starting = tokio::spawn(async move {
-        super::start_libation_download(&starting_state, None, "B000LATE01".to_string(), None).await
+        super::start_libation_download(&starting_state, None, "B000LATE01".to_string(), None, None)
+            .await
     });
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while state

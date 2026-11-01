@@ -385,8 +385,8 @@ semantics. Job kind is `libro-import` and uses the standard jobs endpoints.
 | `GET` | `/api/libation/books` | Audible library known to Libation. |
 | `GET` | `/api/libation/covers/{picture_id}` | Audible cover-art proxy. Accepts the media token. |
 | `POST` | `/api/libation/sync` | Refresh Libation's library scan. Authenticated readers may call it; non-administrators are subject to the configured per-account hourly limit. |
-| `POST` | `/api/libation/books/{asin}/liberate` | Download one title. Admin or directly permitted reader. |
-| `POST` | `/api/libation/accounts/{profile_id}/books/{asin}/liberate` | Download one title through the selected Audible account. Admin or directly permitted reader. |
+| `POST` | `/api/libation/books/{asin}/liberate` | Download one title. Admin or directly permitted reader. Returns `429` at 100 unfinished downloads per user or 1,000 saved downloads overall. |
+| `POST` | `/api/libation/accounts/{profile_id}/books/{asin}/liberate` | Download one title through the selected Audible account. Admin or directly permitted reader, with the same unfinished-download limits. Duplicate requests reuse the existing job; a concurrent retry during registration returns `409`. |
 | `POST` | `/api/libation/liberate-all` | Download all eligible titles. Admin only. |
 | `GET` | `/api/libation/access` | Libation availability and the signed-in reader's direct/approval policy. |
 | `GET` | `/api/libation/requests` | The account's own requests; authorized approvers receive all requests. |
