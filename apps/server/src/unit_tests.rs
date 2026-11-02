@@ -1954,12 +1954,18 @@ exit 0
         libation_refresh_reservation_lock: super::Arc::new(super::Mutex::new(())),
         faststart_lock: super::Arc::new(super::Mutex::new(())),
         login_attempts: super::Arc::new(super::Mutex::new(std::collections::HashMap::new())),
+        credential_issuance_lock: super::Arc::new(super::Mutex::new(())),
+        password_request_slots: super::Arc::new(super::Semaphore::new(
+            super::PASSWORD_REQUEST_CAPACITY,
+        )),
         password_task_slots: super::Arc::new(super::Semaphore::new(
             super::PASSWORD_TASK_CONCURRENCY,
         )),
         download_task_slots: super::Arc::new(super::Semaphore::new(
             super::DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS,
         )),
+        catalogue_slots: super::Arc::new(super::Semaphore::new(super::CATALOGUE_CONCURRENCY)),
+        catalogue_account_slots: super::Arc::new(super::Mutex::new(super::HashMap::new())),
         epub_entry_slots: super::Arc::new(super::Semaphore::new(super::EPUB_ENTRY_CONCURRENCY)),
         epub_entry_account_slots: super::Arc::new(super::Mutex::new(
             std::collections::HashMap::new(),

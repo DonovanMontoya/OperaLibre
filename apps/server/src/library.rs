@@ -526,78 +526,91 @@ pub(crate) async fn list_books(
     Query(query): Query<ListBooksQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    ensure_startup_scan_finished(&state).await?;
-    let (books, next_cursor) = {
-        let library = state.library.read().await;
-        // A missing or inaccessible cursor restarts the walk. Select from
-        // one catalogue snapshot before copying metadata or adding progress.
-        let start = query
-            .limit
-            .and(query.cursor.as_deref())
-            .and_then(|cursor| {
-                library
-                    .books
-                    .iter()
-                    .position(|book| book.id == cursor && can_access_book(&auth, &book.id))
-            })
-            .map_or(0, |index| index + 1);
-        let mut visible = library.books[start..]
+    let lease = CatalogueLease::acquire(&state, &auth).await?;
+    catalogue_books_response(&state, auth, query, headers, lease).await
+}
+
+async fn catalogue_books_response(
+    state: &AppState,
+    auth: AuthUser,
+    query: ListBooksQuery,
+    headers: HeaderMap,
+    lease: CatalogueLease,
+) -> Result<Response, ApiError> {
+    ensure_startup_scan_finished(state).await?;
+    let library = state.library.clone().read_owned().await;
+    let start = query
+        .limit
+        .and(query.cursor.as_deref())
+        .and_then(|cursor| {
+            library
+                .books
+                .iter()
+                .position(|book| book.id == cursor && can_access_book(&auth, &book.id))
+        })
+        .map_or(0, |index| index + 1);
+    let limit = query
+        .limit
+        .map_or(usize::MAX, |limit| limit.clamp(1, MAX_BOOKS_PAGE));
+    let mut visible = library.books[start..]
+        .iter()
+        .filter(|book| can_access_book(&auth, &book.id));
+    let selected: Vec<&Book> = visible.by_ref().take(limit).collect();
+    let next_cursor = visible
+        .next()
+        .and_then(|_| selected.last().map(|book| book.id.clone()));
+    let enrichment = ProgressEnrichment::load(state, &auth, &selected).await?;
+    drop(selected);
+    tokio::task::spawn_blocking(move || {
+        let mut spool = CatalogueSpool::new(lease)?;
+        spool.bytes(b"[")?;
+        for (index, book) in library.books[start..]
             .iter()
-            .filter(|book| can_access_book(&auth, &book.id));
-        let limit = query
-            .limit
-            .map_or(usize::MAX, |limit| limit.clamp(1, MAX_BOOKS_PAGE));
-        let books: Vec<Book> = visible.by_ref().take(limit).cloned().collect();
-        let next_cursor = visible
-            .next()
-            .and_then(|_| books.last().map(|book| book.id.clone()));
-        (books, next_cursor)
-    };
-    let books = enrich_books_with_progress(&state, &auth, books).await?;
-
-    // The tag covers the response as it was actually built, so a change to a
-    // shared listener's position or to a volume gain invalidates it too. It
-    // also covers the navigation state: a page that was exactly full gains a
-    // next cursor when a later-sorting book arrives, with a body that did not
-    // change, and a client holding only the old tag must not be told there is
-    // nothing new. A cheaper tag derived from a library counter would answer
-    // 304 to some requests whose content had in fact changed.
-    let body = serde_json::to_vec(&books)?;
-    let mut hasher = Sha1::new();
-    hasher.update(&body);
-    match &next_cursor {
-        Some(cursor) => {
-            hasher.update(b"\nnext:");
-            hasher.update(cursor.as_bytes());
+            .filter(|book| can_access_book(&auth, &book.id))
+            .take(limit)
+            .enumerate()
+        {
+            check_catalogue_book(book)?;
+            if index > 0 {
+                spool.bytes(b",")?;
+            }
+            spool.json(&enrichment.apply(book.clone()))?;
         }
-        None => hasher.update(b"\nend"),
-    }
-    let etag = format!("\"{}\"", hex_digest(hasher.finalize()));
-    if if_none_match_matches(&headers, &etag) {
-        return Ok(Response::builder()
-            .status(StatusCode::NOT_MODIFIED)
-            .header(ETAG, &etag)
-            .header(CACHE_CONTROL, "private, no-cache")
-            .body(Body::empty())?);
-    }
-
-    let mut response = Response::builder()
-        .status(StatusCode::OK)
-        .header(CONTENT_TYPE, "application/json")
-        .header(ETAG, &etag)
-        .header(CACHE_CONTROL, "private, no-cache");
-    if let Some(cursor) = next_cursor {
-        response = response.header("x-next-cursor", cursor);
-    }
-    Ok(response.body(Body::from(body))?)
+        spool.bytes(b"]")?;
+        let suffix = next_cursor
+            .as_ref()
+            .map_or_else(|| "\nend".to_string(), |cursor| format!("\nnext:{cursor}"));
+        let etag = spool.etag(suffix.as_bytes());
+        if if_none_match_matches(&headers, &etag) {
+            return Ok(Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header(ETAG, etag)
+                .header(CACHE_CONTROL, "private, no-cache")
+                .body(Body::empty())?);
+        }
+        spool.response("application/json", Some(&etag), next_cursor.as_deref())
+    })
+    .await
+    .map_err(|_| ApiError::internal("Catalogue generation was interrupted."))?
 }
 
 pub(crate) async fn rescan(
     State(state): State<AppState>,
     AdminUser(auth): AdminUser,
-) -> Result<Json<Vec<Book>>, ApiError> {
+) -> Result<Response, ApiError> {
+    let lease = CatalogueLease::acquire(&state, &auth).await?;
     rescan_library(&state).await?;
-    Ok(Json(books_with_progress(&state, &auth).await?))
+    catalogue_books_response(
+        &state,
+        auth,
+        ListBooksQuery {
+            limit: None,
+            cursor: None,
+        },
+        HeaderMap::new(),
+        lease,
+    )
+    .await
 }
 
 pub(crate) async fn get_book(

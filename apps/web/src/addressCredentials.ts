@@ -4,14 +4,15 @@ type AddressCredentials = { token?: string; mediaToken?: string };
 
 type KeyValueStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
-const CREDENTIALS_STORAGE_KEY = "operalibre.credentials";
+const CREDENTIALS_STORAGE_KEY = "operalibre.credentials.v2";
+const FOLDED_CREDENTIALS_STORAGE_KEY = "operalibre.credentials";
 // Where the single sign-in lived before sign-ins were kept per address.
 const LEGACY_TOKEN_STORAGE_KEY = "operalibre.authToken";
 const LEGACY_MEDIA_TOKEN_STORAGE_KEY = "operalibre.mediaToken";
 
 /** One address, however it was typed. */
 export function addressKey(url: string): string {
-  return normalizeServerAddress(url).toLowerCase();
+  return normalizeServerAddress(url);
 }
 
 /**
@@ -40,6 +41,15 @@ export class CredentialVault {
     const stored = storage.getItem(CREDENTIALS_STORAGE_KEY);
     if (stored !== null) {
       this.entries = parseEntries(stored);
+    } else if (storage.getItem(FOLDED_CREDENTIALS_STORAGE_KEY) !== null) {
+      // Older keys folded the path's case, losing which proxy tenant issued
+      // a token. Only origin-only entries can be migrated unambiguously.
+      const previous = parseEntries(storage.getItem(FOLDED_CREDENTIALS_STORAGE_KEY)!);
+      for (const [key, entry] of Object.entries(previous)) {
+        try {
+          if (new URL(key).pathname === "/") this.entries[addressKey(key)] = entry;
+        } catch { /* Malformed addresses cannot own a sign-in. */ }
+      }
     } else {
       const token = persistsToken() ? storage.getItem(LEGACY_TOKEN_STORAGE_KEY) : null;
       const mediaToken = storage.getItem(LEGACY_MEDIA_TOKEN_STORAGE_KEY);
@@ -54,6 +64,7 @@ export class CredentialVault {
     // Written before the old keys go, so an interrupted load cannot lose the
     // sign-in.
     this.persist();
+    storage.removeItem(FOLDED_CREDENTIALS_STORAGE_KEY);
     storage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
     storage.removeItem(LEGACY_MEDIA_TOKEN_STORAGE_KEY);
   }

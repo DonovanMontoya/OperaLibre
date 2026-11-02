@@ -85,8 +85,13 @@ pub(crate) struct AppState {
     /// admins cannot remux the same book from opposite ends.
     pub(crate) faststart_lock: Arc<Mutex<()>>,
     pub(crate) login_attempts: Arc<Mutex<HashMap<String, LoginThrottle>>>,
+    /// Serializes credential issuance with password replacement and revocation.
+    pub(crate) credential_issuance_lock: Arc<Mutex<()>>,
     pub(crate) password_task_slots: Arc<Semaphore>,
+    pub(crate) password_request_slots: Arc<Semaphore>,
     pub(crate) download_task_slots: Arc<Semaphore>,
+    pub(crate) catalogue_slots: Arc<Semaphore>,
+    pub(crate) catalogue_account_slots: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
     pub(crate) epub_entry_slots: Arc<Semaphore>,
     pub(crate) epub_entry_account_slots: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
     pub(crate) upload_lock: Arc<Mutex<()>>,
@@ -119,10 +124,9 @@ pub(crate) fn build_router(
         // Catch-all so unknown API paths return a JSON 404 instead of
         // falling through to the SPA fallback (or the auth middleware).
         .route("/api/{*path}", any(api_not_found))
-        // Sign-in and setup wait on the password-hashing worker pool, and
-        // every concurrent attempt clears the throttle check before any of
-        // them records a failure. Without this bound a saturated or wedged
-        // worker queue would hold unauthenticated connections open forever.
+        // Bound unauthenticated request lifetimes even if password work or
+        // persistence stalls. Admission separately bounds password workers
+        // and reserves sign-in throttle counters before verification.
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(REQUEST_TIMEOUT_SECONDS),
@@ -570,7 +574,7 @@ pub(crate) async fn security_headers(
         headers.insert(
             "content-security-policy",
             HeaderValue::from_static(
-                "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: http: https:; connect-src 'self' http: https:; frame-src 'self' data: blob:; worker-src 'self' blob:; form-action 'self'",
+                "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; media-src 'self' data: blob: http: https:; connect-src 'self' http: https:; frame-src 'self' data: blob:; worker-src 'self' blob:; form-action 'self'",
             ),
         );
     }

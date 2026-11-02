@@ -723,48 +723,89 @@ pub(crate) async fn enrich_books_with_progress(
     auth: &AuthUser,
     books: Vec<Book>,
 ) -> Result<Vec<Book>, ApiError> {
-    if books.is_empty() {
-        return Ok(books);
-    }
-    let own_gains = if let [book] = books.as_slice() {
-        HashMap::from([(
-            book.id.clone(),
-            state.book_settings.gain(&auth.id, &book.id).await?,
-        )])
-    } else {
-        state.book_settings.list_for_user(&auth.id).await?
-    };
-    let sharers = progress_sharers(state, auth).await;
-    let user_ids: HashSet<String> = sharers
-        .iter()
-        .map(|(id, _)| id.clone())
-        .chain(std::iter::once(auth.id.clone()))
-        .collect();
-    let saved_progress = state.progress.list_for_users(&user_ids).await?;
-    let works = state.works.read().await;
-    let history = state.reading_history.read().await;
-    let finished_works = FinishedWorks::new(
-        &works,
-        &books,
-        &saved_progress,
-        &history.completions,
-        &user_ids,
-    );
-    drop(history);
-    drop(works);
+    let refs: Vec<&Book> = books.iter().collect();
+    let enrichment = ProgressEnrichment::load(state, auth, &refs).await?;
     Ok(books
         .into_iter()
-        .map(|mut book| {
-            book.progress = progress_for_reader(&book, &auth.id, &saved_progress, &finished_works);
-            book.shared_progress =
-                collect_shared_progress(&book, &saved_progress, &sharers, &finished_works);
-            book.volume_gain = own_gains
-                .get(&book.id)
-                .copied()
-                .unwrap_or(BOOK_VOLUME_GAIN_DEFAULT);
-            book
-        })
+        .map(|book| enrichment.apply(book))
         .collect())
+}
+
+pub(crate) struct ProgressEnrichment {
+    user_id: String,
+    own_gains: HashMap<String, f64>,
+    sharers: Vec<(String, String)>,
+    saved_progress: HashMap<String, Progress>,
+    finished_works: FinishedWorks,
+}
+impl ProgressEnrichment {
+    pub(crate) async fn load(
+        state: &AppState,
+        auth: &AuthUser,
+        books: &[&Book],
+    ) -> Result<Self, ApiError> {
+        if books.is_empty() {
+            return Ok(Self {
+                user_id: auth.id.clone(),
+                own_gains: HashMap::new(),
+                sharers: Vec::new(),
+                saved_progress: HashMap::new(),
+                finished_works: FinishedWorks::default(),
+            });
+        }
+        let own_gains = if let [book] = books {
+            HashMap::from([(
+                book.id.clone(),
+                state.book_settings.gain(&auth.id, &book.id).await?,
+            )])
+        } else {
+            state.book_settings.list_for_user(&auth.id).await?
+        };
+        let sharers = progress_sharers(state, auth).await;
+        let user_ids: HashSet<String> = sharers
+            .iter()
+            .map(|(id, _)| id.clone())
+            .chain(std::iter::once(auth.id.clone()))
+            .collect();
+        let saved_progress = state.progress.list_for_users(&user_ids).await?;
+        let works = state.works.read().await;
+        let history = state.reading_history.read().await;
+        let requested = books.iter().map(|book| book.id.as_str()).collect();
+        let finished_works = FinishedWorks::for_book_ids(
+            &works,
+            requested,
+            &saved_progress,
+            &history.completions,
+            &user_ids,
+        );
+        Ok(Self {
+            user_id: auth.id.clone(),
+            own_gains,
+            sharers,
+            saved_progress,
+            finished_works,
+        })
+    }
+    pub(crate) fn apply(&self, mut book: Book) -> Book {
+        book.progress = progress_for_reader(
+            &book,
+            &self.user_id,
+            &self.saved_progress,
+            &self.finished_works,
+        );
+        book.shared_progress = collect_shared_progress(
+            &book,
+            &self.saved_progress,
+            &self.sharers,
+            &self.finished_works,
+        );
+        book.volume_gain = self
+            .own_gains
+            .get(&book.id)
+            .copied()
+            .unwrap_or(BOOK_VOLUME_GAIN_DEFAULT);
+        book
+    }
 }
 
 pub(crate) async fn book_with_progress(
@@ -808,6 +849,7 @@ pub(crate) struct FinishedWorks {
 }
 
 impl FinishedWorks {
+    #[cfg(test)]
     pub(crate) fn new(
         works: &WorkStore,
         books: &[Book],
@@ -815,7 +857,22 @@ impl FinishedWorks {
         completions: &[CompletionEvent],
         user_ids: &HashSet<String>,
     ) -> Self {
-        let requested: HashSet<&str> = books.iter().map(|book| book.id.as_str()).collect();
+        Self::for_book_ids(
+            works,
+            books.iter().map(|book| book.id.as_str()).collect(),
+            saved_progress,
+            completions,
+            user_ids,
+        )
+    }
+
+    fn for_book_ids(
+        works: &WorkStore,
+        requested: HashSet<&str>,
+        saved_progress: &HashMap<String, Progress>,
+        completions: &[CompletionEvent],
+        user_ids: &HashSet<String>,
+    ) -> Self {
         let mut index = Self::default();
         for work in works.works.iter().filter(|work| {
             work.book_ids
