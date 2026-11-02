@@ -497,6 +497,7 @@ impl TestServer {
             libation_refresh_reservation_lock: Arc::new(Mutex::new(())),
             faststart_lock: Arc::new(Mutex::new(())),
             login_attempts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            password_request_slots: Arc::new(Semaphore::new(PASSWORD_REQUEST_CAPACITY)),
             password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
             download_task_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS)),
             epub_entry_slots: Arc::new(Semaphore::new(EPUB_ENTRY_CONCURRENCY)),
@@ -8748,13 +8749,13 @@ async fn assistants_are_an_experiment_only_the_owner_turns_on() {
 }
 
 #[tokio::test]
-async fn concurrent_login_admission_is_bounded_even_when_password_workers_are_full() {
+async fn concurrent_login_admission_is_bounded_even_when_password_queue_is_full() {
     let server = TestServer::start(0).await;
     let _workers = server
         .state
-        .password_task_slots
+        .password_request_slots
         .clone()
-        .acquire_many_owned(super::PASSWORD_TASK_CONCURRENCY as u32)
+        .acquire_many_owned(super::PASSWORD_REQUEST_CAPACITY as u32)
         .await
         .unwrap();
     let mut pending = tokio::task::JoinSet::new();

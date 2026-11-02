@@ -1847,6 +1847,9 @@ exit 0
         libation_refresh_reservation_lock: super::Arc::new(super::Mutex::new(())),
         faststart_lock: super::Arc::new(super::Mutex::new(())),
         login_attempts: super::Arc::new(super::Mutex::new(std::collections::HashMap::new())),
+        password_request_slots: super::Arc::new(super::Semaphore::new(
+            super::PASSWORD_REQUEST_CAPACITY,
+        )),
         password_task_slots: super::Arc::new(super::Semaphore::new(
             super::PASSWORD_TASK_CONCURRENCY,
         )),

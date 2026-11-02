@@ -86,6 +86,7 @@ pub(crate) struct AppState {
     pub(crate) faststart_lock: Arc<Mutex<()>>,
     pub(crate) login_attempts: Arc<Mutex<HashMap<String, LoginThrottle>>>,
     pub(crate) password_task_slots: Arc<Semaphore>,
+    pub(crate) password_request_slots: Arc<Semaphore>,
     pub(crate) download_task_slots: Arc<Semaphore>,
     pub(crate) epub_entry_slots: Arc<Semaphore>,
     pub(crate) epub_entry_account_slots: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,

@@ -29,6 +29,9 @@ pub(crate) const LOGIN_THROTTLE_MAX_ENTRIES: usize = 10_000;
 
 pub(crate) const PASSWORD_TASK_CONCURRENCY: usize = 4;
 
+/// Includes running password work and its bounded waiting queue.
+pub(crate) const PASSWORD_REQUEST_CAPACITY: usize = 16;
+
 pub(crate) const MIN_PASSWORD_CHARS: usize = 12;
 
 pub(crate) const MAX_PASSWORD_CHARS: usize = 1_024;
@@ -403,16 +406,23 @@ async fn run_password_task<T: Send + 'static>(
     state: &AppState,
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, ApiError> {
-    let permit = state
-        .password_task_slots
+    let request_permit = state
+        .password_request_slots
         .clone()
         .try_acquire_owned()
         .map_err(|_| {
             ApiError::too_many_requests("Password workers are busy. Try again shortly.")
         })?;
+    let permit = state
+        .password_task_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::internal("Password worker pool is unavailable."))?;
     tokio::task::spawn_blocking(move || {
         // Cancellation of the request must not release a still-running worker.
         let _permit = permit;
+        let _request_permit = request_permit;
         work()
     })
     .await
