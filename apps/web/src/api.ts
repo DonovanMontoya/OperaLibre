@@ -171,7 +171,7 @@ export function addServerAlias(name: string, rawUrl: string): ServerAlias {
   if (aliases.some((alias) => alias.name.toLowerCase() === trimmedName.toLowerCase())) {
     throw new Error("An alias with that name already exists.");
   }
-  if (aliases.some((alias) => alias.url.toLowerCase() === url.toLowerCase())) {
+  if (aliases.some((alias) => addressKey(alias.url) === addressKey(url))) {
     throw new Error("That server address is already saved.");
   }
   const alias = { id: crypto.randomUUID(), name: trimmedName, url };
