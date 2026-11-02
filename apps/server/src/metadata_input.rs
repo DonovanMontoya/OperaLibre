@@ -149,7 +149,11 @@ impl MetadataInput {
                     return Err(invalid());
                 }
             }
-            if let Some(track) = tracks.iter().find(|track| chapter_ids.contains(&track.id)) {
+            if let Some(track) = tracks.iter().find_map(|reference| {
+                tracks
+                    .iter()
+                    .find(|target| reference.chapter_ids.contains(&target.id))
+            }) {
                 input.chapter_track = read_track_chapters(&mut input, track)?;
             }
         } else if h.starts_with(b"RIFF") || h.starts_with(b"FORM") {
@@ -486,6 +490,7 @@ struct Track {
     timed_samples: u64,
     samples_per_chunk: u64,
     timescale: u32,
+    chapter_ids: Vec<u32>,
     tables: HashMap<[u8; 4], Vec<u8>>,
 }
 #[derive(Default)]
@@ -555,6 +560,17 @@ fn validate_atoms(
             }
             for id in data.as_chunks::<4>().0 {
                 chapters.push(be32(id)?);
+            }
+            if let Some(i) = track {
+                if tracks[i].tables.insert(*b"chap", data.to_vec()).is_some() {
+                    return Err(invalid());
+                }
+                tracks[i].chapter_ids.extend(
+                    data.as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|id| u32::from_be_bytes(*id)),
+                );
             }
         } else if let Some(i) = track {
             if matches!(
