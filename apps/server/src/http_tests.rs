@@ -8786,3 +8786,36 @@ async fn concurrent_login_admission_is_bounded_even_when_password_queue_is_full(
     assert_eq!(attempts[&keys.ip].failures, super::LOGIN_MAX_FAILURES);
     assert!(server.state.sessions.read().await.is_empty());
 }
+
+#[tokio::test]
+async fn a_burst_of_six_legitimate_logins_can_wait_for_password_workers() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    for index in 0..6 {
+        server
+            .add_reader(&owner, &format!("burst-reader-{index}"))
+            .await;
+    }
+    let mut pending = tokio::task::JoinSet::new();
+    for index in 0..6 {
+        let state = server.state.clone();
+        pending.spawn(async move {
+            super::authenticate_and_open_session(
+                &state,
+                SocketAddr::from(([127, 0, 0, 1], 51234)),
+                &HeaderMap::new(),
+                super::LoginRequest {
+                    username: format!("burst-reader-{index}"),
+                    password: "reader-password-1234".into(),
+                },
+            )
+            .await
+        });
+    }
+    while let Some(result) = pending.join_next().await {
+        let (_, token) = result
+            .unwrap()
+            .expect("a bounded legitimate burst can wait");
+        assert!(!token.is_empty());
+    }
+}
