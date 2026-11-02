@@ -813,8 +813,11 @@ pub(crate) fn rerun_base(
     map_path: &FsPath,
     spans: &[ChapterSpan],
     chapters: &[usize],
+    allowed_roots: &[PathBuf],
 ) -> Result<RerunBase, &'static str> {
-    let map = probe_sync_map(map_path, true).ok_or(BOOK_CHANGED)?.identity;
+    let map = probe_sync_map_in(map_path, true, allowed_roots)
+        .ok_or(BOOK_CHANGED)?
+        .identity;
     let report = read_current_report(sync_dir, book_id, &map).ok_or(
         "This book’s chapter grades are still being updated. Try again shortly, or re-sync the whole book.",
     )?;
@@ -1100,8 +1103,9 @@ pub(crate) async fn publish_backfill(
     let sync_dir = state.sync_dir.clone();
     let book = book_id.to_string();
     let expected = report.map.clone();
+    let allowed_roots = vec![state.library_root.clone(), state.sync_dir.clone()];
     let still_missing = tokio::task::spawn_blocking(move || {
-        probe_sync_map(&path, false).is_some_and(|probe| {
+        probe_sync_map_in(&path, false, &allowed_roots).is_some_and(|probe| {
             probe.identity == expected && read_current_report(&sync_dir, &book, &expected).is_none()
         })
     })
@@ -1152,8 +1156,9 @@ pub(crate) async fn get_sync_report(
     };
     let language_override = language_override(&state, &book_id).await;
     let sync_dir = state.sync_dir.clone();
+    let allowed_roots = vec![state.library_root.clone(), state.sync_dir.clone()];
     let report = tokio::task::spawn_blocking(move || {
-        let map = probe_sync_map(&map_path, true)?.identity;
+        let map = probe_sync_map_in(&map_path, true, &allowed_roots)?.identity;
         read_current_report(&sync_dir, &book_id, &map)
     })
     .await
@@ -1542,7 +1547,15 @@ mod tests {
         )
         .unwrap();
         let check = |spans: &[ChapterSpan], chapters: &[usize]| {
-            rerun_base(root.path(), "book", &map_path, spans, chapters).map(|base| base.chapters)
+            rerun_base(
+                root.path(),
+                "book",
+                &map_path,
+                spans,
+                chapters,
+                &[root.path().to_path_buf()],
+            )
+            .map(|base| base.chapters)
         };
         assert_eq!(
             check(&spans, &[1]).unwrap(),

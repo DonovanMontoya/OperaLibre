@@ -2656,9 +2656,25 @@ pub(crate) struct ProbedSyncMap {
 
 /// Probe metadata without allocating the potentially large fragment array.
 /// `None` for a file that is not a servable sync map.
+#[cfg(test)]
 pub(crate) fn probe_sync_map(path: &FsPath, generated: bool) -> Option<ProbedSyncMap> {
-    let root = ScanRoot::new(path.parent()?).ok()?;
-    probe_sync_map_file(root.open(path).ok()?.0, generated)
+    probe_sync_map_in(path, generated, &[path.parent()?.to_path_buf()])
+}
+pub(crate) fn probe_sync_map_in(
+    path: &FsPath,
+    generated: bool,
+    allowed_roots: &[PathBuf],
+) -> Option<ProbedSyncMap> {
+    // Roots come from server configuration, never from the map's pathname.
+    // In particular, an exchanged library ancestor cannot become a new root.
+    let file = allowed_roots.iter().find_map(|root| {
+        ScanRoot::new(root)
+            .ok()?
+            .open(path)
+            .ok()
+            .map(|opened| opened.0)
+    })?;
+    probe_sync_map_file(file, generated)
 }
 fn probe_sync_map_file(file: std::fs::File, generated: bool) -> Option<ProbedSyncMap> {
     #[derive(Deserialize)]
@@ -2771,7 +2787,9 @@ fn find_sync_file_in(
     });
     let generated = is_plain_file_token(book_id)
         .then(|| sync_dir.join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}")))
-        .and_then(|path| probe_sync_map(&path, true).map(|probe| (path, probe)));
+        .and_then(|path| {
+            probe_sync_map_in(&path, true, &[sync_dir.to_path_buf()]).map(|probe| (path, probe))
+        });
     // A replacement must actually become the served map, even when the old
     // generated map was copied beside the audio as a sidecar.
     let (path, probe, source) = match (sidecar, generated) {
@@ -3906,5 +3924,30 @@ mod scan_boundary_tests {
         let sync = root.path().join("book.sync.json");
         std::os::unix::fs::symlink(&secret, &sync).unwrap();
         assert!(scan.open(&sync).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod sync_probe_boundary_tests {
+    use super::*;
+    #[test]
+    fn report_probe_never_uses_a_replaced_maps_parent_as_its_root() {
+        let library = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let directory = library.path().join("Book");
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("Book.sync.json");
+        std::fs::write(&path, r#"{"precision":"sentence","generatedAt":"inside"}"#).unwrap();
+        let roots = [library.path().to_path_buf()];
+        assert!(probe_sync_map_in(&path, false, &roots).is_some());
+        std::fs::write(
+            outside.path().join("Book.sync.json"),
+            r#"{"precision":"sentence","generatedAt":"outside-secret"}"#,
+        )
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &directory).unwrap();
+        assert!(probe_sync_map_in(&path, false, &roots).is_none());
     }
 }
