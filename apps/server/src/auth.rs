@@ -407,14 +407,16 @@ async fn run_password_task<T: Send + 'static>(
         .password_task_slots
         .clone()
         .try_acquire_owned()
-        .map_err(|_| ApiError::too_many_requests("Password workers are busy. Try again shortly."))?;
+        .map_err(|_| {
+            ApiError::too_many_requests("Password workers are busy. Try again shortly.")
+        })?;
     tokio::task::spawn_blocking(move || {
         // Cancellation of the request must not release a still-running worker.
         let _permit = permit;
         work()
     })
-        .await
-        .map_err(|error| ApiError::internal(format!("Password worker failed: {error}")))
+    .await
+    .map_err(|error| ApiError::internal(format!("Password worker failed: {error}")))
 }
 
 pub(crate) async fn hash_password_async(

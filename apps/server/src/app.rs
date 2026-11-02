@@ -119,10 +119,9 @@ pub(crate) fn build_router(
         // Catch-all so unknown API paths return a JSON 404 instead of
         // falling through to the SPA fallback (or the auth middleware).
         .route("/api/{*path}", any(api_not_found))
-        // Sign-in and setup wait on the password-hashing worker pool, and
-        // every concurrent attempt clears the throttle check before any of
-        // them records a failure. Without this bound a saturated or wedged
-        // worker queue would hold unauthenticated connections open forever.
+        // Bound unauthenticated request lifetimes even if password work or
+        // persistence stalls. Admission separately bounds password workers
+        // and reserves sign-in throttle counters before verification.
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(REQUEST_TIMEOUT_SECONDS),
