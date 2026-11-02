@@ -75,7 +75,7 @@ fn catalogue_too_large() -> ApiError {
 }
 
 pub(crate) struct CatalogueSpool {
-    file: std::fs::File,
+    file: std::io::BufWriter<std::fs::File>,
     count: CountWriter,
     digest: Sha1,
     lease: CatalogueLease,
@@ -83,7 +83,7 @@ pub(crate) struct CatalogueSpool {
 impl CatalogueSpool {
     pub(crate) fn new(lease: CatalogueLease) -> Result<Self, ApiError> {
         Ok(Self {
-            file: tempfile::tempfile()?,
+            file: std::io::BufWriter::with_capacity(8 * 1024, tempfile::tempfile()?),
             count: CountWriter {
                 bytes: 0,
                 limit: CATALOGUE_MAX_BYTES,
@@ -116,12 +116,13 @@ impl CatalogueSpool {
         format!("\"{}\"", hex_digest(digest.finalize()))
     }
     pub(crate) fn response(
-        mut self,
+        self,
         content_type: &str,
         etag: Option<&str>,
         next: Option<&str>,
     ) -> Result<Response, ApiError> {
-        std::io::Seek::rewind(&mut self.file)?;
+        let mut file = self.file.into_inner().map_err(|error| error.into_error())?;
+        std::io::Seek::rewind(&mut file)?;
         let mut response = Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, content_type)
@@ -134,7 +135,7 @@ impl CatalogueSpool {
             response = response.header("x-next-cursor", next);
         }
         let reader = CatalogueReader {
-            file: fs::File::from_std(self.file),
+            file: fs::File::from_std(file),
             _lease: self.lease,
         };
         Ok(response.body(Body::from_stream(ReaderStream::new(reader)))?)
@@ -203,8 +204,38 @@ mod tests {
         spool.bytes(b"[").unwrap();
         spool.json(&"hello").unwrap();
         assert!(spool.json(&"second item").is_err());
-        assert!(spool.file.metadata().unwrap().len() <= 12);
+        assert!(spool.file.get_ref().metadata().unwrap().len() <= 12);
         drop(spool);
+        assert_eq!(global.available_permits(), 1);
+        assert_eq!(account.available_permits(), 1);
+    }
+    #[tokio::test]
+    async fn spool_publishes_buffered_bytes_with_their_length_and_digest() {
+        let global = Arc::new(Semaphore::new(1));
+        let account = Arc::new(Semaphore::new(1));
+        let lease = CatalogueLease {
+            _server: global.clone().try_acquire_owned().unwrap(),
+            _account: account.clone().try_acquire_owned().unwrap(),
+        };
+        let value = vec!["track title"; 100];
+        let expected = serde_json::to_vec(&value).unwrap();
+        let mut spool = CatalogueSpool::new(lease).unwrap();
+        spool.json(&value).unwrap();
+        assert_eq!(spool.file.get_ref().metadata().unwrap().len(), 0);
+        let etag = spool.etag(&[]);
+        assert_eq!(etag, format!("\"{}\"", hex_digest(Sha1::digest(&expected))));
+        let response = spool
+            .response("application/json", Some(&etag), None)
+            .unwrap();
+        assert_eq!(
+            response.headers()[CONTENT_LENGTH],
+            expected.len().to_string()
+        );
+        assert_eq!(response.headers()[ETAG], etag);
+        let body = axum::body::to_bytes(response.into_body(), expected.len())
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), expected);
         assert_eq!(global.available_permits(), 1);
         assert_eq!(account.available_permits(), 1);
     }
