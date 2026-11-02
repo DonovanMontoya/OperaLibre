@@ -570,7 +570,7 @@ pub(crate) async fn security_headers(
         headers.insert(
             "content-security-policy",
             HeaderValue::from_static(
-                "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: http: https:; connect-src 'self' http: https:; frame-src 'self' data: blob:; worker-src 'self' blob:; form-action 'self'",
+                "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; media-src 'self' data: blob: http: https:; connect-src 'self' http: https:; frame-src 'self' data: blob:; worker-src 'self' blob:; form-action 'self'",
             ),
         );
     }
