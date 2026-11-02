@@ -201,28 +201,32 @@ pub(crate) fn discover_candidates(
 /// Recognize an arbitrarily named, byte-identical export of the embedded art.
 /// Bound reads and retain uncertain images as extras instead of hiding them.
 fn duplicates_cover(path: &FsPath, cover: Option<&ScannedCover>) -> bool {
-    const MAX_COVER_BYTES: u64 = 16 * 1024 * 1024;
     let Some(cover) = cover else { return false };
-    if cover.len == 0 || cover.len > MAX_COVER_BYTES {
-        return false;
-    }
-    let Ok(file) = std::fs::File::open(path) else {
+    let Ok((file, _)) = cover.root.open(path) else {
         return false;
     };
     if !file
         .metadata()
-        .is_ok_and(|metadata| metadata.len() == cover.len)
+        .is_ok_and(|metadata| metadata.len() <= MAX_COVER_UPLOAD_BYTES as u64)
     {
         return false;
     }
     let mut bytes = Vec::new();
-    std::io::Read::read_to_end(
-        &mut std::io::Read::take(file, MAX_COVER_BYTES + 1),
-        &mut bytes,
-    )
-    .is_ok()
-        && bytes.len() as u64 == cover.len
-        && bytes_etag(&bytes) == cover.etag
+    if file
+        .take(MAX_COVER_UPLOAD_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() > MAX_COVER_UPLOAD_BYTES
+    {
+        return false;
+    }
+    if bytes_etag(&bytes) == cover.etag {
+        return true;
+    }
+    let _guard = METADATA_PARSE_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    normalize_cover(&bytes).is_ok_and(|png| bytes_etag(&png) == cover.etag)
 }
 
 /// Reads a document to find out how much text and how many pictures it
@@ -230,7 +234,16 @@ fn duplicates_cover(path: &FsPath, cover: Option<&ScannedCover>) -> bool {
 ///
 /// `None` means the document needs more than `memory_bytes` to read, and is
 /// worth another attempt with a larger allowance.
+#[cfg(test)]
 pub(crate) fn analyze_document(path: &FsPath, memory_bytes: u64) -> Option<DocumentAnalysis> {
+    let root = ScanRoot::new(path.parent()?).ok()?;
+    analyze_document_in(&root, path, memory_bytes)
+}
+fn analyze_document_in(
+    root: &ScanRoot,
+    path: &FsPath,
+    memory_bytes: u64,
+) -> Option<DocumentAnalysis> {
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -240,14 +253,22 @@ pub(crate) fn analyze_document(path: &FsPath, memory_bytes: u64) -> Option<Docum
         unreadable: true,
         ..Default::default()
     };
-    let len = match std::fs::metadata(path) {
-        Ok(metadata) if metadata.len() <= MAX_ANALYZED_DOCUMENT_BYTES => metadata.len(),
-        _ => return Some(unreadable),
+    let (file, metadata) = match root.open(path) {
+        Ok(opened) => opened,
+        Err(_) => return Some(unreadable),
     };
+    let len = metadata.len();
+    if len > MAX_ANALYZED_DOCUMENT_BYTES {
+        return Some(unreadable);
+    }
     // An EPUB is read entry by entry from disk, so what it holds is the text
     // it decompresses, however small or large the archive is.
     if extension == "epub" {
-        let parsed = alignment::parse_epub_file_within(path, memory_bytes);
+        let parsed = zip::ZipArchive::new(file)
+            .map_err(anyhow::Error::from)
+            .and_then(|mut archive| {
+                alignment::parse_epub_archive_within(&mut archive, memory_bytes)
+            });
         if parsed.is_err() && memory_bytes < alignment::EPUB_TEXT_BYTES {
             return None;
         }
@@ -256,9 +277,12 @@ pub(crate) fn analyze_document(path: &FsPath, memory_bytes: u64) -> Option<Docum
     if len > memory_bytes {
         return None;
     }
-    let Ok(bytes) = std::fs::read(path) else {
+    let mut bytes = Vec::new();
+    if file.take(memory_bytes + 1).read_to_end(&mut bytes).is_err()
+        || bytes.len() as u64 > memory_bytes
+    {
         return Some(unreadable);
-    };
+    }
     Some(match extension.as_str() {
         "pdf" => analyze_pdf(&bytes),
         "html" | "htm" => DocumentAnalysis {
@@ -414,30 +438,63 @@ pub(crate) fn classify(
 /// Looks up or computes analyses for every path, reading only files the
 /// cache has not seen at this size and modification time. Documents are
 /// independent, so they fan out across the pool.
+#[cfg(test)]
 pub(crate) fn analyze_all(paths: &[PathBuf], cache: &AnalysisCache) -> AnalysisCache {
+    let Some(root) = paths
+        .first()
+        .and_then(|path| path.parent())
+        .and_then(|path| ScanRoot::new(path).ok())
+    else {
+        return AnalysisCache::new();
+    };
+    analyze_all_in(&root, paths, cache)
+}
+pub(crate) fn analyze_all_in(
+    root: &ScanRoot,
+    paths: &[PathBuf],
+    cache: &AnalysisCache,
+) -> AnalysisCache {
     // PDF, HTML, and text are held whole while they are analyzed, and an EPUB
     // holds its text. A document shares the pool only if one of its size on
     // every worker still fits in what a single document may occupy, so a
     // folder of near-limit files costs a small server no more memory than
     // one of them.
     let shared_document_bytes = MAX_ANALYZED_DOCUMENT_BYTES / rayon::current_num_threads() as u64;
-    analyze_all_with(paths, cache, shared_document_bytes, analyze_document)
+    analyze_all_with_metadata(
+        paths,
+        cache,
+        shared_document_bytes,
+        |path, budget| analyze_document_in(root, path, budget),
+        |path| root.open(path).ok().map(|(_, metadata)| metadata),
+    )
 }
 
 /// Documents that need more than `shared_document_bytes` are analyzed one at
 /// a time, after the pool has finished with the rest.
+#[cfg(test)]
 fn analyze_all_with(
     paths: &[PathBuf],
     cache: &AnalysisCache,
     shared_document_bytes: u64,
     analyze: impl Fn(&FsPath, u64) -> Option<DocumentAnalysis> + Sync,
 ) -> AnalysisCache {
+    analyze_all_with_metadata(paths, cache, shared_document_bytes, analyze, |path| {
+        std::fs::metadata(path).ok()
+    })
+}
+fn analyze_all_with_metadata(
+    paths: &[PathBuf],
+    cache: &AnalysisCache,
+    shared_document_bytes: u64,
+    analyze: impl Fn(&FsPath, u64) -> Option<DocumentAnalysis> + Sync,
+    metadata: impl Fn(&FsPath) -> Option<std::fs::Metadata> + Sync,
+) -> AnalysisCache {
     use rayon::prelude::*;
     paths
         .par_iter()
-        .filter(|path| is_document(path))
+        .filter(|path| is_document(path) || is_image(path))
         .filter_map(|path| {
-            let metadata = std::fs::metadata(path).ok()?;
+            let metadata = metadata(path)?;
             let len = metadata.len();
             let modified_unix = metadata
                 .modified()
@@ -445,7 +502,9 @@ fn analyze_all_with(
                 .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|duration| duration.as_secs())
                 .unwrap_or(0);
-            let analysis = if let Some(cached) = cache.get(path)
+            let analysis = if is_image(path) {
+                Some(DocumentAnalysis::default())
+            } else if let Some(cached) = cache.get(path)
                 && cached.len == len
                 && cached.modified_unix == modified_unix
             {
@@ -495,10 +554,7 @@ pub(crate) fn describe(
             let id = stable_id(&path.to_string_lossy());
             let (analysis, len) = match analyses.get(path) {
                 Some(cached) => (cached.analysis.clone(), cached.len),
-                None => (
-                    DocumentAnalysis::default(),
-                    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
-                ),
+                None => (DocumentAnalysis::default(), 0),
             };
             let kind = classify(&analysis, &extension, audio_duration_seconds);
             let is_document = kind != CompanionKind::Image;
@@ -708,6 +764,7 @@ mod tests {
         std::fs::create_dir(&folder).unwrap();
         let art = b"embedded cover bytes";
         let cover = ScannedCover {
+            root: ScanRoot::new(dir.path()).unwrap(),
             mime_type: "image/jpeg".into(),
             etag: bytes_etag(art),
             len: art.len() as u64,
@@ -891,5 +948,30 @@ mod tests {
         );
         assert!(!analyses[&epub].analysis.unreadable);
         assert!(analyses[&epub].analysis.text_characters >= 4096 * 7 - 1);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod scan_boundary_tests {
+    use super::*;
+    #[test]
+    fn replaced_document_is_not_analyzed_even_when_enumerated_or_cached() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = root.path().join("book.txt");
+        std::fs::write(&path, "inside text").unwrap();
+        let scan = ScanRoot::new(root.path()).unwrap();
+        let initial = analyze_all_in(&scan, std::slice::from_ref(&path), &AnalysisCache::new());
+        assert!(!initial[&path].analysis.unreadable);
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "outside private text".repeat(500)).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&secret, &path).unwrap();
+        assert!(
+            analyze_document_in(&scan, &path, MAX_ANALYZED_DOCUMENT_BYTES)
+                .unwrap()
+                .unreadable
+        );
+        assert!(analyze_all_in(&scan, std::slice::from_ref(&path), &initial).is_empty());
     }
 }

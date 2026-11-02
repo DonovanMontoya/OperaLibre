@@ -132,7 +132,7 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         // may list files the first one did not; only those need new tasks.
         var alreadyScheduled = Set<String>()
         var replacedFiles = false
-        let enqueueResult = mutateJobs { jobs -> (createTasks: Bool, shouldStart: Bool, completed: Bool) in
+        let enqueueResult = mutateJobs { jobs -> (createTasks: Bool, shouldStart: Bool, shouldRecover: Bool) in
             if var existing = jobs[jobId], existing.state == "running" || existing.state == "queued" {
                 descriptions = descriptions.map { var info = $0; info.attemptId = existing.attemptId; return info }
                 let previousFiles = existing.files ?? []
@@ -163,7 +163,7 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 reconcileFiles(in: &existing)
                 jobs[jobId] = existing
                 let completed = existing.state == "completed"
-                return (!added.isEmpty && !completed, existing.state == "running", completed)
+                return (!added.isEmpty && (existing.state == "running" || existing.state == "queued"), existing.state == "running", completed || existing.byteBudgetExceeded == true)
             }
             let attemptId = UUID().uuidString
             descriptions = descriptions.map { var info = $0; info.attemptId = attemptId; return info }
@@ -188,7 +188,7 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
             return (!alreadyComplete, shouldStart, alreadyComplete)
         }
         if !enqueueResult.createTasks {
-            if enqueueResult.completed || replacedFiles { recoverAndStartNextJob() }
+            if enqueueResult.shouldRecover || replacedFiles { recoverAndStartNextJob() }
             return
         }
 
@@ -240,8 +240,9 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 completion(.failure(DownloadError.jobNotFound))
                 return
             }
-            if job.state == "completed" {
+            if job.state == "completed" || job.byteBudgetExceeded == true {
                 for task in jobTasks { task.cancel() }
+                if job.byteBudgetExceeded == true { shouldRecover = true }
             }
             if shouldRecover {
                 self.recoverAndStartNextJob()
@@ -455,13 +456,7 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 for task in tasks {
                     if let stored = self.taskInfo(task), stored.jobId == info.jobId, stored.attemptId == info.attemptId { task.cancel() }
                 }
-                for file in job.files ?? [] {
-                    guard let value = URL(string: file.destination),
-                          let path = try? validatedBackgroundMediaDestination(value) else { continue }
-                    try? FileManager.default.removeItem(at: path)
-                }
-                job.state = "failed"
-                job.errors = ["The book exceeds the 25 GiB download limit."]
+                self.failLibroBudget(in: &job)
                 jobs[info.jobId] = job
             }
             self.recoverAndStartNextJob()
@@ -474,6 +469,7 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 var job = jobs[info.jobId],
                 job.attemptId == info.attemptId,
                 job.state != "completed",
+                job.byteBudgetExceeded != true,
                 !job.handledTaskIds.contains(task.taskIdentifier),
                 job.files?.contains(where: { $0.destination == info.destination && (info.allowedOrigin != "libro-device" || $0.source == info.source) }) != false
             else { return nil }
@@ -499,8 +495,31 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         }
     }
 
+    // Callers hold the job lock so cleanup cannot remove a replacement attempt's files.
+    private func failLibroBudget(in job: inout StoredBackgroundJob) {
+        job.byteBudgetExceeded = true
+        job.state = "failed"
+        job.errors = ["The book exceeds the 25 GiB download limit."]
+        for file in job.files ?? [] {
+            guard let value = URL(string: file.destination),
+                  let path = try? validatedBackgroundMediaDestination(value) else { continue }
+            try? FileManager.default.removeItem(at: path)
+        }
+    }
+
     private func reconcileFiles(in job: inout StoredBackgroundJob) {
         guard let files = job.files, !files.isEmpty else { return }
+        if files.contains(where: { $0.allowedOrigin == "libro-device" }) {
+            var budget = job.byteBudget ?? BackgroundBookByteBudget()
+            // Old jobs have no reservations. Reconcile retained parts before
+            // their file counts can turn an interrupted download into a success.
+            guard job.byteBudgetExceeded != true,
+                  budget.reserve(destination: "", bytes: 0, retained: retainedLibroBytes(files)) else {
+                failLibroBudget(in: &job)
+                return
+            }
+            job.byteBudget = budget
+        }
         let existing = files.filter { info in
             guard
                 let value = URL(string: info.destination),
@@ -544,7 +563,7 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                         if !recoveredFiles.isEmpty { job.files = recoveredFiles }
                     }
                     self.reconcileFiles(in: &job)
-                    if job.state == "completed" {
+                    if job.state == "completed" || job.byteBudgetExceeded == true {
                         tasksToCancel.append(contentsOf: tasksByJob[jobId] ?? [])
                     }
                     if job.state == "running" && tasksByJob[jobId, default: []].isEmpty {

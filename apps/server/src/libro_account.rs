@@ -1003,9 +1003,9 @@ async fn acquire_book_with_api(
     Ok(())
 }
 
-pub(crate) fn libro_metadata_for_group(path: &FsPath) -> Option<LibroBook> {
+pub(crate) fn libro_metadata_for_group_in(root: &ScanRoot, path: &FsPath) -> Option<LibroBook> {
     let sidecar = path.join(BOOK_SIDECAR);
-    let (file, metadata) = open_contained_file(&sidecar, &[path.to_path_buf()]).ok()?;
+    let (file, metadata) = root.open(&sidecar).ok()?;
     if metadata.len() > MAX_JSON as u64 {
         return None;
     }

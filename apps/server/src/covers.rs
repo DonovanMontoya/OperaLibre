@@ -149,7 +149,7 @@ pub(crate) async fn remove_cover_override(
     .map_err(|error| ApiError::internal(format!("Cover removal failed: {error}")))?
 }
 
-fn normalize_cover(bytes: &[u8]) -> Result<Vec<u8>, ApiError> {
+pub(crate) fn normalize_cover(bytes: &[u8]) -> Result<Vec<u8>, ApiError> {
     let invalid = || ApiError::bad_request("Choose a readable JPEG, PNG, or WebP image.");
     let format = image::guess_format(bytes).map_err(|_| invalid())?;
     if !matches!(
@@ -301,12 +301,12 @@ pub(crate) fn read_cover_override(
     if !valid_cover_name(book_id, name) {
         return None;
     }
+    let input_root = ScanRoot::new(root).ok()?;
     let path = cover_directory(root, book_path).ok()?.join(name);
-    let metadata = std::fs::symlink_metadata(&path).ok()?;
+    let (file, metadata) = input_root.open(&path).ok()?;
     if !metadata.is_file() || metadata.len() > MAX_STORED_COVER_BYTES {
         return None;
     }
-    let file = std::fs::File::open(&path).ok()?;
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut file.take(MAX_STORED_COVER_BYTES + 1), &mut bytes).ok()?;
     if bytes.len() as u64 > MAX_STORED_COVER_BYTES

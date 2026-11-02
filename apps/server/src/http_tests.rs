@@ -497,8 +497,12 @@ impl TestServer {
             libation_refresh_reservation_lock: Arc::new(Mutex::new(())),
             faststart_lock: Arc::new(Mutex::new(())),
             login_attempts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            credential_issuance_lock: Arc::new(Mutex::new(())),
+            password_request_slots: Arc::new(Semaphore::new(PASSWORD_REQUEST_CAPACITY)),
             password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
             download_task_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS)),
+            catalogue_slots: Arc::new(Semaphore::new(CATALOGUE_CONCURRENCY)),
+            catalogue_account_slots: Arc::new(Mutex::new(HashMap::new())),
             epub_entry_slots: Arc::new(Semaphore::new(EPUB_ENTRY_CONCURRENCY)),
             epub_entry_account_slots: Arc::new(Mutex::new(std::collections::HashMap::new())),
             upload_lock: Arc::new(Mutex::new(())),
@@ -4970,6 +4974,9 @@ async fn audiobookshelf_metadata_uses_the_clients_nested_fields() {
         facets["series"][0]["id"],
         item["media"]["metadata"]["series"][0]["id"]
     );
+    assert_eq!(facets["narrators"], serde_json::json!(["Test Narrator"]));
+    assert_eq!(facets["authors"][0]["name"], "Test Author");
+    assert_eq!(facets["tags"], serde_json::json!(["Favorite"]));
     let filter = general_purpose::STANDARD.encode("Test Series");
     let filtered = server
         .get(
@@ -6703,12 +6710,13 @@ async fn uploaded_cover_restores_real_embedded_art_and_leaves_audio_intact() {
         .await;
     assert_eq!(restored.status, StatusCode::OK);
     assert_eq!(restored.json()["coverArtUrl"], before["coverArtUrl"]);
+    let restored_art = server
+        .get(before["coverArtUrl"].as_str().unwrap(), &owner)
+        .await
+        .body;
     assert_eq!(
-        server
-            .get(before["coverArtUrl"].as_str().unwrap(), &owner)
-            .await
-            .body,
-        embedded
+        image::load_from_memory(&restored_art).unwrap().to_rgba8(),
+        image::load_from_memory(&embedded).unwrap().to_rgba8()
     );
     assert_eq!(std::fs::read(audio).unwrap(), bytes);
 }
@@ -7448,7 +7456,7 @@ async fn existing_sync_maps_are_graded_in_the_background_for_administrators() {
     let owner = server.setup_owner().await;
     let reader = server.add_reader(&owner, "reader").await;
     let (book_id, _) = server.first_book_and_track(&owner).await;
-    let epub = server._root.path().join("book.epub");
+    let epub = server.library_root.join("book.epub");
     std::fs::write(&epub, alignment::build_test_epub()).unwrap();
     let map_path = server
         .state
@@ -8745,4 +8753,284 @@ async fn assistants_are_an_experiment_only_the_owner_turns_on() {
     );
     assert_eq!(set(owner.clone(), true).await.status, StatusCode::OK);
     assert_eq!(tool_names(&server, &secret).await.len(), 3);
+}
+
+#[tokio::test]
+async fn catalogue_slots_follow_compressed_body_lifetimes_and_are_fair_between_readers() {
+    let server = TestServer::start(2).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "catalogue-reader").await;
+    let other = server.add_reader(&owner, "catalogue-other").await;
+    let held_request = |token: &str, uri: &str| {
+        let mut request = Request::builder()
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(SocketAddr::from((
+                [127, 0, 0, 1],
+                51234,
+            ))));
+        request
+    };
+    let held = server
+        .router
+        .clone()
+        .oneshot(held_request(&owner, "/api/books"))
+        .await
+        .unwrap();
+    assert_eq!(held.status(), StatusCode::OK);
+    for uri in [
+        "/api/opds/books",
+        "/abs/api/libraries/operalibre/filterdata",
+        "/abs/api/authors/Author%2000",
+    ] {
+        let blocked = server.get(uri, &owner).await;
+        assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(blocked.headers.contains_key(header::RETRY_AFTER));
+    }
+    let peer = server
+        .router
+        .clone()
+        .oneshot(held_request(&reader, "/abs/api/libraries/operalibre/items"))
+        .await
+        .unwrap();
+    assert_eq!(peer.status(), StatusCode::OK);
+    assert_eq!(
+        server.get("/api/books", &other).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // Playback/progress are outside the catalogue quota.
+    assert_eq!(
+        server.get("/api/auth/me", &owner).await.status,
+        StatusCode::OK
+    );
+    drop(held);
+    assert_eq!(
+        server.get("/api/books", &other).await.status,
+        StatusCode::OK
+    );
+    drop(peer);
+    assert_eq!(
+        server.get("/api/opds/books", &reader).await.status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn oversized_catalogue_metadata_fails_without_partial_feeds_and_releases_slots() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    server.state.library.write().await.books[0].description = Some("x".repeat(2 * 1024 * 1024 + 1));
+    for route in [
+        "/api/books",
+        "/api/opds/books",
+        "/abs/api/libraries/operalibre/items",
+        "/abs/api/libraries/operalibre/search?q=",
+    ] {
+        let refused = server.get(route, &owner).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "{route}: {}",
+            refused.text()
+        );
+        assert!(
+            refused.json()["message"]
+                .as_str()
+                .unwrap()
+                .contains("metadata")
+        );
+    }
+    server.state.library.write().await.books[0].description = Some("A normal description".into());
+    let good = server.get("/api/books", &owner).await;
+    assert_eq!(good.status, StatusCode::OK);
+    assert_eq!(good.json()[0]["description"], "A normal description");
+}
+
+#[tokio::test]
+async fn password_recovery_refuses_a_previously_verified_hash() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "recovery-reader").await;
+    let verified = server
+        .state
+        .users
+        .read()
+        .await
+        .users
+        .iter()
+        .find(|user| user.username == "recovery-reader")
+        .unwrap()
+        .clone();
+    let reset = server
+        .send_json(
+            "POST",
+            &format!("/api/users/{}/password", verified.id),
+            &owner,
+            serde_json::json!({"newPassword":"a-brand-new-password"}),
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::OK);
+    let refused = super::finish_password_login(&server.state, &verified)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        server.get("/api/auth/me", &reader).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        !server
+            .state
+            .sessions
+            .read()
+            .await
+            .values()
+            .any(|session| session.user_id == verified.id)
+    );
+    let fresh = server
+        .send_json(
+            "POST",
+            "/api/auth/login",
+            "",
+            serde_json::json!({"username":"recovery-reader", "password":"a-brand-new-password"}),
+        )
+        .await;
+    assert_eq!(fresh.status, StatusCode::OK, "{}", fresh.text());
+}
+
+#[tokio::test]
+async fn password_recovery_refuses_agent_issuance_from_a_delayed_request_body() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "delayed-reader").await;
+    let _old_agent = create_agent(&server, &reader, &["library"]).await;
+    let id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let auth = server
+        .state
+        .users
+        .read()
+        .await
+        .users
+        .iter()
+        .find(|user| user.id == id)
+        .map(AuthUser::from)
+        .unwrap();
+    let session = CurrentSession {
+        id: session_id_for_token(&reader),
+        media_token: media_token_for_session(&reader),
+    };
+    let reset = server
+        .send_json(
+            "POST",
+            &format!("/api/users/{id}/password"),
+            &owner,
+            serde_json::json!({"newPassword":"another-new-password"}),
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::OK, "{}", reset.text());
+    // These extensions were captured by middleware before a delayed body.
+    let response = super::create_agent_token(
+        State(server.state.clone()),
+        Extension(auth),
+        Extension(session),
+        Json(
+            serde_json::from_value(serde_json::json!({"name":"delayed", "scopes":["library"]}))
+                .unwrap(),
+        ),
+    )
+    .await;
+    assert!(matches!(response, Err(error) if error.status == StatusCode::UNAUTHORIZED));
+    assert!(
+        !server
+            .state
+            .agent_tokens
+            .read()
+            .await
+            .tokens
+            .iter()
+            .any(|token| token.user_id == id)
+    );
+    create_agent(&server, &owner, &["library"]).await;
+}
+
+#[tokio::test]
+async fn concurrent_login_admission_is_bounded_even_when_password_queue_is_full() {
+    let server = TestServer::start(0).await;
+    let _workers = server
+        .state
+        .password_request_slots
+        .clone()
+        .acquire_many_owned(super::PASSWORD_REQUEST_CAPACITY as u32)
+        .await
+        .unwrap();
+    let mut pending = tokio::task::JoinSet::new();
+    for _ in 0..20 {
+        let state = server.state.clone();
+        pending.spawn(async move {
+            super::authenticate_and_open_session(
+                &state,
+                SocketAddr::from(([127, 0, 0, 1], 51234)),
+                &HeaderMap::new(),
+                super::LoginRequest {
+                    username: "unknown".into(),
+                    password: super::mint_identity_id(),
+                },
+            )
+            .await
+        });
+    }
+    while let Some(result) = pending.join_next().await {
+        assert_eq!(
+            result.unwrap().unwrap_err().status,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    let keys = super::LoginThrottleKeys::new(std::net::IpAddr::from([127, 0, 0, 1]), "unknown");
+    let attempts = server.state.login_attempts.lock().await;
+    assert_eq!(attempts[&keys.account].failures, super::LOGIN_MAX_FAILURES);
+    assert_eq!(attempts[&keys.ip].failures, super::LOGIN_MAX_FAILURES);
+    assert!(server.state.sessions.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_burst_of_six_legitimate_logins_can_wait_for_password_workers() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let password = format!("test-{}", super::mint_identity_id());
+    for index in 0..6 {
+        let created = server.send_json("POST", "/api/users", &owner,
+            serde_json::json!({"username":format!("burst-reader-{index}"),"password":password,"isAdmin":false})).await;
+        assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    }
+    let mut pending = tokio::task::JoinSet::new();
+    for index in 0..6 {
+        let state = server.state.clone();
+        let password = password.clone();
+        pending.spawn(async move {
+            super::authenticate_and_open_session(
+                &state,
+                SocketAddr::from(([127, 0, 0, 1], 51234)),
+                &HeaderMap::new(),
+                super::LoginRequest {
+                    username: format!("burst-reader-{index}"),
+                    password,
+                },
+            )
+            .await
+        });
+    }
+    while let Some(result) = pending.join_next().await {
+        let (_, token) = result
+            .unwrap()
+            .expect("a bounded legitimate burst can wait");
+        assert!(!token.is_empty());
+    }
 }
