@@ -25,12 +25,15 @@ pub(crate) const COMPANION_CACHE_CONTROL: &str = "private, no-cache";
 pub(crate) enum FileCaching {
     /// Streamed media: never stored, never revalidated.
     Private,
-    /// Kept and revalidated with an `ETag`.
+    /// Kept and revalidated with a content `ETag`.
     Revalidated,
 }
 
-/// A validator for a file on disk: its length and modification time, which
-/// together change whenever the library file is replaced.
+/// Distinguishes two EPUB archives inside an entry's validator. The entry
+/// CRC already changes with that member's bytes; length and mtime only
+/// separate archives that share one. They are not a validator for a whole
+/// file — a same-sized rewrite can land in the timestamp tick the file
+/// already has — so those responses use [`content_etag`].
 fn file_etag(metadata: &std::fs::Metadata) -> Option<String> {
     let modified = metadata
         .modified()
@@ -42,6 +45,28 @@ fn file_etag(metadata: &std::fs::Metadata) -> Option<String> {
         metadata.len(),
         modified.as_nanos()
     ))
+}
+
+/// ETag for a file a client is allowed to revalidate.
+///
+/// The tag is a hash of the bytes this response will send. Length and
+/// modification time stay put when a same-sized replacement is written
+/// during the timestamp tick already recorded on the file, which is several
+/// milliseconds on ordinary disks, and a client offering the old tag would
+/// then be told its copy was still current.
+fn content_etag(file: &std::fs::File) -> io::Result<String> {
+    let mut source = file.try_clone()?;
+    std::io::Seek::seek(&mut source, std::io::SeekFrom::Start(0))?;
+    let mut hasher = Sha1::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let amount = std::io::Read::read(&mut source, &mut buffer)?;
+        if amount == 0 {
+            break;
+        }
+        hasher.update(&buffer[..amount]);
+    }
+    Ok(format!("\"{}\"", hex_digest(hasher.finalize())))
 }
 
 pub(crate) async fn get_cover_art(
@@ -474,17 +499,26 @@ pub(crate) async fn serve_file_response(
         .iter()
         .map(|root| root.to_path_buf())
         .collect::<Vec<_>>();
-    let (file, metadata) =
-        tokio::task::spawn_blocking(move || open_contained_file(&path_for_open, &allowed_roots))
-            .await
-            .map_err(|error| ApiError::internal(format!("Could not open media file: {error}")))?
+    let revalidated = caching == FileCaching::Revalidated;
+    let (file, metadata, etag) = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+        let (file, metadata) = open_contained_file(&path_for_open, &allowed_roots)
             .map_err(|_| ApiError::not_found("Media file not found"))?;
+        // Hashed on this blocking thread: a long sync map or ebook must not
+        // stall the runtime, and the hash has to be known before the status
+        // line so a matching tag can answer 304 without the body.
+        let etag = if revalidated {
+            Some(content_etag(&file).map_err(|error| {
+                ApiError::internal(format!("Could not read media file: {error}"))
+            })?)
+        } else {
+            None
+        };
+        Ok((file, metadata, etag))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Could not open media file: {error}")))??;
     let file_size = metadata.len();
     let content_type = media_content_type(&file_path);
-    let etag = match caching {
-        FileCaching::Private => None,
-        FileCaching::Revalidated => file_etag(&metadata),
-    };
     let cache_control = match caching {
         FileCaching::Private => MEDIA_CACHE_CONTROL,
         FileCaching::Revalidated => COMPANION_CACHE_CONTROL,
