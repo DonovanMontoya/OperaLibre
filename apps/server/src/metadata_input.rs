@@ -1067,3 +1067,53 @@ mod format_compatibility_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod chapter_container_compatibility_tests {
+    use super::*;
+    #[test]
+    fn bounded_metadata_keeps_real_m4b_chapter_tracks() {
+        let Some(tools) = faststart::discover_tools(None, None) else {
+            eprintln!("skipping: ffmpeg is not installed");
+            return;
+        };
+        let root = tempfile::tempdir().unwrap();
+        let metadata = root.path().join("chapters.ffmetadata");
+        std::fs::write(&metadata, ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=500\ntitle=One\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=500\nEND=1000\ntitle=Two\n").unwrap();
+        let path = root.path().join("book.m4b");
+        let generated = std::process::Command::new(&tools.ffmpeg)
+            .args([
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-f",
+                "ffmetadata",
+                "-i",
+            ])
+            .arg(&metadata)
+            .args(["-map_metadata", "1", "-map_chapters", "1", "-c:a", "aac"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            generated.status.success(),
+            "{}",
+            String::from_utf8_lossy(&generated.stderr)
+        );
+        let parsed = read_track_metadata(&path);
+        assert!(parsed.duration_seconds.is_some());
+        assert_eq!(parsed.chapters.len(), 2);
+        assert_eq!(parsed.chapters[0].title, "One");
+        assert_eq!(parsed.chapters[1].title, "Two");
+        assert_eq!(parsed.chapters[0].start_seconds, 0.0);
+        assert_eq!(parsed.chapters[0].end_seconds, Some(0.5));
+        assert_eq!(parsed.chapters[1].start_seconds, 0.5);
+        assert_eq!(parsed.chapters[0].source, "mp4-chapter-track");
+    }
+}
