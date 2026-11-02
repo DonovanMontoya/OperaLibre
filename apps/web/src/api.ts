@@ -787,7 +787,7 @@ export async function removeSyncAddon() {
   );
 }
 
-export type ServerRestoreResult = {
+type ServerRestoreResult = {
   restoredAt: string;
   safetyBackup: string;
   accounts: number;
@@ -1517,7 +1517,7 @@ export type SyncSweep = {
   eligibleCount: number;
 };
 
-export type SyncSweepRun = { queued: number; skipped: number; error: string | null };
+type SyncSweepRun = { queued: number; skipped: number; error: string | null };
 
 export function getSyncSweep() {
   return request<SyncSweep>("/api/sync-sweep");

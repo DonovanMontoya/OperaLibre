@@ -1,6 +1,6 @@
 import { normalizeServerAddress } from "./serverAddress.ts";
 
-export type AddressCredentials = { token?: string; mediaToken?: string };
+type AddressCredentials = { token?: string; mediaToken?: string };
 
 type KeyValueStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 

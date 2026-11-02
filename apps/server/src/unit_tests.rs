@@ -1031,6 +1031,113 @@ async fn invalid_requested_range_returns_416_with_file_size() {
     );
 }
 
+/// A same-sized rewrite that keeps the previous modification time must not
+/// answer 304. Length and mtime can both stay put across that rewrite; the
+/// bytes are what the client is caching.
+#[tokio::test]
+async fn revalidated_etag_tracks_bytes_when_mtime_and_length_stay_put() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("book.sync.json");
+    let original = br#"{"start":0.0}"#;
+    std::fs::write(&path, original).unwrap();
+    let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+    let first = super::serve_file_response(
+        &path,
+        &[root.path()],
+        HeaderMap::new(),
+        None,
+        super::FileCaching::Revalidated,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let etag = first.headers()[super::ETAG].to_str().unwrap().to_string();
+    assert_eq!(
+        axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .as_ref(),
+        original
+    );
+
+    let rewritten = br#"{"start":1.0}"#;
+    assert_eq!(rewritten.len(), original.len());
+    std::fs::write(&path, rewritten).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    let metadata = std::fs::metadata(&path).unwrap();
+    assert_eq!(metadata.len(), original.len() as u64);
+    assert_eq!(metadata.modified().unwrap(), mtime);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(super::IF_NONE_MATCH, etag.parse().unwrap());
+    let updated = super::serve_file_response(
+        &path,
+        &[root.path()],
+        headers,
+        None,
+        super::FileCaching::Revalidated,
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated.status(), StatusCode::OK);
+    let new_etag = updated.headers()[super::ETAG].to_str().unwrap().to_string();
+    assert_ne!(new_etag, etag);
+    assert_eq!(
+        axum::body::to_bytes(updated.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .as_ref(),
+        rewritten
+    );
+
+    let mut headers = HeaderMap::new();
+    headers.insert(super::IF_NONE_MATCH, new_etag.parse().unwrap());
+    let cached = super::serve_file_response(
+        &path,
+        &[root.path()],
+        headers,
+        None,
+        super::FileCaching::Revalidated,
+    )
+    .await
+    .unwrap();
+    assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(cached.headers()[super::ETAG], new_etag);
+    assert!(
+        axum::body::to_bytes(cached.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // A timestamp bump that does not change the bytes is the same representation.
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(mtime + std::time::Duration::from_secs(30))
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(super::IF_NONE_MATCH, new_etag.parse().unwrap());
+    let untouched = super::serve_file_response(
+        &path,
+        &[root.path()],
+        headers,
+        None,
+        super::FileCaching::Revalidated,
+    )
+    .await
+    .unwrap();
+    assert_eq!(untouched.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(untouched.headers()[super::ETAG], new_etag);
+}
+
 #[tokio::test]
 async fn empty_file_without_range_returns_empty_200() {
     let root = tempfile::tempdir().unwrap();
@@ -9072,6 +9179,8 @@ async fn libation_restart_recovers_approved_and_direct_downloads_with_restricted
                 .pending_downloads
                 .push(super::PendingLibationDownload {
                     id: "saved-direct".to_string(),
+                    initiated_by: None,
+                    job_id: None,
                     profile_id: Some("legacy".to_string()),
                     asin: "B000RECOV2".to_string(),
                     grant_to_user: None,
@@ -9613,6 +9722,7 @@ async fn libation_account_removal_cannot_accept_a_download_for_a_deleted_profile
             Some(profile_id),
             "B000RACE01".to_string(),
             None,
+            None,
         )
         .await
     });
@@ -9678,7 +9788,7 @@ async fn libation_startup_imports_wait_for_the_catalogue_and_reuse_manually_name
         book.join("Already present [B000LOCAL1].wav"),
     )
     .unwrap();
-    let direct = super::start_libation_download(&state, None, "B000LOCAL1".to_string(), None)
+    let direct = super::start_libation_download(&state, None, "B000LOCAL1".to_string(), None, None)
         .await
         .unwrap()
         .0;
@@ -9726,10 +9836,11 @@ async fn libation_shutdown_preserves_a_download_queued_behind_the_startup_catalo
     let root = tempfile::tempdir().unwrap();
     let (state, _) = fake_libation_state(root.path());
     state.library.write().await.catalogue_ready = false;
-    let created = super::start_libation_download(&state, None, "B000QUEUE1".to_string(), None)
-        .await
-        .unwrap()
-        .0;
+    let created =
+        super::start_libation_download(&state, None, "B000QUEUE1".to_string(), None, None)
+            .await
+            .unwrap()
+            .0;
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while state.shutdown.receiver_count() < 2 {
             tokio::task::yield_now().await;
@@ -9768,7 +9879,8 @@ async fn libation_shutdown_preserves_intent_when_the_observer_starts_after_the_s
     let registration_guard = state.libation_account_registration_lock.lock().await;
     let starting_state = state.clone();
     let starting = tokio::spawn(async move {
-        super::start_libation_download(&starting_state, None, "B000LATE01".to_string(), None).await
+        super::start_libation_download(&starting_state, None, "B000LATE01".to_string(), None, None)
+            .await
     });
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while state

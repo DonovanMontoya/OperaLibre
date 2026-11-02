@@ -18,7 +18,7 @@ type NativeAudioState = {
   trackId?: string;
 };
 
-export type NativeAudioRecoveryState = {
+type NativeAudioRecoveryState = {
   trackId: string;
   positionSeconds: number;
   bookPositionSeconds: number;

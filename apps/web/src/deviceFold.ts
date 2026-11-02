@@ -3,7 +3,7 @@ import { useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 
 export type FoldPosture = "closed" | "half-open" | "flat" | "unknown";
-export type FoldAxis = "vertical" | "horizontal";
+type FoldAxis = "vertical" | "horizontal";
 export type DeviceFoldState = {
   posture: FoldPosture;
   /** Hinge angle in degrees, when the device reports one. */
