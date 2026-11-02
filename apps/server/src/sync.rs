@@ -666,13 +666,21 @@ async fn rerun_request_chapters(
         tracks.to_vec(),
         chapters.to_vec(),
     );
+    let allowed_roots = vec![state.library_root.clone(), state.sync_dir.clone()];
     tokio::task::spawn_blocking(move || {
         let epub = alignment::parse_epub_file(&epub_path).map_err(|_| sync_report::BOOK_CHANGED)?;
         let plan =
             plan_scopes(&epub, &tracks, chapter_slicing).map_err(|_| sync_report::BOOK_CHANGED)?;
         let spans = sync_report::chapter_spans(&epub, &tracks, &plan.scopes);
-        sync_report::rerun_base(&sync_dir, &book_id, &map_path, &spans, &chapters)
-            .map(|base| base.chapters)
+        sync_report::rerun_base(
+            &sync_dir,
+            &book_id,
+            &map_path,
+            &spans,
+            &chapters,
+            &allowed_roots,
+        )
+        .map(|base| base.chapters)
     })
     .await
     .map_err(|error| ApiError::internal(error.to_string()))?
@@ -1271,8 +1279,9 @@ pub(crate) async fn run_sync_generation(
                 spans.clone(),
                 chapters.to_vec(),
             );
+            let allowed_roots = vec![state.library_root.clone(), state.sync_dir.clone()];
             let base = tokio::task::spawn_blocking(move || {
-                sync_report::rerun_base(&sync_dir, &book, &path, &spans, &chapters)
+                sync_report::rerun_base(&sync_dir, &book, &path, &spans, &chapters, &allowed_roots)
             })
             .await?
             .map_err(|message| anyhow::anyhow!(message))?;

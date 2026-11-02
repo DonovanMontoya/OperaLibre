@@ -103,7 +103,7 @@ async function open(page: Page, seed: Seed) {
 
 const stored = (page: Page) => page.evaluate(() => ({
   active: localStorage.getItem('operalibre.serverUrl'),
-  signIns: JSON.parse(localStorage.getItem('operalibre.credentials') ?? '{}') as Record<string, SignIn>
+  signIns: JSON.parse(localStorage.getItem('operalibre.credentials.v2') ?? '{}') as Record<string, SignIn>
 }));
 
 async function signInAtAway(page: Page) {

@@ -47,9 +47,6 @@ fn synchsafe(b: &[u8]) -> io::Result<u32> {
     Ok(b[..4].iter().fold(0, |n, v| (n << 7) | u32::from(*v)))
 }
 impl MetadataInput {
-    pub(crate) fn open(path: &FsPath) -> io::Result<Self> {
-        Self::new(std::fs::File::open(path)?)
-    }
     pub(crate) fn new(file: std::fs::File) -> io::Result<Self> {
         let len = file.metadata()?.len();
         let mut input = Self {
@@ -646,7 +643,10 @@ fn validate_atoms(
     Ok(())
 }
 
-pub(crate) fn read_bounded_tags(input: &MetadataInput) -> anyhow::Result<lofty::file::TaggedFile> {
+pub(crate) fn read_bounded_tags(
+    input: &MetadataInput,
+    path: &FsPath,
+) -> anyhow::Result<lofty::file::TaggedFile> {
     // Lofty's options are thread-local and its allocation cap is per item.
     // The frozen aggregate preflight is the primary bound.
     lofty::config::apply_global_options(
@@ -654,9 +654,13 @@ pub(crate) fn read_bounded_tags(input: &MetadataInput) -> anyhow::Result<lofty::
             .allocation_limit(TAG_BYTES as usize)
             .preserve_format_specific_items(false),
     );
-    Ok(lofty::probe::Probe::new(input.fork(READ_BYTES)?)
-        .guess_file_type()?
-        .read()?)
+    let reader = std::io::BufReader::new(input.fork(READ_BYTES)?);
+    let probe = if let Some(kind) = lofty::file::FileType::from_path(path) {
+        lofty::probe::Probe::with_file_type(reader, kind)
+    } else {
+        lofty::probe::Probe::new(reader)
+    };
+    Ok(probe.guess_file_type()?.read()?)
 }
 
 pub(crate) struct MetadataCounter {
@@ -735,7 +739,7 @@ mod tests {
         let mut header = [0u8; 4];
         reader.read_exact(&mut header).unwrap();
         assert_eq!(&header, b"RIFF");
-        let tag = read_bounded_tags(&checked).unwrap();
+        let tag = read_bounded_tags(&checked, FsPath::new("book.wav")).unwrap();
         assert!(tag.properties().duration().as_secs() > 20_000);
     }
     #[test]

@@ -68,6 +68,7 @@ mod alignment;
 mod app;
 mod auth;
 mod backup;
+mod catalogue;
 mod companions;
 mod config;
 mod covers;
@@ -92,6 +93,7 @@ mod opds;
 mod progress;
 mod reading;
 mod reading_log;
+mod scan_input;
 mod storage;
 mod sync;
 mod sync_report;
@@ -111,6 +113,7 @@ use agent::*;
 use app::*;
 use auth::*;
 use backup::*;
+use catalogue::*;
 use companions::*;
 use config::*;
 use covers::*;
@@ -130,6 +133,7 @@ use opds::*;
 use progress::*;
 use reading::*;
 use reading_log::*;
+use scan_input::*;
 use storage::*;
 use sync::*;
 use upload::*;
@@ -654,8 +658,12 @@ fn build_app_state(
         libation_refresh_reservation_lock: Arc::new(Mutex::new(())),
         faststart_lock: Arc::new(Mutex::new(())),
         login_attempts: Arc::new(Mutex::new(HashMap::new())),
+        credential_issuance_lock: Arc::new(Mutex::new(())),
+        password_request_slots: Arc::new(Semaphore::new(PASSWORD_REQUEST_CAPACITY)),
         password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
         download_task_slots: Arc::new(Semaphore::new(config.max_concurrent_book_downloads)),
+        catalogue_slots: Arc::new(Semaphore::new(CATALOGUE_CONCURRENCY)),
+        catalogue_account_slots: Arc::new(Mutex::new(HashMap::new())),
         epub_entry_slots: Arc::new(Semaphore::new(EPUB_ENTRY_CONCURRENCY)),
         epub_entry_account_slots: Arc::new(Mutex::new(HashMap::new())),
         upload_lock: Arc::new(Mutex::new(())),

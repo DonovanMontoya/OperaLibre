@@ -7,6 +7,8 @@ nav_order: 5
 
 The server scans `library_root` and groups files into books. The rules are simple, but knowing them helps you organize for the best metadata and readalong matching.
 
+Symbolic links inside the library are skipped. Keep audio, companion files, artwork, and metadata sidecars inside the library folder. If an audio file disappears or becomes unreadable during a scan, the previous catalogue stays available; restore access and rescan.
+
 ## The two book shapes
 
 ### Folder books
