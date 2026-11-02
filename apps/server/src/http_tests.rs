@@ -8768,7 +8768,7 @@ async fn concurrent_login_admission_is_bounded_even_when_password_queue_is_full(
                 &HeaderMap::new(),
                 super::LoginRequest {
                     username: "unknown".into(),
-                    password: "wrong-password".into(),
+                    password: super::mint_identity_id(),
                 },
             )
             .await
@@ -8791,14 +8791,16 @@ async fn concurrent_login_admission_is_bounded_even_when_password_queue_is_full(
 async fn a_burst_of_six_legitimate_logins_can_wait_for_password_workers() {
     let server = TestServer::start(0).await;
     let owner = server.setup_owner().await;
+    let password = format!("test-{}", super::mint_identity_id());
     for index in 0..6 {
-        server
-            .add_reader(&owner, &format!("burst-reader-{index}"))
-            .await;
+        let created = server.send_json("POST", "/api/users", &owner,
+            serde_json::json!({"username":format!("burst-reader-{index}"),"password":password,"isAdmin":false})).await;
+        assert_eq!(created.status, StatusCode::OK, "{}", created.text());
     }
     let mut pending = tokio::task::JoinSet::new();
     for index in 0..6 {
         let state = server.state.clone();
+        let password = password.clone();
         pending.spawn(async move {
             super::authenticate_and_open_session(
                 &state,
@@ -8806,7 +8808,7 @@ async fn a_burst_of_six_legitimate_logins_can_wait_for_password_workers() {
                 &HeaderMap::new(),
                 super::LoginRequest {
                     username: format!("burst-reader-{index}"),
-                    password: "reader-password-1234".into(),
+                    password,
                 },
             )
             .await
