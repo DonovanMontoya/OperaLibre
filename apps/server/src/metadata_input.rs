@@ -995,3 +995,75 @@ mod footer_tests {
         assert!(MetadataInput::new(file).is_err());
     }
 }
+
+#[cfg(test)]
+mod format_compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_metadata_preserves_supported_format_tags_and_durations() {
+        let Some(tools) = faststart::discover_tools(None, None) else {
+            eprintln!("skipping: ffmpeg is not installed");
+            return;
+        };
+        let root = tempfile::tempdir().unwrap();
+        for (extension, codec) in [
+            ("mp3", "libmp3lame"),
+            ("m4a", "aac"),
+            ("m4b", "aac"),
+            ("mp4", "aac"),
+            ("aac", "aac"),
+            ("flac", "flac"),
+            ("ogg", "vorbis"),
+            ("opus", "opus"),
+            ("wav", "pcm_s16le"),
+            ("aiff", "pcm_s16be"),
+        ] {
+            let path = root.path().join(format!("book.{extension}"));
+            let generated = std::process::Command::new(&tools.ffmpeg)
+                .args([
+                    "-nostdin",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=1",
+                    "-ac",
+                    "2",
+                    "-strict",
+                    "experimental",
+                    "-c:a",
+                    codec,
+                    "-metadata",
+                    "title=A small tagged book",
+                    "-metadata",
+                    "artist=Known Author",
+                ])
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert!(
+                generated.status.success(),
+                "{extension}: {}",
+                String::from_utf8_lossy(&generated.stderr)
+            );
+            let baseline = lofty::read_from_path(&path).unwrap();
+            let tag = baseline.primary_tag().or_else(|| baseline.first_tag());
+            let expected_title = tag.and_then(|tag| tag.title().map(|title| title.into_owned()));
+            let expected_author =
+                tag.and_then(|tag| tag.artist().map(|artist| artist.into_owned()));
+            let metadata = read_track_metadata(&path);
+            assert_eq!(metadata.title, expected_title, "{extension} title");
+            assert_eq!(metadata.author, expected_author, "{extension} author");
+            assert_eq!(
+                metadata.duration_seconds,
+                Some(baseline.properties().duration().as_secs_f64())
+                    .filter(|duration| *duration > 0.0),
+                "{extension} duration"
+            );
+        }
+    }
+}
