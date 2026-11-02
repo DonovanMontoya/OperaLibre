@@ -961,6 +961,25 @@ pub(crate) async fn authenticate_and_open_session(
     attempts.remove(&throttle_keys.username);
     drop(attempts);
 
+    finish_password_login(state, &user).await
+}
+
+pub(crate) async fn finish_password_login(
+    state: &AppState,
+    verified: &User,
+) -> Result<(User, String), ApiError> {
+    let _issuance = state.credential_issuance_lock.lock().await;
+    let user = state
+        .users
+        .read()
+        .await
+        .users
+        .iter()
+        .find(|current| {
+            current.id == verified.id && current.password_hash == verified.password_hash
+        })
+        .cloned()
+        .ok_or_else(|| ApiError::unauthorized("Invalid username or password."))?;
     let token = create_session(state, &user.id).await?;
     Ok((user, token))
 }
@@ -1554,6 +1573,7 @@ pub(crate) async fn change_password(
     }
 
     let new_hash = hash_password_async(&state, payload.new_password).await?;
+    let _issuance = state.credential_issuance_lock.lock().await;
     state
         .users
         .mutate(|users| {

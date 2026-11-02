@@ -652,6 +652,7 @@ fn build_app_state(
         libation_refresh_reservation_lock: Arc::new(Mutex::new(())),
         faststart_lock: Arc::new(Mutex::new(())),
         login_attempts: Arc::new(Mutex::new(HashMap::new())),
+        credential_issuance_lock: Arc::new(Mutex::new(())),
         password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
         download_task_slots: Arc::new(Semaphore::new(config.max_concurrent_book_downloads)),
         epub_entry_slots: Arc::new(Semaphore::new(EPUB_ENTRY_CONCURRENCY)),
