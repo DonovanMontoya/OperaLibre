@@ -86,6 +86,7 @@ pub(crate) struct AppState {
     pub(crate) faststart_lock: Arc<Mutex<()>>,
     pub(crate) login_attempts: Arc<Mutex<HashMap<String, LoginThrottle>>>,
     pub(crate) password_task_slots: Arc<Semaphore>,
+    pub(crate) password_request_slots: Arc<Semaphore>,
     pub(crate) download_task_slots: Arc<Semaphore>,
     pub(crate) epub_entry_slots: Arc<Semaphore>,
     pub(crate) epub_entry_account_slots: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
@@ -119,10 +120,9 @@ pub(crate) fn build_router(
         // Catch-all so unknown API paths return a JSON 404 instead of
         // falling through to the SPA fallback (or the auth middleware).
         .route("/api/{*path}", any(api_not_found))
-        // Sign-in and setup wait on the password-hashing worker pool, and
-        // every concurrent attempt clears the throttle check before any of
-        // them records a failure. Without this bound a saturated or wedged
-        // worker queue would hold unauthenticated connections open forever.
+        // Bound unauthenticated request lifetimes even if password work or
+        // persistence stalls. Admission separately bounds password workers
+        // and reserves sign-in throttle counters before verification.
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(REQUEST_TIMEOUT_SECONDS),

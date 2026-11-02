@@ -29,6 +29,9 @@ pub(crate) const LOGIN_THROTTLE_MAX_ENTRIES: usize = 10_000;
 
 pub(crate) const PASSWORD_TASK_CONCURRENCY: usize = 4;
 
+/// Includes running password work and its bounded waiting queue.
+pub(crate) const PASSWORD_REQUEST_CAPACITY: usize = 16;
+
 pub(crate) const MIN_PASSWORD_CHARS: usize = 12;
 
 pub(crate) const MAX_PASSWORD_CHARS: usize = 1_024;
@@ -403,15 +406,27 @@ async fn run_password_task<T: Send + 'static>(
     state: &AppState,
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, ApiError> {
-    let _permit = state
+    let request_permit = state
+        .password_request_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            ApiError::too_many_requests("Password workers are busy. Try again shortly.")
+        })?;
+    let permit = state
         .password_task_slots
         .clone()
         .acquire_owned()
         .await
         .map_err(|_| ApiError::internal("Password worker pool is unavailable."))?;
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|error| ApiError::internal(format!("Password worker failed: {error}")))
+    tokio::task::spawn_blocking(move || {
+        // Cancellation of the request must not release a still-running worker.
+        let _permit = permit;
+        let _request_permit = request_permit;
+        work()
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Password worker failed: {error}")))
 }
 
 pub(crate) async fn hash_password_async(
@@ -925,11 +940,24 @@ pub(crate) async fn authenticate_and_open_session(
                 "Too many failed sign-in attempts. Try again in a minute.",
             ));
         }
+        let missing = throttle_keys
+            .all()
+            .into_iter()
+            .filter(|key| !attempts.contains_key(*key))
+            .count();
+        if attempts.len().saturating_add(missing) > LOGIN_THROTTLE_MAX_ENTRIES {
+            return Err(ApiError::too_many_requests(
+                "Too many sign-in attempts. Try again in a minute.",
+            ));
+        }
+        // Charge admission before yielding to password work. Cancelled or
+        // overloaded attempts stay charged until the ordinary lockout expires.
+        // Otherwise a disconnected request could buy an uncounted guess.
+        record_login_failures_in(&mut attempts, throttle_keys.all(), now);
     }
 
     if payload.password.chars().count() > MAX_PASSWORD_CHARS {
         let _ = verify_dummy_password_async(state, "oversized-password".to_string()).await?;
-        record_login_failures(state, throttle_keys.all()).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
 
@@ -946,11 +974,9 @@ pub(crate) async fn authenticate_and_open_session(
         // Burn the same time as a real verification so response timing does
         // not reveal whether the username exists.
         let _ = verify_dummy_password_async(state, payload.password).await?;
-        record_login_failures(state, throttle_keys.all()).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     };
     if !verify_password_async(state, payload.password, user.password_hash.clone()).await? {
-        record_login_failures(state, throttle_keys.all()).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
     // A success clears only the counters about this account. The per-address
@@ -959,6 +985,9 @@ pub(crate) async fn authenticate_and_open_session(
     let mut attempts = state.login_attempts.lock().await;
     attempts.remove(&throttle_keys.account);
     attempts.remove(&throttle_keys.username);
+    if let Some(ip) = attempts.get_mut(&throttle_keys.ip) {
+        ip.failures = ip.failures.saturating_sub(1);
+    }
     drop(attempts);
 
     let token = create_session(state, &user.id).await?;
@@ -1044,12 +1073,21 @@ impl LoginThrottleKeys {
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn record_login_failures<'a>(
     state: &AppState,
     throttle_keys: impl IntoIterator<Item = &'a String>,
 ) {
     let now = unix_now_seconds();
     let mut attempts = state.login_attempts.lock().await;
+    record_login_failures_in(&mut attempts, throttle_keys, now);
+}
+
+fn record_login_failures_in<'a>(
+    attempts: &mut HashMap<String, LoginThrottle>,
+    throttle_keys: impl IntoIterator<Item = &'a String>,
+    now: u64,
+) {
     // A flood of unique bogus usernames within the lockout window can't grow
     // the map without bound: stop tracking new names at the cap. Entries for
     // already-tracked names keep counting, and stale ones are pruned on every
