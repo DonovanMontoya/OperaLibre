@@ -100,12 +100,17 @@ export function refreshLibroDevice(email?: string): Promise<void> {
 async function settleDownloads() {
   const pending = read<Pending[]>(JOBS, []);
   for (const item of pending.filter(active)) {
+    let publishing = false;
     try {
       const status = await getBackgroundBookDownloadStatus(item.job.id);
       item.job.status = status.state;
       item.job.progress = { step: `Downloading to this device · ${Math.round(status.fraction * 100)}%`, fraction: status.fraction, completed: null, total: null };
-      if (status.state === "failed") item.job.error = status.error ?? "Download failed. Retry to get a fresh download link.";
+      if (status.state === "failed") {
+        item.job.error = status.error ?? "Download failed. Retry to get a fresh download link.";
+        await discard(item);
+      }
       if (status.state === "completed") {
+        publishing = true;
         // Publication runs on foreground recovery as well as ordinary completion.
         item.job.status = "running";
         item.job.progress = { step: "Adding to your device library", fraction: null, completed: null, total: null };
@@ -127,6 +132,9 @@ async function settleDownloads() {
     } catch (error) {
       item.job.status = "failed";
       item.job.error = error instanceof Error ? error.message : "Device import failed. Retry the book.";
+      // Failed extraction/publication cannot leave raw archives consuming the
+      // book's budget forever. A retry obtains fresh provider URLs.
+      if (publishing) await discard(item);
     }
     write(JOBS, pending);
   }

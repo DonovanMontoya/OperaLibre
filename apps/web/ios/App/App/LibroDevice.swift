@@ -174,6 +174,9 @@ public class LibroDevicePlugin: CAPPlugin, CAPBridgedPlugin, URLSessionTaskDeleg
         do {
             for url in try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
                 if url.pathExtension == "m4b" {
+                    let size = (try fm.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
+                    guard size > 0, size <= maximumBackgroundDownloadBytes - bytes else { throw LibroDeviceError(message: "Book exceeds 25 GiB.") }
+                    bytes += size
                     files.append(["name":url.lastPathComponent, "path":url.absoluteString]); continue
                 }
                 guard url.pathExtension == "zip" else { continue }
