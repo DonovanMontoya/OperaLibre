@@ -864,7 +864,7 @@ fn m4b_cover_art_survives_the_tag_read() {
     let cover = super::read_track_metadata(&book)
         .cover_art
         .expect("the embedded cover should be read back");
-    assert_eq!(cover.mime_type, "image/jpeg");
+    assert_eq!(cover.mime_type, "image/png");
     assert!(!cover.data.is_empty());
 }
 

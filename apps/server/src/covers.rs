@@ -149,7 +149,7 @@ pub(crate) async fn remove_cover_override(
     .map_err(|error| ApiError::internal(format!("Cover removal failed: {error}")))?
 }
 
-fn normalize_cover(bytes: &[u8]) -> Result<Vec<u8>, ApiError> {
+pub(crate) fn normalize_cover(bytes: &[u8]) -> Result<Vec<u8>, ApiError> {
     let invalid = || ApiError::bad_request("Choose a readable JPEG, PNG, or WebP image.");
     let format = image::guess_format(bytes).map_err(|_| invalid())?;
     if !matches!(

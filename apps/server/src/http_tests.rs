@@ -6710,12 +6710,13 @@ async fn uploaded_cover_restores_real_embedded_art_and_leaves_audio_intact() {
         .await;
     assert_eq!(restored.status, StatusCode::OK);
     assert_eq!(restored.json()["coverArtUrl"], before["coverArtUrl"]);
+    let restored_art = server
+        .get(before["coverArtUrl"].as_str().unwrap(), &owner)
+        .await
+        .body;
     assert_eq!(
-        server
-            .get(before["coverArtUrl"].as_str().unwrap(), &owner)
-            .await
-            .body,
-        embedded
+        image::load_from_memory(&restored_art).unwrap().to_rgba8(),
+        image::load_from_memory(&embedded).unwrap().to_rgba8()
     );
     assert_eq!(std::fs::read(audio).unwrap(), bytes);
 }

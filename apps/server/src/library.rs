@@ -470,7 +470,7 @@ pub(crate) struct BookMetadataUpdate {
     pub(crate) asin: Option<String>,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 pub(crate) struct TrackMetadata {
     pub(crate) title: Option<String>,
     pub(crate) author: Option<String>,
@@ -478,11 +478,12 @@ pub(crate) struct TrackMetadata {
     pub(crate) duration_seconds: Option<f64>,
     pub(crate) asin: Option<String>,
     pub(crate) chapters: Vec<ParsedChapter>,
+    #[serde(skip)]
     pub(crate) cover_art: Option<EmbeddedImage>,
     pub(crate) summary: MetadataSummary,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 pub(crate) struct ParsedChapter {
     pub(crate) title: String,
     pub(crate) start_seconds: f64,
@@ -1987,9 +1988,8 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
             cached_fingerprints,
         )
     });
-    // Tag reading is the slowest part of a first scan, and every file is
-    // independent, so it fans out across the pool instead of walking the list
-    // on one thread.
+    // Embedded parsers and raster decoders share one memory allowance.
+    // Collect serially so completed metadata cannot outrun its aggregate budget.
     //
     // Only one cover per book is ever used, so the picture bytes every track
     // may carry are reduced to a digest here and read again once per book,
@@ -1998,15 +1998,21 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
     // library.
     let metadata_root = input_root.clone();
     let metadata_task = tokio::task::spawn_blocking(move || {
-        use rayon::prelude::*;
+        let mut retained = 0u64;
         metadata_files
-            .into_par_iter()
-            .map(|path| {
+            .into_iter()
+            .map(|path| -> anyhow::Result<_> {
                 let mut metadata = read_track_metadata_in(&metadata_root, &path)?;
                 let cover = metadata
                     .cover_art
                     .take()
                     .map(|image| ScannedCover::from_image_in(metadata_root.clone(), &path, &image));
+                let mut count = MetadataCounter {
+                    bytes: 0,
+                    remaining: (128 * 1024 * 1024u64).saturating_sub(retained),
+                };
+                serde_json::to_writer(&mut count, &metadata)?;
+                retained += count.bytes;
                 Ok((path, metadata, cover))
             })
             .collect::<anyhow::Result<Vec<_>>>()
@@ -2492,7 +2498,7 @@ fn build_tracks(
                 .iter()
                 .map(|chapter| Chapter {
                     id: stable_id(&format!("{track_id}:{}", chapter.start_seconds)),
-                    title: chapter.title.clone(),
+                    title: clean_tag_text(&chapter.title),
                     track_id: track_id.clone(),
                     track_index: index,
                     start_seconds: chapter.start_seconds,
@@ -2982,20 +2988,15 @@ fn read_track_metadata_in(root: &ScanRoot, file_path: &FsPath) -> anyhow::Result
     let (file, _) = root.open(file_path)?;
     Ok(read_track_metadata_file(file, file_path))
 }
-fn read_scan_tags(
-    file: impl Read + std::io::Seek,
-    path: &FsPath,
-) -> anyhow::Result<lofty::file::TaggedFile> {
-    let reader = std::io::BufReader::new(file);
-    let probe = if let Some(kind) = lofty::file::FileType::from_path(path) {
-        lofty::probe::Probe::with_file_type(reader, kind)
-    } else {
-        lofty::probe::Probe::new(reader)
+fn read_track_metadata_file(file: std::fs::File, file_path: &FsPath) -> TrackMetadata {
+    let _parse_guard = METADATA_PARSE_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Ok(mut input) = MetadataInput::new(file) else {
+        tracing::warn!(path = %file_path.display(), "Skipping malformed or oversized embedded metadata");
+        return TrackMetadata::default();
     };
-    Ok(probe.guess_file_type()?.read()?)
-}
-fn read_track_metadata_file(mut file: std::fs::File, file_path: &FsPath) -> TrackMetadata {
-    let Ok(tagged_file) = read_scan_tags(&mut file, file_path) else {
+    let Ok(tagged_file) = read_bounded_tags(&input, file_path) else {
         return TrackMetadata::default();
     };
 
@@ -3006,7 +3007,7 @@ fn read_track_metadata_file(mut file: std::fs::File, file_path: &FsPath) -> Trac
     if let Some(vendor_summary) = tag.and_then(extract_vendor_json_summary) {
         summary = merge_two_summaries(summary, vendor_summary);
     }
-    let chapters = read_embedded_chapters_file(file, file_path);
+    let chapters = read_embedded_chapters_from(file_path, &mut input);
 
     let author = tag
         .and_then(|tag| {
@@ -3020,11 +3021,11 @@ fn read_track_metadata_file(mut file: std::fs::File, file_path: &FsPath) -> Trac
                 ],
             )
         })
-        .or_else(|| tag.and_then(|tag| tag.artist().map(|value| value.to_string())));
+        .or_else(|| tag.and_then(|tag| tag.artist().map(clean_tag_text)));
 
     TrackMetadata {
         title: tag
-            .and_then(|tag| tag.title().map(|value| value.to_string()))
+            .and_then(|tag| tag.title().map(clean_tag_text))
             .or_else(|| summary.album.clone()),
         narrator: tag
             .and_then(extract_narrator)
@@ -3161,24 +3162,27 @@ pub(crate) fn extract_metadata_summary(tag: &Tag) -> MetadataSummary {
 pub(crate) fn first_tag_text(tag: &Tag, keys: &[ItemKey]) -> Option<String> {
     keys.iter()
         .find_map(|key| tag.get_string(*key))
-        .map(clean_metadata_text)
+        .map(clean_tag_text)
         .filter(|value| !value.is_empty())
 }
 
 pub(crate) fn collect_genres(tag: &Tag) -> Vec<String> {
     tag.get_strings(ItemKey::Genre)
+        .take(100)
         .flat_map(|value| value.split([';', ',']))
-        .map(clean_metadata_text)
+        .take(100)
+        .map(clean_tag_text)
         .filter(|value| !value.is_empty())
         .collect()
 }
 
 pub(crate) fn collect_raw_fields(tag: &Tag) -> Vec<MetadataField> {
     tag.items()
+        .take(100)
         .filter_map(|item| {
             let value = match item.value() {
                 ItemValue::Text(value) | ItemValue::Locator(value) => {
-                    truncate_metadata_value(&clean_metadata_text(value))
+                    truncate_metadata_value(&clean_tag_text(value))
                 }
                 ItemValue::Binary(value) => format!("<{} bytes>", value.len()),
             };
@@ -3191,7 +3195,7 @@ pub(crate) fn collect_raw_fields(tag: &Tag) -> Vec<MetadataField> {
                 key: item_key_label(item.key()),
                 value,
                 description: (!item.description().is_empty())
-                    .then(|| item.description().to_string()),
+                    .then(|| clean_tag_text(item.description())),
             })
         })
         .collect()
@@ -3199,6 +3203,15 @@ pub(crate) fn collect_raw_fields(tag: &Tag) -> Vec<MetadataField> {
 
 pub(crate) fn item_key_label(key: ItemKey) -> String {
     format!("{key:?}")
+}
+
+fn clean_tag_text(value: impl AsRef<str>) -> String {
+    let text = value.as_ref();
+    let mut end = text.len().min(16 * 1024);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    clean_metadata_text(&text[..end])
 }
 
 pub(crate) fn clean_metadata_text(value: impl AsRef<str>) -> String {
@@ -3258,7 +3271,7 @@ pub(crate) fn extract_vendor_narrator(tag: &Tag) -> Option<String> {
             .get("narrated_by")
             .or_else(|| value.get("narrator"))
             .and_then(serde_json::Value::as_str)
-            .map(clean_metadata_text)
+            .map(clean_tag_text)
     })
 }
 
@@ -3311,7 +3324,7 @@ pub(crate) fn json_string(value: &serde_json::Value, keys: &[&str]) -> Option<St
         value
             .get(*key)
             .and_then(serde_json::Value::as_str)
-            .map(clean_metadata_text)
+            .map(clean_tag_text)
             .filter(|value| !value.is_empty())
     })
 }
@@ -3329,7 +3342,7 @@ pub(crate) fn find_raw_text_by_name(tag: &Tag, names: &[&str]) -> Option<String>
 
         match item.value() {
             ItemValue::Text(value) | ItemValue::Locator(value) => {
-                Some(clean_metadata_text(value)).filter(|value| !value.is_empty())
+                Some(clean_tag_text(value)).filter(|value| !value.is_empty())
             }
             ItemValue::Binary(_) => None,
         }
@@ -3340,16 +3353,21 @@ pub(crate) fn extract_cover_art(tag: &Tag) -> Option<EmbeddedImage> {
     let picture = tag
         .get_picture_type(PictureType::CoverFront)
         .or_else(|| tag.pictures().first())?;
+    if picture.data().len() > MAX_COVER_UPLOAD_BYTES {
+        return None;
+    }
+    let data = normalize_cover(picture.data()).ok()?;
     Some(EmbeddedImage {
-        mime_type: cover_art_content_type(picture.mime_type().map(|mime| mime.as_str())),
-        data: picture.data().to_vec(),
-        etag: bytes_etag(picture.data()),
+        mime_type: "image/png".into(),
+        etag: bytes_etag(&data),
+        data,
     })
 }
 
 /// The type a cover is served under. The tag's own claim is served verbatim
 /// only when it names an image: anything else — `text/html` most of all —
 /// would otherwise go out same-origin as whatever the tag said it was.
+#[cfg(test)]
 pub(crate) fn cover_art_content_type(declared: Option<&str>) -> String {
     let declared = declared
         .map(|value| {
@@ -3376,17 +3394,21 @@ pub(crate) fn cover_art_content_type(declared: Option<&str>) -> String {
 /// once the scan has chosen it, without keeping every track's bytes around.
 fn read_track_cover_art_in(root: &ScanRoot, file_path: &FsPath) -> Option<EmbeddedImage> {
     let (file, _) = root.open(file_path).ok()?;
-    let tagged_file = read_scan_tags(file, file_path).ok()?;
+    let _parse_guard = METADATA_PARSE_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let input = MetadataInput::new(file).ok()?;
+    let tagged_file = read_bounded_tags(&input, file_path).ok()?;
     tagged_file
         .primary_tag()
         .or_else(|| tagged_file.first_tag())
         .and_then(extract_cover_art)
 }
 
-fn read_embedded_chapters_file(mut file: std::fs::File, file_path: &FsPath) -> Vec<ParsedChapter> {
-    if std::io::Seek::rewind(&mut file).is_err() {
-        return Vec::new();
-    }
+fn read_embedded_chapters_from(
+    file_path: &FsPath,
+    input: &mut MetadataInput,
+) -> Vec<ParsedChapter> {
     let extension = file_path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -3394,8 +3416,8 @@ fn read_embedded_chapters_file(mut file: std::fs::File, file_path: &FsPath) -> V
         .to_lowercase();
 
     let mut chapters = match extension.as_str() {
-        "m4a" | "m4b" | "mp4" => read_mp4_chapters(file),
-        "mp3" => read_id3_chapters(file),
+        "m4a" | "m4b" | "mp4" => read_mp4_chapters(input),
+        "mp3" => read_id3_chapters(input),
         _ => Vec::new(),
     };
 
@@ -3406,8 +3428,22 @@ fn read_embedded_chapters_file(mut file: std::fs::File, file_path: &FsPath) -> V
     chapters
 }
 
-fn read_mp4_chapters(mut file: std::fs::File) -> Vec<ParsedChapter> {
-    let Ok(tag) = mp4ameta::Tag::read_from(&mut file) else {
+fn read_mp4_chapters(input: &mut MetadataInput) -> Vec<ParsedChapter> {
+    let chapter_track = input.take_chapter_track();
+    if !chapter_track.is_empty() {
+        return chapter_track;
+    }
+    let Ok(mut reader) = input.fork(8 * 1024 * 1024) else {
+        return Vec::new();
+    };
+    let config = mp4ameta::ReadConfig {
+        read_meta_items: false,
+        read_chapter_track: false,
+        read_image_data: false,
+        read_audio_info: false,
+        ..mp4ameta::ReadConfig::DEFAULT
+    };
+    let Ok(tag) = mp4ameta::Tag::read_with(&mut reader, &config) else {
         return Vec::new();
     };
 
@@ -3425,7 +3461,7 @@ fn read_mp4_chapters(mut file: std::fs::File) -> Vec<ParsedChapter> {
             title: if chapter.title.trim().is_empty() {
                 format!("Chapter {}", index + 1)
             } else {
-                chapter.title.clone()
+                clean_tag_text(&chapter.title)
             },
             start_seconds: chapter.start.as_secs_f64(),
             end_seconds: chapters
@@ -3436,8 +3472,11 @@ fn read_mp4_chapters(mut file: std::fs::File) -> Vec<ParsedChapter> {
         .collect()
 }
 
-fn read_id3_chapters(file: std::fs::File) -> Vec<ParsedChapter> {
-    let Ok(tag) = id3::Tag::read_from2(file) else {
+fn read_id3_chapters(input: &MetadataInput) -> Vec<ParsedChapter> {
+    let Ok(reader) = input.fork(8 * 1024 * 1024) else {
+        return Vec::new();
+    };
+    let Ok(tag) = id3::Tag::read_from2(reader) else {
         return Vec::new();
     };
 
@@ -3904,6 +3943,35 @@ mod mapping_revision_tests {
 #[cfg(all(test, unix))]
 mod scan_boundary_tests {
     use super::*;
+    #[test]
+    fn bounded_metadata_keeps_the_opened_track_after_path_substitution() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = root.path().join("book.wav");
+        let samples = vec![0u8; 16_000];
+        let mut wav = b"RIFF".to_vec();
+        wav.extend((36 + samples.len() as u32).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend([1, 0, 1, 0]);
+        wav.extend(8_000u32.to_le_bytes());
+        wav.extend(16_000u32.to_le_bytes());
+        wav.extend([2, 0, 16, 0]);
+        wav.extend(b"data");
+        wav.extend((samples.len() as u32).to_le_bytes());
+        wav.extend(samples);
+        std::fs::write(&path, wav).unwrap();
+        let scan = ScanRoot::new(root.path()).unwrap();
+        let (opened, _) = scan.open(&path).unwrap();
+        let replacement = outside.path().join("oversized.wav");
+        std::fs::write(&replacement, b"ID3\x04\0\0\x7f\x7f\x7f\x7f").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&replacement, &path).unwrap();
+        let metadata = read_track_metadata_file(opened, &path);
+        assert_eq!(metadata.duration_seconds, Some(1.0));
+        assert!(read_track_metadata_in(&scan, &path).is_err());
+        assert!(read_track_cover_art_in(&scan, &path).is_none());
+    }
     #[test]
     fn replaced_track_cannot_supply_fingerprint_tags_cover_or_sync_metadata() {
         let root = tempfile::tempdir().unwrap();

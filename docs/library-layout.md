@@ -54,7 +54,11 @@ Chapters are discovered in this order:
 
 If a single `.m4b` has internal chapters, those win. If not, you get one chapter per file.
 
+Embedded tags have an 8 MiB budget per track; MP4 container tables have a separate 64 MiB allowance so long recordings still work. Malformed, compressed, or oversized tags are skipped without rewriting the audio. Text fields keep at most 16 KiB, the first 100 raw fields and genres are retained, and chapter tracks are limited to 10,000 entries. If the combined imported track metadata exceeds 128 MiB, the scan stops and the previous catalogue stays available. Reduce oversized tags and rescan.
+
 ## Cover art
+
+Embedded covers use the same 8 MiB, 16-million-pixel and 8192-pixel-per-side limits as uploaded covers. JPEG, PNG and WebP artwork is saved as a resized PNG; invalid or oversized art is omitted while the audio remains available.
 
 Cover art initially comes from the artwork embedded in the audio files' tags; the server extracts it during a scan and caches it under `data_dir/covers/`. A book with no embedded art falls back to a generic tile. Loose image files such as `cover.jpg` beside the tracks are not used as covers.
 
