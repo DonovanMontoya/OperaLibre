@@ -244,6 +244,18 @@ impl MetadataInput {
         input.remaining = READ_BYTES;
         Ok(input)
     }
+    // Chapter titles are consumed only by our checked reader. They never go
+    // back through a third-party parser, so retain decoded titles rather than
+    // two snapshot entries per chapter. Container headers remain frozen.
+    fn chapter_bytes(&mut self, start: u64, len: u64) -> io::Result<Vec<u8>> {
+        if start > self.len || len > self.len - start || len > TAG_BYTES {
+            return Err(invalid());
+        }
+        let mut bytes = vec![0; len as usize];
+        self.file.seek(StdSeekFrom::Start(start))?;
+        self.file.read_exact(&mut bytes)?;
+        Ok(bytes)
+    }
     fn freeze(&mut self, start: u64, len: u64) -> io::Result<Vec<u8>> {
         if self.snapshots.len() >= 4096 {
             return Err(invalid());
@@ -832,14 +844,17 @@ fn read_track_chapters(input: &mut MetadataInput, track: &Track) -> io::Result<V
             } else {
                 be32(sizes.get(12 + sample * 4..).ok_or_else(invalid)?)?
             };
-            let header = input.freeze(offset, 4)?;
+            let header = input.chapter_bytes(offset, 2)?;
             let len = u16::from_be_bytes(header[..2].try_into().unwrap()) as u64;
             if len + 2 > u64::from(size) || retained + len > TAG_BYTES {
                 return Err(invalid());
             }
-            let text = input.freeze(offset.checked_add(2).ok_or_else(invalid)?, len)?;
+            let text = input.chapter_bytes(offset.checked_add(2).ok_or_else(invalid)?, len)?;
             retained += len;
-            let bom = u16::from_be_bytes(header[2..4].try_into().unwrap());
+            let bom = text
+                .get(..2)
+                .map(|bytes| u16::from_be_bytes(bytes.try_into().unwrap()))
+                .unwrap_or(0);
             let title = if matches!(bom, 0xfeff | 0xfffe) {
                 if len < 2 || !len.is_multiple_of(2) {
                     return Err(invalid());
@@ -855,7 +870,7 @@ fn read_track_chapters(input: &mut MetadataInput, track: &Track) -> io::Result<V
                     .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
                     .collect()
             } else {
-                String::from_utf8_lossy(&text).into_owned()
+                String::from_utf8(text).map_err(|_| invalid())?
             };
             chapters.push(ParsedChapter {
                 title,
@@ -888,7 +903,7 @@ mod chapter_tests {
     fn numbers(values: &[u32]) -> Vec<u8> {
         values.iter().flat_map(|v| v.to_be_bytes()).collect()
     }
-    fn moov(offset: u32, size: u32) -> Vec<u8> {
+    fn moov(offset: u32, size: u32, count: u32) -> Vec<u8> {
         let audio = atom(
             b"trak",
             &[
@@ -898,9 +913,9 @@ mod chapter_tests {
             .concat(),
         );
         let tables = [
-            atom(b"stsz", &numbers(&[0, 0, 2, size, size])),
-            atom(b"stsc", &numbers(&[0, 1, 1, 2, 1])),
-            atom(b"stts", &numbers(&[0, 1, 2, 1000])),
+            atom(b"stsz", &numbers(&[0, size, count])),
+            atom(b"stsc", &numbers(&[0, 1, 1, count, 1])),
+            atom(b"stts", &numbers(&[0, 1, count, 1000])),
             atom(b"stco", &numbers(&[0, 1, offset])),
         ]
         .concat();
@@ -923,10 +938,11 @@ mod chapter_tests {
     }
     fn parse(payload: &[u8], size: u32) -> io::Result<MetadataInput> {
         let ftyp = atom(b"ftyp", b"M4B ");
-        let headers = moov(0, size);
+        let count = payload.len() as u32 / size;
+        let headers = moov(0, size, count);
         let offset = (ftyp.len() + headers.len() + 8) as u32;
         let mut file = tempfile::tempfile()?;
-        file.write_all(&[ftyp, moov(offset, size), atom(b"mdat", payload)].concat())?;
+        file.write_all(&[ftyp, moov(offset, size, count), atom(b"mdat", payload)].concat())?;
         MetadataInput::new(file)
     }
     #[test]
@@ -938,6 +954,19 @@ mod chapter_tests {
         assert_eq!(chapters[1].title, "Two");
         assert_eq!(chapters[0].end_seconds, Some(1.0));
         assert_eq!(chapters[1].start_seconds, 1.0);
+    }
+    #[test]
+    fn metadata_chapter_tracks_accept_the_documented_count_without_snapshot_growth() {
+        let mut input = parse(&b"\0\x03One".repeat(MAX_ITEMS), 5).unwrap();
+        assert!(input.snapshots.len() < 32);
+        let chapters = input.take_chapter_track();
+        assert_eq!(chapters.len(), MAX_ITEMS);
+        assert_eq!(
+            chapters.last().unwrap().start_seconds,
+            (MAX_ITEMS - 1) as f64
+        );
+        assert_eq!(chapters.last().unwrap().title, "One");
+        assert!(parse(&b"\0\x03One".repeat(MAX_ITEMS + 1), 5).is_err());
     }
     #[test]
     fn metadata_chapter_tracks_reject_short_utf16_lengths_before_allocation() {
