@@ -86,9 +86,12 @@ pub(crate) async fn opds_books(
     Extension(session): Extension<CurrentSession>,
 ) -> Result<Response, ApiError> {
     ensure_startup_scan_finished(&state).await?;
-    let books = visible_books(&state, &auth).await;
+    let lease = CatalogueLease::acquire(&state, &auth).await?;
+    let library = state.library.clone().read_owned().await;
     let updated = rfc3339_utc(unix_now_seconds());
     let media_token = session.media_token.clone();
+    tokio::task::spawn_blocking(move || {
+    let mut spool = CatalogueSpool::new(lease)?;
     let mut body = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/terms/" xmlns:opds="http://opds-spec.org/2010/catalog">
@@ -101,7 +104,10 @@ pub(crate) async fn opds_books(
 "#
     );
 
-    for book in &books {
+    spool.bytes(body.as_bytes())?;
+    body.clear();
+    for book in library.books.iter().filter(|book| can_access_book(&auth, &book.id)) {
+        check_catalogue_book(book)?;
         body.push_str("  <entry>\n");
         body.push_str(&format!(
             "    <id>urn:operalibre:book:{}</id>\n",
@@ -165,8 +171,10 @@ pub(crate) async fn opds_books(
             ));
         }
         body.push_str("  </entry>\n");
+        spool.bytes(body.as_bytes())?;
+        body.clear();
     }
-
-    body.push_str("</feed>\n");
-    feed_response(body, OPDS_FEED_TYPE)
+    spool.bytes(b"</feed>\n")?;
+    spool.response(OPDS_FEED_TYPE, None, None)
+    }).await.map_err(|_| ApiError::internal("Catalogue generation was interrupted."))?
 }

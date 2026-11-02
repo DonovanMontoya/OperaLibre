@@ -501,6 +501,8 @@ impl TestServer {
             password_request_slots: Arc::new(Semaphore::new(PASSWORD_REQUEST_CAPACITY)),
             password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
             download_task_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS)),
+            catalogue_slots: Arc::new(Semaphore::new(CATALOGUE_CONCURRENCY)),
+            catalogue_account_slots: Arc::new(Mutex::new(HashMap::new())),
             epub_entry_slots: Arc::new(Semaphore::new(EPUB_ENTRY_CONCURRENCY)),
             epub_entry_account_slots: Arc::new(Mutex::new(std::collections::HashMap::new())),
             upload_lock: Arc::new(Mutex::new(())),
@@ -4972,6 +4974,9 @@ async fn audiobookshelf_metadata_uses_the_clients_nested_fields() {
         facets["series"][0]["id"],
         item["media"]["metadata"]["series"][0]["id"]
     );
+    assert_eq!(facets["narrators"], serde_json::json!(["Test Narrator"]));
+    assert_eq!(facets["authors"][0]["name"], "Test Author");
+    assert_eq!(facets["tags"], serde_json::json!(["Favorite"]));
     let filter = general_purpose::STANDARD.encode("Test Series");
     let filtered = server
         .get(
@@ -8747,6 +8752,102 @@ async fn assistants_are_an_experiment_only_the_owner_turns_on() {
     );
     assert_eq!(set(owner.clone(), true).await.status, StatusCode::OK);
     assert_eq!(tool_names(&server, &secret).await.len(), 3);
+}
+
+#[tokio::test]
+async fn catalogue_slots_follow_compressed_body_lifetimes_and_are_fair_between_readers() {
+    let server = TestServer::start(2).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "catalogue-reader").await;
+    let other = server.add_reader(&owner, "catalogue-other").await;
+    let held_request = |token: &str, uri: &str| {
+        let mut request = Request::builder()
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(SocketAddr::from((
+                [127, 0, 0, 1],
+                51234,
+            ))));
+        request
+    };
+    let held = server
+        .router
+        .clone()
+        .oneshot(held_request(&owner, "/api/books"))
+        .await
+        .unwrap();
+    assert_eq!(held.status(), StatusCode::OK);
+    for uri in [
+        "/api/opds/books",
+        "/abs/api/libraries/operalibre/filterdata",
+        "/abs/api/authors/Author%2000",
+    ] {
+        let blocked = server.get(uri, &owner).await;
+        assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(blocked.headers.contains_key(header::RETRY_AFTER));
+    }
+    let peer = server
+        .router
+        .clone()
+        .oneshot(held_request(&reader, "/abs/api/libraries/operalibre/items"))
+        .await
+        .unwrap();
+    assert_eq!(peer.status(), StatusCode::OK);
+    assert_eq!(
+        server.get("/api/books", &other).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // Playback/progress are outside the catalogue quota.
+    assert_eq!(
+        server.get("/api/auth/me", &owner).await.status,
+        StatusCode::OK
+    );
+    drop(held);
+    assert_eq!(
+        server.get("/api/books", &other).await.status,
+        StatusCode::OK
+    );
+    drop(peer);
+    assert_eq!(
+        server.get("/api/opds/books", &reader).await.status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn oversized_catalogue_metadata_fails_without_partial_feeds_and_releases_slots() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    server.state.library.write().await.books[0].description = Some("x".repeat(2 * 1024 * 1024 + 1));
+    for route in [
+        "/api/books",
+        "/api/opds/books",
+        "/abs/api/libraries/operalibre/items",
+        "/abs/api/libraries/operalibre/search?q=",
+    ] {
+        let refused = server.get(route, &owner).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "{route}: {}",
+            refused.text()
+        );
+        assert!(
+            refused.json()["message"]
+                .as_str()
+                .unwrap()
+                .contains("metadata")
+        );
+    }
+    server.state.library.write().await.books[0].description = Some("A normal description".into());
+    let good = server.get("/api/books", &owner).await;
+    assert_eq!(good.status, StatusCode::OK);
+    assert_eq!(good.json()[0]["description"], "A normal description");
 }
 
 #[tokio::test]

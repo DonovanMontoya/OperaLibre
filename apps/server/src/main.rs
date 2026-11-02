@@ -68,6 +68,7 @@ mod alignment;
 mod app;
 mod auth;
 mod backup;
+mod catalogue;
 mod companions;
 mod config;
 mod covers;
@@ -110,6 +111,7 @@ use agent::*;
 use app::*;
 use auth::*;
 use backup::*;
+use catalogue::*;
 use companions::*;
 use config::*;
 use covers::*;
@@ -656,6 +658,8 @@ fn build_app_state(
         password_request_slots: Arc::new(Semaphore::new(PASSWORD_REQUEST_CAPACITY)),
         password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
         download_task_slots: Arc::new(Semaphore::new(config.max_concurrent_book_downloads)),
+        catalogue_slots: Arc::new(Semaphore::new(CATALOGUE_CONCURRENCY)),
+        catalogue_account_slots: Arc::new(Mutex::new(HashMap::new())),
         epub_entry_slots: Arc::new(Semaphore::new(EPUB_ENTRY_CONCURRENCY)),
         epub_entry_account_slots: Arc::new(Mutex::new(HashMap::new())),
         upload_lock: Arc::new(Mutex::new(())),
