@@ -4972,6 +4972,9 @@ async fn audiobookshelf_metadata_uses_the_clients_nested_fields() {
         facets["series"][0]["id"],
         item["media"]["metadata"]["series"][0]["id"]
     );
+    assert_eq!(facets["narrators"], serde_json::json!(["Test Narrator"]));
+    assert_eq!(facets["authors"][0]["name"], "Test Author");
+    assert_eq!(facets["tags"], serde_json::json!(["Favorite"]));
     let filter = general_purpose::STANDARD.encode("Test Series");
     let filtered = server
         .get(

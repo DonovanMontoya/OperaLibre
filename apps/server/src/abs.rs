@@ -762,7 +762,7 @@ pub(crate) async fn abs_filter_data(
         spool.bytes(b",\"series\":")?;
         spool_named_entities(&mut spool, series, false)?;
         spool.bytes(b",\"narrators\":")?;
-        spool_named_entities(&mut spool, narrators, false)?;
+        spool.json(&narrators)?;
         spool.bytes(b",\"languages\":[]}")?;
         spool.response("application/json", None, None)
     })
