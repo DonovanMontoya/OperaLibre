@@ -3739,22 +3739,13 @@ fn unchanged_tracks_reuse_cached_fingerprints_and_removed_ones_are_pruned() {
 }
 
 #[test]
-fn unreadable_tracks_keep_a_stable_identity_instead_of_failing_the_scan() {
+fn unreadable_tracks_withhold_scan_before_identity_resolution() {
     let root = tempfile::tempdir().unwrap();
     let missing = root.path().join("gone.mp3");
-    let files = std::slice::from_ref(&missing);
-
-    let (fingerprints, cache) =
-        super::fingerprint_tracks(root.path(), files, std::collections::BTreeMap::new());
-    let fingerprint = fingerprints[&missing].clone();
-    assert!(fingerprint.starts_with("path:"));
-    // Never cached, so a file that becomes readable again is picked up on
-    // the next scan rather than being stuck on the stand-in.
-    assert!(cache.is_empty());
-
-    let (repeated, _) =
-        super::fingerprint_tracks(root.path(), files, std::collections::BTreeMap::new());
-    assert_eq!(repeated[&missing], fingerprint);
+    let scan = super::ScanRoot::new(root.path()).unwrap();
+    assert!(scan.open(&missing).is_err());
+    // Production propagates an open failure before identities or catalogue
+    // publication, retaining the last good library and its progress IDs.
 }
 
 #[test]
