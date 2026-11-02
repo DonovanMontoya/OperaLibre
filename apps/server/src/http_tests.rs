@@ -497,6 +497,7 @@ impl TestServer {
             libation_refresh_reservation_lock: Arc::new(Mutex::new(())),
             faststart_lock: Arc::new(Mutex::new(())),
             login_attempts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            credential_issuance_lock: Arc::new(Mutex::new(())),
             password_request_slots: Arc::new(Semaphore::new(PASSWORD_REQUEST_CAPACITY)),
             password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
             download_task_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS)),
@@ -8746,6 +8747,116 @@ async fn assistants_are_an_experiment_only_the_owner_turns_on() {
     );
     assert_eq!(set(owner.clone(), true).await.status, StatusCode::OK);
     assert_eq!(tool_names(&server, &secret).await.len(), 3);
+}
+
+#[tokio::test]
+async fn password_recovery_refuses_a_previously_verified_hash() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "recovery-reader").await;
+    let verified = server
+        .state
+        .users
+        .read()
+        .await
+        .users
+        .iter()
+        .find(|user| user.username == "recovery-reader")
+        .unwrap()
+        .clone();
+    let reset = server
+        .send_json(
+            "POST",
+            &format!("/api/users/{}/password", verified.id),
+            &owner,
+            serde_json::json!({"newPassword":"a-brand-new-password"}),
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::OK);
+    let refused = super::finish_password_login(&server.state, &verified)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        server.get("/api/auth/me", &reader).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        !server
+            .state
+            .sessions
+            .read()
+            .await
+            .values()
+            .any(|session| session.user_id == verified.id)
+    );
+    let fresh = server
+        .send_json(
+            "POST",
+            "/api/auth/login",
+            "",
+            serde_json::json!({"username":"recovery-reader", "password":"a-brand-new-password"}),
+        )
+        .await;
+    assert_eq!(fresh.status, StatusCode::OK, "{}", fresh.text());
+}
+
+#[tokio::test]
+async fn password_recovery_refuses_agent_issuance_from_a_delayed_request_body() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "delayed-reader").await;
+    let _old_agent = create_agent(&server, &reader, &["library"]).await;
+    let id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let auth = server
+        .state
+        .users
+        .read()
+        .await
+        .users
+        .iter()
+        .find(|user| user.id == id)
+        .map(AuthUser::from)
+        .unwrap();
+    let session = CurrentSession {
+        id: session_id_for_token(&reader),
+        media_token: media_token_for_session(&reader),
+    };
+    let reset = server
+        .send_json(
+            "POST",
+            &format!("/api/users/{id}/password"),
+            &owner,
+            serde_json::json!({"newPassword":"another-new-password"}),
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::OK, "{}", reset.text());
+    // These extensions were captured by middleware before a delayed body.
+    let response = super::create_agent_token(
+        State(server.state.clone()),
+        Extension(auth),
+        Extension(session),
+        Json(
+            serde_json::from_value(serde_json::json!({"name":"delayed", "scopes":["library"]}))
+                .unwrap(),
+        ),
+    )
+    .await;
+    assert!(matches!(response, Err(error) if error.status == StatusCode::UNAUTHORIZED));
+    assert!(
+        !server
+            .state
+            .agent_tokens
+            .read()
+            .await
+            .tokens
+            .iter()
+            .any(|token| token.user_id == id)
+    );
+    create_agent(&server, &owner, &["library"]).await;
 }
 
 #[tokio::test]

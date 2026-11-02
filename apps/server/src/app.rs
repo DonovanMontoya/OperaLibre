@@ -85,6 +85,8 @@ pub(crate) struct AppState {
     /// admins cannot remux the same book from opposite ends.
     pub(crate) faststart_lock: Arc<Mutex<()>>,
     pub(crate) login_attempts: Arc<Mutex<HashMap<String, LoginThrottle>>>,
+    /// Serializes credential issuance with password replacement and revocation.
+    pub(crate) credential_issuance_lock: Arc<Mutex<()>>,
     pub(crate) password_task_slots: Arc<Semaphore>,
     pub(crate) password_request_slots: Arc<Semaphore>,
     pub(crate) download_task_slots: Arc<Semaphore>,
