@@ -165,6 +165,28 @@ impl AsyncRead for CatalogueReader {
     }
 }
 
+pub(crate) struct CatalogueFieldsBudget(u64);
+impl CatalogueFieldsBudget {
+    pub(crate) fn new() -> Self {
+        Self(CATALOGUE_MAX_BYTES)
+    }
+    pub(crate) fn insert<'a>(
+        &mut self,
+        set: &mut std::collections::BTreeSet<&'a str>,
+        value: &'a str,
+    ) -> Result<(), ApiError> {
+        if !set.contains(value) {
+            let cost = value.len() as u64 + 64;
+            if cost > self.0 {
+                return Err(catalogue_too_large());
+            }
+            self.0 -= cost;
+            set.insert(value);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,27 +207,5 @@ mod tests {
         drop(spool);
         assert_eq!(global.available_permits(), 1);
         assert_eq!(account.available_permits(), 1);
-    }
-}
-
-pub(crate) struct CatalogueFieldsBudget(u64);
-impl CatalogueFieldsBudget {
-    pub(crate) fn new() -> Self {
-        Self(CATALOGUE_MAX_BYTES)
-    }
-    pub(crate) fn insert<'a>(
-        &mut self,
-        set: &mut std::collections::BTreeSet<&'a str>,
-        value: &'a str,
-    ) -> Result<(), ApiError> {
-        if !set.contains(value) {
-            let cost = value.len() as u64 + 64;
-            if cost > self.0 {
-                return Err(catalogue_too_large());
-            }
-            self.0 -= cost;
-            set.insert(value);
-        }
-        Ok(())
     }
 }
