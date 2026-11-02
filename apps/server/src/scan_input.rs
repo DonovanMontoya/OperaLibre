@@ -107,6 +107,22 @@ impl ScanRoot {
     }
 }
 
+pub(crate) fn open_scan_file_in(
+    path: &FsPath,
+    allowed_roots: &[PathBuf],
+) -> anyhow::Result<std::fs::File> {
+    allowed_roots
+        .iter()
+        .find_map(|root| {
+            ScanRoot::new(root)
+                .ok()?
+                .open(path)
+                .ok()
+                .map(|opened| opened.0)
+        })
+        .ok_or_else(|| anyhow::anyhow!("scan input is outside an approved root or cannot be read"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

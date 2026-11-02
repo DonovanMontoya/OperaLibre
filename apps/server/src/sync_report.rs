@@ -906,10 +906,34 @@ fn clip_gap(gap: &alignment::RecoveryGap, start: f64, end: f64) -> Option<alignm
 /// a run would divide it and the map's sentences and gaps are measured.
 /// Chapter slicing is assumed available, since chapters are the most useful
 /// grain even for a map that was aligned as one track.
+#[cfg(test)]
 pub(crate) fn estimate_report(
     epub_path: &FsPath,
     tracks: &[SyncTrackInput],
     map_path: &FsPath,
+) -> anyhow::Result<SyncReport> {
+    estimate_report_files(
+        std::fs::File::open(epub_path)?,
+        tracks,
+        std::fs::File::open(map_path)?,
+    )
+}
+fn estimate_report_in(
+    epub_path: &FsPath,
+    tracks: &[SyncTrackInput],
+    map_path: &FsPath,
+    allowed_roots: &[PathBuf],
+) -> anyhow::Result<SyncReport> {
+    estimate_report_files(
+        open_scan_file_in(epub_path, allowed_roots)?,
+        tracks,
+        open_scan_file_in(map_path, allowed_roots)?,
+    )
+}
+fn estimate_report_files(
+    epub: std::fs::File,
+    tracks: &[SyncTrackInput],
+    mut map_file: std::fs::File,
 ) -> anyhow::Result<SyncReport> {
     /// The parts of a map grading reads; word timings are skipped unparsed.
     #[derive(Deserialize)]
@@ -921,11 +945,12 @@ pub(crate) fn estimate_report(
         #[serde(default)]
         recovery_gaps: Vec<alignment::RecoveryGap>,
     }
-    let bytes = std::fs::read(map_path)?;
+    let mut bytes = Vec::new();
+    map_file.read_to_end(&mut bytes)?;
     let map: GradedMap = serde_json::from_slice(&bytes)?;
     let identity = MapIdentity::from_bytes(map.generated_at, &bytes);
     drop(bytes);
-    let epub = alignment::parse_epub_file(epub_path)?;
+    let epub = alignment::parse_epub_archive(&mut zip::ZipArchive::new(epub)?)?;
     // A book that cannot be divided gets an empty report, so later scans do
     // not reread it until the map changes.
     let chapters = estimate_chapters(&epub, tracks, &map.fragments, &map.recovery_gaps);
@@ -1058,8 +1083,9 @@ async fn backfill_reports(state: &AppState) {
             (map_path, epub_path, tracks)
         };
         let estimate_path = map_path.clone();
+        let allowed_roots = vec![state.library_root.clone(), state.sync_dir.clone()];
         let graded = tokio::task::spawn_blocking(move || {
-            estimate_report(&epub_path, &tracks, &estimate_path)
+            estimate_report_in(&epub_path, &tracks, &estimate_path, &allowed_roots)
         })
         .await;
         let report = match graded {
@@ -2034,5 +2060,30 @@ mod tests {
             json,
             serde_json::json!({"cause": "runtime-missing", "evidence": {}, "fix": {"kind": "none", "attempted": false}})
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod scan_estimate_boundary_tests {
+    use super::*;
+    #[test]
+    fn background_grading_rejects_replaced_epub_and_map_paths() {
+        let library = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let epub = library.path().join("book.epub");
+        let map = library.path().join("book.sync.json");
+        let secret = outside.path().join("secret");
+        std::fs::write(&secret, b"outside").unwrap();
+        std::fs::write(&epub, b"inside").unwrap();
+        std::os::unix::fs::symlink(&secret, &map).unwrap();
+        let roots = [library.path().to_path_buf()];
+        let error = estimate_report_in(&epub, &[], &map, &roots).unwrap_err();
+        assert!(error.to_string().contains("approved root"));
+        std::fs::remove_file(&map).unwrap();
+        std::fs::write(&map, b"{}").unwrap();
+        std::fs::remove_file(&epub).unwrap();
+        std::os::unix::fs::symlink(&secret, &epub).unwrap();
+        let error = estimate_report_in(&epub, &[], &map, &roots).unwrap_err();
+        assert!(error.to_string().contains("approved root"));
     }
 }

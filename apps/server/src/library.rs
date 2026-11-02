@@ -2667,13 +2667,7 @@ pub(crate) fn probe_sync_map_in(
 ) -> Option<ProbedSyncMap> {
     // Roots come from server configuration, never from the map's pathname.
     // In particular, an exchanged library ancestor cannot become a new root.
-    let file = allowed_roots.iter().find_map(|root| {
-        ScanRoot::new(root)
-            .ok()?
-            .open(path)
-            .ok()
-            .map(|opened| opened.0)
-    })?;
+    let file = open_scan_file_in(path, allowed_roots).ok()?;
     probe_sync_map_file(file, generated)
 }
 fn probe_sync_map_file(file: std::fs::File, generated: bool) -> Option<ProbedSyncMap> {
