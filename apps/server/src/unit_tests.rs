@@ -1960,6 +1960,8 @@ exit 0
         download_task_slots: super::Arc::new(super::Semaphore::new(
             super::DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS,
         )),
+        catalogue_slots: super::Arc::new(super::Semaphore::new(super::CATALOGUE_CONCURRENCY)),
+        catalogue_account_slots: super::Arc::new(super::Mutex::new(super::HashMap::new())),
         epub_entry_slots: super::Arc::new(super::Semaphore::new(super::EPUB_ENTRY_CONCURRENCY)),
         epub_entry_account_slots: super::Arc::new(super::Mutex::new(
             std::collections::HashMap::new(),
