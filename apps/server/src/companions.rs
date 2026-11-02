@@ -201,28 +201,32 @@ pub(crate) fn discover_candidates(
 /// Recognize an arbitrarily named, byte-identical export of the embedded art.
 /// Bound reads and retain uncertain images as extras instead of hiding them.
 fn duplicates_cover(path: &FsPath, cover: Option<&ScannedCover>) -> bool {
-    const MAX_COVER_BYTES: u64 = 16 * 1024 * 1024;
     let Some(cover) = cover else { return false };
-    if cover.len == 0 || cover.len > MAX_COVER_BYTES {
-        return false;
-    }
     let Ok(file) = std::fs::File::open(path) else {
         return false;
     };
     if !file
         .metadata()
-        .is_ok_and(|metadata| metadata.len() == cover.len)
+        .is_ok_and(|metadata| metadata.len() <= MAX_COVER_UPLOAD_BYTES as u64)
     {
         return false;
     }
     let mut bytes = Vec::new();
-    std::io::Read::read_to_end(
-        &mut std::io::Read::take(file, MAX_COVER_BYTES + 1),
-        &mut bytes,
-    )
-    .is_ok()
-        && bytes.len() as u64 == cover.len
-        && bytes_etag(&bytes) == cover.etag
+    if file
+        .take(MAX_COVER_UPLOAD_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() > MAX_COVER_UPLOAD_BYTES
+    {
+        return false;
+    }
+    if bytes_etag(&bytes) == cover.etag {
+        return true;
+    }
+    let _guard = METADATA_PARSE_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    normalize_cover(&bytes).is_ok_and(|png| bytes_etag(&png) == cover.etag)
 }
 
 /// Reads a document to find out how much text and how many pictures it

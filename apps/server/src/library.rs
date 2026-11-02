@@ -470,7 +470,7 @@ pub(crate) struct BookMetadataUpdate {
     pub(crate) asin: Option<String>,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 pub(crate) struct TrackMetadata {
     pub(crate) title: Option<String>,
     pub(crate) author: Option<String>,
@@ -478,11 +478,12 @@ pub(crate) struct TrackMetadata {
     pub(crate) duration_seconds: Option<f64>,
     pub(crate) asin: Option<String>,
     pub(crate) chapters: Vec<ParsedChapter>,
+    #[serde(skip)]
     pub(crate) cover_art: Option<EmbeddedImage>,
     pub(crate) summary: MetadataSummary,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 pub(crate) struct ParsedChapter {
     pub(crate) title: String,
     pub(crate) start_seconds: f64,
@@ -1941,9 +1942,8 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
     let fingerprint_task = tokio::task::spawn_blocking(move || {
         fingerprint_tracks(&library_root, &scanned_files, cached_fingerprints)
     });
-    // Tag reading is the slowest part of a first scan, and every file is
-    // independent, so it fans out across the pool instead of walking the list
-    // on one thread.
+    // Embedded parsers and raster decoders share one memory allowance.
+    // Collect serially so completed metadata cannot outrun its aggregate budget.
     //
     // Only one cover per book is ever used, so the picture bytes every track
     // may carry are reduced to a digest here and read again once per book,
@@ -1951,23 +1951,29 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
     // track's picture through the scan cost hundreds of megabytes on a large
     // library.
     let metadata_task = tokio::task::spawn_blocking(move || {
-        use rayon::prelude::*;
+        let mut retained = 0u64;
         metadata_files
-            .into_par_iter()
-            .map(|path| {
+            .into_iter()
+            .map(|path| -> anyhow::Result<_> {
                 let mut metadata = read_track_metadata(&path);
                 let cover = metadata
                     .cover_art
                     .take()
                     .map(|image| ScannedCover::from_image(&path, &image));
-                (path, metadata, cover)
+                let mut count = MetadataCounter {
+                    bytes: 0,
+                    remaining: (128 * 1024 * 1024u64).saturating_sub(retained),
+                };
+                serde_json::to_writer(&mut count, &metadata)?;
+                retained += count.bytes;
+                Ok((path, metadata, cover))
             })
-            .collect::<Vec<_>>()
+            .collect::<anyhow::Result<Vec<_>>>()
     });
     let (track_fingerprints_by_path, fingerprint_cache) = fingerprint_task.await?;
     let mut metadata_by_path = HashMap::new();
     let mut covers_by_path = HashMap::new();
-    for (path, metadata, cover) in metadata_task.await? {
+    for (path, metadata, cover) in metadata_task.await?? {
         if let Some(cover) = cover {
             covers_by_path.insert(path.clone(), cover);
         }
@@ -2437,7 +2443,7 @@ fn build_tracks(
                 .iter()
                 .map(|chapter| Chapter {
                     id: stable_id(&format!("{track_id}:{}", chapter.start_seconds)),
-                    title: chapter.title.clone(),
+                    title: clean_tag_text(&chapter.title),
                     track_id: track_id.clone(),
                     track_index: index,
                     start_seconds: chapter.start_seconds,
@@ -2878,7 +2884,14 @@ pub(crate) fn group_files_into_books(
 }
 
 pub(crate) fn read_track_metadata(file_path: &FsPath) -> TrackMetadata {
-    let Ok(tagged_file) = read_from_path(file_path) else {
+    let _parse_guard = METADATA_PARSE_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Ok(mut input) = MetadataInput::open(file_path) else {
+        tracing::warn!(path = %file_path.display(), "Skipping malformed or oversized embedded metadata");
+        return TrackMetadata::default();
+    };
+    let Ok(tagged_file) = read_bounded_tags(&input) else {
         return TrackMetadata::default();
     };
 
@@ -2889,7 +2902,7 @@ pub(crate) fn read_track_metadata(file_path: &FsPath) -> TrackMetadata {
     if let Some(vendor_summary) = tag.and_then(extract_vendor_json_summary) {
         summary = merge_two_summaries(summary, vendor_summary);
     }
-    let chapters = read_embedded_chapters(file_path);
+    let chapters = read_embedded_chapters_from(file_path, &mut input);
 
     let author = tag
         .and_then(|tag| {
@@ -2903,11 +2916,11 @@ pub(crate) fn read_track_metadata(file_path: &FsPath) -> TrackMetadata {
                 ],
             )
         })
-        .or_else(|| tag.and_then(|tag| tag.artist().map(|value| value.to_string())));
+        .or_else(|| tag.and_then(|tag| tag.artist().map(clean_tag_text)));
 
     TrackMetadata {
         title: tag
-            .and_then(|tag| tag.title().map(|value| value.to_string()))
+            .and_then(|tag| tag.title().map(clean_tag_text))
             .or_else(|| summary.album.clone()),
         narrator: tag
             .and_then(extract_narrator)
@@ -3044,24 +3057,27 @@ pub(crate) fn extract_metadata_summary(tag: &Tag) -> MetadataSummary {
 pub(crate) fn first_tag_text(tag: &Tag, keys: &[ItemKey]) -> Option<String> {
     keys.iter()
         .find_map(|key| tag.get_string(*key))
-        .map(clean_metadata_text)
+        .map(clean_tag_text)
         .filter(|value| !value.is_empty())
 }
 
 pub(crate) fn collect_genres(tag: &Tag) -> Vec<String> {
     tag.get_strings(ItemKey::Genre)
+        .take(100)
         .flat_map(|value| value.split([';', ',']))
-        .map(clean_metadata_text)
+        .take(100)
+        .map(clean_tag_text)
         .filter(|value| !value.is_empty())
         .collect()
 }
 
 pub(crate) fn collect_raw_fields(tag: &Tag) -> Vec<MetadataField> {
     tag.items()
+        .take(100)
         .filter_map(|item| {
             let value = match item.value() {
                 ItemValue::Text(value) | ItemValue::Locator(value) => {
-                    truncate_metadata_value(&clean_metadata_text(value))
+                    truncate_metadata_value(&clean_tag_text(value))
                 }
                 ItemValue::Binary(value) => format!("<{} bytes>", value.len()),
             };
@@ -3074,7 +3090,7 @@ pub(crate) fn collect_raw_fields(tag: &Tag) -> Vec<MetadataField> {
                 key: item_key_label(item.key()),
                 value,
                 description: (!item.description().is_empty())
-                    .then(|| item.description().to_string()),
+                    .then(|| clean_tag_text(item.description())),
             })
         })
         .collect()
@@ -3082,6 +3098,15 @@ pub(crate) fn collect_raw_fields(tag: &Tag) -> Vec<MetadataField> {
 
 pub(crate) fn item_key_label(key: ItemKey) -> String {
     format!("{key:?}")
+}
+
+fn clean_tag_text(value: impl AsRef<str>) -> String {
+    let text = value.as_ref();
+    let mut end = text.len().min(16 * 1024);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    clean_metadata_text(&text[..end])
 }
 
 pub(crate) fn clean_metadata_text(value: impl AsRef<str>) -> String {
@@ -3141,7 +3166,7 @@ pub(crate) fn extract_vendor_narrator(tag: &Tag) -> Option<String> {
             .get("narrated_by")
             .or_else(|| value.get("narrator"))
             .and_then(serde_json::Value::as_str)
-            .map(clean_metadata_text)
+            .map(clean_tag_text)
     })
 }
 
@@ -3194,7 +3219,7 @@ pub(crate) fn json_string(value: &serde_json::Value, keys: &[&str]) -> Option<St
         value
             .get(*key)
             .and_then(serde_json::Value::as_str)
-            .map(clean_metadata_text)
+            .map(clean_tag_text)
             .filter(|value| !value.is_empty())
     })
 }
@@ -3212,7 +3237,7 @@ pub(crate) fn find_raw_text_by_name(tag: &Tag, names: &[&str]) -> Option<String>
 
         match item.value() {
             ItemValue::Text(value) | ItemValue::Locator(value) => {
-                Some(clean_metadata_text(value)).filter(|value| !value.is_empty())
+                Some(clean_tag_text(value)).filter(|value| !value.is_empty())
             }
             ItemValue::Binary(_) => None,
         }
@@ -3223,16 +3248,21 @@ pub(crate) fn extract_cover_art(tag: &Tag) -> Option<EmbeddedImage> {
     let picture = tag
         .get_picture_type(PictureType::CoverFront)
         .or_else(|| tag.pictures().first())?;
+    if picture.data().len() > MAX_COVER_UPLOAD_BYTES {
+        return None;
+    }
+    let data = normalize_cover(picture.data()).ok()?;
     Some(EmbeddedImage {
-        mime_type: cover_art_content_type(picture.mime_type().map(|mime| mime.as_str())),
-        data: picture.data().to_vec(),
-        etag: bytes_etag(picture.data()),
+        mime_type: "image/png".into(),
+        etag: bytes_etag(&data),
+        data,
     })
 }
 
 /// The type a cover is served under. The tag's own claim is served verbatim
 /// only when it names an image: anything else — `text/html` most of all —
 /// would otherwise go out same-origin as whatever the tag said it was.
+#[cfg(test)]
 pub(crate) fn cover_art_content_type(declared: Option<&str>) -> String {
     let declared = declared
         .map(|value| {
@@ -3258,14 +3288,21 @@ pub(crate) fn cover_art_content_type(declared: Option<&str>) -> String {
 /// The picture a track carries, read on its own. Used to fetch a book's cover
 /// once the scan has chosen it, without keeping every track's bytes around.
 pub(crate) fn read_track_cover_art(file_path: &FsPath) -> Option<EmbeddedImage> {
-    let tagged_file = read_from_path(file_path).ok()?;
+    let _parse_guard = METADATA_PARSE_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let input = MetadataInput::open(file_path).ok()?;
+    let tagged_file = read_bounded_tags(&input).ok()?;
     tagged_file
         .primary_tag()
         .or_else(|| tagged_file.first_tag())
         .and_then(extract_cover_art)
 }
 
-pub(crate) fn read_embedded_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
+fn read_embedded_chapters_from(
+    file_path: &FsPath,
+    input: &mut MetadataInput,
+) -> Vec<ParsedChapter> {
     let extension = file_path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -3273,8 +3310,8 @@ pub(crate) fn read_embedded_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
         .to_lowercase();
 
     let mut chapters = match extension.as_str() {
-        "m4a" | "m4b" | "mp4" => read_mp4_chapters(file_path),
-        "mp3" => read_id3_chapters(file_path),
+        "m4a" | "m4b" | "mp4" => read_mp4_chapters(input),
+        "mp3" => read_id3_chapters(input),
         _ => Vec::new(),
     };
 
@@ -3285,8 +3322,22 @@ pub(crate) fn read_embedded_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
     chapters
 }
 
-pub(crate) fn read_mp4_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
-    let Ok(tag) = mp4ameta::Tag::read_from_path(file_path) else {
+fn read_mp4_chapters(input: &mut MetadataInput) -> Vec<ParsedChapter> {
+    let chapter_track = input.take_chapter_track();
+    if !chapter_track.is_empty() {
+        return chapter_track;
+    }
+    let Ok(mut reader) = input.fork(8 * 1024 * 1024) else {
+        return Vec::new();
+    };
+    let config = mp4ameta::ReadConfig {
+        read_meta_items: false,
+        read_chapter_track: false,
+        read_image_data: false,
+        read_audio_info: false,
+        ..mp4ameta::ReadConfig::DEFAULT
+    };
+    let Ok(tag) = mp4ameta::Tag::read_with(&mut reader, &config) else {
         return Vec::new();
     };
 
@@ -3304,7 +3355,7 @@ pub(crate) fn read_mp4_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
             title: if chapter.title.trim().is_empty() {
                 format!("Chapter {}", index + 1)
             } else {
-                chapter.title.clone()
+                clean_tag_text(&chapter.title)
             },
             start_seconds: chapter.start.as_secs_f64(),
             end_seconds: chapters
@@ -3315,8 +3366,11 @@ pub(crate) fn read_mp4_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
         .collect()
 }
 
-pub(crate) fn read_id3_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
-    let Ok(tag) = id3::Tag::read_from_path(file_path) else {
+fn read_id3_chapters(input: &MetadataInput) -> Vec<ParsedChapter> {
+    let Ok(reader) = input.fork(8 * 1024 * 1024) else {
+        return Vec::new();
+    };
+    let Ok(tag) = id3::Tag::read_from2(reader) else {
         return Vec::new();
     };
 
