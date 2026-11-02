@@ -497,6 +497,8 @@ impl TestServer {
             libation_refresh_reservation_lock: Arc::new(Mutex::new(())),
             faststart_lock: Arc::new(Mutex::new(())),
             login_attempts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            credential_issuance_lock: Arc::new(Mutex::new(())),
+            password_request_slots: Arc::new(Semaphore::new(PASSWORD_REQUEST_CAPACITY)),
             password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
             download_task_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS)),
             catalogue_slots: Arc::new(Semaphore::new(CATALOGUE_CONCURRENCY)),
@@ -8846,4 +8848,188 @@ async fn oversized_catalogue_metadata_fails_without_partial_feeds_and_releases_s
     let good = server.get("/api/books", &owner).await;
     assert_eq!(good.status, StatusCode::OK);
     assert_eq!(good.json()[0]["description"], "A normal description");
+}
+
+#[tokio::test]
+async fn password_recovery_refuses_a_previously_verified_hash() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "recovery-reader").await;
+    let verified = server
+        .state
+        .users
+        .read()
+        .await
+        .users
+        .iter()
+        .find(|user| user.username == "recovery-reader")
+        .unwrap()
+        .clone();
+    let reset = server
+        .send_json(
+            "POST",
+            &format!("/api/users/{}/password", verified.id),
+            &owner,
+            serde_json::json!({"newPassword":"a-brand-new-password"}),
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::OK);
+    let refused = super::finish_password_login(&server.state, &verified)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        server.get("/api/auth/me", &reader).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        !server
+            .state
+            .sessions
+            .read()
+            .await
+            .values()
+            .any(|session| session.user_id == verified.id)
+    );
+    let fresh = server
+        .send_json(
+            "POST",
+            "/api/auth/login",
+            "",
+            serde_json::json!({"username":"recovery-reader", "password":"a-brand-new-password"}),
+        )
+        .await;
+    assert_eq!(fresh.status, StatusCode::OK, "{}", fresh.text());
+}
+
+#[tokio::test]
+async fn password_recovery_refuses_agent_issuance_from_a_delayed_request_body() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "delayed-reader").await;
+    let _old_agent = create_agent(&server, &reader, &["library"]).await;
+    let id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let auth = server
+        .state
+        .users
+        .read()
+        .await
+        .users
+        .iter()
+        .find(|user| user.id == id)
+        .map(AuthUser::from)
+        .unwrap();
+    let session = CurrentSession {
+        id: session_id_for_token(&reader),
+        media_token: media_token_for_session(&reader),
+    };
+    let reset = server
+        .send_json(
+            "POST",
+            &format!("/api/users/{id}/password"),
+            &owner,
+            serde_json::json!({"newPassword":"another-new-password"}),
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::OK, "{}", reset.text());
+    // These extensions were captured by middleware before a delayed body.
+    let response = super::create_agent_token(
+        State(server.state.clone()),
+        Extension(auth),
+        Extension(session),
+        Json(
+            serde_json::from_value(serde_json::json!({"name":"delayed", "scopes":["library"]}))
+                .unwrap(),
+        ),
+    )
+    .await;
+    assert!(matches!(response, Err(error) if error.status == StatusCode::UNAUTHORIZED));
+    assert!(
+        !server
+            .state
+            .agent_tokens
+            .read()
+            .await
+            .tokens
+            .iter()
+            .any(|token| token.user_id == id)
+    );
+    create_agent(&server, &owner, &["library"]).await;
+}
+
+#[tokio::test]
+async fn concurrent_login_admission_is_bounded_even_when_password_queue_is_full() {
+    let server = TestServer::start(0).await;
+    let _workers = server
+        .state
+        .password_request_slots
+        .clone()
+        .acquire_many_owned(super::PASSWORD_REQUEST_CAPACITY as u32)
+        .await
+        .unwrap();
+    let mut pending = tokio::task::JoinSet::new();
+    for _ in 0..20 {
+        let state = server.state.clone();
+        pending.spawn(async move {
+            super::authenticate_and_open_session(
+                &state,
+                SocketAddr::from(([127, 0, 0, 1], 51234)),
+                &HeaderMap::new(),
+                super::LoginRequest {
+                    username: "unknown".into(),
+                    password: super::mint_identity_id(),
+                },
+            )
+            .await
+        });
+    }
+    while let Some(result) = pending.join_next().await {
+        assert_eq!(
+            result.unwrap().unwrap_err().status,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    let keys = super::LoginThrottleKeys::new(std::net::IpAddr::from([127, 0, 0, 1]), "unknown");
+    let attempts = server.state.login_attempts.lock().await;
+    assert_eq!(attempts[&keys.account].failures, super::LOGIN_MAX_FAILURES);
+    assert_eq!(attempts[&keys.ip].failures, super::LOGIN_MAX_FAILURES);
+    assert!(server.state.sessions.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_burst_of_six_legitimate_logins_can_wait_for_password_workers() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let password = format!("test-{}", super::mint_identity_id());
+    for index in 0..6 {
+        let created = server.send_json("POST", "/api/users", &owner,
+            serde_json::json!({"username":format!("burst-reader-{index}"),"password":password,"isAdmin":false})).await;
+        assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    }
+    let mut pending = tokio::task::JoinSet::new();
+    for index in 0..6 {
+        let state = server.state.clone();
+        let password = password.clone();
+        pending.spawn(async move {
+            super::authenticate_and_open_session(
+                &state,
+                SocketAddr::from(([127, 0, 0, 1], 51234)),
+                &HeaderMap::new(),
+                super::LoginRequest {
+                    username: format!("burst-reader-{index}"),
+                    password,
+                },
+            )
+            .await
+        });
+    }
+    while let Some(result) = pending.join_next().await {
+        let (_, token) = result
+            .unwrap()
+            .expect("a bounded legitimate burst can wait");
+        assert!(!token.is_empty());
+    }
 }
