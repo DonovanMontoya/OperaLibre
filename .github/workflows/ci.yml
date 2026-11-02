@@ -312,6 +312,9 @@ jobs:
           swiftc apps/web/ios/App/App/BackgroundDownloadPolicy.swift apps/web/ios/Tests/BackgroundDownloadPolicyTests.swift -o "$RUNNER_TEMP/background-policy-tests"
           "$RUNNER_TEMP/background-policy-tests"
 
+      - name: Test background download manager recovery
+        run: python3 script/test_background_download_manager.py
+
       - name: Test iOS Libro response decoding
         run: |
           swiftc apps/web/ios/App/App/LibroDeviceResponse.swift apps/web/ios/Tests/LibroDeviceResponseTests.swift -o "$RUNNER_TEMP/libro-response-tests"
