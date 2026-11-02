@@ -498,6 +498,7 @@ impl TestServer {
             faststart_lock: Arc::new(Mutex::new(())),
             login_attempts: Arc::new(Mutex::new(std::collections::HashMap::new())),
             credential_issuance_lock: Arc::new(Mutex::new(())),
+            password_request_slots: Arc::new(Semaphore::new(PASSWORD_REQUEST_CAPACITY)),
             password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
             download_task_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS)),
             epub_entry_slots: Arc::new(Semaphore::new(EPUB_ENTRY_CONCURRENCY)),
@@ -8856,4 +8857,78 @@ async fn password_recovery_refuses_agent_issuance_from_a_delayed_request_body() 
             .any(|token| token.user_id == id)
     );
     create_agent(&server, &owner, &["library"]).await;
+}
+
+#[tokio::test]
+async fn concurrent_login_admission_is_bounded_even_when_password_queue_is_full() {
+    let server = TestServer::start(0).await;
+    let _workers = server
+        .state
+        .password_request_slots
+        .clone()
+        .acquire_many_owned(super::PASSWORD_REQUEST_CAPACITY as u32)
+        .await
+        .unwrap();
+    let mut pending = tokio::task::JoinSet::new();
+    for _ in 0..20 {
+        let state = server.state.clone();
+        pending.spawn(async move {
+            super::authenticate_and_open_session(
+                &state,
+                SocketAddr::from(([127, 0, 0, 1], 51234)),
+                &HeaderMap::new(),
+                super::LoginRequest {
+                    username: "unknown".into(),
+                    password: super::mint_identity_id(),
+                },
+            )
+            .await
+        });
+    }
+    while let Some(result) = pending.join_next().await {
+        assert_eq!(
+            result.unwrap().unwrap_err().status,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    let keys = super::LoginThrottleKeys::new(std::net::IpAddr::from([127, 0, 0, 1]), "unknown");
+    let attempts = server.state.login_attempts.lock().await;
+    assert_eq!(attempts[&keys.account].failures, super::LOGIN_MAX_FAILURES);
+    assert_eq!(attempts[&keys.ip].failures, super::LOGIN_MAX_FAILURES);
+    assert!(server.state.sessions.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_burst_of_six_legitimate_logins_can_wait_for_password_workers() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let password = format!("test-{}", super::mint_identity_id());
+    for index in 0..6 {
+        let created = server.send_json("POST", "/api/users", &owner,
+            serde_json::json!({"username":format!("burst-reader-{index}"),"password":password,"isAdmin":false})).await;
+        assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    }
+    let mut pending = tokio::task::JoinSet::new();
+    for index in 0..6 {
+        let state = server.state.clone();
+        let password = password.clone();
+        pending.spawn(async move {
+            super::authenticate_and_open_session(
+                &state,
+                SocketAddr::from(([127, 0, 0, 1], 51234)),
+                &HeaderMap::new(),
+                super::LoginRequest {
+                    username: format!("burst-reader-{index}"),
+                    password,
+                },
+            )
+            .await
+        });
+    }
+    while let Some(result) = pending.join_next().await {
+        let (_, token) = result
+            .unwrap()
+            .expect("a bounded legitimate burst can wait");
+        assert!(!token.is_empty());
+    }
 }

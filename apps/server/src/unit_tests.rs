@@ -1031,6 +1031,113 @@ async fn invalid_requested_range_returns_416_with_file_size() {
     );
 }
 
+/// A same-sized rewrite that keeps the previous modification time must not
+/// answer 304. Length and mtime can both stay put across that rewrite; the
+/// bytes are what the client is caching.
+#[tokio::test]
+async fn revalidated_etag_tracks_bytes_when_mtime_and_length_stay_put() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("book.sync.json");
+    let original = br#"{"start":0.0}"#;
+    std::fs::write(&path, original).unwrap();
+    let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+    let first = super::serve_file_response(
+        &path,
+        &[root.path()],
+        HeaderMap::new(),
+        None,
+        super::FileCaching::Revalidated,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let etag = first.headers()[super::ETAG].to_str().unwrap().to_string();
+    assert_eq!(
+        axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .as_ref(),
+        original
+    );
+
+    let rewritten = br#"{"start":1.0}"#;
+    assert_eq!(rewritten.len(), original.len());
+    std::fs::write(&path, rewritten).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    let metadata = std::fs::metadata(&path).unwrap();
+    assert_eq!(metadata.len(), original.len() as u64);
+    assert_eq!(metadata.modified().unwrap(), mtime);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(super::IF_NONE_MATCH, etag.parse().unwrap());
+    let updated = super::serve_file_response(
+        &path,
+        &[root.path()],
+        headers,
+        None,
+        super::FileCaching::Revalidated,
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated.status(), StatusCode::OK);
+    let new_etag = updated.headers()[super::ETAG].to_str().unwrap().to_string();
+    assert_ne!(new_etag, etag);
+    assert_eq!(
+        axum::body::to_bytes(updated.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .as_ref(),
+        rewritten
+    );
+
+    let mut headers = HeaderMap::new();
+    headers.insert(super::IF_NONE_MATCH, new_etag.parse().unwrap());
+    let cached = super::serve_file_response(
+        &path,
+        &[root.path()],
+        headers,
+        None,
+        super::FileCaching::Revalidated,
+    )
+    .await
+    .unwrap();
+    assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(cached.headers()[super::ETAG], new_etag);
+    assert!(
+        axum::body::to_bytes(cached.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // A timestamp bump that does not change the bytes is the same representation.
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(mtime + std::time::Duration::from_secs(30))
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(super::IF_NONE_MATCH, new_etag.parse().unwrap());
+    let untouched = super::serve_file_response(
+        &path,
+        &[root.path()],
+        headers,
+        None,
+        super::FileCaching::Revalidated,
+    )
+    .await
+    .unwrap();
+    assert_eq!(untouched.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(untouched.headers()[super::ETAG], new_etag);
+}
+
 #[tokio::test]
 async fn empty_file_without_range_returns_empty_200() {
     let root = tempfile::tempdir().unwrap();
@@ -1848,6 +1955,9 @@ exit 0
         faststart_lock: super::Arc::new(super::Mutex::new(())),
         login_attempts: super::Arc::new(super::Mutex::new(std::collections::HashMap::new())),
         credential_issuance_lock: super::Arc::new(super::Mutex::new(())),
+        password_request_slots: super::Arc::new(super::Semaphore::new(
+            super::PASSWORD_REQUEST_CAPACITY,
+        )),
         password_task_slots: super::Arc::new(super::Semaphore::new(
             super::PASSWORD_TASK_CONCURRENCY,
         )),
