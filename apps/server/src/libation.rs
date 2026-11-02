@@ -3290,7 +3290,17 @@ pub(crate) async fn start_all_libation_downloads(
     Ok(Json(JobCreated { job_id }))
 }
 
+#[cfg(test)]
 pub(crate) fn libation_sidecar_for_group(
+    group_key: &FsPath,
+    grouped_files: &[PathBuf],
+    listings: &mut DirectoryFiles,
+) -> Option<LibationSidecarMetadata> {
+    let root = ScanRoot::new(grouped_files.first()?.parent()?).ok()?;
+    libation_sidecar_for_group_in(&root, group_key, grouped_files, listings)
+}
+pub(crate) fn libation_sidecar_for_group_in(
+    root: &ScanRoot,
     group_key: &FsPath,
     grouped_files: &[PathBuf],
     listings: &mut DirectoryFiles,
@@ -3328,11 +3338,17 @@ pub(crate) fn libation_sidecar_for_group(
     let mut parsed = candidates
         .into_iter()
         .filter_map(|path| {
-            let metadata = std::fs::metadata(&path).ok()?;
+            let (file, metadata) = root.open(&path).ok()?;
             if metadata.len() > MAX_LIBATION_METADATA_BYTES {
                 return None;
             }
-            let contents = std::fs::read_to_string(&path).ok()?;
+            let mut contents = String::new();
+            file.take(MAX_LIBATION_METADATA_BYTES + 1)
+                .read_to_string(&mut contents)
+                .ok()?;
+            if contents.len() as u64 > MAX_LIBATION_METADATA_BYTES {
+                return None;
+            }
             Some((path, parse_libation_sidecar(&contents)?))
         })
         .collect::<Vec<_>>();

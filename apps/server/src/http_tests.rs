@@ -7455,7 +7455,7 @@ async fn existing_sync_maps_are_graded_in_the_background_for_administrators() {
     let owner = server.setup_owner().await;
     let reader = server.add_reader(&owner, "reader").await;
     let (book_id, _) = server.first_book_and_track(&owner).await;
-    let epub = server._root.path().join("book.epub");
+    let epub = server.library_root.join("book.epub");
     std::fs::write(&epub, alignment::build_test_epub()).unwrap();
     let map_path = server
         .state

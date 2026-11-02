@@ -134,7 +134,7 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
     parse_epub_archive_within(archive, EPUB_TEXT_BYTES)
 }
 
-fn parse_epub_archive_within<R: Read + std::io::Seek>(
+pub(crate) fn parse_epub_archive_within<R: Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
     mut remaining: u64,
 ) -> anyhow::Result<EpubDocument> {
