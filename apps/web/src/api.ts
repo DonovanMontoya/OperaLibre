@@ -162,7 +162,7 @@ function storeServerAliases(aliases: ServerAlias[]) {
 
 export function addServerAlias(name: string, rawUrl: string): ServerAlias {
   const trimmedName = name.trim();
-  const url = Capacitor.isNativePlatform()
+  const url = usesNativeCredentialStorage()
     ? requireSecurePublicServerAddress(rawUrl)
     : normalizeServerAddress(rawUrl);
   if (!trimmedName) throw new Error("Alias name is required.");
@@ -306,7 +306,7 @@ function readStoredServerUrl(): string | null {
     return null;
   }
   const stored = window.localStorage.getItem(SERVER_URL_STORAGE_KEY) ?? "";
-  storedServerUrl = Capacitor.isNativePlatform()
+  storedServerUrl = usesNativeCredentialStorage()
     ? upgradeStoredNativeServerAddress(stored)
     : stored;
   if (storedServerUrl && storedServerUrl !== stored) {
@@ -321,7 +321,7 @@ function readStoredServerUrl(): string | null {
 // The server address, ignoring the on-device and demo modes layered over it.
 function configuredServerUrl(): string {
   const url = readStoredServerUrl() ?? configuredApiBase ?? defaultServerUrl(getServerType());
-  return Capacitor.isNativePlatform() ? upgradeStoredNativeServerAddress(url) : url;
+  return usesNativeCredentialStorage() ? upgradeStoredNativeServerAddress(url) : url;
 }
 
 export function getServerUrl(): string {
@@ -361,7 +361,7 @@ export function getServerIdentityUrl(): string {
   const url = typeof window === "undefined"
     ? getServerUrl()
     : window.localStorage.getItem(SERVER_IDENTITY_URL_STORAGE_KEY) ?? getServerUrl();
-  const secured = Capacitor.isNativePlatform() ? upgradeStoredNativeServerAddress(url) : url;
+  const secured = usesNativeCredentialStorage() ? upgradeStoredNativeServerAddress(url) : url;
   if (typeof window !== "undefined" && secured !== url) {
     window.localStorage.setItem(SERVER_IDENTITY_URL_STORAGE_KEY, secured);
   }
@@ -379,7 +379,7 @@ export function hasUserConfiguredServer(): boolean {
 }
 
 function setServerUrl(rawValue: string) {
-  const value = Capacitor.isNativePlatform()
+  const value = usesNativeCredentialStorage()
     ? requireSecurePublicServerAddress(rawValue)
     : normalizeServerAddress(rawValue);
   storedServerUrl = value;
@@ -436,7 +436,7 @@ function currentApiBase(): string {
 // Where unauthenticated requests to a candidate address are sent, after the
 // same checks a saved address must pass.
 function serverRequestBase(serverType: ServerType, rawValue: string): string {
-  const base = Capacitor.isNativePlatform()
+  const base = usesNativeCredentialStorage()
     ? requireSecurePublicServerAddress(rawValue)
     : normalizeServerAddress(rawValue);
   if (!base) {
@@ -488,7 +488,7 @@ let vault: CredentialVault | null = null;
 function originalServerUrl(): string {
   const url = (typeof window === "undefined" ? null : window.localStorage.getItem(SERVER_IDENTITY_URL_STORAGE_KEY))
     ?? configuredServerUrl();
-  return Capacitor.isNativePlatform() ? upgradeStoredNativeServerAddress(url) : url;
+  return usesNativeCredentialStorage() ? upgradeStoredNativeServerAddress(url) : url;
 }
 
 /**
