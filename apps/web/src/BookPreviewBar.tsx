@@ -187,7 +187,7 @@ export function BookPreviewBar({ book, active, onStart, onStop, onContinue }: {
         </div>
       ) : null}
       {active && !finished && elapsed > 0 ? (
-        <button type="button" className="book-sample-reset" onClick={() => { stop(); onStop(); }}>Reset preview</button>
+        <button type="button" className="book-sample-reset" onClick={() => { stop(); onStop(); }}><RotateCcw size={13} aria-hidden="true" />Reset preview</button>
       ) : null}
     </section>
   );

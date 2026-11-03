@@ -59,6 +59,7 @@ import type { NativeTab } from "./nativeTabs";
 import type { NativePlayerSheet } from "./PlayerSheets";
 import type { DeviceDownloadActivity } from "./SettingsCards";
 import { OfflineBookReadiness } from "./OfflineBookReadiness";
+import { offlineReadinessNeedsAttention } from "./offlineReadiness";
 import type { Dispatch, ReactNode, RefObject, SetStateAction, TouchEvent, UIEvent } from "react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ServerCapabilities } from "./serverCapabilities";
@@ -984,7 +985,8 @@ export function PlayerPane({
                       }}
                     >
                       {selectedBookQueued ? <Check size={14} /> : <Plus size={14} />}
-                      <span>{selectedBookQueued ? "In Up Next · Remove" : "Add to Up Next"}</span>
+                      <span>{selectedBookQueued ? "In Up Next" : "Add to Up Next"}</span>
+                      {selectedBookQueued ? <X className="book-quick-queue-remove" size={14} aria-hidden="true" /> : null}
                     </button>
                   ) : null}
                   {queueSaveFailed ? (
@@ -1052,7 +1054,10 @@ export function PlayerPane({
             </div>
           </div>
 
-          {selectedBook.source !== "device" && !demoMode && downloadedBookIds.has(selectedBook.id) ? (
+          {/* Only a download with something missing needs a word here; the
+              storage action already says the book is on the device. */}
+          {selectedBook.source !== "device" && !demoMode && downloadedBookIds.has(selectedBook.id)
+            && offlineReadinessNeedsAttention(readiness[selectedBook.id]) ? (
             <section className="book-offline-files" aria-label="Offline files">
               <OfflineBookReadiness book={selectedBook} readiness={readiness[selectedBook.id]} />
               {capabilities.downloads && !!readiness[selectedBook.id]?.missingFiles.length ? (

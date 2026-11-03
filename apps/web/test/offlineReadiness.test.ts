@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { downloadWebBook } from "../src/offlineDownload.ts";
-import { inspectOfflineReadiness, offlineDownloadMessage, offlineMissingFileLabels } from "../src/offlineReadiness.ts";
+import { inspectOfflineReadiness, offlineDownloadMessage, offlineMissingFileLabels, offlineReadinessNeedsAttention } from "../src/offlineReadiness.ts";
 import { library } from "./performance/fixtures.ts";
 import type { Book, SyncMap } from "../src/types.ts";
 
@@ -101,4 +101,13 @@ test("books without a usable ebook do not warn about unused sentence-sync files"
 test("missing-file labels identify artwork, companions, and follow-along timing", () => {
   const state = { audio: true, ebook: "missing", sentenceSync: "missing", missingFiles: ["cover:latest", "companion:ebook", "sync"] } as const;
   assert.deepEqual(offlineMissingFileLabels(book, { ...state, missingFiles: [...state.missingFiles] }), ["cover art", "book.epub", "follow-along timing"]);
+});
+
+test("a complete download needs no notice, but a missing file or timing does", () => {
+  assert.equal(offlineReadinessNeedsAttention(undefined), false);
+  assert.equal(offlineReadinessNeedsAttention({ audio: true, ebook: "not-present", sentenceSync: "unsupported", missingFiles: [] }), false);
+  assert.equal(offlineReadinessNeedsAttention({ audio: true, ebook: "available", sentenceSync: "available", missingFiles: [] }), false);
+  assert.equal(offlineReadinessNeedsAttention({ audio: true, ebook: "available", sentenceSync: "missing", missingFiles: ["sync"] }), true);
+  assert.equal(offlineReadinessNeedsAttention({ audio: false, ebook: "not-present", sentenceSync: "unsupported", missingFiles: [] }), true);
+  assert.equal(offlineReadinessNeedsAttention({ audio: true, ebook: "not-present", sentenceSync: "unsupported", missingFiles: ["cover"] }), true);
 });

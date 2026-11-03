@@ -59,6 +59,12 @@ export function offlineReadinessSummary(readiness?: OfflineReadiness) {
   return `Audio: ${readiness.audio ? "ready" : "missing"} · Ebook: ${labels[readiness.ebook]} · Sentence sync: ${labels[readiness.sentenceSync]}`;
 }
 
+/** Whether a downloaded book is short of something it could have offline. */
+export function offlineReadinessNeedsAttention(readiness?: OfflineReadiness) {
+  return !!readiness && (!readiness.audio || readiness.missingFiles.length > 0
+    || readiness.ebook === "missing" || readiness.sentenceSync === "missing" || readiness.sentenceSync === "needs-ebook");
+}
+
 export function offlineDownloadMessage(title: string, readiness: OfflineReadiness) {
   return `${title} — ${offlineReadinessSummary(readiness)}${readiness.missingFiles.length ? ". Retry missing files when connected." : ""}`;
 }
