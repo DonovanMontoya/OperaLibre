@@ -167,6 +167,41 @@ for (const [reader, key, alias, value, expected] of [
   });
 }
 
+test("Generated helpers follow the configured data directory", async () => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "operalibre-installer-lifecycle-"));
+  try {
+    const start = installer.match(/cat >.*?<<'START_HELPER'\n([\s\S]*?)\nSTART_HELPER/m)?.[1];
+    const stop = installer.match(/cat >.*?<<'STOP_HELPER'\n([\s\S]*?)\nSTOP_HELPER/m)?.[1];
+    assert.ok(start);
+    assert.ok(stop);
+    const install = path.join(fixture, "install");
+    const state = path.join(install, "custom state");
+    await mkdir(install, { recursive: true });
+    await writeFile(path.join(install, "server.config"),
+      'data_dir = old\nData-Dir = "custom state"\n');
+    await writeFile(path.join(install, "operalibre-server"),
+      "#!/usr/bin/env bash\nexec -a operalibre-server sleep 1000\n");
+    await execFileSync("chmod", ["+x", path.join(install, "operalibre-server")]);
+    const startPath = path.join(install, "start.sh");
+    const stopPath = path.join(install, "stop.sh");
+    await writeFile(startPath, start);
+    await writeFile(stopPath, stop);
+    await execFileSync("chmod", ["+x", startPath, stopPath]);
+    execFileSync("sh", [startPath], { encoding: "utf8" });
+    const pidPath = path.join(state, "operalibre-server.pid");
+    const pid = Number((await readFile(pidPath, "utf8")).trim());
+    assert.ok(pid > 0);
+    await readFile(path.join(state, "server.log"));
+    await assert.rejects(readFile(path.join(install, "data", "operalibre-server.pid")), { code: "ENOENT" });
+    await writeFile(pidPath, "not-a-live-pid\n");
+    execFileSync("sh", [stopPath], { encoding: "utf8" });
+    await assert.rejects(readFile(pidPath), { code: "ENOENT" });
+    process.kill(pid, "SIGTERM");
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
 {
   const kind = "combined";
   test(`Linux ${kind} package includes coordinated systemd handoff`, async () => {

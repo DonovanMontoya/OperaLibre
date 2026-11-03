@@ -633,10 +633,42 @@ if [ "$KIND" = server ]; then
 set -eu
 
 cd -- "$(dirname -- "$0")"
-mkdir -p audiobooks data
-chmod 700 data 2>/dev/null || true
 
-pid_file="data/operalibre-server.pid"
+config_value() {
+  CONFIG_KEY=$1 awk '
+    BEGIN {
+      pattern = ENVIRON["CONFIG_KEY"]
+      gsub(/[-_]/, "[-_]", pattern)
+      pattern = "^[[:space:]]*" pattern "[[:space:]]*="
+    }
+    tolower($0) ~ pattern {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      first = substr(value, 1, 1)
+      last = substr(value, length(value), 1)
+      if (length(value) >= 2 && first == last && (first == "\"" || first == "\047"))
+        value = substr(value, 2, length(value) - 2)
+      found = 1
+    }
+    END { if (found) print value }
+  ' server.config
+}
+
+configured_data_dir() {
+  data_dir=$(config_value data_dir)
+  case "$data_dir" in
+    "") printf '%s' "${PWD}/data" ;;
+    /*) printf '%s' "$data_dir" ;;
+    *) printf '%s' "${PWD}/${data_dir}" ;;
+  esac
+}
+
+data_dir=$(configured_data_dir)
+mkdir -p audiobooks "$data_dir"
+chmod 700 "$data_dir" 2>/dev/null || true
+
+pid_file="$data_dir/operalibre-server.pid"
 if [ -f "$pid_file" ]; then
   pid=$(cat "$pid_file")
   # A PID left behind by a crash can be recycled by the OS, so only treat it
@@ -649,12 +681,13 @@ if [ -f "$pid_file" ]; then
   esac
 fi
 
-touch data/server.log
-chmod 600 data/server.log 2>/dev/null || true
-nohup ./operalibre-server >>data/server.log 2>&1 &
+log_file="$data_dir/server.log"
+touch "$log_file"
+chmod 600 "$log_file" 2>/dev/null || true
+nohup ./operalibre-server >>"$log_file" 2>&1 &
 echo "$!" >"$pid_file"
 chmod 600 "$pid_file" 2>/dev/null || true
-echo "OperaLibre started (process $!). Log: data/server.log"
+echo "OperaLibre started (process $!). Log: $log_file"
 START_HELPER
 
   cat >"${INSTALL_DIR}/stop-operalibre.sh" <<'STOP_HELPER'
@@ -663,7 +696,38 @@ START_HELPER
 set -eu
 
 cd -- "$(dirname -- "$0")"
-pid_file="data/operalibre-server.pid"
+
+config_value() {
+  CONFIG_KEY=$1 awk '
+    BEGIN {
+      pattern = ENVIRON["CONFIG_KEY"]
+      gsub(/[-_]/, "[-_]", pattern)
+      pattern = "^[[:space:]]*" pattern "[[:space:]]*="
+    }
+    tolower($0) ~ pattern {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      first = substr(value, 1, 1)
+      last = substr(value, length(value), 1)
+      if (length(value) >= 2 && first == last && (first == "\"" || first == "\047"))
+        value = substr(value, 2, length(value) - 2)
+      found = 1
+    }
+    END { if (found) print value }
+  ' server.config
+}
+
+configured_data_dir() {
+  data_dir=$(config_value data_dir)
+  case "$data_dir" in
+    "") printf '%s' "${PWD}/data" ;;
+    /*) printf '%s' "$data_dir" ;;
+    *) printf '%s' "${PWD}/${data_dir}" ;;
+  esac
+}
+
+pid_file="$(configured_data_dir)/operalibre-server.pid"
 if [ ! -f "$pid_file" ]; then
   echo "OperaLibre is not running."
   exit 0
