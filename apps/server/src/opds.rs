@@ -107,7 +107,7 @@ pub(crate) async fn opds_books(
     spool.bytes(body.as_bytes())?;
     body.clear();
     for book in library.books.iter().filter(|book| can_access_book(&auth, &book.id)) {
-        check_catalogue_book(book)?;
+        spool.begin_item();
         body.push_str("  <entry>\n");
         body.push_str(&format!(
             "    <id>urn:operalibre:book:{}</id>\n",
@@ -172,6 +172,7 @@ pub(crate) async fn opds_books(
         }
         body.push_str("  </entry>\n");
         spool.bytes(body.as_bytes())?;
+        spool.finish_item()?;
         body.clear();
     }
     spool.bytes(b"</feed>\n")?;

@@ -691,7 +691,7 @@ pub(crate) async fn abs_library_items(
             .filter(|book| selected_ids.contains(&book.id))
             .enumerate()
         {
-            check_catalogue_book(book)?;
+            spool.begin_item();
             if index > 0 {
                 spool.bytes(b",")?;
             }
@@ -700,6 +700,7 @@ pub(crate) async fn abs_library_items(
                 &media_token,
                 false,
             ))?;
+            spool.finish_item()?;
         }
         spool
             .bytes(format!("],\"total\":{total},\"page\":{page},\"limit\":{limit}}}").as_bytes())?;
@@ -865,13 +866,14 @@ pub(crate) async fn abs_search(
             .filter(|book| selected_ids.contains(&book.id))
             .enumerate()
         {
-            check_catalogue_book(book)?;
+            spool.begin_item();
             if index > 0 {
                 spool.bytes(b",")?;
             }
             spool.json(&AbsSearchResult {
                 library_item: library_item(&enrichment.apply(book.clone()), &media_token, false),
             })?;
+            spool.finish_item()?;
         }
         spool.bytes(b"]}")?;
         spool.response("application/json", None, None)
@@ -932,7 +934,6 @@ pub(crate) async fn abs_author(
             .iter()
             .find(|book| ids.contains(&book.id))
             .expect("selected author book");
-        check_catalogue_book(first)?;
         let name = first.author.as_deref().expect("selected author");
         let mut spool = CatalogueSpool::new(lease)?;
         spool.bytes(b"{\"id\":")?;
@@ -946,7 +947,7 @@ pub(crate) async fn abs_author(
             .filter(|book| ids.contains(&book.id))
             .enumerate()
         {
-            check_catalogue_book(book)?;
+            spool.begin_item();
             if index > 0 {
                 spool.bytes(b",")?;
             }
@@ -955,6 +956,7 @@ pub(crate) async fn abs_author(
                 &session.media_token,
                 false,
             ))?;
+            spool.finish_item()?;
         }
         spool.bytes(b"]}")?;
         spool.response("application/json", None, None)
