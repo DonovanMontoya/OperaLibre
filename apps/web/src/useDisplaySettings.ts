@@ -2,9 +2,13 @@ import { useState } from "react";
 import { disableRotationLock, enableRotationLock, readStoredRotationLock } from "./rotationLock";
 import {
   type AppearanceMode,
+  type DarkTheme,
   applyAppearanceMode,
   readStoredAppearanceMode,
-  writeAppearanceMode
+  readStoredDarkTheme,
+  switchDarkTheme,
+  writeAppearanceMode,
+  writeDarkTheme
 } from "./appearance";
 import { haptic, syncStatusBarStyle } from "./native";
 import { errorMessage } from "./formatting";
@@ -18,6 +22,7 @@ export function useDisplaySettings({
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() =>
     ios ? readStoredAppearanceMode() : "light"
   );
+  const [darkTheme, setDarkTheme] = useState<DarkTheme>(readStoredDarkTheme);
   const [rotationLockBusy, setRotationLockBusy] = useState(false);
   const [rotationLockError, setRotationLockError] = useState<string | null>(null);
 
@@ -49,12 +54,22 @@ export function useDisplaySettings({
     }
   }
 
+  function updateDarkTheme(theme: DarkTheme) {
+    if (theme === darkTheme) return;
+    setDarkTheme(theme);
+    writeDarkTheme(window.localStorage, theme);
+    switchDarkTheme(theme);
+    haptic("light");
+  }
+
   return {
     appearanceMode,
+    darkTheme,
     rotationLockBusy,
     rotationLockEnabled,
     rotationLockError,
     toggleRotationLock,
-    updateAppearanceMode
+    updateAppearanceMode,
+    updateDarkTheme
   };
 }
