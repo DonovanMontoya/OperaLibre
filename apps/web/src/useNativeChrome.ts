@@ -57,8 +57,9 @@ export function useNativeChrome({
     currentUser.isAdmin ? brokenLibationAccounts.length : 0);
   const [chrome, setChrome] = useState<string | undefined>(undefined);
   const [barTint, setBarTint] = useState<string | undefined>(undefined);
-  // The tab class carries the screen's colors, and the appearance switch flips
-  // the palette on the document, so watch both for the tones UIKit should hold.
+  // The tab class carries the screen's colors, and the appearance and dark
+  // theme settings flip the palette on the document, so watch them all for the
+  // tones UIKit should hold.
   useEffect(() => {
     if (!native) return;
     const read = () => {
@@ -67,7 +68,7 @@ export function useNativeChrome({
     };
     read();
     const observer = new MutationObserver(read);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-dark-theme"] });
     return () => observer.disconnect();
   }, [native, nativeTab, shelfLayout, shellRef]);
   const { ready: nativeTabsReady, shown: nativeTabsShown, settled: nativeTabsSettled } = useNativeTabs({
