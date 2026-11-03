@@ -289,8 +289,9 @@ export function usePlaybackControls({
 
   /**
    * Route the element through the boost chain, once, when this book actually
-   * asks for more than its own level. Unboosted books never touch Web Audio at
-   * all, which keeps the ordinary playback path exactly as it was.
+   * asks for more than its own level or a visualizer needs to listen.
+   * Otherwise the book never touches Web Audio at all, which keeps the
+   * ordinary playback path exactly as it was.
    *
    * Called from user gestures wherever possible: an AudioContext first created
    * outside one starts suspended, and a suspended context makes a routed
@@ -304,7 +305,7 @@ export function usePlaybackControls({
   ) {
     if (!audio || nativeAudio) return;
     if (!gainChain().isAttachedTo(audio)) {
-      if (gain <= BOOK_GAIN_DEFAULT) return;
+      if (gain <= BOOK_GAIN_DEFAULT && !gainChain().visualizing) return;
       if (!streamCanBeBoosted(audio.currentSrc || streamUrl)) return;
       if (!gainChain().attach(audio)) return;
     }

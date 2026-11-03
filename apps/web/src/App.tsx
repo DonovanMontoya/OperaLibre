@@ -1,5 +1,14 @@
-import { readBookPreviewsEnabled, readContinueReadingAutoplay, writeBookPreviewsEnabled, writeContinueReadingAutoplay } from "./playbackPreferences";
+import {
+  type PlayerVisualizerMode,
+  readBookPreviewsEnabled,
+  readContinueReadingAutoplay,
+  readPlayerVisualizer,
+  writeBookPreviewsEnabled,
+  writeContinueReadingAutoplay,
+  writePlayerVisualizer
+} from "./playbackPreferences";
 import { useDeviceFold } from "./deviceFold";
+import { runMarkedViewTransition } from "./viewTransition";
 import { progressSeekOptions, progressSeekStorage, readProgressSeekIntent } from "./progressSeekIntent";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
 import { serverCapabilities } from "./serverCapabilities";
@@ -486,6 +495,8 @@ function MainApp({
     readalongEnabled
   } = readerPreferences;
   const [continueReadingAutoplay, setContinueReadingAutoplay] = useState(readContinueReadingAutoplay);
+  const [playerVisualizer, setPlayerVisualizer] = useState(readPlayerVisualizer);
+  const [visualizerStaged, setVisualizerStaged] = useState(false);
   function toggleContinueReadingAutoplay() {
     const enabled = !continueReadingAutoplay;
     setContinueReadingAutoplay(enabled);
@@ -1382,6 +1393,40 @@ function MainApp({
     volume,
     wantsAutoplayRef
   });
+
+  // The browser player only: native shells play through their own engines,
+  // and a stream Web Audio cannot tap would draw nothing. The macOS shell is
+  // left out too for now. WebKit is told so rather than left wondering, since
+  // it can never tap (see playbackGain.ts).
+  const visualizerShell = native || window.__OPERALIBRE_NATIVE_SHELL__ === true;
+  const playbackCanVisualize = !visualizerShell && playbackCanBoost;
+  const visualizerUnavailable = !visualizerShell && !webAudioBoostSupported();
+  const visualizing = playbackCanVisualize && playerVisualizer !== "off";
+  gainChain().visualizing = visualizing;
+  useEffect(() => {
+    setVisualizerStaged(false);
+  }, [playbackBookId]);
+
+  /**
+   * Opening and closing the stage reshapes the whole card, so the browser
+   * morphs between the two layouts: the cover and each row of controls glide
+   * to their new places (see `data-visualizer-transition` in styles.css).
+   */
+  function stageVisualizer(staged: boolean) {
+    const update = () => setVisualizerStaged(staged);
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) update();
+    else runMarkedViewTransition(document.documentElement, "visualizerTransition", "", update);
+  }
+
+  function changePlayerVisualizer(mode: PlayerVisualizerMode) {
+    setPlayerVisualizer(mode);
+    writePlayerVisualizer(mode);
+    if (mode === "off") return;
+    // Route within the click, which is the gesture an AudioContext needs to
+    // start audible; the render above would be a step too late.
+    gainChain().visualizing = true;
+    engageGainChain(audioRef.current);
+  }
   later.pausePlayback = pausePlayback;
   later.showMediaClock = showMediaClock;
   // Timer and native-event callbacks run after later renders may have landed;
@@ -2394,6 +2439,15 @@ function MainApp({
         upcomingChapters={upcomingChapters}
         updateSpeed={updateSpeed}
         uploads={uploads}
+        visualizer={playbackCanVisualize || visualizerUnavailable ? {
+          active: !libraryOpen && !readalongPanelElement,
+          analyser: () => gainChain().analyser(),
+          mode: playerVisualizer,
+          onChange: changePlayerVisualizer,
+          onStage: stageVisualizer,
+          staged: visualizerStaged && visualizing,
+          unavailable: !playbackCanVisualize
+        } : null}
         volume={volume}
         withWebViewTransition={withWebViewTransition}
       />

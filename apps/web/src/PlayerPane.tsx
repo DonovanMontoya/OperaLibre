@@ -59,6 +59,7 @@ import type { NativeTab } from "./nativeTabs";
 import type { NativePlayerSheet } from "./PlayerSheets";
 import type { DeviceDownloadActivity } from "./SettingsCards";
 import { OfflineBookReadiness } from "./OfflineBookReadiness";
+import { PlayerVisualizer, type PlayerVisualizerProps } from "./PlayerVisualizer";
 import type { Dispatch, ReactNode, RefObject, SetStateAction, TouchEvent, UIEvent } from "react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ServerCapabilities } from "./serverCapabilities";
@@ -159,6 +160,7 @@ export function PlayerPane({
   upcomingChapters,
   updateSpeed,
   uploads,
+  visualizer,
   volume,
   withWebViewTransition
 }: {
@@ -252,6 +254,8 @@ export function PlayerPane({
   upcomingChapters: ChapterSegment[];
   updateSpeed: (value: number) => void;
   uploads: ReturnType<typeof useUploads>;
+  /** Absent where the playing stream cannot be tapped for Web Audio. */
+  visualizer: Omit<PlayerVisualizerProps, "isPlaying"> | null;
   volume: number;
   withWebViewTransition: (update: () => void) => void;
 }) {
@@ -627,13 +631,17 @@ export function PlayerPane({
       {selectedBook && (currentTrack || nativePlayerView !== "now") ? (
         <>
           {isViewingPlayingBook && nativePlayerView === "now" && playbackBook && currentTrack ? (
-            <section className="native-now-playing" aria-label="Now playing">
+            <section
+              className={`native-now-playing${visualizer?.staged ? " is-visualizer-stage" : ""}`}
+              aria-label="Now playing"
+            >
               {/* The halves group the stack for a foldable phone, which sets
                   them either side of its fold. Everywhere else they take no
                   box and their children lay out in the card's grid. */}
               <div className="native-now-half native-now-lead">
                 <div className="native-now-artwork">
                   <CoverArt book={playbackBook} size="large" />
+                  {visualizer ? <PlayerVisualizer {...visualizer} isPlaying={isPlaying} /> : null}
                 </div>
 
                 <div className="native-now-copy">

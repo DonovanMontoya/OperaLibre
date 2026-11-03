@@ -1,9 +1,5 @@
-import { flushSync } from "react-dom";
 import type { ShelfLayout } from "./shelfSort";
-
-type ShelfViewTransition = { finished: Promise<unknown> };
-
-let activeShelfTransition: ShelfViewTransition | null = null;
+import { runMarkedViewTransition } from "./viewTransition.ts";
 
 /**
  * Runs an iPad Shelf layout change as one motion: the page being put away
@@ -20,12 +16,9 @@ export function runShelfLayoutTransition(
   to: ShelfLayout,
   update: () => void
 ): void {
-  const document = root.ownerDocument as (Document & {
-    startViewTransition?: (update: () => void | Promise<void>) => ShelfViewTransition;
-  }) | null;
-  const view = document?.defaultView;
-  const shouldAnimate = !!document?.startViewTransition
-    && !!view
+  const document = root.ownerDocument;
+  const view = document.defaultView;
+  const shouldAnimate = !!view
     && root.classList.contains("platform-ios")
     && !view.matchMedia("(prefers-reduced-motion: reduce)").matches
     && !!document.querySelector(".native-shell:is(.tab-shelf, .tab-reading)");
@@ -33,17 +26,5 @@ export function runShelfLayoutTransition(
     update();
     return;
   }
-
-  root.dataset.shelfTransition = `${from}-${to}`;
-  // React would otherwise commit after WebKit takes the new snapshot, and the
-  // spread would jump to its new layout once the animation had finished.
-  const transition = document.startViewTransition(() => flushSync(update));
-  activeShelfTransition = transition;
-  const cleanUp = () => {
-    // A second change started mid-flight owns the attribute now.
-    if (activeShelfTransition !== transition) return;
-    activeShelfTransition = null;
-    delete root.dataset.shelfTransition;
-  };
-  void transition.finished.then(cleanUp, cleanUp);
+  runMarkedViewTransition(root, "shelfTransition", `${from}-${to}`, update);
 }

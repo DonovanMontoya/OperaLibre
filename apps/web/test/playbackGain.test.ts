@@ -99,8 +99,15 @@ test("nothing is boostable without a stream or without Web Audio", () => {
  * silent: not after a quick pause-then-play, and not when the outgoing track's
  * element pauses after the next one is already routed.
  */
+type FakeNode = { outputs: Set<unknown>; connect(to: unknown): void; disconnect(): void };
+
 function fakeWebAudio() {
-  const node = () => ({ connect() {}, disconnect() {}, gain: { value: 1, setTargetAtTime() {} } });
+  const node = () => ({
+    outputs: new Set<unknown>(),
+    connect(to: unknown) { this.outputs.add(to); },
+    disconnect() { this.outputs.clear(); },
+    gain: { value: 1, setTargetAtTime() {} }
+  });
   const param = () => ({ value: 0 });
   const contexts: FakeContext[] = [];
   class FakeContext {
@@ -113,6 +120,7 @@ function fakeWebAudio() {
     }
     createMediaElementSource() { return node(); }
     createGain() { return node(); }
+    createAnalyser() { return node(); }
     createDynamicsCompressor() {
       return { ...node(), threshold: param(), knee: param(), ratio: param(), attack: param(), release: param() };
     }
@@ -219,4 +227,36 @@ test("the next track starting while the ended track's suspend is in flight still
   context.pendingSuspend?.();
   await settle();
   assert.equal(context.state, "running");
+});
+
+/**
+ * The visualizer reads one analyser for the whole session, while the player
+ * replaces its <audio> per track and the boost reroutes the gain node.
+ */
+test("the visualizer routes an unboosted book audibly and keeps hearing it across tracks and boosts", async () => {
+  const contexts = fakeWebAudio();
+  const { PlaybackGainChain } = await import("../src/playbackGain.ts");
+  const chain = new PlaybackGainChain();
+
+  assert.equal(chain.analyser(), null, "nothing to listen to before an element is routed");
+  chain.attach(fakeElement() as unknown as HTMLAudioElement);
+  const context = contexts[0];
+  const routed = (chain as unknown as { chain: { gain: FakeNode } }).chain;
+  assert.ok(routed.gain.outputs.has(context.destination), "a book at its own level still reaches the speakers");
+  const analyser = chain.analyser();
+  const sources: FakeNode[] = [];
+  const create = context.createMediaElementSource.bind(context);
+  context.createMediaElementSource = () => {
+    const source = create();
+    sources.push(source);
+    return source;
+  };
+
+  chain.setGain(2);
+  chain.setGain(1);
+  chain.attach(fakeElement() as unknown as HTMLAudioElement);
+  assert.equal(chain.analyser(), analyser);
+  assert.ok(sources[0].outputs.has(analyser), "the next track feeds the same analyser");
+  chain.setGain(2);
+  assert.ok(sources[0].outputs.has(analyser), "engaging the limiter does not cut the tap");
 });
