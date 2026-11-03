@@ -34,7 +34,7 @@ import {
   removeServerAlias,
   type ServerAlias
 } from "./api";
-import type { AppearanceMode } from "./appearance";
+import { DARK_THEMES, type AppearanceMode, type DarkTheme } from "./appearance";
 import type { AuthUser, Book, LibationAccount, LibroAccountSummary } from "./types";
 import type { DeviceNotice } from "./ConfirmDialogs";
 import type { NativeTab, StoreSettingsTarget } from "./nativeTabs";
@@ -54,15 +54,18 @@ export type DeviceDownloadActivity = {
 
 export function DisplaySettings({
   appearanceMode,
+  darkTheme,
   ios,
   rotationLockAvailable,
   rotationLockBusy,
   rotationLockEnabled,
   rotationLockError,
   toggleRotationLock,
-  updateAppearanceMode
+  updateAppearanceMode,
+  updateDarkTheme
 }: {
   appearanceMode: AppearanceMode;
+  darkTheme: DarkTheme;
   ios: boolean;
   rotationLockAvailable: boolean;
   rotationLockBusy: boolean;
@@ -70,6 +73,7 @@ export function DisplaySettings({
   rotationLockError: string | null;
   toggleRotationLock: () => Promise<void>;
   updateAppearanceMode: (mode: AppearanceMode) => void;
+  updateDarkTheme: (theme: DarkTheme) => void;
 }) {
   return (
     <section className="settings-card">
@@ -90,6 +94,28 @@ export function DisplaySettings({
               onClick={() => updateAppearanceMode(mode)}
             >
               {mode === "light" ? "Light" : mode === "dark" ? "Dark" : "System"}
+            </button>
+          ))}
+        </div>
+      </div> : null}
+      {ios ? <div className="settings-toggle-row settings-appearance-row">
+        <span>
+          <strong>Dark theme</strong>
+          <small>How the app looks when it is dark.</small>
+        </span>
+        <div className="settings-theme-samples" role="radiogroup" aria-label="Dark theme">
+          {DARK_THEMES.map((theme) => (
+            <button
+              key={theme.id}
+              type="button"
+              role="radio"
+              aria-checked={darkTheme === theme.id}
+              className={darkTheme === theme.id ? "selected" : undefined}
+              data-theme={theme.id}
+              onClick={() => updateDarkTheme(theme.id)}
+            >
+              <span className="settings-theme-cloth" aria-hidden="true" />
+              {theme.label}
             </button>
           ))}
         </div>
