@@ -3,6 +3,20 @@ import Foundation
 @main
 struct BackgroundDownloadPolicyTests {
     static func main() throws {
+        var book = BackgroundBookByteBudget()
+        precondition(book.reserve(destination: "part-a", bytes: 7, retained: ["part-a": 0, "part-b": 0], limit: 12))
+        // A second individually valid part cannot get a fresh book budget.
+        precondition(!book.reserve(destination: "part-b", bytes: 7, retained: ["part-a": 7, "part-b": 0], limit: 12))
+        var restored = try JSONDecoder().decode(BackgroundBookByteBudget.self, from: JSONEncoder().encode(book))
+        precondition(restored.reserve(destination: "part-b", bytes: 5, retained: ["part-a": 7, "part-b": 0], limit: 12))
+        precondition(!restored.reserve(destination: "part-b", bytes: 6, retained: ["part-a": 7, "part-b": 0], limit: 12))
+        // Jobs from before persisted accounting still reconcile final files.
+        var legacy = BackgroundBookByteBudget()
+        precondition(!legacy.reserve(destination: "part-b", bytes: 6, retained: ["part-a": 7, "part-b": 0], limit: 12))
+        precondition(legacy.reserve(destination: "part-b", bytes: 5, retained: ["part-a": 7, "part-b": 0], limit: 12))
+        var overflow = BackgroundBookByteBudget()
+        precondition(!overflow.reserve(destination: "b", bytes: 3, retained: ["a": Int64.max - 1, "b": 0], limit: Int64.max))
+
         let libro = BackgroundDownloadAllowlist(origin: "libro-device", basePath: "")
         for source in ["https://assets.libro.fm/book.m4b", "https://books.s3.amazonaws.com/part.zip", "https://example.cloudfront.net/book"] {
             precondition((try? validatedBackgroundMediaSource(URL(string: source)!, allowedBy: libro)) != nil)
