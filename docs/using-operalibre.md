@@ -358,6 +358,10 @@ The milestones are books finished (1, then 10, 25, and 100), a finished book of 
 
 The installed iPhone and Android apps include a **Games** tab. **Word Grid** is a five-letter word puzzle: it starts on the day's word, takes six guesses, and can be replaced with another word. **Chapter Match** is a board where you swap adjacent symbols to line up three or more. The tab is in the bottom navigation by default. Turn it off with **Games tab** under **Settings → Behavior**. The games run on the device and send nothing to the server.
 
+## Dark themes
+
+The iPhone and iPad apps can turn dark with your device or stay dark all the time; choose under **Settings → Display → Appearance**. **Dark theme** just below it sets how dark looks: **Warm**, **Graphite**, **Midnight**, **Reading Room**, or **True Black**. The choice is remembered on the device and applies only while the app is dark.
+
 ## Check for application updates
 
 Open **Administration → Overview** and choose **Check for updates** under **Software versions**. In a browser this checks the installed server and its separately updatable web application; in the installed iOS app it checks the connected server. Owners can install supported managed-package updates from the same card when one is available.
