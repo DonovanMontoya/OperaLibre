@@ -13798,6 +13798,7 @@ html[data-theme-turn]::view-transition-old(root) {
 
 .settings-download-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
@@ -13805,7 +13806,10 @@ html[data-theme-turn]::view-transition-old(root) {
   border-bottom: 1px dotted rgba(var(--ink-rgb), 0.18);
 }
 
+/* Keeps room for the title and file status; the remove button wraps below
+   when a narrow card cannot fit both. */
 .settings-download-info {
+  flex: 1 1 240px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -13858,6 +13862,7 @@ html[data-theme-turn]::view-transition-old(root) {
 
 .settings-download-row strong {
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -17310,9 +17315,9 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 }
 .purchase-book-list .purchase-book-row > .audible-download-action > svg { display: none; }
 
-/* "Downloading" is the longest status. It keeps its spinner, the only sign the
-   download is moving, and tightens its spacing instead. */
-.purchase-book-list .purchase-book-row > .audible-download-status.downloading {
+/* The statuses and "On server" keep their icons, so they tighten their spacing
+   to fit the action column; "Downloading" is the longest. */
+.purchase-book-list .purchase-book-row > :is(.audible-download-status, .local-marker) {
   gap: 5px;
   padding-inline: 4px;
   letter-spacing: 0.02em;
