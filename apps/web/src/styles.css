@@ -9692,17 +9692,38 @@ html.native-app .book-heading .heading-actions {
   transform: scale(0.985);
 }
 
+/* Secondary actions under the play bar are small outlined chips, so they
+   read as buttons rather than captions. */
 .book-quick-return {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  min-height: 34px;
-  padding: 5px 10px;
-  border: 0;
+  justify-self: center;
+  gap: 8px;
+  min-height: 36px;
+  max-width: 100%;
+  padding: 0 14px;
+  border: 1px solid rgba(var(--ink-rgb), 0.16);
+  border-radius: 18px;
   color: var(--oxblood);
-  background: transparent;
+  background: rgba(var(--lift-soft-rgb), 0.6);
   font: 500 0.62rem/1.2 "JetBrains Mono", monospace;
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+
+.book-quick-return:active {
+  background: rgba(var(--ink-rgb), 0.06);
+}
+
+.book-quick-queue[aria-pressed="true"] {
+  border-color: rgba(139, 46, 31, 0.28);
+  background: rgba(139, 46, 31, 0.07);
+}
+
+.book-quick-queue-remove {
+  flex: none;
+  margin-right: -4px;
+  opacity: 0.7;
 }
 
 .book-quick-return span {
@@ -11911,9 +11932,12 @@ html.native-app .native-shell.tab-shelf.library-book-open > .player-pane {
   padding-bottom: calc(var(--tabs-h) + 88px);
 }
 
+/* The pill's padding and border sit outside the page edge, so the round
+   back button lines up with the cover below it. */
 html.native-app .native-shell.tab-shelf.library-book-open .native-player-return {
   min-height: 40px;
   margin-bottom: 2px;
+  margin-left: -5px;
   padding: 3px 12px 3px 4px;
   font-size: 0.58rem;
 }
@@ -14758,7 +14782,7 @@ html.native-app .recent-row {
     grid-column: 1;
     grid-row: 1;
     align-self: center;
-    margin: 0;
+    margin: 0 0 0 -5px;
   }
 
   /* A book's own page says what it is in its heading; the running head
@@ -19369,6 +19393,13 @@ html.native-app.side-rail[data-rail-controls="play"] .native-shell:is(.tab-shelf
   display: none;
 }
 
+/* Play alone: a round lacquer disc with the button at its centre, rather
+   than the column's padding, which leaves more room under the last button. */
+html.native-app.side-rail[data-rail-controls="play"] .native-shell:is(.tab-shelf, .tab-games) .mini-player {
+  height: 56px;
+  padding: 0;
+}
+
 
 /* Reading along, the bar is hidden and the column is free to the bottom of
    the screen. The listening controls stand in it, so the page below the text
@@ -22014,12 +22045,15 @@ html .book-heading .book-cover-column > .large-cover { width: 100%; }
 .book-sample progress::-webkit-progress-value { background: var(--oxblood); }
 .book-sample progress::-moz-progress-bar { background: var(--oxblood); }
 .book-sample-reset {
-  display: block;
-  margin: 2px auto 0;
-  min-height: 28px;
-  padding: 3px 6px;
-  border: none;
-  background: transparent;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px auto 0;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgba(var(--ink-rgb), 0.16);
+  border-radius: 16px;
+  background: rgba(var(--lift-soft-rgb), 0.6);
   color: var(--ink-soft);
   font-size: 0.62rem;
   cursor: pointer;
