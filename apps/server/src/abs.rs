@@ -696,7 +696,7 @@ pub(crate) async fn abs_library_items(
                 spool.bytes(b",")?;
             }
             spool.json(&library_item(
-                &enrichment.apply(book.clone()),
+                &enrichment.apply_catalogue(book)?,
                 &media_token,
                 false,
             ))?;
@@ -871,7 +871,7 @@ pub(crate) async fn abs_search(
                 spool.bytes(b",")?;
             }
             spool.json(&AbsSearchResult {
-                library_item: library_item(&enrichment.apply(book.clone()), &media_token, false),
+                library_item: library_item(&enrichment.apply_catalogue(book)?, &media_token, false),
             })?;
             spool.finish_item()?;
         }
@@ -934,6 +934,7 @@ pub(crate) async fn abs_author(
             .iter()
             .find(|book| ids.contains(&book.id))
             .expect("selected author book");
+        check_catalogue_book(first)?;
         let name = first.author.as_deref().expect("selected author");
         let mut spool = CatalogueSpool::new(lease)?;
         spool.bytes(b"{\"id\":")?;
@@ -952,7 +953,7 @@ pub(crate) async fn abs_author(
                 spool.bytes(b",")?;
             }
             spool.json(&library_item(
-                &enrichment.apply(book.clone()),
+                &enrichment.apply_catalogue(book)?,
                 &session.media_token,
                 false,
             ))?;

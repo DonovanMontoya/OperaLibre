@@ -575,7 +575,7 @@ async fn catalogue_books_response(
             if index > 0 {
                 spool.bytes(b",")?;
             }
-            spool.json(&enrichment.apply(book.clone()))?;
+            spool.json(&enrichment.apply_catalogue(book)?)?;
             spool.finish_item()?;
         }
         spool.bytes(b"]")?;

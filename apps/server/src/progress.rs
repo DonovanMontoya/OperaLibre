@@ -806,6 +806,12 @@ impl ProgressEnrichment {
             .unwrap_or(BOOK_VOLUME_GAIN_DEFAULT);
         book
     }
+
+    /// Check the borrowed source before cloning the potentially large book.
+    pub(crate) fn apply_catalogue(&self, book: &Book) -> Result<Book, ApiError> {
+        check_catalogue_book(book)?;
+        Ok(self.apply(book.clone()))
+    }
 }
 
 pub(crate) async fn book_with_progress(
@@ -1305,4 +1311,66 @@ pub(crate) fn progress_write_is_unintentional_regression(
     !intentional_seek
         && incoming_book_position + PROGRESS_AUTOMATIC_REGRESSION_SLACK_SECONDS
             < previous_book_position
+}
+
+#[cfg(test)]
+mod catalogue_preparation_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_catalogue_preparation_rejects_before_cloning_nested_metadata() {
+        let enrichment = ProgressEnrichment {
+            user_id: "reader".into(),
+            own_gains: HashMap::new(),
+            sharers: Vec::new(),
+            saved_progress: HashMap::new(),
+            finished_works: FinishedWorks::default(),
+        };
+        let track = Track {
+            id: "track".into(),
+            title: "Track".into(),
+            file_name: "track.mp3".into(),
+            index: 0,
+            duration_seconds: None,
+            stream_url: "/stream".into(),
+            chapters: Vec::new(),
+            metadata: MetadataSummary {
+                description: Some("x".repeat(8 * 1024 * 1024)),
+                ..Default::default()
+            },
+        };
+        let book = Book {
+            id: "book".into(),
+            title: "Oversized nested metadata".into(),
+            author: None,
+            narrator: None,
+            duration_seconds: None,
+            track_count: 1,
+            cover_art_url: None,
+            has_cover_override: false,
+            cover_art_content_type: None,
+            description: None,
+            genres: Vec::new(),
+            tags: Vec::new(),
+            published_date: None,
+            asin: None,
+            added_at: "0".into(),
+            reading_file: None,
+            companions: Vec::new(),
+            sync_file: None,
+            chapters: Vec::new(),
+            metadata: MetadataSummary::default(),
+            tracks: vec![track],
+            progress: None,
+            shared_progress: Vec::new(),
+            volume_gain: BOOK_VOLUME_GAIN_DEFAULT,
+        };
+        let (result, allocated) =
+            crate::test_alloc::allocated_bytes(|| enrichment.apply_catalogue(&book));
+        assert!(
+            allocated < 64 * 1024,
+            "preparation allocated {allocated} bytes before rejecting an oversized book"
+        );
+        assert_eq!(result.unwrap_err().status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
 }
