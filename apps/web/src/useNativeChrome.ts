@@ -57,18 +57,20 @@ export function useNativeChrome({
     currentUser.isAdmin ? brokenLibationAccounts.length : 0);
   const [chrome, setChrome] = useState<string | undefined>(undefined);
   const [barTint, setBarTint] = useState<string | undefined>(undefined);
-  // The tab class carries the screen's colors, and the appearance and dark
-  // theme settings flip the palette on the document, so watch them all for the
-  // tones UIKit should hold.
+  const [accent, setAccent] = useState<string | undefined>(undefined);
+  // The tab class carries the screen's colors, and the appearance and theme
+  // settings flip the palette on the document, so watch them all for the tones
+  // UIKit should hold.
   useEffect(() => {
     if (!native) return;
     const read = () => {
       setChrome(nativeShellColor(shellRef.current, "--native-chrome"));
       setBarTint(nativeShellColor(shellRef.current, "--native-bar"));
+      setAccent(nativeShellColor(shellRef.current, "--oxblood"));
     };
     read();
     const observer = new MutationObserver(read);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-dark-theme"] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-dark-theme", "data-light-theme"] });
     return () => observer.disconnect();
   }, [native, nativeTab, shelfLayout, shellRef]);
   const { ready: nativeTabsReady, shown: nativeTabsShown, settled: nativeTabsSettled } = useNativeTabs({
@@ -83,6 +85,7 @@ export function useNativeChrome({
     // another tone at the edges mid-rotation.
     chrome: deskView ? "#000000" : chrome,
     bar: barTint,
+    accent,
     // The desk view covers the screen as it hides the bar. A held frame would
     // be whatever the page last drew, which after the hinge opens can be the
     // inner screen's layout.
