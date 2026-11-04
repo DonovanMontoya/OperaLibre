@@ -78,3 +78,36 @@ test("mouse presses are left to the browser", () => {
   fire(root, "click", button);
   assert.equal(clicks(), 1);
 });
+
+test("a lift on a hit area stretched past the button's box still activates it", (t) => {
+  const { root, clicks } = setup();
+  const { button } = fakeButton();
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "document");
+  // The row-wide hit area belongs to the button, so the page hit-tests to it.
+  Object.defineProperty(globalThis, "document", { configurable: true, value: { elementFromPoint: () => button } });
+  t.after(() => {
+    if (previous) Object.defineProperty(globalThis, "document", previous);
+    else delete (globalThis as { document?: unknown }).document;
+  });
+  fire(root, "pointerdown", button);
+  fire(root, "pointerup", button, { clientX: 300, clientY: 140 });
+  const click = fire(root, "click", button);
+  assert.equal(clicks(), 1);
+  assert.equal(click.defaultPrevented, false);
+});
+
+test("a lift over a different control still cancels the press", (t) => {
+  const { root, clicks } = setup();
+  const { button } = fakeButton();
+  const other = { closest: () => other };
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: { elementFromPoint: () => other } });
+  t.after(() => {
+    if (previous) Object.defineProperty(globalThis, "document", previous);
+    else delete (globalThis as { document?: unknown }).document;
+  });
+  fire(root, "pointerdown", button);
+  fire(root, "pointerup", button, { clientX: 300, clientY: 140 });
+  fire(root, "click", button);
+  assert.equal(clicks(), 0);
+});
