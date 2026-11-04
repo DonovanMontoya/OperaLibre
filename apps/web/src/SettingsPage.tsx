@@ -141,12 +141,14 @@ export function SettingsPage({
   const {
     appearanceMode,
     darkTheme,
+    lightTheme,
     rotationLockBusy,
     rotationLockEnabled,
     rotationLockError,
     toggleRotationLock,
     updateAppearanceMode,
-    updateDarkTheme
+    updateDarkTheme,
+    updateLightTheme
   } = displaySettings;
   const {
     cancelOfflineDownload,
@@ -212,6 +214,7 @@ export function SettingsPage({
           appearanceMode={appearanceMode}
           darkTheme={darkTheme}
           ios={ios}
+          lightTheme={lightTheme}
           rotationLockAvailable={rotationLockAvailable}
           rotationLockBusy={rotationLockBusy}
           rotationLockEnabled={rotationLockEnabled}
@@ -219,6 +222,7 @@ export function SettingsPage({
           toggleRotationLock={toggleRotationLock}
           updateAppearanceMode={updateAppearanceMode}
           updateDarkTheme={updateDarkTheme}
+          updateLightTheme={updateLightTheme}
         /> : null}
 
         <BehaviorSettings

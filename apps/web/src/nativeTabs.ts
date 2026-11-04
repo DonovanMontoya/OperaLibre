@@ -17,6 +17,9 @@ export type NativeTabsState = {
   /** `#rrggbb` tint for the floating bar's glass, so it passes for a pane of
    *  the page it floats over. */
   bar?: string;
+  /** `#rrggbb` for the selected tab on a light screen, so a light theme's
+   *  accent carries into the bar. Dark screens keep the brass. */
+  accent?: string;
   /** Change the bar's visibility without holding the last frame over the
    *  page, for a page that fills the screen and does not reflow with it. */
   uncovered?: boolean;
@@ -26,8 +29,16 @@ export type NativeTabsState = {
  *  back keeps the colors in the stylesheet with the rest of the palette. */
 export function nativeShellColor(shell: Element | null, name: string): string | undefined {
   if (!shell) return undefined;
-  const value = getComputedStyle(shell).getPropertyValue(name).trim();
-  return /^#[0-9a-f]{6}$/i.test(value) ? value : undefined;
+  return longHexColor(getComputedStyle(shell).getPropertyValue(name));
+}
+
+/** UIKit takes `#rrggbb`, but the minifier shortens tones such as #ffffff and
+ *  #000000 to three digits. */
+export function longHexColor(value: string): string | undefined {
+  const text = value.trim();
+  if (/^#[0-9a-f]{6}$/i.test(text)) return text;
+  const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(text);
+  return short ? `#${short[1]}${short[1]}${short[2]}${short[2]}${short[3]}${short[3]}` : undefined;
 }
 
 // Administration is a destination within Settings, keeping UIKit at five tabs.

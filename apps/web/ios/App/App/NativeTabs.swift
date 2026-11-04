@@ -141,6 +141,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     // rotation, an iPad's top-hung bar — and sets the status bar's polarity.
     private var chrome: UIColor?
     private var barTint: UIColor?
+    private var accent: UIColor?
     private var chromeIsDark = true
     // The launch screen is parchment, and the shell cannot report its color
     // until the web view has loaded. Restoring the last one hands the two
@@ -210,7 +211,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { content.preferredInterfaceOrientationForPresentation }
 
     func configure(items: [JSObject], selected: String, visible: Bool, blocked: Bool, appearance: String,
-                   chrome: String?, bar: String?, uncovered: Bool = false) {
+                   chrome: String?, bar: String?, accent: String? = nil, uncovered: Bool = false) {
         loadViewIfNeeded()
         // The page may have reloaded and lost the clearance it was sent.
         sentTopClearance = -1
@@ -222,7 +223,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         // so the tones follow the selection a turn later, as they do after a
         // tap.
         let reselecting = requestedSelection != nil && selected != requestedSelection
-        if !reselecting { applyChrome(chrome, bar: bar) }
+        if !reselecting { applyChrome(chrome, bar: bar, accent: accent) }
         if visible != navigationVisible && navigation.parent != nil && !uncovered {
             // Showing or hiding the bar resizes the web view, and the page
             // reflows over several frames as its safe area and viewport catch
@@ -285,7 +286,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             }
         }
         if reselecting {
-            DispatchQueue.main.async { [weak self] in self?.applyChrome(chrome, bar: bar) }
+            DispatchQueue.main.async { [weak self] in self?.applyChrome(chrome, bar: bar, accent: accent) }
         }
         requestedSelection = selected
         // Web sheets rise from the bottom of the page, which now runs under
@@ -320,9 +321,10 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     /// The bar is glass over the screen it belongs to. Tinting that glass with
     /// the page's own tone keeps it from reading as a bright slab laid on the
     /// paper, and its labels take the page's ink: gold on the dark shelf and
-    /// parlour, oxblood — the same red as the play control — on paper.
+    /// parlour, and on paper the light theme's accent, the same color as the
+    /// play control (oxblood unless the page reports another).
     private func applyBarTint() {
-        let selected = chromeIsDark ? brass : oxblood
+        let selected = chromeIsDark ? brass : (accent ?? oxblood)
         // Ink and spine are the same tone in the palette; on paper it reads
         // as the text color rather than as the shelf's board.
         let resting = (chromeIsDark ? parchment : spine).withAlphaComponent(0.75)
@@ -355,10 +357,12 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     /// Take the tones the selected screen reports. Crossing them over the same
     /// beat as the shell's tab fade keeps the clock and the bar from turning
     /// over before the page behind them does.
-    private func applyChrome(_ hex: String?, bar: String?) {
+    private func applyChrome(_ hex: String?, bar: String?, accent accentHex: String? = nil) {
         let tint = bar.flatMap(chromeColor)
-        let retinted = tint != nil && tint != barTint
+        let newAccent = accentHex.flatMap(chromeColor)
+        let retinted = (tint != nil && tint != barTint) || (newAccent != nil && newAccent != accent)
         barTint = tint ?? barTint
+        accent = newAccent ?? accent
         guard let hex, let color = chromeColor(hex), color != chrome else {
             if retinted { applyBarTint() }
             return
@@ -740,6 +744,7 @@ public final class NativeTabsPlugin: CAPPlugin, CAPBridgedPlugin {
                                  blocked: call.getBool("blocked") ?? false,
                                  appearance: call.getString("appearance") ?? "system",
                                  chrome: call.getString("chrome"), bar: call.getString("bar"),
+                                 accent: call.getString("accent"),
                                  uncovered: call.getBool("uncovered") ?? false)
             call.resolve()
         }

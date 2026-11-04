@@ -4,7 +4,15 @@ import * as nativeTabs from "../src/nativeTabs.ts";
 import * as shelfOnScreen from "../src/shelfOnScreen.ts";
 import { loadHook } from "./hookHarness.ts";
 
-const { nativeTabItems, fullShelfMustYield, nativeTabSelection, spreadTab } = nativeTabs;
+const { nativeTabItems, fullShelfMustYield, longHexColor, nativeTabSelection, spreadTab } = nativeTabs;
+
+test("minified screen tones still reach UIKit as six-digit hex", () => {
+  assert.equal(longHexColor(" #f1e7d0 "), "#f1e7d0");
+  assert.equal(longHexColor("#fff"), "#ffffff");
+  assert.equal(longHexColor("#000"), "#000000");
+  assert.equal(longHexColor("rgb(0, 0, 0)"), undefined);
+  assert.equal(longHexColor(""), undefined);
+});
 
 test("native tabs keep Administration inside Settings and never need More", () => {
   for (const games of [false, true]) {

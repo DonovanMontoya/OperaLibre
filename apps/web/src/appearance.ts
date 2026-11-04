@@ -14,6 +14,18 @@ export const DARK_THEMES = [
 
 export type DarkTheme = (typeof DARK_THEMES)[number]["id"];
 
+export const LIGHT_THEME_STORAGE_KEY = "operalibre.lightTheme";
+
+export const LIGHT_THEMES = [
+  { id: "parchment", label: "Parchment" },
+  { id: "linen", label: "Linen" },
+  { id: "sage", label: "Sage" },
+  { id: "harbor", label: "Harbor" },
+  { id: "pure-white", label: "Pure White" }
+] as const;
+
+export type LightTheme = (typeof LIGHT_THEMES)[number]["id"];
+
 type StorageReader = Pick<Storage, "getItem">;
 type StorageWriter = Pick<Storage, "setItem">;
 
@@ -37,6 +49,15 @@ export function readDarkTheme(storage: StorageReader): DarkTheme {
 
 export function writeDarkTheme(storage: StorageWriter, theme: DarkTheme): void {
   storage.setItem(DARK_THEME_STORAGE_KEY, theme);
+}
+
+export function readLightTheme(storage: StorageReader): LightTheme {
+  const stored = storage.getItem(LIGHT_THEME_STORAGE_KEY);
+  return LIGHT_THEMES.find((theme) => theme.id === stored)?.id ?? "parchment";
+}
+
+export function writeLightTheme(storage: StorageWriter, theme: LightTheme): void {
+  storage.setItem(LIGHT_THEME_STORAGE_KEY, theme);
 }
 
 export function resolveDarkMode(mode: AppearanceMode, systemPrefersDark: boolean): boolean {
@@ -77,30 +98,53 @@ export function readStoredDarkTheme(): DarkTheme {
   }
 }
 
-/* Warm is the base dark appearance, so it carries no attribute. */
+export function readStoredLightTheme(): LightTheme {
+  try {
+    return readLightTheme(window.localStorage);
+  } catch {
+    return "parchment";
+  }
+}
+
+/* Warm and Parchment are the base appearances, so they carry no attribute. */
 export function applyDarkTheme(theme: DarkTheme): void {
   const root = document.documentElement;
   if (theme === "warm") root.removeAttribute("data-dark-theme");
   else root.setAttribute("data-dark-theme", theme);
 }
 
-/* The turn only shows while the app is dark, and it is one snapshot animated
-   once, so it stays cheap on old phones. */
-export function switchDarkTheme(theme: DarkTheme): void {
+export function applyLightTheme(theme: LightTheme): void {
+  const root = document.documentElement;
+  if (theme === "parchment") root.removeAttribute("data-light-theme");
+  else root.setAttribute("data-light-theme", theme);
+}
+
+/* The turn only shows when the theme being changed is the one on screen, and
+   it is one snapshot animated once, so it stays cheap on old phones. */
+function turnTheme(visible: boolean, apply: () => void): void {
   const root = document.documentElement;
   const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-  if (!root.classList.contains("dark-mode") || reducedMotion || !document.startViewTransition) {
-    applyDarkTheme(theme);
+  if (!visible || reducedMotion || !document.startViewTransition) {
+    apply();
     return;
   }
   root.setAttribute("data-theme-turn", "");
-  void document.startViewTransition(() => applyDarkTheme(theme)).finished
+  void document.startViewTransition(apply).finished
     .finally(() => root.removeAttribute("data-theme-turn"));
+}
+
+export function switchDarkTheme(theme: DarkTheme): void {
+  turnTheme(document.documentElement.classList.contains("dark-mode"), () => applyDarkTheme(theme));
+}
+
+export function switchLightTheme(theme: LightTheme): void {
+  turnTheme(!document.documentElement.classList.contains("dark-mode"), () => applyLightTheme(theme));
 }
 
 export function applyStoredAppearance(): void {
   if (!document.documentElement.classList.contains("platform-ios")) return;
   applyDarkTheme(readStoredDarkTheme());
+  applyLightTheme(readStoredLightTheme());
   applyAppearanceMode(readStoredAppearanceMode());
 }
 

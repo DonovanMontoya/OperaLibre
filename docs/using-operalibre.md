@@ -358,9 +358,9 @@ The milestones are books finished (1, then 10, 25, and 100), a finished book of 
 
 The installed iPhone and Android apps include a **Games** tab. **Word Grid** is a five-letter word puzzle: it starts on the day's word, takes six guesses, and can be replaced with another word. **Chapter Match** is a board where you swap adjacent symbols to line up three or more. The tab is in the bottom navigation by default. Turn it off with **Games tab** under **Settings → Behavior**. The games run on the device and send nothing to the server.
 
-## Dark themes
+## Light and dark themes
 
-The iPhone and iPad apps can turn dark with your device or stay dark all the time; choose under **Settings → Display → Appearance**. **Dark theme** just below it sets how dark looks: **Warm**, **Graphite**, **Midnight**, **Reading Room**, or **True Black**. The choice is remembered on the device and applies only while the app is dark.
+The iPhone and iPad apps can turn dark with your device or stay light or dark all the time; choose under **Settings → Display → Appearance**. **Themes**, just below it, sets how each appearance looks, with the light themes (**Parchment**, **Linen**, **Sage**, **Harbor**, **Pure White**) beside the dark ones (**Warm**, **Graphite**, **Midnight**, **Reading Room**, **True Black**). Each choice is remembered on the device and applies only while the app is in that appearance, so with **System** you can pick one of each. The Shelf and Games stay dark in either appearance, and the Shelf takes on a dark shade of whichever theme is showing.
 
 ## Check for application updates
 
