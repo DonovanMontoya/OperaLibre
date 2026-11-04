@@ -105,6 +105,7 @@ export function LibraryPane({
   purchases,
   readerPreferences,
   refreshLibrary,
+  refreshShelf,
   resumeSelectedBook,
   selectBook,
   selectFromShelf,
@@ -162,6 +163,7 @@ export function LibraryPane({
   purchases: ReturnType<typeof usePurchases>;
   readerPreferences: ReturnType<typeof useReaderPreferences>;
   refreshLibrary: () => Promise<void>;
+  refreshShelf: () => Promise<void>;
   resumeSelectedBook: (book: Book) => void;
   selectBook: (book: Book) => void;
   selectFromShelf: (book: Book) => void;
@@ -223,6 +225,7 @@ export function LibraryPane({
     brokenLibationAccounts,
     canBrowseLibation,
     displayedLibationJobs,
+    isRefreshingAudible,
     downloadAllLibationJob,
     libationAllPending,
     libationBooks,
@@ -250,6 +253,7 @@ export function LibraryPane({
     visibleLibationBooks,
     audibleBookCount
   } = purchases;
+  const checkingAudible = showAudiblePurchases && isRefreshingAudible;
   const {
     carPlaybackBook,
     takeOverFromCar
@@ -557,10 +561,11 @@ export function LibraryPane({
           ) : null}
           <button
             className="icon-button refresh-icon-button"
-            aria-label={capabilities.administration ? "Rescan library" : "Refresh library"}
-            onClick={() => void refreshLibrary()}
+            aria-label={librarySource !== "local" ? "Refresh purchases" : capabilities.administration ? "Rescan library" : "Refresh library"}
+            aria-busy={checkingAudible}
+            onClick={() => void (librarySource !== "local" ? refreshShelf() : refreshLibrary())}
           >
-            <RefreshCcw size={16} />
+            <RefreshCcw size={16} className={checkingAudible ? "spin-icon" : undefined} />
           </button>
           <div className="user-menu-wrap" ref={userMenuWrapRef}>
             <button

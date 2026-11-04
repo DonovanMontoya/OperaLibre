@@ -1522,6 +1522,7 @@ function MainApp({
     libroAccounts,
     libroOnDevice,
     loadLibationBooks,
+    refreshAudiblePurchases,
     setLibroRefreshKey
   } = purchases;
 
@@ -1964,6 +1965,7 @@ function MainApp({
     persistProgress,
     playbackBookIdRef,
     reconcileServerBookGains,
+    refreshAudiblePurchases,
     setBooks,
     setCurrentTrackId,
     setError,
@@ -2274,6 +2276,7 @@ function MainApp({
         purchases={purchases}
         readerPreferences={readerPreferences}
         refreshLibrary={refreshLibrary}
+        refreshShelf={refreshShelf}
         resumeSelectedBook={resumeSelectedBook}
         continueReadingBook={continueReadingBook}
         selectBook={shelfExpanded ? (book: Book) => openShelfBook(book.id) : selectBook}
