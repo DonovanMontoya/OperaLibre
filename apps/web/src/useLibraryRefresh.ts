@@ -33,6 +33,7 @@ export function useLibraryRefresh({
   persistProgress,
   playbackBookIdRef,
   reconcileServerBookGains,
+  refreshAudiblePurchases,
   setBooks,
   setCurrentTrackId,
   setError,
@@ -63,6 +64,7 @@ export function useLibraryRefresh({
   persistProgress: () => Promise<void>;
   playbackBookIdRef: RefObject<string | null>;
   reconcileServerBookGains: (payload: readonly Book[]) => void;
+  refreshAudiblePurchases: () => Promise<void>;
   setBooks: Dispatch<SetStateAction<Book[]>>;
   setCurrentTrackId: Dispatch<SetStateAction<string | null>>;
   setError: Dispatch<SetStateAction<string | null>>;
@@ -164,10 +166,10 @@ export function useLibraryRefresh({
             try { await (libroOnDevice ? refreshLibroDevice() : refreshLibroAccount()); }
             finally { setLibroRefreshKey(key => key + 1); }
           }] : []),
-          ...(canBrowseLibation ? [loadLibationBooks] : [])
+          ...(canBrowseLibation ? [refreshAudiblePurchases] : [])
         ]);
       } else if (librarySource === "audible") {
-        await loadLibationBooks();
+        await refreshAudiblePurchases();
       } else if (librarySource === "libro") {
         await (libroOnDevice ? refreshLibroDevice() : refreshLibroAccount());
         setLibroRefreshKey(key => key + 1);
@@ -177,7 +179,7 @@ export function useLibraryRefresh({
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : "Shelf refresh failed. Please try again.");
     }
-  }, [librarySource, libroOnDevice, libroAccounts, canBrowseLibation, loadBooks, loadLibationBooks, setLibroRefreshKey, setError]);
+  }, [librarySource, libroOnDevice, libroAccounts, canBrowseLibation, loadBooks, refreshAudiblePurchases, setLibroRefreshKey, setError]);
 
   return {
     applyAdminLibraryChange,

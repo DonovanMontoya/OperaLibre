@@ -102,7 +102,7 @@ When configured, an admin sees Libation-aware controls:
 - **Accounts** — connect or reconnect Audible, view account health and refresh times, rename accounts added in OperaLibre, and choose automatic imports. Owners can disconnect accounts added in OperaLibre.
 - **Account browsing** — filter or sort by account label. **All accounts** keeps duplicate titles visible as separate entries carrying their friendly account label.
 - **Library** — the Audible library Libation knows about; it loads automatically when the Audible tab opens.
-- **Refresh Audible** — ask Libation to check Audible for new purchases. The server also refreshes every 24 hours by default. Administrators can refresh at any time; reader accounts get three refreshes per rolling hour by default.
+- **Refresh Audible** — ask Libation to check Audible for new purchases. In **Get books**, the refresh button (or pulling down on the list in the phone apps) does this too, and the list updates when the check finishes. The server also refreshes every 24 hours by default. Administrators can refresh at any time; reader accounts get three refreshes per rolling hour by default.
 - **Add to server** — add a selected Audible title to the OperaLibre library. Progress shows as a background job.
 - **Rescan** — automatic after a successful download; can also be triggered manually.
 
