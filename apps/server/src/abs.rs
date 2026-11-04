@@ -691,15 +691,16 @@ pub(crate) async fn abs_library_items(
             .filter(|book| selected_ids.contains(&book.id))
             .enumerate()
         {
-            check_catalogue_book(book)?;
+            spool.begin_item();
             if index > 0 {
                 spool.bytes(b",")?;
             }
             spool.json(&library_item(
-                &enrichment.apply(book.clone()),
+                &enrichment.apply_catalogue(book)?,
                 &media_token,
                 false,
             ))?;
+            spool.finish_item()?;
         }
         spool
             .bytes(format!("],\"total\":{total},\"page\":{page},\"limit\":{limit}}}").as_bytes())?;
@@ -865,13 +866,14 @@ pub(crate) async fn abs_search(
             .filter(|book| selected_ids.contains(&book.id))
             .enumerate()
         {
-            check_catalogue_book(book)?;
+            spool.begin_item();
             if index > 0 {
                 spool.bytes(b",")?;
             }
             spool.json(&AbsSearchResult {
-                library_item: library_item(&enrichment.apply(book.clone()), &media_token, false),
+                library_item: library_item(&enrichment.apply_catalogue(book)?, &media_token, false),
             })?;
+            spool.finish_item()?;
         }
         spool.bytes(b"]}")?;
         spool.response("application/json", None, None)
@@ -946,15 +948,16 @@ pub(crate) async fn abs_author(
             .filter(|book| ids.contains(&book.id))
             .enumerate()
         {
-            check_catalogue_book(book)?;
+            spool.begin_item();
             if index > 0 {
                 spool.bytes(b",")?;
             }
             spool.json(&library_item(
-                &enrichment.apply(book.clone()),
+                &enrichment.apply_catalogue(book)?,
                 &session.media_token,
                 false,
             ))?;
+            spool.finish_item()?;
         }
         spool.bytes(b"]}")?;
         spool.response("application/json", None, None)

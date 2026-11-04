@@ -571,11 +571,12 @@ async fn catalogue_books_response(
             .take(limit)
             .enumerate()
         {
-            check_catalogue_book(book)?;
+            spool.begin_item();
             if index > 0 {
                 spool.bytes(b",")?;
             }
-            spool.json(&enrichment.apply(book.clone()))?;
+            spool.json(&enrichment.apply_catalogue(book)?)?;
+            spool.finish_item()?;
         }
         spool.bytes(b"]")?;
         let suffix = next_cursor

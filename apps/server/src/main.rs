@@ -99,6 +99,8 @@ mod sync;
 mod sync_report;
 mod sync_schedule;
 #[cfg(test)]
+mod test_alloc;
+#[cfg(test)]
 mod unit_tests;
 mod update_channel;
 mod update_manifest;

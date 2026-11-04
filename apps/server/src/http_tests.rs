@@ -8844,6 +8844,11 @@ async fn oversized_catalogue_metadata_fails_without_partial_feeds_and_releases_s
                 .unwrap()
                 .contains("metadata")
         );
+        assert!(
+            refused.body.len() < 4096,
+            "{route} published {} bytes with the 413",
+            refused.body.len()
+        );
     }
     server.state.library.write().await.books[0].description = Some("A normal description".into());
     let good = server.get("/api/books", &owner).await;
