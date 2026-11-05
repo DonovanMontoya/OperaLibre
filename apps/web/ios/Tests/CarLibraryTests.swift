@@ -3,7 +3,7 @@ import Foundation
 /// Checks the arithmetic the car screen resumes a book with.
 ///
 /// Run it the same way as the other checks here:
-/// `swiftc apps/web/ios/Tests/CarLibraryTests.swift apps/web/ios/App/App/CarLibrary.swift -o /tmp/carlibrary && /tmp/carlibrary`
+/// `swiftc apps/web/ios/Tests/CarLibraryTests.swift apps/web/ios/App/App/CarLibrary.swift apps/web/ios/App/App/StoredRecords.swift -o /tmp/carlibrary && /tmp/carlibrary`
 @main
 struct CarLibraryTests {
     static func book(
@@ -127,6 +127,23 @@ struct CarLibraryTests {
         newerSnapshot.updatedAt = 30
         precondition(newerSnapshot.resuming(book(positionSeconds: 800), sessions: [rewind]).resumePositionSeconds == 800,
                      "a newer library snapshot supersedes an old drive")
+
+        // A session saved in a shape this build cannot read survives every
+        // later save, so the drive it holds still reaches the server.
+        let saved = try! JSONEncoder().encode([advancing])
+        var mixed = try! JSONSerialization.jsonObject(with: saved) as! [Any]
+        mixed.append(["bookId": "future", "listenedFrom": "a newer app"])
+        var stored = StoredRecordList<CarPlaybackSession>(
+            decoding: try! JSONSerialization.data(withJSONObject: mixed)
+        )
+        precondition(stored.records.count == 1 && stored.records[0].bookPositionSeconds == 205,
+                     "readable sessions decode beside an unreadable one")
+        stored.records.removeAll()
+        let rewritten = try! JSONSerialization.jsonObject(with: stored.encoded()!) as! [[String: String]]
+        precondition(rewritten == [["bookId": "future", "listenedFrom": "a newer app"]],
+                     "an unreadable session is written back unchanged")
+        precondition(StoredRecordList<CarPlaybackSession>(decoding: StoredRecordList<CarPlaybackSession>().encoded()).records.isEmpty,
+                     "signing out leaves nothing behind")
 
         // Siri must restore the last device session without selecting another
         // account's book or silently restarting a completed audiobook.

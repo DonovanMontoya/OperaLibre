@@ -93,3 +93,17 @@ for (file, size) in zip([info(a, attempt: "retry"), info(b, attempt: "retry")], 
 }
 precondition(status() == "completed")
 print("PASS new attempt publishes while stale attempt is rejected")
+// A job this build cannot decode is kept, and so are the readable jobs beside
+// it, instead of one bad record wiping every queued download.
+try seed([-1, -1])
+var raw = try JSONSerialization.jsonObject(with: defaults.data(forKey: "operalibre.background-download-jobs")!) as! [String: Any]
+raw["future"] = ["title": "from another version"]
+defaults.set(try JSONSerialization.data(withJSONObject: raw), forKey: "operalibre.background-download-jobs")
+precondition(manager.mutateJobs { jobs -> Bool in
+    jobs["control"]!.state = "queued"
+    return jobs["book"] != nil && jobs["future"] == nil
+})
+let kept = try JSONSerialization.jsonObject(with: defaults.data(forKey: "operalibre.background-download-jobs")!) as! [String: Any]
+precondition(kept["future"] as? [String: String] == ["title": "from another version"])
+precondition(manager.mutateJobs { $0["control"]!.state } == "queued")
+print("PASS unreadable job is preserved with the readable jobs")
