@@ -19456,6 +19456,12 @@ html.native-app.side-rail .native-shell {
   --mini-player-height: 0px !important;
 }
 
+/* A bottom sheet runs edge to edge under that column, so a tall one stops
+   below the clock; otherwise the clock covers its close button. */
+html.native-app.side-rail .modal-card {
+  max-height: min(calc(var(--native-viewport-height) - var(--status-h) - 12px), calc(100dvh - var(--rail-top) - 8px));
+}
+
 /* WebKit's overlay scroll indicator sits at the safe-area edge. Give the
    unfolded book's scrolling content clearance inside that edge as well;
    scrollbar-gutter alone does not reserve space for overlay scrollbars. */
