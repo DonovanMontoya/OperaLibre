@@ -74,7 +74,8 @@ function attach(audio: ControlElement, trackId: string, pending?: number) {
       wantsPlayback: () => false,
       gain: () => 1,
       sleepTimerSeconds: () => 0,
-      sleepAtChapterEnd: () => false
+      sleepAtChapterEnd: () => false,
+      adopted: () => undefined
     },
     () => undefined,
     () => undefined,

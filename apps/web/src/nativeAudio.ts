@@ -40,6 +40,13 @@ export type NativeAudioQueueTrack = {
   }>;
 };
 
+/** A player that kept running through a WebView reload, as the page takes it over. */
+export type NativeAudioAdoptedSession = {
+  positionSeconds: number;
+  sleepTimerSeconds: number;
+  sleepAtChapterEnd: boolean;
+};
+
 type NativeAudioRecoveryIdentity = {
   source: string;
   settings: () => { rate: number; volume: number };
@@ -64,6 +71,12 @@ type NativeAudioRecoveryIdentity = {
    */
   sleepTimerSeconds: () => number;
   sleepAtChapterEnd: () => boolean;
+  /**
+   * The page's first attachment took over a player that was already playing
+   * this track. React must drop the pending seek it restored (the native
+   * clock is newer) and show the native sleep timer before the first state tick.
+   */
+  adopted: (session: NativeAudioAdoptedSession) => void;
 };
 
 interface NativeAudioPlugin {
@@ -101,6 +114,11 @@ interface NativeAudioPlugin {
     }>;
   }): Promise<void>;
   getRecoveryState(options: { scopeKey: string }): Promise<Partial<NativeAudioRecoveryState>>;
+  getAdoptableSession(options: {
+    scopeKey: string;
+    trackId: string;
+    url: string;
+  }): Promise<Partial<NativeAudioAdoptedSession>>;
   /**
    * Tears the player down. `releaseSession` (default true) also gives up the
    * audio session so other apps' audio can resume; the attach cleanup passes
@@ -128,6 +146,32 @@ interface NativeAudioPlugin {
 }
 
 const NativeAudio = registerPlugin<NativeAudioPlugin>("NativeAudio");
+
+/**
+ * iOS may discard the WebView's content process during a long background
+ * listen while AVPlayer plays on, and Capacitor then reloads the page. Only
+ * the first attachment of a page can find a player it did not load, so only
+ * it asks whether to take that player over rather than load the book again.
+ */
+let firstAttachmentOfPage = true;
+
+async function adoptableNativeSession(
+  scopeKey: string,
+  trackId: string,
+  url: string
+): Promise<NativeAudioAdoptedSession | null> {
+  // Any failure to answer means loading as usual; the page must never be
+  // left waiting on this question with nothing loaded.
+  const session: Partial<NativeAudioAdoptedSession> = await NativeAudio.getAdoptableSession({ scopeKey, trackId, url })
+    .then((answer) => answer ?? {}, () => ({}));
+  return Number.isFinite(session.positionSeconds)
+    ? {
+        positionSeconds: session.positionSeconds!,
+        sleepTimerSeconds: Number.isFinite(session.sleepTimerSeconds) ? Math.max(0, session.sleepTimerSeconds!) : 0,
+        sleepAtChapterEnd: session.sleepAtChapterEnd === true
+      }
+    : null;
+}
 
 /**
  * Where each control element's last attachment left AVPlayer. The clock dies
@@ -281,6 +325,15 @@ export function attachNativeAudioPlayer(
   let endedFromNative = false;
   let nativeIsPlaying = false;
   let fellBack = false;
+  // Whether this attachment loaded or took over the engine, so its cleanup
+  // tears down only a player it owns. One disposed while still deciding must
+  // not stop the player the next attachment is about to take over.
+  let engaged = false;
+  const askToAdopt = firstAttachmentOfPage;
+  // Until the decision, AVPlayer's ticks belong to a player this page has not
+  // claimed; applying one would announce metadata and let React's restored
+  // pending seek drag the live player back.
+  let deciding = askToAdopt;
   // The queue track AVPlayer is on, as far as this attachment knows. After an
   // accepted trackChanged, React remounts the media element and re-attaches
   // for the new track; until then this element still represents the previous
@@ -358,6 +411,7 @@ export function attachNativeAudioPlayer(
     // selected settings own every native load, including async queue rebuilds.
     const settings = recovery.settings();
     applyNativePlaybackSettings(audio, settings);
+    engaged = true;
     safely(NativeAudio.load({
       url,
       positionSeconds: nativeStartupPosition(recovery.pendingPosition(), audio.currentTime),
@@ -378,18 +432,22 @@ export function attachNativeAudioPlayer(
   };
 
   audio.muted = true;
-  // Unconditional: passing 0 also disarms a timer left behind by a WebView
-  // reload, where the detach cleanup (and its stop()) never ran.
-  void NativeAudio.setSleepTimer({
-    seconds: Math.max(0, recovery.sleepTimerSeconds()),
-    atChapterEnd: recovery.sleepAtChapterEnd()
-  }).catch(() => undefined);
+  // Unconditional for every load: passing 0 also disarms a timer left behind
+  // by a WebView reload, where the detach cleanup (and its stop()) never ran.
+  // A player taken over keeps its timer instead.
+  const syncSleepTimer = () => {
+    void NativeAudio.setSleepTimer({
+      seconds: Math.max(0, recovery.sleepTimerSeconds()),
+      atChapterEnd: recovery.sleepAtChapterEnd()
+    }).catch(() => undefined);
+  };
+  if (!askToAdopt) syncSleepTimer();
   audio.addEventListener("ratechange", rateChange);
   audio.addEventListener("volumechange", volumeChange);
   audio.addEventListener("seeked", seeked);
 
   listenerRegistrations.push(NativeAudio.addListener("state", (state) => {
-    if (disposed || fellBack) return;
+    if (disposed || fellBack || deciding) return;
     // A clock for another queue track belongs to the element React is about
     // to mount for it, not to this one. Prefer the payload's own track id;
     // fall back to the last accepted trackChanged when the native side does
@@ -491,7 +549,23 @@ export function attachNativeAudioPlayer(
   // AVPlayer is the only media loader; its ready event initializes the UI clock.
   startAfterListeners(listenerRegistrations, () => !disposed && !fellBack, () => {
     listening = true;
-    load();
+    if (!askToAdopt) {
+      load();
+      return;
+    }
+    void adoptableNativeSession(recovery.scopeKey, recovery.trackId, recovery.source).then((session) => {
+      if (disposed || fellBack) return;
+      firstAttachmentOfPage = false;
+      if (session && !carPlaybackOwnsEngine()) {
+        engaged = true;
+        recovery.adopted(session);
+        deciding = false;
+        return;
+      }
+      deciding = false;
+      syncSleepTimer();
+      load();
+    });
   });
 
   return () => {
@@ -513,6 +587,6 @@ export function attachNativeAudioPlayer(
     // Keep the audio session: this cleanup runs on every track change, and
     // the next attach is moments away. App.tsx releases it when the player
     // closes with nothing to follow.
-    void stopNativeUnlessCarOwns({ releaseSession: false });
+    if (engaged) void stopNativeUnlessCarOwns({ releaseSession: false });
   };
 }
