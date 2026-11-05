@@ -645,15 +645,11 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
     private func mutateJobs<T>(_ mutation: (inout [String: StoredBackgroundJob]) -> T) -> T {
         lock.lock()
         defer { lock.unlock() }
-        let jobs: [String: StoredBackgroundJob]
-        if let data = UserDefaults.standard.data(forKey: jobsKey) {
-            jobs = (try? JSONDecoder().decode([String: StoredBackgroundJob].self, from: data)) ?? [:]
-        } else {
-            jobs = [:]
-        }
-        var mutableJobs = jobs
-        let result = mutation(&mutableJobs)
-        if let data = try? JSONEncoder().encode(mutableJobs) {
+        // A job another app version saved in a shape this one cannot read is
+        // kept as it is, along with every other job, its files and its tasks.
+        var jobs = StoredRecordMap<StoredBackgroundJob>(decoding: UserDefaults.standard.data(forKey: jobsKey))
+        let result = mutation(&jobs.records)
+        if let data = jobs.encoded() {
             UserDefaults.standard.set(data, forKey: jobsKey)
         }
         return result
