@@ -10,7 +10,7 @@ import {
   Volume2,
   X
 } from "lucide-react";
-import type { Dispatch, FormEvent, SetStateAction } from "react";
+import { useLayoutEffect, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { useModalFocus } from "./useModalFocus";
 import type { ChapterSegment } from "./chapters";
 import { displayPublishedDate } from "./bookMetadata";
@@ -259,6 +259,15 @@ export function ChapterSheet({
   setNativePlayerSheet: Dispatch<SetStateAction<NativePlayerSheet>>;
 }) {
   const dialogRef = useModalFocus<HTMLElement>(closeNativePlayerSheet);
+  // Open on the playing chapter, centred in the sheet. Only on open: following
+  // playback afterwards would yank the list away from someone browsing it.
+  useLayoutEffect(() => {
+    const sheet = dialogRef.current;
+    const row = sheet?.querySelector<HTMLElement>(".chapter-sheet-options button.selected");
+    if (!sheet || !row) return;
+    const offset = row.getBoundingClientRect().top - sheet.getBoundingClientRect().top;
+    sheet.scrollTop += offset - (sheet.clientHeight - row.offsetHeight) / 2;
+  }, [dialogRef]);
   return (
     <div className="sleep-sheet-layer" role="presentation">
       <button
