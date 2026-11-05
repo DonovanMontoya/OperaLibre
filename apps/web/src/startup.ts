@@ -89,3 +89,25 @@ export function startupDestinationAfterLoad(
   // restore reveals it once they are known.
   return restoredBookId ? { tab: "reading", reveal: false } : { tab: "shelf", reveal: true };
 }
+
+/**
+ * A launch often reaches the server a moment after the app opens, while the
+ * network, a VPN such as Tailscale, or local-network access is still waking.
+ * The library treats the server as reachable and retries quickly. It switches
+ * to offline after three failures in a row, after ten seconds of failures
+ * (two requests that each wait out their timeout), or at once when the device
+ * reports no network. It then keeps checking back, more slowly.
+ */
+const LIBRARY_OFFLINE_AFTER_FAILURES = 3;
+const LIBRARY_OFFLINE_AFTER_MS = 10_000;
+const LIBRARY_RECONNECT_MAX_MS = 30_000;
+
+export function libraryReconnectDelayMs(failures: number) {
+  return Math.min(LIBRARY_RECONNECT_MAX_MS, 1_000 * 2 ** Math.max(0, failures - 1));
+}
+
+export function libraryOfflineConfirmed(failures: number, deviceOnline: boolean, failingForMs: number) {
+  return !deviceOnline
+    || failures >= LIBRARY_OFFLINE_AFTER_FAILURES
+    || failingForMs >= LIBRARY_OFFLINE_AFTER_MS;
+}
