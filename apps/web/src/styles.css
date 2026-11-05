@@ -13690,9 +13690,12 @@ html.native-app.platform-ios:not(.dark-mode)[data-light-theme="pure-white"] .pro
   background-image: none;
 }
 
-/* Warm-tinted surfaces that are not tokens because light mode shares them. */
+/* Warm-tinted surfaces that are not tokens because light mode shares them.
+   The mini player is dark lacquer in light mode too, so the light themes
+   give it their tinted shelf. */
 html.native-app.platform-ios.dark-mode[data-dark-theme] .spine-tabs,
-html.native-app.platform-ios.dark-mode[data-dark-theme] .mini-player {
+html.native-app.platform-ios.dark-mode[data-dark-theme] .mini-player,
+html.native-app.platform-ios:not(.dark-mode)[data-light-theme] .mini-player {
   background: var(--shelf-low);
 }
 
