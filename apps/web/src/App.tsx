@@ -1719,6 +1719,7 @@ function MainApp({
     playPendingBookIdRef,
     playPendingRef,
     playWhenTrackLoads,
+    playbackActionVersionRef,
     playbackBook,
     playbackBookKey,
     playbackGain,
