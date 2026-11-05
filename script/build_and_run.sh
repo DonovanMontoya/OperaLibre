@@ -37,7 +37,39 @@ if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "could not read the server version from apps/server/Cargo.toml" >&2
   exit 1
 fi
-pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+# The app binds a fixed port. Stop the copy this checkout built if it holds
+# that port, and never an installed OperaLibre or another checkout's build.
+APP_PORT=49201
+APP_URL="http://127.0.0.1:$APP_PORT/index.html"
+
+port_owner() {
+  /usr/sbin/lsof -nP -t -iTCP:"$APP_PORT" -sTCP:LISTEN 2>/dev/null | head -n 1 || true
+}
+
+is_this_build() {
+  local macos_dir
+  macos_dir="$(cd "$APP_MACOS" 2>/dev/null && pwd -P)" || return 1
+  [[ "$(ps -o comm= -p "$1")" == "$macos_dir/$APP_NAME" ]]
+}
+
+stop_previous_build() {
+  local pid
+  pid="$(port_owner)"
+  [[ -n "$pid" ]] || return 0
+  if ! is_this_build "$pid"; then
+    echo "port $APP_PORT is held by $(ps -o comm= -p "$pid") (pid $pid); quit it first" >&2
+    exit 1
+  fi
+  kill "$pid"
+  for _ in {1..50}; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  echo "the previous build (pid $pid) did not quit" >&2
+  exit 1
+}
+
+stop_previous_build
 
 npm run build -w @operalibre/web
 swift build --product "$APP_NAME"
@@ -113,7 +145,14 @@ case "$MODE" in
     ;;
   --verify|verify)
     open_app
-    sleep 1
-    pgrep -x "$APP_NAME" >/dev/null
+    for _ in {1..100}; do
+      if /usr/bin/curl -fs -o /dev/null "$APP_URL"; then
+        is_this_build "$(port_owner)"
+        exit
+      fi
+      sleep 0.1
+    done
+    echo "the app did not start serving $APP_URL" >&2
+    exit 1
     ;;
 esac
