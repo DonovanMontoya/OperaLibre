@@ -43,6 +43,7 @@ import {
   getServerStorageKey,
   getStoredMediaToken,
   getStoredToken,
+  droppedUnsupportedServer,
   hasUserConfiguredServer,
   isNetworkError,
   isLocalMode,
@@ -196,6 +197,10 @@ type AuthState =
 function initialAuthState(): AuthState {
   if (isDemoMode()) return { phase: "ready", user: DEMO_USER };
   if (isLocalMode()) return { phase: "ready", user: DEVICE_USER };
+  // A saved connection to a server kind the app no longer supports was just
+  // forgotten. Show the server picker, even on a phone, so the reader learns
+  // why their library is gone instead of landing in an empty device library.
+  if (droppedUnsupportedServer()) return { phase: "server" };
   if (!hasUserConfiguredServer()) {
     // A phone with no server configured opens straight into the on-device
     // library rather than gating on server setup: someone who installs the
@@ -304,6 +309,12 @@ export default function App() {
       const offlineUser = getOfflineUser();
       setAuthState(offlineUser ? { phase: "ready", user: offlineUser } : { phase: "login" });
     }
+  }, []);
+
+  useEffect(() => {
+    // CarPlay keeps its own copy of the library; one from a forgotten server
+    // must not stay browsable there.
+    if (droppedUnsupportedServer()) void clearCarLibrary().catch(console.error);
   }, []);
 
   useEffect(() => {

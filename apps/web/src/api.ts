@@ -41,6 +41,7 @@ import {
 } from "./serverAddress";
 import { readServerId, refuseDifferentServer } from "./serverIdentity";
 import { addressKey, CredentialVault, reconnectCandidates } from "./addressCredentials";
+import { dropRemovedServerConnection } from "./removedServers";
 import {
   DEMO_USER,
   demoMediaUrl,
@@ -279,6 +280,7 @@ export async function reconnectUsingServerAliases(): Promise<boolean> {
 }
 
 let storedServerUrl: string | null = null;
+let droppedRemovedServer = false;
 
 function readStoredServerUrl(): string | null {
   if (storedServerUrl !== null) {
@@ -287,6 +289,14 @@ function readStoredServerUrl(): string | null {
   if (typeof window === "undefined") {
     return null;
   }
+  // Before anything reads the saved address: a connection to a server kind
+  // the app no longer supports must not be treated as an OperaLibre server.
+  droppedRemovedServer = dropRemovedServerConnection(window.localStorage, [
+    SERVER_URL_STORAGE_KEY,
+    SERVER_IDENTITY_URL_STORAGE_KEY,
+    SERVER_ID_STORAGE_KEY,
+    SERVER_ALIASES_STORAGE_KEY
+  ]);
   const stored = window.localStorage.getItem(SERVER_URL_STORAGE_KEY) ?? "";
   storedServerUrl = usesNativeCredentialStorage()
     ? upgradeStoredNativeServerAddress(stored)
@@ -296,8 +306,20 @@ function readStoredServerUrl(): string | null {
   }
   // Opening the vault can move the active address (see credentialVault), so
   // it happens before the address is first handed out.
-  credentialVault();
+  const credentials = credentialVault();
+  // The dropped connection's sign-ins belong to that server alone.
+  if (droppedRemovedServer) credentials.forgetAll();
   return storedServerUrl || null;
+}
+
+/**
+ * Whether this launch forgot a saved connection to a server kind the app no
+ * longer supports. The app then opens at the server picker, on every
+ * platform, and says why.
+ */
+export function droppedUnsupportedServer(): boolean {
+  readStoredServerUrl();
+  return droppedRemovedServer;
 }
 
 // The server address, ignoring the on-device and demo modes layered over it.
@@ -460,7 +482,9 @@ function credentialVault(): CredentialVault {
   if (vault) return vault;
   vault = new CredentialVault(
     typeof window === "undefined" ? null : window.localStorage,
-    persistsAuthToken,
+    // Native shells have no cookie session, so the token must be kept; a
+    // browser tab relies on the server's session cookie.
+    usesNativeCredentialStorage,
     originalServerUrl
   );
   // Builds from before sign-ins were kept per address had one, and could be
@@ -474,12 +498,6 @@ function credentialVault(): CredentialVault {
 
 export function getStoredToken(): string | null {
   return credentialVault().get(getServerUrl()).token ?? null;
-}
-
-// Whether the auth token lives in localStorage. Native shells have no cookie
-// session, so they must; a browser tab relies on the server's session cookie.
-function persistsAuthToken(): boolean {
-  return usesNativeCredentialStorage();
 }
 
 /** Save the active address's sign-in; null ends it, media credential included. */

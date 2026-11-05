@@ -3,6 +3,7 @@ import { Capacitor } from "@capacitor/core";
 import { BookOpen, ChevronRight, ExternalLink, LogIn, ShieldCheck, Smartphone } from "lucide-react";
 import { useState } from "react";
 import {
+  droppedUnsupportedServer,
   getServerUrl,
   SERVER_SETUP_GUIDE_URL,
   login,
@@ -30,6 +31,7 @@ export function ServerSetup({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const nativeApp = Capacitor.isNativePlatform();
+  const unsupportedServerDropped = droppedUnsupportedServer();
 
   // The second way in is always one that needs no server: the device library
   // on native apps (a way back to it when this screen was opened from there),
@@ -82,6 +84,13 @@ export function ServerSetup({
           <span className="connect-wordmark">OperaLibre</span>
         </div>
         <h1>Connect your library</h1>
+        {unsupportedServerDropped ? (
+          <p className="connect-notice" role="status">
+            OperaLibre now connects only to OperaLibre servers, so the server
+            you used before was disconnected. Enter an OperaLibre server
+            address to continue.
+          </p>
+        ) : null}
 
         <form className="connect-form" onSubmit={submit}>
           <label>
