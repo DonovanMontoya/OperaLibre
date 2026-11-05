@@ -608,6 +608,34 @@ fn legacy_permissions_promote_the_first_admin_to_owner() {
 }
 
 #[test]
+fn unreadable_permissions_version_does_not_rerun_the_admin_migration() {
+    let root = tempfile::tempdir().unwrap();
+    let connection = super::db::open(&root.path().join("operalibre.db")).unwrap();
+    assert_eq!(
+        super::read_users_rows(&connection)
+            .unwrap()
+            .permissions_version,
+        0
+    );
+
+    super::db::write_document(&connection, super::USERS_PERMISSIONS_VERSION_DOCUMENT, "1").unwrap();
+    assert_eq!(
+        super::read_users_rows(&connection)
+            .unwrap()
+            .permissions_version,
+        1
+    );
+
+    super::db::write_document(
+        &connection,
+        super::USERS_PERMISSIONS_VERSION_DOCUMENT,
+        "one",
+    )
+    .unwrap();
+    assert!(super::read_users_rows(&connection).is_err());
+}
+
+#[test]
 fn interrupted_libation_approvals_preserve_the_decision() {
     let mut store: super::LibationRequestStore = serde_json::from_value(serde_json::json!({
         "requests": [
