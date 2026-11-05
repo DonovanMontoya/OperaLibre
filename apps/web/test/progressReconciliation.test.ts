@@ -96,7 +96,7 @@ function fixture() {
     "./localLibrary": { getDeviceBooks: () => [], getDeviceProgress: () => null, saveDeviceProgress: noop,
       mergeDeviceAndServerBooks: (books: unknown) => books },
     "./api": { getServerStorageKey: () => "server", getProgress: async () => server,
-      getBooks: async () => [book], getLibationBooks: async () => [], isServerNotReadyError: () => false,
+      getBooks: async () => [book], getLibationBooks: async () => [], isNetworkError: () => false, isServerBusyError: () => false, isServerNotReadyError: () => false,
       saveProgress: async (_book: string, progress: Progress, options: unknown) => {
         writes.push({ progress, options });
         return { ...server, trackId: progress.trackId, positionSeconds: progress.positionSeconds,
@@ -118,7 +118,7 @@ function fixture() {
     storeCanonicalServerProgress: (_book: unknown, progress: Progress) => canonical.push(progress), updateBookProgress: noop,
     audioRef: ref({ currentTime: 0, duration: 7200, paused: true }), initialLibraryHydrated: ref(true),
     isOperaLibre: false, libraryRequestGenerationRef: ref(0), libraryRetryTimerRef: ref(null), loadBooksRef: ref(noop),
-    localMode: false, native: false, nativeAudioRef: ref(false), nativePlaybackPlayingRef: ref(false),
+    localMode: false, native: false, nativeAudioRef: ref(false), nativePlaybackPlayingRef: ref(false), onServerReachable: noop,
     reconcileServerBookGains: noop, setBooks: noop, setError: noop, setIsLoading: noop, setIsOffline: noop,
     setLibationBooks: noop, setLibationBooksLoaded: noop, setNativeTab: noop, setPlaybackBookId: noop,
     setSelectedBookId: noop, setStartupViewReady: noop, startupNavigationResolved: ref(true),

@@ -48,7 +48,7 @@ function fixture(saved: string | null = "playing", selected = "browsed") {
     audioRef: ref(null), currentUser: { id: "fixture" }, initialLibraryHydrated: ref(false),
     isOperaLibre: false, libraryRequestGenerationRef: ref(0), libraryRetryTimerRef: ref(null),
     loadBooksRef: ref(noop), localMode: false, native: true, nativeAudioRef: ref(true),
-    nativePlaybackPlayingRef: ref(false), reconcileServerBookGains: noop,
+    nativePlaybackPlayingRef: ref(false), onServerReachable: noop, reconcileServerBookGains: noop,
     setBooks: noop, setError: noop, setIsLoading: (loading: boolean) => { if (!loading) cachedApplied.resolve(); },
     setIsOffline: noop, setLibationBooks: noop, setLibationBooksLoaded: noop,
     setNativeTab: navigation.setStartupTab, startupNavigationOverridden: navigation.startupNavigationOverridden,
@@ -65,7 +65,8 @@ function fixture(saved: string | null = "playing", selected = "browsed") {
     "./localLibrary": { migrateDeviceLibraryFileExtensions: async () => {}, backfillDeviceLibraryMetadata: async () => {},
       getDeviceBooks: () => [], mergeDeviceAndServerBooks: (books: unknown) => books },
     "./offline": { getCachedLibrary: () => cache.promise, cacheLibrary: async () => {} },
-    "./api": { getBooks: () => live.promise, isServerNotReadyError: () => false }
+    "./api": { getBooks: () => live.promise, isNetworkError: () => false, isServerBusyError: () => false,
+      isServerNotReadyError: () => false }
   })(options).loadBooks;
   return { options, load, cache, live, cachedApplied, paint, visible,
     connect: () => { bridgeReady = true; paint(); },
