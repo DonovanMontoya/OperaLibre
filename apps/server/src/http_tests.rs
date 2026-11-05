@@ -6102,6 +6102,18 @@ async fn unreadable_sync_queue_is_kept_aside_and_startup_continues() {
         std::fs::read(queue.with_extension("json.unreadable")).unwrap(),
         br#"[{"id":"from-a-newer-version"}]"#
     );
+
+    // A second unreadable queue is kept beside the first, not over it.
+    std::fs::write(&queue, b"not json").unwrap();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    assert_eq!(
+        std::fs::read(queue.with_extension("json.unreadable")).unwrap(),
+        br#"[{"id":"from-a-newer-version"}]"#
+    );
+    assert_eq!(
+        std::fs::read(queue.with_extension("json.unreadable.1")).unwrap(),
+        b"not json"
+    );
 }
 
 #[tokio::test]

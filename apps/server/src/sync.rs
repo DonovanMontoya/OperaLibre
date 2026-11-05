@@ -457,11 +457,17 @@ pub(crate) async fn restore_queue(state: &AppState) -> Result<(), ApiError> {
     // The server starts without a queue it cannot read, such as one written by
     // a newer version before a downgrade, so read-along work never keeps
     // listening and progress sync offline. The file is kept beside the empty
-    // queue that replaces it, for the owner to recover.
+    // queue that replaces it, for the owner to recover. A file kept by an
+    // earlier start is never replaced.
     let entries: Vec<JobStatus> = match serde_json::from_slice(&bytes) {
         Ok(entries) => entries,
         Err(error) => {
-            let kept = path.with_extension("json.unreadable");
+            let mut kept = path.with_extension("json.unreadable");
+            let mut copy = 1;
+            while fs::try_exists(&kept).await? {
+                kept = path.with_extension(format!("json.unreadable.{copy}"));
+                copy += 1;
+            }
             tracing::error!(
                 ?error,
                 kept = %kept.display(),
