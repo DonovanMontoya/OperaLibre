@@ -322,7 +322,7 @@ jobs:
 
       - name: Test iOS CarPlay resume position
         run: |
-          swiftc apps/web/ios/App/App/CarLibrary.swift apps/web/ios/Tests/CarLibraryTests.swift -o "$RUNNER_TEMP/car-library-tests"
+          swiftc apps/web/ios/App/App/CarLibrary.swift apps/web/ios/App/App/StoredRecords.swift apps/web/ios/Tests/CarLibraryTests.swift -o "$RUNNER_TEMP/car-library-tests"
           "$RUNNER_TEMP/car-library-tests"
 
       - name: Test simulator runtime selection

@@ -6088,6 +6088,35 @@ async fn sync_queue_restores_ids_order_and_results_and_retries_interrupted_books
 }
 
 #[tokio::test]
+async fn unreadable_sync_queue_is_kept_aside_and_startup_continues() {
+    let mut server = TestServer::start(1).await;
+    let queue = server.state.database_path.with_file_name("sync-jobs.json");
+    std::fs::write(&queue, br#"[{"id":"from-a-newer-version"}]"#).unwrap();
+    server.state.jobs = Arc::new(RwLock::new(HashMap::new()));
+
+    crate::sync::restore_queue(&server.state).await.unwrap();
+
+    assert!(server.state.jobs.read().await.is_empty());
+    assert!(!queue.exists());
+    assert_eq!(
+        std::fs::read(queue.with_extension("json.unreadable")).unwrap(),
+        br#"[{"id":"from-a-newer-version"}]"#
+    );
+
+    // A second unreadable queue is kept beside the first, not over it.
+    std::fs::write(&queue, b"not json").unwrap();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    assert_eq!(
+        std::fs::read(queue.with_extension("json.unreadable")).unwrap(),
+        br#"[{"id":"from-a-newer-version"}]"#
+    );
+    assert_eq!(
+        std::fs::read(queue.with_extension("json.unreadable.1")).unwrap(),
+        b"not json"
+    );
+}
+
+#[tokio::test]
 async fn accepted_sync_queue_is_durable_and_deduplicated_before_work_starts() {
     let mut server = TestServer::start(1).await;
     let owner = server.setup_owner().await;
