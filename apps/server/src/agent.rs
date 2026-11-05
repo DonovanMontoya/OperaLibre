@@ -1329,7 +1329,7 @@ async fn get_achievements(
 
 /// The achievements on the listener's profile. This mirrors
 /// `readingAchievements` in apps/web/src/readingAchievements.ts, which the
-/// app keeps for itself because it also runs offline and against Jellyfin;
+/// app keeps for itself because it also runs offline and on the device;
 /// change the two together.
 fn reading_achievements(books: &[Book], stats: &ProfileStats) -> Vec<serde_json::Value> {
     let finished: Vec<&Book> = books
