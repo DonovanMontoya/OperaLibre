@@ -75,7 +75,7 @@ for (const native of [false, true]) {
   test(`${native ? 'macOS shell' : 'web'} with a saved Jellyfin connection opens the server picker`, async ({ page }) => {
     const requests: string[] = [];
     page.on('request', request => {
-      if (!request.url().startsWith(url)) requests.push(request.url());
+      requests.push(new URL(request.url()).origin);
     });
     await page.route('https://media.example/**', route => route.abort());
     await page.addInitScript(native => {
@@ -102,7 +102,7 @@ for (const native of [false, true]) {
     }
     expect(stored['operalibre.credentials.v2'] ?? '{}').not.toContain('jellyfin-token');
     // Nothing was sent to the forgotten server.
-    expect(requests.filter(request => request.startsWith('https://media.example'))).toEqual([]);
+    expect(requests).not.toContain('https://media.example');
 
     // The next launch is an ordinary first run, without the notice.
     await page.reload();

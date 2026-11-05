@@ -88,7 +88,8 @@ import {
 import { DEMO_USER, enterDemoMode, exitDemoMode, isDemoMode } from "./demo";
 import {
   canRestoreCachedNativeSession,
-  shouldRefreshMediaCredential
+  shouldRefreshMediaCredential,
+  startupWithoutServer
 } from "./startup";
 import {
   nativeQueueEntryUrl,
@@ -197,17 +198,11 @@ type AuthState =
 function initialAuthState(): AuthState {
   if (isDemoMode()) return { phase: "ready", user: DEMO_USER };
   if (isLocalMode()) return { phase: "ready", user: DEVICE_USER };
-  // A saved connection to a server kind the app no longer supports was just
-  // forgotten. Show the server picker, even on a phone, so the reader learns
-  // why their library is gone instead of landing in an empty device library.
-  if (droppedUnsupportedServer()) return { phase: "server" };
   if (!hasUserConfiguredServer()) {
-    // A phone with no server configured opens straight into the on-device
-    // library rather than gating on server setup: someone who installs the
-    // app before their server exists can still listen, and connecting stays
-    // one tap away on the shelf and in settings. The mode must be persisted
-    // before MainApp renders because it reads isLocalMode() directly.
-    if (Capacitor.isNativePlatform()) {
+    // Connecting stays one tap away on the shelf and in settings. The mode
+    // must be persisted before MainApp renders because it reads isLocalMode()
+    // directly.
+    if (startupWithoutServer(Capacitor.isNativePlatform(), droppedUnsupportedServer()) === "local") {
       enterLocalMode();
       return { phase: "ready", user: DEVICE_USER };
     }
@@ -245,7 +240,7 @@ export default function App() {
       return;
     }
     if (!hasUserConfiguredServer()) {
-      if (Capacitor.isNativePlatform()) {
+      if (startupWithoutServer(Capacitor.isNativePlatform(), droppedUnsupportedServer()) === "local") {
         enterLocalMode();
         setAuthState({ phase: "ready", user: DEVICE_USER });
         return;
