@@ -95,7 +95,7 @@ Most people should download a filename containing **combined**:
 | Normal Intel/AMD Linux computer | `combined-linux-x64.tar.gz` |
 | 64-bit ARM Linux or Raspberry Pi | `combined-linux-arm64.tar.gz` |
 
-The **combined** package includes both pieces OperaLibre needs: the audiobook server and the web app. It is the only server download; to run the server without its web app, see [Headless servers](#headless-servers). The frontend-only file is for hosting the web app separately, including in front of a Jellyfin server.
+The **combined** package includes both pieces OperaLibre needs: the audiobook server and the web app. It is the only server download; to run the server without its web app, see [Headless servers](#headless-servers). The frontend-only file is for hosting the web app separately from an OperaLibre server.
 
 ## 2. Extract it
 

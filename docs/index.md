@@ -53,7 +53,7 @@ Windows and manual installs are covered in [Install a Release](installing-a-rele
 3. [Configuration](configuration.md) — every key in `server.config` explained
 4. [Library Layout](library-layout.md) — how to structure your audiobook folder
 5. [Users & Accounts](users.md) — first-run admin setup, adding readers, sessions
-6. [Using OperaLibre](using-operalibre.md) — phones, reader accounts, uploads, readalong, Jellyfin, and optional imports
+6. [Using OperaLibre](using-operalibre.md) — phones, reader accounts, uploads, readalong, and optional imports
 7. [Libation / Audible Import](libation.md) — optional acquisition pipeline
 8. [API Reference](api.md) — HTTP endpoints exposed by the server
 9. [Deployment](deployment.md) — running on a home server or LAN

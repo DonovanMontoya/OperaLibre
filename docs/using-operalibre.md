@@ -5,7 +5,7 @@ nav_order: 7
 
 # Using OperaLibre
 
-This is the everyday guide for listeners and the person who looks after the library. Connect to an OperaLibre or Jellyfin server, use the native app's on-device library, or try the bundled demo. [Getting Started](getting-started.md) explains the OperaLibre server setup.
+This is the everyday guide for listeners and the person who looks after the library. Connect to an OperaLibre server, use the native app's on-device library, or try the bundled demo. [Getting Started](getting-started.md) explains the OperaLibre server setup.
 
 ## Try the demo
 
@@ -346,7 +346,7 @@ Choose **Add to server** to import a purchase into the shared library. Download 
 
 ## Reading achievements
 
-Open **Reader's ledger** from the account menu, or the **Ledger** tab in the iPhone and Android apps. The ledger is part of an OperaLibre library, including books kept on the device. A Jellyfin connection has no ledger.
+Open **Reader's ledger** from the account menu, or the **Ledger** tab in the iPhone and Android apps. The ledger is part of an OperaLibre library, including books kept on the device.
 
 **Achievements** on that page are calculated from the books you can open and from your recorded listening. OperaLibre does not store a separate award or the date one was earned. Finishing a book, or changing its author, narrator, genre, or series, can change the set you have earned. Hours of listening are measured time. A finished book's length is its original runtime, at any playback speed. Books that live only on the device count when the ledger is showing that on-device library.
 
@@ -366,22 +366,12 @@ The iPhone and iPad apps can turn dark with your device or stay light or dark al
 
 Open **Administration → Overview** and choose **Check for updates** under **Software versions**. In a browser this checks the installed server and its separately updatable web application; in the installed iOS app it checks the connected server. Owners can install supported managed-package updates from the same card when one is available.
 
-## Connect to Jellyfin instead
+## Other servers and apps
 
-OperaLibre can be used as a client for an existing Jellyfin audiobook library; no OperaLibre server configuration is needed for this mode.
+The OperaLibre apps connect to OperaLibre servers. Earlier versions could also connect to a Jellyfin server; after updating, that saved connection is removed and the app opens at the connection screen so you can enter an OperaLibre server address.
 
-1. On the connection screen, choose **Use a Jellyfin server**.
-2. Enter the Jellyfin address. The common local address is `http://localhost:8096`; on a phone, use the server’s LAN address instead.
-3. Sign in with a normal Jellyfin user account.
-
-In Jellyfin mode, OperaLibre lists and streams audiobooks, groups multi-file albums, shows cover art and chapters, and syncs resume position with Jellyfin. Playback speed, sleep timers, and local volume adjustment remain available. OperaLibre-only administration, uploading, Libation, metadata editing, server readalong, and the reader ledger are not available in this mode.
-
-Use a **Books** library in Jellyfin and give your account access to it. Audiobooks stored as music are not included. Audio streams use the original file: the browser or device must support its format; OperaLibre does not currently negotiate Jellyfin transcoding.
-
-When your Jellyfin account permits downloads, iOS and Android offer offline audio downloads. The web app offers **Download tracks** with individual file links; it does not create a book ZIP or an offline web library. Download permission also applies to Jellyfin administrators. A previously cached account with unknown permission needs an online sign-in refresh before new downloads are offered; existing offline copies remain available.
-
-Audiobookshelf is not yet a supported server connection in these apps. OperaLibre's `/abs` endpoints serve compatible clients connecting to an OperaLibre server.
+Other apps can still use your library. The server's Audiobookshelf-compatible API lets Audiobookshelf apps such as BookPlayer connect to an OperaLibre server, and its OPDS catalog serves OPDS readers. See [Client compatibility](client-compatibility.md).
 
 ## macOS app
 
-The macOS app is a small native window around the web app. From the repository root, run `./script/build_and_run.sh`, then enter the address of a running OperaLibre or Jellyfin server on its first screen. It remembers the address and sign-in token between launches. Start the OperaLibre server separately with `npm run dev:server` while developing, or use the production server command in [Getting Started](getting-started.md#keep-it-running-recommended-after-you-have-tried-it).
+The macOS app is a small native window around the web app. From the repository root, run `./script/build_and_run.sh`, then enter the address of a running OperaLibre server on its first screen. It remembers the address and sign-in token between launches. Start the OperaLibre server separately with `npm run dev:server` while developing, or use the production server command in [Getting Started](getting-started.md#keep-it-running-recommended-after-you-have-tried-it).
