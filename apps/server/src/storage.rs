@@ -1086,9 +1086,17 @@ pub(crate) fn read_users_rows(connection: &rusqlite::Connection) -> anyhow::Resu
     }
     // Accounts are presented oldest first, the order the file preserved.
     users.sort_by(|left, right| left.created_at.cmp(&right.created_at));
-    let permissions_version = db::read_document(connection, USERS_PERMISSIONS_VERSION_DOCUMENT)?
-        .and_then(|payload| payload.parse().ok())
-        .unwrap_or(0);
+    // Only an install from before the permissions migration lacks the version.
+    // One that cannot be read is refused rather than taken as 0: rerunning the
+    // migration would give every administrator back the Libation access and
+    // approval rights the owner may have taken away.
+    let permissions_version =
+        match db::read_document(connection, USERS_PERMISSIONS_VERSION_DOCUMENT)? {
+            None => 0,
+            Some(payload) => payload.parse().map_err(|_| {
+                anyhow::anyhow!("The stored account permissions version {payload:?} is unreadable")
+            })?,
+        };
     Ok(UsersStore {
         users,
         permissions_version,
