@@ -1,7 +1,6 @@
 import { readBookPreviewsEnabled, readContinueReadingAutoplay, writeBookPreviewsEnabled, writeContinueReadingAutoplay } from "./playbackPreferences";
 import { useDeviceFold } from "./deviceFold";
 import { progressSeekOptions, progressSeekStorage, readProgressSeekIntent } from "./progressSeekIntent";
-import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor } from "@capacitor/core";
 import { fullShelfMustYield, spreadTab, type StoreSettingsTarget } from "./nativeTabs";
@@ -42,7 +41,6 @@ import {
   getAuthStatus,
   getMe,
   getServerStorageKey,
-  getServerType,
   getStoredMediaToken,
   getStoredToken,
   hasUserConfiguredServer,
@@ -55,7 +53,6 @@ import {
   mediaUrl,
   pinActiveServerId,
   reconnectUsingServerAliases,
-  playbackReportingSession,
   setBookVolume,
   setStoredMediaToken,
   setStoredToken,
@@ -473,15 +470,13 @@ function MainApp({
   onLogout: () => void | Promise<void>;
   onConnectServer: () => void;
 }) {
-  const isOperaLibre = getServerType() === "operalibre";
   const demoMode = isDemoMode();
   const localMode = isLocalMode();
-  const capabilities = serverCapabilities(getServerType(), currentUser, { local: localMode, demo: demoMode });
+  const capabilities = serverCapabilities(currentUser, { local: localMode, demo: demoMode });
   const native = Capacitor.isNativePlatform();
   const ios = native && document.documentElement.classList.contains("platform-ios");
   const ipad = ios && isIPadNavigator(window.navigator);
-  // Shared reading is an OperaLibre-server feature: Jellyfin keeps its own user
-  // data, and demo/local libraries have no other listeners to compare against.
+  // Demo and device-only libraries have no other listeners to compare against.
   const sharedProgressAvailable = capabilities.sharedActivity;
   const rotationLockAvailable = isRotationLockAvailable();
   const { nativeTab, setNativeTab, setStartupTab, startupNavigationOverridden } = useStartupNavigation();
@@ -518,7 +513,7 @@ function MainApp({
   );
 
   useEffect(() => {
-    if (!isOperaLibre || demoMode || localMode) {
+    if (demoMode || localMode) {
       return;
     }
     let cancelled = false;
@@ -536,7 +531,7 @@ function MainApp({
       window.clearInterval(timer);
       window.removeEventListener("focus", refreshCurrentUser);
     };
-  }, [demoMode, isOperaLibre, localMode, onCurrentUserChanged]);
+  }, [demoMode, localMode, onCurrentUserChanged]);
   const finishFeedState = useFinishFeed({
     capabilities,
     currentUser
@@ -999,62 +994,6 @@ function MainApp({
   // identity would tear down the <audio> src mid-playback every few seconds.
   const playbackBookKey = playbackBook?.id ?? null;
   const currentTrackKey = currentTrack?.id ?? null;
-  const playbackReportRef = useRef<{ stop: () => Promise<unknown> } | null>(null);
-  const playbackTransitions = useMemo(createPlaybackTransitions, []);
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio || !currentTrackKey || playbackBook?.source === "device") return;
-    const session = playbackReportingSession(currentTrackKey);
-    if (!session) return;
-    let lastPosition = audio.currentTime;
-    let disposed = false;
-    let startScheduled = false;
-    const positionForReport = () => playbackReportPosition(currentTrackKey, pendingSeekRef.current, lastPosition);
-    const rememberPosition = () => {
-      if (Number.isFinite(audio.currentTime)) lastPosition = Math.max(0, audio.currentTime);
-    };
-    const startIfReady = () => {
-      rememberPosition();
-      if (startScheduled) return;
-      startScheduled = true;
-      void playbackTransitions.ready().then(async () => {
-        // Recheck after the old track drains: this element may have been
-        // replaced again, or the listener may have paused while waiting.
-        if (disposed || !playbackTouchedRef.current
-          || restoredProgressBookId.current !== playbackBookKey
-          || resumeReconciliationBookIdRef.current === playbackBookKey
-          || (pendingSeekRef.current && pendingSeekRef.current.trackId !== currentTrackKey)
-          || (nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused)) return;
-        const reportPosition = positionForReport();
-        if (reportPosition !== null) await session.start(reportPosition);
-      }).finally(() => { startScheduled = false; });
-    };
-    const reporting = {
-      stop: () => {
-        const reportPosition = positionForReport();
-        return reportPosition === null ? Promise.resolve() : session.stop(reportPosition);
-      }
-    };
-    playbackReportRef.current = reporting;
-    audio.addEventListener("play", startIfReady);
-    audio.addEventListener("timeupdate", startIfReady);
-    audio.addEventListener("seeked", rememberPosition);
-    return () => {
-      disposed = true;
-      audio.removeEventListener("play", startIfReady);
-      audio.removeEventListener("timeupdate", startIfReady);
-      audio.removeEventListener("seeked", rememberPosition);
-      // The application queue can hold a newer checkpoint behind an in-flight
-      // request. Drain that queue before stop, and hold the next start behind it.
-      // The drain promise is read when the stop runs, deliberately the latest one.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      void playbackTransitions.stopAfterProgress(() => progressSaveDrainPromiseRef.current, reporting.stop);
-      if (playbackReportRef.current === reporting) playbackReportRef.current = null;
-    };
-    // Capture the element and credentials for this track. A timeupdate retries a
-    // start deferred by restore/reconciliation without reporting optimistic progress.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTrackKey, playbackBookKey, currentUser.id, nativeAudio, playbackTransitions]);
   const bookIdsKey = useMemo(() => books.map((book) => book.id).join("|"), [books]);
   const booksRef = useRef<Book[]>(books);
   const carPlay = useCarPlay({
@@ -1267,7 +1206,6 @@ function MainApp({
     pausePlayback: (audio) => later.pausePlayback(audio),
     playbackBookId,
     playbackBookIdRef,
-    playbackReportRef,
     playbackTouchedRef,
     progressMutationVersion,
     progressSaveAbortController,
@@ -1411,7 +1349,6 @@ function MainApp({
     audioRef,
     currentUser,
     initialLibraryHydrated,
-    isOperaLibre,
     libraryRequestGenerationRef,
     onServerReachable,
     libraryProgressReplaysRef,
@@ -1444,7 +1381,6 @@ function MainApp({
     currentUser,
     demoMode,
     followSyncEnabled,
-    isOperaLibre,
     isViewingPlayingBook,
     loadBooks,
     localMode,
@@ -1510,7 +1446,6 @@ function MainApp({
     capabilities,
     currentUser,
     demoMode,
-    isOperaLibre,
     libationBooks,
     libationBooksLoaded,
     librarySource,
@@ -1977,7 +1912,6 @@ function MainApp({
     canBrowseLibation,
     currentUser,
     flushProgressSaveQueue,
-    isOperaLibre,
     libationBooksLoaded,
     librarySource,
     libroAccounts,
@@ -2012,7 +1946,6 @@ function MainApp({
     launchCoverLifted,
     appearanceMode,
     brokenLibationAccounts,
-    capabilities,
     currentTrack,
     currentUser,
     gamesEnabled,
@@ -2046,7 +1979,6 @@ function MainApp({
     capabilities,
     currentUser,
     demoMode,
-    isOperaLibre,
     localMode,
     native,
     onCurrentUserChanged,
@@ -2172,7 +2104,7 @@ function MainApp({
           const message = code === MediaError.MEDIA_ERR_DECODE
             ? "This audio file could not be decoded."
             : rejected
-              ? isOperaLibre ? STREAM_LOAD_FAILED : "This device cannot play the original Jellyfin audio file. Try an MP3 or AAC version; automatic conversion is not available."
+              ? STREAM_LOAD_FAILED
               : code === MediaError.MEDIA_ERR_NETWORK
                 ? "Playback lost its connection to the audiobook server."
                 : STREAM_LOAD_FAILED;
@@ -2183,7 +2115,7 @@ function MainApp({
           // browser cannot play; ask the server which it was. The element is
           // keyed per track, so a reply for a track since left is dropped.
           const rejectedElement = audioRef.current;
-          if (rejected && isOperaLibre && !nativeAudio && streamUrl && rejectedElement) {
+          if (rejected && !nativeAudio && streamUrl && rejectedElement) {
             void streamFailureMessage(streamUrl).then((reason) => {
               if (audioRef.current === rejectedElement && rejectedElement.error) {
                 setPlaybackError(reason);
@@ -2286,7 +2218,6 @@ function MainApp({
         playPending={playPending}
         togglePlayback={togglePlayback}
         isOffline={isOffline}
-        isOperaLibre={isOperaLibre}
         lastPurchaseSource={lastPurchaseSource}
         libraryOpen={libraryOpen}
         libraryPaneRef={libraryPaneRef}
@@ -2356,7 +2287,6 @@ function MainApp({
         handlePlayerPaneScroll={handlePlayerPaneScroll}
         hasNextChapter={hasNextChapter}
         hasPreviousChapter={hasPreviousChapter}
-        isOperaLibre={isOperaLibre}
         isPlaying={isPlaying}
         isViewingPlayingBook={isViewingPlayingBook}
         jumpToChapter={jumpToChapter}
@@ -2378,7 +2308,7 @@ function MainApp({
           if (started) setPreviewBook(current => current?.id === book.id ? null : current);
           return started;
         }}
-        openBookPreview={bookPreviewsEnabled && isOperaLibre && !demoMode && !localMode && !isOffline ? (book) => {
+        openBookPreview={bookPreviewsEnabled && !demoMode && !localMode && !isOffline ? (book) => {
           cancelPendingPlayback(audioRef.current);
           pausePlayback(audioRef.current);
           setPreviewBook(book);
@@ -2573,7 +2503,7 @@ function MainApp({
         <MetadataEditorDialog books={books} editor={metadataEditor} />
       ) : null}
 
-      {capabilities.statistics && profileOpen ? (
+      {profileOpen ? (
         <ProfilePage
           books={books}
           user={currentUser}
@@ -2677,7 +2607,6 @@ function MainApp({
           downloadedBookIds={downloadedBookIds}
           gamesEnabled={gamesEnabled}
           ios={ios}
-          isOperaLibre={isOperaLibre}
           loadBooks={loadBooks}
           localMode={localMode}
           nativeTab={nativeTab}

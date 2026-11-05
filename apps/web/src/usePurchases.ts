@@ -35,7 +35,6 @@ export function usePurchases({
   capabilities,
   currentUser,
   demoMode,
-  isOperaLibre,
   libationBooks,
   libationBooksLoaded,
   librarySource,
@@ -52,7 +51,6 @@ export function usePurchases({
   capabilities: ServerCapabilities;
   currentUser: AuthUser;
   demoMode: boolean;
-  isOperaLibre: boolean;
   libationBooks: LibationBook[];
   libationBooksLoaded: boolean;
   librarySource: LibrarySource;
@@ -68,8 +66,8 @@ export function usePurchases({
 }) {
   const [libroRefreshKey, setLibroRefreshKey] = useState(0);
   const [libroDestination, setLibroDestination] = useState<"server" | "device">("server");
-  const libroOnDevice = localMode || !isOperaLibre || libroDestination === "device";
-  const libroAvailable = (!localMode && isOperaLibre) || supportsLibroDevice();
+  const libroOnDevice = localMode || libroDestination === "device";
+  const libroAvailable = !localMode || supportsLibroDevice();
   const [libationStatus, setLibationStatus] = useState<LibationStatus | null>(null);
   const [libationDownloadRequests, setLibationDownloadRequests] = useState<LibationDownloadRequest[]>([]);
   const libationDownloadRequestsRef = useRef<LibationDownloadRequest[]>([]);
@@ -175,7 +173,7 @@ export function usePurchases({
 
   const loadLibationStatus = useCallback(async () => {
     const generation = libationAccountGenerationRef.current;
-    if (!isOperaLibre || (!currentUser.isAdmin && !native)) {
+    if (!currentUser.isAdmin && !native) {
       setLibationStatus(null);
       setLibationStatusError(null);
       return false;
@@ -207,7 +205,7 @@ export function usePurchases({
       setLibationStatusError(errorMessage(error, "The Audible connection status could not be checked."));
       return false;
     }
-  }, [currentUser.isAdmin, isOperaLibre, native]);
+  }, [currentUser.isAdmin, native]);
 
   const loadLibationBooks = useCallback(async (clearError = true) => {
     const generation = ++libationCatalogGenerationRef.current;
@@ -272,12 +270,12 @@ export function usePurchases({
   }, [currentUser.isAdmin, loadLibationStatus, native]);
 
   useEffect(() => {
-    if (!currentUser.isAdmin || !isOperaLibre) {
+    if (!currentUser.isAdmin) {
       return;
     }
     const timer = window.setInterval(() => void loadLibationStatus(), 60_000);
     return () => window.clearInterval(timer);
-  }, [currentUser.isAdmin, isOperaLibre, loadLibationStatus]);
+  }, [currentUser.isAdmin, loadLibationStatus]);
 
   useEffect(() => {
     if (!currentUser.isAdmin) {
@@ -301,7 +299,7 @@ export function usePurchases({
   }, [currentUser.isAdmin]);
 
   useEffect(() => {
-    if (!currentUser.isAdmin || !isOperaLibre || demoMode || localMode) return;
+    if (!currentUser.isAdmin || demoMode || localMode) return;
     if (!libationStatus?.autoImportAccountIds?.length && librarySource !== "audible" && librarySource !== "all") return;
     let cancelled = false;
     const refreshJobs = async () => {
@@ -324,7 +322,7 @@ export function usePurchases({
     const timer = window.setInterval(() => void refreshJobs(), 15_000);
     document.addEventListener("visibilitychange", refreshJobs);
     return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener("visibilitychange", refreshJobs); };
-  }, [currentUser.isAdmin, demoMode, isOperaLibre, localMode, librarySource, libationStatus?.autoImportAccountIds?.length, loadBooks, loadLibationBooks]);
+  }, [currentUser.isAdmin, demoMode, localMode, librarySource, libationStatus?.autoImportAccountIds?.length, loadBooks, loadLibationBooks]);
 
   useEffect(() => {
     if ((librarySource === "audible" || librarySource === "all") && libationStatus?.enabled && !libationBooksLoaded && !libationLoading) {
@@ -657,7 +655,7 @@ export function usePurchases({
     setLibationRequests((current) => new Set(current).add(book.catalogId));
     try {
       let actingUser = currentUser;
-      if (isOperaLibre && !demoMode && !localMode) {
+      if (!demoMode && !localMode) {
         try {
           actingUser = await getMe();
           onCurrentUserChanged(actingUser);

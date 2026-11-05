@@ -21,7 +21,7 @@ export type Book = {
   trackCount: number;
   coverArtUrl: string | null;
   coverArtContentType: string | null;
-  /** Absent on older servers, Jellyfin, and device-only books. */
+  /** Absent on older servers and device-only books. */
   hasCoverOverride?: boolean;
   description: string | null;
   genres: string[];
@@ -35,8 +35,7 @@ export type Book = {
   /**
    * Every document and picture beside the audio, each classified as the
    * book's text, a picture supplement, or a loose image. Absent on servers
-   * released before companion classification, on Jellyfin, and on device
-   * books.
+   * released before companion classification and on device books.
    */
   companions?: CompanionFile[];
   syncFile: SyncFile | null;
@@ -46,8 +45,8 @@ export type Book = {
   progress: BookProgress | null;
   /**
    * What the other listeners on this server have done with the book. Omitted
-   * by Jellyfin, by device-only books, and whenever the viewer has turned
-   * progress sharing off.
+   * by device-only books and whenever the viewer has turned progress sharing
+   * off.
    */
   sharedProgress?: SharedProgress[];
   /** Device books need no server; matched server books may retain a device copy. */
@@ -57,8 +56,8 @@ export type Book = {
   localCoverPath?: string;
   /**
    * The viewer's own playback gain for this book, as a linear multiplier of the
-   * file's level. Absent on Jellyfin, on device-only books, and on OperaLibre
-   * servers released before per-book volume; all of those mean unity.
+   * file's level. Absent on device-only books and on servers released before
+   * per-book volume; both mean unity.
    */
   volumeGain?: number;
 };
@@ -539,8 +538,6 @@ export type SyncAddonStatus = {
 };
 
 export type AuthUser = {
-  /** Jellyfin download permission; unknown cached accounts must refresh first. */
-  canDownload?: boolean;
   id: string;
   username: string;
   isAdmin: boolean;
@@ -583,8 +580,6 @@ export type FinishFeed = {
   /** Send back to mark the feed read. Null when the feed is empty. */
   latestId: string | null;
 };
-
-export type ServerType = "operalibre" | "jellyfin";
 
 export type AuthStatus = {
   setupRequired: boolean;

@@ -37,7 +37,6 @@ for (const native of [false, true]) {
       await page.setViewportSize({ width: native ? 390 : 1440, height: 844 });
       await page.addInitScript(state => {
         localStorage.setItem('operalibre.serverUrl', location.origin);
-        localStorage.setItem('operalibre.serverType', 'operalibre');
         if (state === 'demo') localStorage.setItem('operalibre.demoMode', 'true');
         if (state === 'local') localStorage.setItem('operalibre.localMode', 'true');
       }, state);
@@ -64,11 +63,11 @@ for (const native of [false, true]) {
   }
 }
 
-test('server selection exposes privacy for both server types before connecting', async ({ page }) => {
+test('server selection exposes privacy before connecting', async ({ page }) => {
   await page.route('**/api/**', route => route.fulfill({ json: { setupRequired: false, user: null } }));
   await page.goto(url);
   await expect(page.getByRole('heading', { name: 'Connect your library' })).toBeVisible();
-  await openPolicy(page);
-  await page.getByRole('button', { name: 'Use a Jellyfin server' }).click();
+  await expect(page.getByRole('button', { name: /Jellyfin/ })).toHaveCount(0);
   await openPolicy(page);
 });
+

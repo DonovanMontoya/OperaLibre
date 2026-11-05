@@ -16,7 +16,7 @@ import {
   summarizeBookProgress,
   writeProgressCheckpoint
 } from "./reliability";
-import { getFreshProgress, getServerStorageKey, saveProgress } from "./api";
+import { getProgress, getServerStorageKey, saveProgress } from "./api";
 import { cacheProgress, getCachedProgress, warnCacheFailure } from "./offline";
 import { getDeviceBooks, saveDeviceProgress } from "./localLibrary";
 import type { PendingSeek, QueuedProgressSave } from "./playbackTypes";
@@ -218,7 +218,6 @@ export function useProgressSync({
     queuedProgressSaves.current.set(playbackBook.id, {
       bookId: playbackBook.id,
       progress: localProgress,
-      isPaused: nativeAudio ? !nativePlaybackPlayingRef.current : audioRef.current.paused,
       intentionalSeekGeneration,
       seekIntentId: persistedIntent.intentionalSeek ? seekIntent?.id : undefined,
       intentionalRegression
@@ -255,7 +254,6 @@ export function useProgressSync({
               recording: entry.progress.recording
             },
             {
-              isPaused: entry.isPaused,
               intentionalRegression:
                 entry.intentionalRegression
                 && (persistedSeekPending || entry.intentionalSeekGeneration
@@ -445,7 +443,7 @@ export function useProgressSync({
     const sessionVersion = playbackSessionVersion.current;
     foregroundAdoptInFlightRef.current = true;
     try {
-      const server = await getFreshProgress(book).catch(() => null);
+      const server = await getProgress(book.id).catch(() => null);
       const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
       if (
         !server ||

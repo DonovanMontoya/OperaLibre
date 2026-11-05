@@ -1,11 +1,9 @@
 import { PrivacyPolicyLink } from "./PrivacyPolicyLink";
 import { Capacitor } from "@capacitor/core";
 import { BookOpen, ChevronRight, ExternalLink, LogIn, ShieldCheck, Smartphone } from "lucide-react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import {
-  defaultServerUrl,
   getServerUrl,
-  getServerType,
   SERVER_SETUP_GUIDE_URL,
   login,
   pingServer,
@@ -13,7 +11,7 @@ import {
   setupAdmin
 } from "./api";
 import { errorMessage } from "./formatting";
-import type { LoginResponse, ServerType } from "./types";
+import type { LoginResponse } from "./types";
 
 type AuthMode = "setup" | "login";
 
@@ -28,13 +26,10 @@ export function ServerSetup({
   onDemo?: () => void;
   onLocal?: () => void;
 }) {
-  const [serverType, setServerType] = useState<ServerType>(() => getServerType());
   const [url, setUrl] = useState(() => getServerUrl());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const addressInput = useRef<HTMLInputElement>(null);
   const nativeApp = Capacitor.isNativePlatform();
-  const jellyfin = serverType === "jellyfin";
 
   // The second way in is always one that needs no server: the device library
   // on native apps (a way back to it when this screen was opened from there),
@@ -63,20 +58,13 @@ export function ServerSetup({
         : null;
   const demoLink = offline?.action !== onDemo ? onDemo : undefined;
 
-  function switchServerType(next: ServerType) {
-    setServerType(next);
-    setUrl(defaultServerUrl(next));
-    setError(null);
-    if (!nativeApp) addressInput.current?.focus();
-  }
-
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
     setBusy(true);
     try {
-      const serverId = await pingServer(serverType, url);
-      setServerConnection(serverType, url, serverId);
+      const serverId = await pingServer(url);
+      setServerConnection(url, serverId);
       onConnected();
     } catch (err) {
       const message = errorMessage(err, "Could not reach that server.");
@@ -97,14 +85,11 @@ export function ServerSetup({
 
         <form className="connect-form" onSubmit={submit}>
           <label>
-            <span>{jellyfin ? "Jellyfin server address" : "OperaLibre server address"}</span>
+            <span>OperaLibre server address</span>
             <input
-              ref={addressInput}
               type="text"
               value={url}
-              placeholder={jellyfin
-                ? nativeApp ? "My-Mac.local:8096" : "http://localhost:8096"
-                : nativeApp ? "My-Mac.local:4920" : "http://localhost:4920"}
+              placeholder={nativeApp ? "My-Mac.local:4920" : "http://localhost:4920"}
               inputMode="url"
               autoComplete="off"
               autoCapitalize="off"
@@ -120,10 +105,8 @@ export function ServerSetup({
             {nativeApp ? (
               <>
                 Private addresses use HTTP automatically; public names such
-                as <code>{jellyfin ? "jellyfin.example.com" : "books.example.com"}</code> use HTTPS.
+                as <code>books.example.com</code> use HTTPS.
               </>
-            ) : jellyfin ? (
-              <>Usually <code>localhost:8096</code>, or <code>localhost:8920</code> with HTTPS.</>
             ) : (
               <>Usually <code>localhost:4920</code> on the server itself, or its HTTPS name from elsewhere.</>
             )}
@@ -152,23 +135,14 @@ export function ServerSetup({
 
         <div className="connect-more">
           <PrivacyPolicyLink />
-          <button
-            type="button"
-            onClick={() => switchServerType(jellyfin ? "operalibre" : "jellyfin")}
-            disabled={busy}
-          >
-            {jellyfin ? "Use an OperaLibre server" : "Use a Jellyfin server"}
-          </button>
           {demoLink ? (
             <button type="button" onClick={demoLink} disabled={busy}>
               Explore the on-device demo
             </button>
           ) : null}
-          {jellyfin ? null : (
-            <a href={SERVER_SETUP_GUIDE_URL} target="_blank" rel="noreferrer">
-              Server setup guide <ExternalLink size={11} aria-hidden="true" />
-            </a>
-          )}
+          <a href={SERVER_SETUP_GUIDE_URL} target="_blank" rel="noreferrer">
+            Server setup guide <ExternalLink size={11} aria-hidden="true" />
+          </a>
         </div>
       </div>
     </main>
@@ -187,7 +161,6 @@ export function AuthGate({
   setupTokenRequired?: boolean;
   setupLocalOnly?: boolean;
 }) {
-  const isJellyfin = getServerType() === "jellyfin";
   const nativeApp = Capacitor.isNativePlatform();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -231,7 +204,7 @@ export function AuthGate({
       <form className="auth-card" onSubmit={submit}>
         <span className="eyebrow">
           {isSetup ? <ShieldCheck size={13} /> : <LogIn size={13} />}{" "}
-          {isSetup ? "First-run setup" : isJellyfin ? "Jellyfin sign in" : "Sign in"}
+          {isSetup ? "First-run setup" : "Sign in"}
         </span>
         <h1>{isSetup ? "Claim this library" : "Welcome back"}</h1>
         <p>
@@ -239,9 +212,7 @@ export function AuthGate({
             ? setupLocalOnly
               ? "This server uses local setup. Open OperaLibre on the server machine to create its first owner."
               : "Create the first owner account. You can add administrators and readers later."
-            : isJellyfin
-              ? "Use your Jellyfin account to open its audiobook libraries."
-              : "Sign in to track your audiobook progress."}
+            : "Sign in to track your audiobook progress."}
         </p>
 
         <label>

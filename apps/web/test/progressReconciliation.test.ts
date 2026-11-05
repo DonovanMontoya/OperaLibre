@@ -117,7 +117,7 @@ function fixture() {
     setRestoredPlaybackBookId: noop, setPendingSeek: (seek: any) => seeks.push(seek),
     storeCanonicalServerProgress: (_book: unknown, progress: Progress) => canonical.push(progress), updateBookProgress: noop,
     audioRef: ref({ currentTime: 0, duration: 7200, paused: true }), initialLibraryHydrated: ref(true),
-    isOperaLibre: false, libraryRequestGenerationRef: ref(0), libraryRetryTimerRef: ref(null), loadBooksRef: ref(noop),
+    libraryRequestGenerationRef: ref(0), libraryRetryTimerRef: ref(null), loadBooksRef: ref(noop),
     localMode: false, native: false, nativeAudioRef: ref(false), nativePlaybackPlayingRef: ref(false), onServerReachable: noop,
     reconcileServerBookGains: noop, setBooks: noop, setError: noop, setIsLoading: noop, setIsOffline: noop,
     setLibationBooks: noop, setLibationBooksLoaded: noop, setNativeTab: noop, setPlaybackBookId: noop,
@@ -328,7 +328,7 @@ for (const nativeAudio of [false, true]) {
     let server = f.server;
     let offline = false;
     let loseReply = true;
-    Object.assign(f.dependencies["./api"], { getFreshProgress: async () => server });
+    Object.assign(f.dependencies["./api"], { getProgress: async () => server });
     f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
       f.writes.push({ progress, options });
       if (offline) throw new Error("offline");
@@ -794,7 +794,7 @@ for (const nativeAudio of [false, true]) {
       sync.storeCanonicalServerProgress(f.book, rejected, f.local);
       return rejected;
     };
-    Object.assign(f.dependencies["./api"], { getFreshProgress: async () => ({ ...rejected, accepted: undefined }) });
+    Object.assign(f.dependencies["./api"], { getProgress: async () => ({ ...rejected, accepted: undefined }) });
     const sync = loadHook("useProgressSync", f.dependencies)(f.options);
     f.options.storeCanonicalServerProgress = sync.storeCanonicalServerProgress;
     f.options.setPendingSeek = (seek: any) => { f.seeks.push(seek); f.options.pendingSeekRef.current = seek; };
@@ -919,7 +919,7 @@ test("idle conflict adoption stages canonical position before advancing the play
     f.writes.push({ progress, options });
     return rejected;
   };
-  Object.assign(f.dependencies["./api"], { getFreshProgress: async () => ({ ...rejected, accepted: undefined }) });
+  Object.assign(f.dependencies["./api"], { getProgress: async () => ({ ...rejected, accepted: undefined }) });
   f.options.setPendingSeek = (seek: any) => { f.seeks.push(seek); f.options.pendingSeekRef.current = seek; };
   const sync = loadHook("useProgressSync", f.dependencies)(f.options);
   await sync.persistProgress();
@@ -1392,7 +1392,7 @@ test("web pause keeps its listening position after an untouched phone restores t
   for (const f of [web, phone]) {
     f.write(reliability.syncedProgress(server, "2026-09-30T11:55:00Z"));
     Object.assign(f.dependencies["./api"], {
-      getProgress: async () => server, getFreshProgress: async () => server, saveProgress: save
+      getProgress: async () => server, saveProgress: save
     });
   }
   web.options.restoredProgressBookId.current = "book";

@@ -4,14 +4,18 @@ const PROGRESS_CHECKPOINT_PREFIX = "operalibre.progressCheckpoint.v1";
 
 type ProgressStorage = Pick<Storage, "getItem" | "setItem">;
 
-export function serverStorageKey(serverType: string, serverUrl: string): string {
-  const value = `${serverType}:${serverUrl.toLowerCase()}`;
+// Keys were once namespaced by server kind; the OperaLibre namespace is kept
+// so caches, checkpoints and downloads saved by earlier builds stay reachable.
+const SERVER_STORAGE_NAMESPACE = "operalibre";
+
+export function serverStorageKey(serverUrl: string): string {
+  const value = `${SERVER_STORAGE_NAMESPACE}:${serverUrl.toLowerCase()}`;
   let hash = 0x811c9dc5;
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index);
     hash = Math.imul(hash, 0x01000193);
   }
-  return `${serverType}-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  return `${SERVER_STORAGE_NAMESPACE}-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 export function progressTimestamp(value: string): number {

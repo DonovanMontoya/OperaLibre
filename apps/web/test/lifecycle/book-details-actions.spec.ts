@@ -14,7 +14,6 @@ test.afterAll(async () => { await server?.close(); });
 async function setup(page: Page, platform: 'ios' | 'android' | 'web', admin = true) {
   await page.addInitScript(() => {
     localStorage.setItem('operalibre.serverUrl', location.origin);
-    localStorage.setItem('operalibre.serverType', 'operalibre');
   });
   const books = library(5);
   books[1].readingFile = { id: 'ebook', fileName: 'book.epub', extension: 'epub', contentType: 'application/epub+zip', url: '/book.epub' };
