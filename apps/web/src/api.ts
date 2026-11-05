@@ -585,6 +585,12 @@ export function isServerNotReadyError(error: unknown): error is ApiError {
   return error instanceof ApiError && error.status === 503 && error.retryAfterSeconds !== undefined;
 }
 
+// The server is up but already sending this account a catalogue (another
+// device, or an overlapping refresh), so it turned this one away for now.
+export function isServerBusyError(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.status === 429;
+}
+
 function retryAfterSeconds(response: Response): number | undefined {
   const value = response.headers.get("Retry-After");
   if (value === null) return undefined;

@@ -319,19 +319,23 @@ export default function App() {
     return () => setUnauthorizedHandler(null);
   }, [checkAuth]);
 
+  // A session restored offline has no media credential. Any sign the server
+  // is reachable again (the network returning, the app foregrounding, or a
+  // library listing that succeeds) fetches it, or streams stay unauthorized.
+  const refreshMediaCredential = useCallback(() => {
+    if (!shouldRefreshMediaCredential(
+      Capacitor.isNativePlatform(),
+      getStoredToken(),
+      getStoredMediaToken(),
+      hasUserConfiguredServer(),
+      isLocalMode(),
+      isDemoMode()
+    )) return;
+    void checkAuth();
+  }, [checkAuth]);
+
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
-    const refreshMediaCredential = () => {
-      if (!shouldRefreshMediaCredential(
-        Capacitor.isNativePlatform(),
-        getStoredToken(),
-        getStoredMediaToken(),
-        hasUserConfiguredServer(),
-        isLocalMode(),
-        isDemoMode()
-      )) return;
-      void checkAuth();
-    };
     const refreshMediaCredentialOnForeground = () => {
       if (!document.hidden && navigator.onLine) refreshMediaCredential();
     };
@@ -341,7 +345,7 @@ export default function App() {
       window.removeEventListener("online", refreshMediaCredential);
       document.removeEventListener("visibilitychange", refreshMediaCredentialOnForeground);
     };
-  }, [checkAuth]);
+  }, [refreshMediaCredential]);
 
   const handleCurrentUserChanged = useCallback((user: AuthUser) => {
     cacheOfflineUser(user);
@@ -420,6 +424,7 @@ export default function App() {
     <MainApp
       currentUser={authState.user}
       onCurrentUserChanged={handleCurrentUserChanged}
+      onServerReachable={refreshMediaCredential}
       onConnectServer={async () => {
         await clearCarLibrary();
         exitLocalMode();
@@ -459,10 +464,12 @@ function MainApp({
   currentUser,
   onCurrentUserChanged,
   onLogout,
-  onConnectServer
+  onConnectServer,
+  onServerReachable
 }: {
   currentUser: AuthUser;
   onCurrentUserChanged: (user: AuthUser) => void;
+  onServerReachable: () => void;
   onLogout: () => void | Promise<void>;
   onConnectServer: () => void;
 }) {
@@ -1406,6 +1413,7 @@ function MainApp({
     initialLibraryHydrated,
     isOperaLibre,
     libraryRequestGenerationRef,
+    onServerReachable,
     libraryProgressReplaysRef,
     libraryRetryTimerRef,
     loadBooksRef,
@@ -1528,8 +1536,26 @@ function MainApp({
 
   loadBooksRef.current = loadBooks;
 
+  // A pending reconnect runs at once when the network returns or the app comes
+  // back to the foreground, rather than waiting out its backoff.
+  useEffect(() => {
+    const reconnectNow = () => {
+      if (document.hidden || libraryRetryTimerRef.current === null) return;
+      void loadBooksRef.current();
+    };
+    window.addEventListener("online", reconnectNow);
+    document.addEventListener("visibilitychange", reconnectNow);
+    return () => {
+      window.removeEventListener("online", reconnectNow);
+      document.removeEventListener("visibilitychange", reconnectNow);
+    };
+  }, []);
+
   useEffect(
     () => () => {
+      // A listing still in flight belongs to this session; when it fails it
+      // must not schedule a retry that runs under the next account.
+      libraryRequestGenerationRef.current += 1;
       if (libraryRetryTimerRef.current !== null) {
         window.clearTimeout(libraryRetryTimerRef.current);
         libraryRetryTimerRef.current = null;
