@@ -77,7 +77,7 @@ final class CarLibraryStore {
             UserDefaults.standard.set(true, forKey: invalidatedKey)
             if let snapshotURL { try? FileManager.default.removeItem(at: snapshotURL) }
         }
-        persistSessions([])
+        persistSessions(StoredRecordList())
         artworkMemoryCache.removeAll()
         artworkEpoch += 1
         // Queued behind any cover download in flight, so what it writes is
@@ -94,18 +94,21 @@ final class CarLibraryStore {
     // MARK: - Sessions
 
     func pendingSessions() -> [CarPlaybackSession] {
-        guard
-            let data = UserDefaults.standard.data(forKey: sessionsKey),
-            let sessions = try? JSONDecoder().decode([CarPlaybackSession].self, from: data)
-        else { return [] }
-        return sessions
+        storedSessions().records
+    }
+
+    /// Sessions another app version saved in a shape this one cannot read stay
+    /// stored, so their listening is not lost before it reaches the server.
+    private func storedSessions() -> StoredRecordList<CarPlaybackSession> {
+        StoredRecordList(decoding: UserDefaults.standard.data(forKey: sessionsKey))
     }
 
     /// One record per book: a car session that keeps running only moves its own
     /// position forward, and the newest one is the only one worth saving.
     func recordSession(_ session: CarPlaybackSession) {
-        var sessions = pendingSessions().filter { $0.bookId != session.bookId }
-        sessions.append(session)
+        var sessions = storedSessions()
+        sessions.records.removeAll { $0.bookId == session.bookId }
+        sessions.records.append(session)
         persistSessions(sessions)
     }
 
@@ -113,15 +116,16 @@ final class CarLibraryStore {
     /// timestamp as well as their book so a session that advanced between the
     /// read and the acknowledgement survives to be saved again.
     func acknowledgeSessions(_ acknowledged: [String: Double], clearRegressionForBookId: String? = nil) {
-        let remaining = CarPlaybackSession.remainingAfterAcknowledgement(
-            pendingSessions(), acknowledged: acknowledged,
+        var sessions = storedSessions()
+        sessions.records = CarPlaybackSession.remainingAfterAcknowledgement(
+            sessions.records, acknowledged: acknowledged,
             clearRegressionForBookId: clearRegressionForBookId
         )
-        persistSessions(remaining)
+        persistSessions(sessions)
     }
 
-    private func persistSessions(_ sessions: [CarPlaybackSession]) {
-        guard let data = try? JSONEncoder().encode(sessions) else { return }
+    private func persistSessions(_ sessions: StoredRecordList<CarPlaybackSession>) {
+        guard let data = sessions.encoded() else { return }
         UserDefaults.standard.set(data, forKey: sessionsKey)
     }
 

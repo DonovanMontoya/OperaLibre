@@ -31,7 +31,8 @@ with tempfile.TemporaryDirectory(prefix="ol-manager-") as directory:
     policy = replace_once(policy, "25 * 1024 * 1024 * 1024", "12")
     policy = replace_once(policy, 'FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first', 'URL(string: ProcessInfo.processInfo.environment["OL_TEST_ROOT"]!)')
     combined = scratch / "main.swift"
-    combined.write_text(policy + "\n" + manager + "\n" + (ROOT / "apps/web/ios/Tests/BackgroundDownloadManagerTests.swift").read_text())
+    records = (ROOT / "apps/web/ios/App/App/StoredRecords.swift").read_text()
+    combined.write_text(policy + "\n" + records + "\n" + manager + "\n" + (ROOT / "apps/web/ios/Tests/BackgroundDownloadManagerTests.swift").read_text())
     if os.environ.get("OL_MANAGER_SOURCE"):
         Path(os.environ["OL_MANAGER_SOURCE"]).write_text(combined.read_text())
     binary = scratch / "tests"
