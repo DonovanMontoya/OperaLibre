@@ -69,6 +69,25 @@ struct AudiobookPlayerStatus {
     var album: String
 }
 
+struct AudiobookAdoptableSession {
+    var positionSeconds: Double
+    var sleepTimerSeconds: Double
+    var sleepAtChapterEnd: Bool
+}
+
+/// Stream URLs carry a media credential in the query that a reloaded page may
+/// mint afresh, so the same file is the same scheme, host, port and path.
+func sameAudioSource(_ playing: URL, _ requested: URL) -> Bool {
+    if playing.isFileURL || requested.isFileURL {
+        return playing.isFileURL && requested.isFileURL
+            && playing.standardizedFileURL.path == requested.standardizedFileURL.path
+    }
+    return playing.scheme == requested.scheme
+        && playing.host == requested.host
+        && playing.port == requested.port
+        && playing.path == requested.path
+}
+
 /// The web bridge's view of the player. Delivery follows the rules the
 /// Capacitor layer depends on: events raised while WKWebView is suspended are
 /// held back and replayed once the app is active again, so JS never has to
@@ -571,6 +590,44 @@ public final class AudiobookPlayer {
     func recoveryState(forScope scope: String) -> NativeAudioCheckpoint? {
         guard let checkpoint = loadCheckpoint(), checkpoint.scopeKey == scope else { return nil }
         return checkpoint
+    }
+
+    /// The running session a freshly loaded page may take over instead of
+    /// loading the book again. iOS can discard the WebView's content process
+    /// during a long background listen while AVPlayer plays on; the reloaded
+    /// page restores the same book, and its load() would otherwise tear the
+    /// live player down. Only a player that is playing the requested track
+    /// from the same file qualifies; anything else answers nil and loads.
+    func adoptableSession(
+        scopeKey: String,
+        trackId: String,
+        source: URL,
+        completion: @escaping (AudiobookAdoptableSession?) -> Void
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            guard
+                let self,
+                let player = self.player,
+                player.timeControlStatus != .paused,
+                self.initialSeekComplete,
+                player.currentItem?.status == .readyToPlay,
+                self.recoveryScopeKey == scopeKey,
+                self.recoveryTrackId == trackId,
+                self.queuedTracks.indices.contains(self.activeQueueIndex),
+                sameAudioSource(self.queuedTracks[self.activeQueueIndex].url, source)
+            else {
+                completion(nil)
+                return
+            }
+            completion(AudiobookAdoptableSession(
+                positionSeconds: self.stablePlayerPosition(),
+                sleepTimerSeconds: self.sleepTimerRemaining,
+                sleepAtChapterEnd: self.sleepAtChapterEnd
+            ))
+            // The page drops ticks until it has decided, and a player that is
+            // buffering sends none of its own; hand it a clock straight away.
+            DispatchQueue.main.async { [weak self] in self?.emitState() }
+        }
     }
 
     func stop(releaseSession: Bool) {
