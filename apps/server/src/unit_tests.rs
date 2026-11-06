@@ -10171,67 +10171,6 @@ fn a_reported_offset_behind_an_untimed_track_is_bounded() {
     );
 }
 
-#[test]
-fn an_earlier_over_report_does_not_freeze_later_checkpoints() {
-    let book = book_after_an_untimed_track();
-    let track = &book.tracks[1];
-    let now = super::unix_now_millis();
-    let checkpoint = |position_seconds: f64, reported: f64| super::ProgressUpdate {
-        track_id: "t2".to_string(),
-        position_seconds,
-        book_position_seconds: Some(reported),
-        duration_seconds: Some(3_600.0),
-        updated_at_ms: None,
-        intentional_regression: false,
-        intentional_seek: false,
-        tz_offset_minutes: None,
-        speed: None,
-        client: None,
-    };
-    let over_reported =
-        match super::decide_progress_write(&book, track, None, &checkpoint(30.0, 1e9), now) {
-            super::ProgressDecision::Store { saved, .. } => saved,
-            super::ProgressDecision::Keep => panic!("a first position is stored"),
-        };
-
-    match super::decide_progress_write(
-        &book,
-        track,
-        Some(&over_reported),
-        &checkpoint(60.0, 3_660.0),
-        now + 30_000,
-    ) {
-        super::ProgressDecision::Store {
-            saved,
-            backup_previous,
-        } => {
-            assert_eq!(saved.position_seconds, 60.0);
-            assert_eq!(
-                saved.book_position_seconds,
-                over_reported.book_position_seconds + 30.0
-            );
-            assert!(!backup_previous);
-        }
-        super::ProgressDecision::Keep => panic!("listening on the same track is saved"),
-    }
-    // A late checkpoint from earlier on that track is still refused.
-    let corrected = super::Progress {
-        position_seconds: 60.0,
-        book_position_seconds: 3_660.0,
-        ..over_reported
-    };
-    assert!(matches!(
-        super::decide_progress_write(
-            &book,
-            track,
-            Some(&corrected),
-            &checkpoint(20.0, 3_620.0),
-            now + 60_000,
-        ),
-        super::ProgressDecision::Keep
-    ));
-}
-
 fn untimed_book_checkpoint(
     track: &str,
     position_seconds: f64,
@@ -10266,76 +10205,20 @@ fn a_lost_offset_behind_an_untimed_track_cannot_reset_the_book() {
     };
     let now = super::unix_now_millis();
     for (position, reported) in [(0.0, 0.0), (1.0, 0.0), (1.5, 1.5)] {
-        match super::decide_progress_write(
-            &book,
-            &book.tracks[1],
-            Some(&previous),
-            &untimed_book_checkpoint("t2", position, reported),
-            now,
-        ) {
-            super::ProgressDecision::Keep => {}
-            super::ProgressDecision::Store { saved, .. } => assert!(
-                saved.book_position_seconds >= 7_200.0 + position,
-                "{position}s reporting {reported}s must not replace two hours"
+        assert!(
+            matches!(
+                super::decide_progress_write(
+                    &book,
+                    &book.tracks[1],
+                    Some(&previous),
+                    &untimed_book_checkpoint("t2", position, reported),
+                    now,
+                ),
+                super::ProgressDecision::Keep
             ),
-        }
+            "{position}s reporting {reported}s must not replace two hours"
+        );
     }
-}
-
-#[test]
-fn an_over_report_does_not_freeze_saves_after_the_next_track_starts() {
-    let book = book_with_tracks(
-        None,
-        vec![
-            track_with_duration("t1", 0, None),
-            track_with_duration("t2", 1, Some(3_600.0)),
-            track_with_duration("t3", 2, Some(3_600.0)),
-        ],
-    );
-    let now = super::unix_now_millis();
-    let inflated = match super::decide_progress_write(
-        &book,
-        &book.tracks[1],
-        None,
-        &untimed_book_checkpoint("t2", 3_590.0, 1e9),
-        now,
-    ) {
-        super::ProgressDecision::Store { saved, .. } => saved,
-        super::ProgressDecision::Keep => panic!("a first position is stored"),
-    };
-    match super::decide_progress_write(
-        &book,
-        &book.tracks[2],
-        Some(&inflated),
-        &untimed_book_checkpoint("t3", 30.0, 10_830.0),
-        now + 30_000,
-    ) {
-        super::ProgressDecision::Store { saved, .. } => {
-            assert_eq!(saved.track_id, "t3");
-            assert_eq!(
-                saved.book_position_seconds,
-                inflated.book_position_seconds + 10.0 + 30.0
-            );
-        }
-        super::ProgressDecision::Keep => panic!("advancing to the next track is saved"),
-    }
-    // Going back a track without asking is still refused.
-    let on_third = super::Progress {
-        track_id: "t3".to_string(),
-        position_seconds: 30.0,
-        book_position_seconds: 10_830.0,
-        ..inflated
-    };
-    assert!(matches!(
-        super::decide_progress_write(
-            &book,
-            &book.tracks[1],
-            Some(&on_third),
-            &untimed_book_checkpoint("t2", 3_000.0, 10_200.0),
-            now + 60_000,
-        ),
-        super::ProgressDecision::Keep
-    ));
 }
 
 #[test]
@@ -10357,9 +10240,11 @@ fn marking_a_legacy_row_finished_does_not_back_it_up() {
 }
 
 /// A client that lost its offset reports the start of the next track as the
-/// start of the book; the floor clamp alone would still drop two hours.
+/// start of the book. The floor clamp lifts that above the reset threshold, so
+/// the regression guard is what refuses it. The same holds for an older replay
+/// of the next track arriving after a deliberate rewind.
 #[test]
-fn a_lost_offset_on_the_next_track_keeps_the_whole_book_position() {
+fn a_lost_offset_on_the_next_track_is_refused() {
     let book = book_with_tracks(
         None,
         vec![
@@ -10379,28 +10264,36 @@ fn a_lost_offset_on_the_next_track_keeps_the_whole_book_position() {
         updated_at: now.saturating_sub(120_000).to_string(),
         finished_override: None,
     };
-    for base in [Some(previous.updated_at.clone()), None] {
-        let checkpoint = super::ProgressCheckpoint {
-            update: super::ProgressUpdate {
-                updated_at_ms: base.is_none().then_some(now.saturating_sub(120_000)),
-                ..untimed_book_checkpoint("t3", 0.0, 0.0)
-            },
-            sent_at_ms: None,
-            base_updated_at: base.clone(),
-            recording: None,
-        };
-        match super::decide_progress_checkpoint(
-            &book,
-            &book.tracks[2],
-            Some(&previous),
-            &checkpoint,
-            now,
-        ) {
-            super::ProgressDecision::Store { saved, .. } => {
-                assert_eq!(saved.track_id, "t3");
-                assert_eq!(saved.book_position_seconds, 10_800.0, "base {base:?}");
-            }
-            super::ProgressDecision::Keep => panic!("moving to the next track is saved"),
+    let rewound = super::Progress {
+        position_seconds: 60.0,
+        book_position_seconds: 7_260.0,
+        ..previous.clone()
+    };
+    for stored in [&previous, &rewound] {
+        for base in [Some(stored.updated_at.clone()), None] {
+            let checkpoint = super::ProgressCheckpoint {
+                update: super::ProgressUpdate {
+                    updated_at_ms: base.is_none().then_some(now.saturating_sub(180_000)),
+                    ..untimed_book_checkpoint("t3", 0.0, 0.0)
+                },
+                sent_at_ms: None,
+                base_updated_at: base.clone(),
+                recording: None,
+            };
+            assert!(
+                matches!(
+                    super::decide_progress_checkpoint(
+                        &book,
+                        &book.tracks[2],
+                        Some(stored),
+                        &checkpoint,
+                        now,
+                    ),
+                    super::ProgressDecision::Keep
+                ),
+                "stored {} with base {base:?}",
+                stored.book_position_seconds
+            );
         }
     }
 }

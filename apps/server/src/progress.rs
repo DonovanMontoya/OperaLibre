@@ -335,21 +335,12 @@ pub(crate) fn decide_progress_write(
 
     let incoming_track_position =
         clamped_track_position(update.position_seconds, track.duration_seconds);
-    let mut incoming_book_position = validated_book_position_seconds(
+    let incoming_book_position = validated_book_position_seconds(
         book,
         track,
         incoming_track_position,
         update.book_position_seconds,
     );
-    // Behind an untimed track the book position is only what clients report,
-    // and one that lost its offset reports too little. Moving forward from a
-    // stored position can't end up behind it, so carry the stored offset.
-    if unknown_earlier_track_count(book, track) > 0
-        && let Some(previous) = previous
-        && let Some(carried) = carried_book_position(book, previous, track, incoming_track_position)
-    {
-        incoming_book_position = incoming_book_position.max(carried);
-    }
     let saved = Progress {
         recording: None,
         book_id: book.id.clone(),
@@ -1192,44 +1183,6 @@ pub(crate) fn unknown_earlier_track_count(book: &Book, track: &Track) -> usize {
                 .is_some_and(|duration| duration > 0.0)
         })
         .count()
-}
-
-/// The least whole-book position a forward move from `previous` can reach:
-/// its track's start, the rest of that track, any timed tracks between, and
-/// the new position. An untimed track counts as long as the position heard in
-/// it. `None` when the move isn't forward in track order. Track ids and track
-/// positions are the server's own, unlike a reported whole-book offset.
-fn carried_book_position(
-    book: &Book,
-    previous: &Progress,
-    track: &Track,
-    position_seconds: f64,
-) -> Option<f64> {
-    let index_of = |id: &str| book.tracks.iter().position(|candidate| candidate.id == id);
-    let (before, now) = (index_of(&previous.track_id)?, index_of(&track.id)?);
-    let previous_track_start =
-        (previous.book_position_seconds - previous.position_seconds).max(0.0);
-    if now == before {
-        return (position_seconds >= previous.position_seconds)
-            .then_some(previous_track_start + position_seconds);
-    }
-    if now < before {
-        return None;
-    }
-    let known = |candidate: &Track| {
-        candidate
-            .duration_seconds
-            .filter(|duration| *duration > 0.0)
-    };
-    let previous_track_length = known(&book.tracks[before])
-        .map_or(previous.position_seconds, |duration| {
-            duration.max(previous.position_seconds)
-        });
-    let between = book.tracks[before + 1..now]
-        .iter()
-        .filter_map(known)
-        .sum::<f64>();
-    Some(previous_track_start + previous_track_length + between + position_seconds)
 }
 
 /// The most one untimed track may add to a client-reported book position.
