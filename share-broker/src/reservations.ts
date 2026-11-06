@@ -31,10 +31,10 @@ export async function reserveRoom(storage: TransactionalStorage, input: Input, c
   });
 }
 
-export async function cleanupRoom(storage: TransactionalStorage, input: Input, clock: () => number): Promise<boolean> {
+export async function cleanupRoom(storage: TransactionalStorage, input: Input, _clock: () => number): Promise<boolean> {
   return storage.transaction(async txn => {
     const reservation = await txn.get<Reservation>("reservation");
-    if (!reservation || reservation.expiresAt !== input.expiresAt || !await authenticateOwner(input.reservationId, Uint8Array.from(reservation.digest)) || input.expiresAt <= clock()) return false;
+    if (!reservation || reservation.expiresAt !== input.expiresAt || !await authenticateOwner(input.reservationId, Uint8Array.from(reservation.digest))) return false;
     if (await txn.get("revoked")) return !!await txn.get("reservation:cleaned");
     await txn.put("revoked", true);
     await txn.put("reservation:cleaned", true);

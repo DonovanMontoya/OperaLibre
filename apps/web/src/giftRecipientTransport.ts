@@ -1,7 +1,8 @@
 import { GiftScreenError } from "./GiftScreen";
 import type { GiftDetails, GiftLink, GiftTransport } from "./ExperimentalGiftRoute";
 import { GiftChunkReceiver, type GiftChunkSink } from "./giftChunkReceiver";
-import { createNativeGiftStaging } from "./giftNativeStaging";
+import { createNativeGiftStaging, recoverNativeGiftStaging } from "./giftNativeStaging";
+import { receiveRecoveredGift, type RecipientRecoveryProtocol } from "./giftRecipientRecovery";
 
 export type VerifiedRecipientDetails = GiftDetails & { transfer: { room: string; size: number; sha256: string; expiresAt: number } };
 type Capability = { payload: string; signature: string };
@@ -56,11 +57,11 @@ function waitForGathering(peer: RTCPeerConnection, signal: AbortSignal): Promise
 }
 
 /** The caller supplies owner-controlled ICE servers; no public TURN service is
- * configured implicitly. Resume is deliberately unavailable until the sender
- * and broker negotiate and authenticate the offset. */
+ * configured implicitly. Recovery requires an explicitly supplied authenticated
+ * protocol adapter; the application does not supply one. */
 export function createExperimentalRecipientTransport(
   verifiedPreview: VerifiedPreviewSource,
-  options: { iceServers?: RTCIceServer[]; stage?: (giftId: string) => Promise<Staging>; peer?: (configuration: RTCConfiguration) => RTCPeerConnection } = {}
+  options: { iceServers?: RTCIceServer[]; stage?: (giftId: string) => Promise<Staging>; peer?: (configuration: RTCConfiguration) => RTCPeerConnection; recovery?: RecipientRecoveryProtocol } = {}
 ): GiftTransport {
   return {
     async preview(link, signal) { return verifiedPreview(link, signal); },
@@ -76,6 +77,10 @@ export function createExperimentalRecipientTransport(
       let peer: RTCPeerConnection | null = null; let stage: Staging | null = null; let receiver: GiftChunkReceiver | null = null; let monitoring = true;
       try {
         if (outerSignal.aborted) throw new GiftScreenError("unavailable");
+        if (options.recovery) {
+          await receiveRecoveredGift(link, { giftId: details.giftId, ...transfer }, controller.signal, recoverNativeGiftStaging, options.recovery);
+          return;
+        }
         await brokerPost(link, `/claim/${transfer.room}`, credential, controller.signal);
         stage = await (options.stage ?? createNativeGiftStaging)(details.giftId);
         receiver = new GiftChunkReceiver(stage, transfer.size, transfer.sha256);

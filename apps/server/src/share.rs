@@ -36,6 +36,7 @@ struct ActiveSender {
     owner_secret: String,
     room: String,
     expires_at: u64,
+    reservation_id: String,
 }
 static INVITATION_GATE: LazyLock<Mutex<HashMap<String, Vec<ActiveSender>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -46,10 +47,15 @@ fn invitation_key(state: &AppState, digest: &str) -> String {
 
 #[cfg(test)]
 pub(crate) async fn forget_invitation_runtime_for_test(state: &AppState, token: &str) {
-    INVITATION_GATE
+    if let Some(senders) = INVITATION_GATE
         .lock()
         .await
-        .remove(&invitation_key(state, &share_digest_string(token)));
+        .remove(&invitation_key(state, &share_digest_string(token)))
+    {
+        for sender in senders {
+            let _ = sender.cancel.send(true);
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -606,6 +612,83 @@ struct PendingBrokerRoom {
     origin: String,
     room: String,
     expires_at: u64,
+    #[serde(default)]
+    reservation_version: u8,
+    #[serde(default)]
+    cleanup_pending: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    last_cleanup_attempt: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+fn reservation_id(owner_secret: &str, token_digest: &str, room: &str) -> String {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, owner_secret.as_bytes());
+    let mut mac = ring::hmac::Context::with_key(&key);
+    mac.update(b"operalibre-reservation-v1\0");
+    mac.update(token_digest.as_bytes());
+    mac.update(b"\0");
+    mac.update(room.as_bytes());
+    URL_SAFE_NO_PAD.encode(mac.sign().as_ref())
+}
+
+async fn cleanup_reserved_room(
+    broker: &crate::share_broker::BrokerClient,
+    owner_secret: &str,
+    token_digest: &str,
+    entry: &PendingBrokerRoom,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        entry.reservation_version == 1,
+        "unreserved legacy room requires manual recovery"
+    );
+    let id = reservation_id(owner_secret, token_digest, &entry.room);
+    if broker
+        .cleanup(owner_secret, &entry.room, &id, entry.expires_at)
+        .await
+        .is_ok()
+    {
+        return Ok(());
+    }
+    // If reservation's response was lost before it committed, reserve first.
+    // A differently owned room rejects this operation and is never revoked.
+    broker
+        .reserve(owner_secret, &entry.room, &id, entry.expires_at)
+        .await?;
+    broker
+        .cleanup(owner_secret, &entry.room, &id, entry.expires_at)
+        .await
+}
+
+/// Remove the durable cleanup record only after the matching reservation has
+/// been confirmed cleaned. The caller holds INVITATION_GATE.
+async fn cleanup_failed_preparation(
+    state: &AppState,
+    broker: &crate::share_broker::BrokerClient,
+    owner_secret: &str,
+    token_digest: &str,
+    entry: &PendingBrokerRoom,
+) -> Result<(), ApiError> {
+    if cleanup_reserved_room(broker, owner_secret, token_digest, entry)
+        .await
+        .is_err()
+    {
+        return Ok(()); // Keep the durable record for owner retry.
+    }
+    let mut invitations = read_invitations(&state.database).await?;
+    let invitation = invitations
+        .iter_mut()
+        .find(|item| item.token_digest == token_digest)
+        .ok_or_else(|| ApiError::not_found("Share link not found."))?;
+    invitation.broker_rooms.retain(|item| {
+        item.origin != entry.origin
+            || item.room != entry.room
+            || item.expires_at != entry.expires_at
+    });
+    write_invitations(&state.database, invitations).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -750,13 +833,8 @@ pub(crate) async fn create_share(
         broker_rooms: Vec::new(),
     };
     let mut invitations = read_invitations(&state.database).await?;
-    invitations.retain(|item| {
-        (item.expires_at > now && !item.revoked)
-            || item
-                .broker_rooms
-                .iter()
-                .any(|room| room.expires_at > now as u64)
-    });
+    invitations
+        .retain(|item| (item.expires_at > now && !item.revoked) || !item.broker_rooms.is_empty());
     invitations.push(invitation);
     write_invitations(&state.database, invitations).await?;
     Ok(Json(ShareLinkResponse {
@@ -814,7 +892,12 @@ pub(crate) async fn revoke_share(
         for sender in senders.drain(..) {
             if sender
                 .broker
-                .revoke(&sender.owner_secret, &sender.room)
+                .cleanup(
+                    &sender.owner_secret,
+                    &sender.room,
+                    &sender.reservation_id,
+                    sender.expires_at,
+                )
                 .await
                 .is_err()
             {
@@ -833,15 +916,10 @@ pub(crate) async fn revoke_share(
         .iter_mut()
         .find(|item| item.token_digest == digest)
         .ok_or_else(|| ApiError::not_found("Share link not found."))?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| ApiError::internal("System clock is invalid."))?
-        .as_secs();
     record.broker_rooms.retain(|entry| {
-        entry.expires_at > now
-            && !succeeded
-                .iter()
-                .any(|(origin, room)| origin == &entry.origin && room == &entry.room)
+        !succeeded
+            .iter()
+            .any(|(origin, room)| origin == &entry.origin && room == &entry.room)
     });
     let pending = !record.broker_rooms.is_empty();
     write_invitations(&state.database, invitations).await?;
@@ -873,15 +951,13 @@ pub(crate) async fn retry_share_broker_revocation(
     if record.sender_user_id != auth.id || !record.revoked {
         return Err(ApiError::not_found("Revoked share link not found."));
     }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| ApiError::internal("System clock is invalid."))?
-        .as_secs();
     let origin = broker.origin().origin().ascii_serialization();
     let mut pending = Vec::new();
     for entry in record.broker_rooms.drain(..) {
-        if entry.expires_at > now
-            && (entry.origin != origin || broker.revoke(owner_secret, &entry.room).await.is_err())
+        if entry.origin != origin
+            || cleanup_reserved_room(broker, owner_secret, &digest, &entry)
+                .await
+                .is_err()
         {
             pending.push(entry);
         }
@@ -933,25 +1009,67 @@ pub(crate) async fn retry_revocations_for_owner(
     broker: &crate::share_broker::BrokerClient,
     owner_secret: &str,
 ) -> Result<RetryBrokerRevocationsResponse, ApiError> {
-    let _gate = INVITATION_GATE.lock().await;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| ApiError::internal("System clock is invalid."))?
-        .as_secs();
+    let mut gate = INVITATION_GATE.lock().await;
     let origin = broker.origin().origin().ascii_serialization();
     let mut invitations = read_invitations(&state.database).await?;
+    let mut attempt_order = invitations
+        .iter()
+        .flat_map(|item| &item.broker_rooms)
+        .map(|entry| entry.last_cleanup_attempt)
+        .max()
+        .unwrap_or(0);
+    invitations.sort_by_key(|item| {
+        item.broker_rooms
+            .iter()
+            .filter(|entry| {
+                entry.origin == origin
+                    && (item.revoked
+                        || entry.cleanup_pending
+                        || !gate
+                            .get(&invitation_key(state, &item.token_digest))
+                            .is_some_and(|senders| {
+                                senders.iter().any(|sender| {
+                                    sender.room == entry.room && sender.cancel.receiver_count() > 0
+                                })
+                            }))
+            })
+            .map(|entry| entry.last_cleanup_attempt)
+            .min()
+            .unwrap_or(u64::MAX)
+    });
     let mut completed = 0;
     let mut pending = 0;
     let mut attempted = 0;
-    for invitation in invitations.iter_mut().filter(|item| item.revoked) {
+    for invitation in invitations.iter_mut() {
         let mut remaining = Vec::new();
-        for entry in invitation.broker_rooms.drain(..) {
-            if entry.expires_at <= now {
+        invitation
+            .broker_rooms
+            .sort_by_key(|entry| entry.last_cleanup_attempt);
+        for mut entry in invitation.broker_rooms.drain(..) {
+            let has_live_sender = gate
+                .get(&invitation_key(state, &invitation.token_digest))
+                .is_some_and(|senders| {
+                    senders.iter().any(|sender| {
+                        sender.room == entry.room && sender.cancel.receiver_count() > 0
+                    })
+                });
+            if !invitation.revoked && !entry.cleanup_pending && has_live_sender {
+                remaining.push(entry);
                 continue;
             }
             if entry.origin == origin && attempted < 16 {
                 attempted += 1;
-                if broker.revoke(owner_secret, &entry.room).await.is_ok() {
+                attempt_order = attempt_order.saturating_add(1);
+                entry.last_cleanup_attempt = attempt_order;
+                if cleanup_reserved_room(broker, owner_secret, &invitation.token_digest, &entry)
+                    .await
+                    .is_ok()
+                {
+                    if let Some(senders) =
+                        gate.get_mut(&invitation_key(state, &invitation.token_digest))
+                    {
+                        senders.retain(|sender| sender.room != entry.room);
+                    }
                     completed += 1;
                     continue;
                 }
@@ -985,20 +1103,14 @@ pub(crate) async fn start_invitation_sender(
     token: &str,
     broker: &crate::share_broker::BrokerClient,
     owner_secret: &str,
-    room: &str,
-    nonce: &str,
 ) -> Result<PreparedShareSession, ApiError> {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     if !enabled {
         return Err(ApiError::service_unavailable("Book sharing is disabled."));
     }
-    if !(16..=128).contains(&room.len())
-        || !room
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-    {
-        return Err(ApiError::bad_request("Invalid share room."));
-    }
+    // A caller cannot choose or reuse another invitation's broker room.
+    let room = URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>());
+    let nonce = URL_SAFE_NO_PAD.encode(rand::random::<[u8; 24]>());
     let mut gate = INVITATION_GATE.lock().await;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1095,7 +1207,7 @@ pub(crate) async fn start_invitation_sender(
         &invitation.manifest.sender_display_name,
         invitation.manifest.personal_message.as_deref(),
         &gift_id,
-        room,
+        &room,
         expires_at,
         &receipt,
     )
@@ -1111,21 +1223,73 @@ pub(crate) async fn start_invitation_sender(
         .iter_mut()
         .find(|item| item.token_digest == invitation.token_digest)
         .ok_or_else(|| ApiError::not_found("Share link not found."))?;
-    record.broker_rooms.retain(|entry| entry.expires_at > now);
-    record.broker_rooms.push(PendingBrokerRoom {
+    if record.broker_rooms.len() >= 32 {
+        return Err(ApiError::conflict("Too many rooms await owner cleanup."));
+    }
+    let pending = PendingBrokerRoom {
         origin: broker.origin().origin().ascii_serialization(),
         room: room.to_string(),
         expires_at,
-    });
+        reservation_version: 1,
+        cleanup_pending: true,
+        last_cleanup_attempt: 0,
+    };
+    record.broker_rooms.push(pending.clone());
     write_invitations(&state.database, invitations).await?;
-    let recipient = broker
-        .issue_recipient(owner_secret, room, &recipient_nonce, expires_at)
+    let reservation_id = reservation_id(owner_secret, &invitation.token_digest, &room);
+    if broker
+        .reserve(owner_secret, &room, &reservation_id, expires_at)
         .await
-        .map_err(|_| ApiError::service_unavailable("Could not issue recipient capability."))?;
-    broker
-        .publish_preview(owner_secret, room, expires_at, &encrypted)
+        .is_err()
+    {
+        cleanup_failed_preparation(
+            state,
+            broker,
+            owner_secret,
+            &invitation.token_digest,
+            &pending,
+        )
+        .await?;
+        return Err(ApiError::service_unavailable(
+            "Broker room reservation failed; cleanup may be pending.",
+        ));
+    }
+    let recipient = match broker
+        .issue_recipient(owner_secret, &room, &recipient_nonce, expires_at)
         .await
-        .map_err(|_| ApiError::service_unavailable("Could not publish share preview."))?;
+    {
+        Ok(value) => value,
+        Err(_) => {
+            cleanup_failed_preparation(
+                state,
+                broker,
+                owner_secret,
+                &invitation.token_digest,
+                &pending,
+            )
+            .await?;
+            return Err(ApiError::service_unavailable(
+                "Could not issue recipient capability.",
+            ));
+        }
+    };
+    if broker
+        .publish_preview(owner_secret, &room, expires_at, &encrypted)
+        .await
+        .is_err()
+    {
+        cleanup_failed_preparation(
+            state,
+            broker,
+            owner_secret,
+            &invitation.token_digest,
+            &pending,
+        )
+        .await?;
+        return Err(ApiError::service_unavailable(
+            "Could not publish share preview.",
+        ));
+    }
     let token = URL_SAFE_NO_PAD.encode(
         serde_json::to_vec(&recipient).map_err(|error| ApiError::internal(error.to_string()))?,
     );
@@ -1151,8 +1315,8 @@ pub(crate) async fn start_invitation_sender(
         enabled,
         broker,
         owner_secret,
-        room,
-        nonce,
+        &room,
+        &nonce,
         expires_at,
         move |capability, stop| async move {
             let _guards = (temp, permit);
@@ -1173,12 +1337,46 @@ pub(crate) async fn start_invitation_sender(
     let session = match session_result {
         Ok(session) => session,
         Err(error) => {
-            let _ = broker.revoke(owner_secret, room).await;
+            cleanup_failed_preparation(
+                state,
+                broker,
+                owner_secret,
+                &invitation.token_digest,
+                &pending,
+            )
+            .await?;
             return Err(ApiError::internal(format!(
                 "Share session could not start: {error}"
             )));
         }
     };
+    let mark_active = async {
+        let mut invitations = read_invitations(&state.database).await?;
+        let record = invitations
+            .iter_mut()
+            .find(|item| item.token_digest == invitation.token_digest)
+            .ok_or_else(|| ApiError::not_found("Share link not found."))?;
+        let entry = record
+            .broker_rooms
+            .iter_mut()
+            .find(|entry| entry.room == room && entry.origin == pending.origin)
+            .ok_or_else(|| ApiError::internal("Share reservation record missing."))?;
+        entry.cleanup_pending = false;
+        write_invitations(&state.database, invitations).await
+    }
+    .await;
+    if let Err(error) = mark_active {
+        let _ = session.cancellation_handle().send(true);
+        let _ = cleanup_failed_preparation(
+            state,
+            broker,
+            owner_secret,
+            &invitation.token_digest,
+            &pending,
+        )
+        .await;
+        return Err(error);
+    }
     let senders = gate
         .entry(invitation_key(state, &invitation.token_digest))
         .or_default();
@@ -1188,6 +1386,7 @@ pub(crate) async fn start_invitation_sender(
         owner_secret: owner_secret.to_string(),
         room: room.to_string(),
         expires_at,
+        reservation_id,
     });
     Ok(PreparedShareSession {
         gift_url: gift_url.to_string(),
@@ -1350,6 +1549,29 @@ pub(crate) fn share_token_digest(token: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reservation_identity_is_scoped_and_does_not_embed_credential() {
+        let value = reservation_id("owner-secret", "digest-one", "room-one");
+        assert_eq!(value.len(), 43);
+        assert!(!value.contains("owner-secret"));
+        assert_eq!(
+            value,
+            reservation_id("owner-secret", "digest-one", "room-one")
+        );
+        assert_ne!(
+            value,
+            reservation_id("owner-secret", "digest-two", "room-one")
+        );
+        assert_ne!(
+            value,
+            reservation_id("owner-secret", "digest-one", "room-two")
+        );
+        assert_ne!(
+            value,
+            reservation_id("other-secret", "digest-one", "room-one")
+        );
+    }
     use tempfile::tempdir;
 
     /// Opt-in cross-runtime fixture, written only to the explicit test path.

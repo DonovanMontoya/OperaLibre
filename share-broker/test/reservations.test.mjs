@@ -24,13 +24,13 @@ test("reservation collision, retries, cleanup ownership, replay and expiry", asy
   assert.equal(await reserveRoom(db, { ...a, expiresAt: 201 }, clock), false);
   assert.equal(await cleanupRoom(db, b, clock), false);
   assert.equal(await cleanupRoom(db, { ...a, expiresAt: 201 }, clock), false);
-  assert.equal(await cleanupRoom(db, a, () => 200), false);
+  assert.equal(await cleanupRoom(db, a, () => 200), true); // owner can clean expired data
   assert.equal(await cleanupRoom(db, a, clock), true);
   assert.equal(await cleanupRoom(db, a, clock), true); // lost cleanup response
   assert.equal(await reserveRoom(db, a, clock), false);
   assert.equal(await reserveRoom(db, b, clock), false);
   assert.equal(await cleanupRoom(db, b, clock), false);
-  assert.equal(await cleanupRoom(db, a, () => 200), false);
+  assert.equal(await cleanupRoom(db, a, () => 200), true);
 });
 
 test("old state, expired reservations and revoked rooms cannot be acquired", async () => {

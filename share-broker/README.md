@@ -34,17 +34,20 @@ The Worker remains disabled unless explicitly enabled; this is a broker-only
 prototype, not a completed transfer resume implementation. After a successful
 `POST /claim/{room}`, the owner may issue a successor using the existing
 authenticated `POST /issue` endpoint. It must have the same room, role, and
-expiry as the current claim and a fresh, unpredictable nonce. Treat both signed
+expiry as the current claim, a fresh, unpredictable nonce, and `previousNonce`
+equal to the current nonce. Treat both signed
 claims as bearer secrets and deliver the successor securely to that same peer.
 
 The peer sends `POST /resume/{room}` with the current `payload` and `signature`
-and the successor as `nextPayload` and `nextSignature`. A successful 204
+and the successor as `nextPayload` and `nextSignature`, plus the current
+`generation`. A successful 204 returns `x-signaling-generation` and
 atomically replaces the current role membership; the old claim and every
 previously used nonce for that role are rejected. Concurrent rotations have at
 most one winner. Invalid, expired, replayed, cross-room or cross-role claims,
 and revoked rooms receive 403. The original expiry cannot be extended. Room
-revocation and rotation share the storage transaction boundary. Signaling
-queues are retained, including their sequence numbers and quotas. Each role is
+revocation and rotation share the storage transaction boundary. Rotation clears
+both signaling queues; peers must coordinate the new generation and restart
+their sequences. There is no implemented generation-discovery protocol. Each role is
 limited to 16 rotations per room; nonce records require eventual room cleanup.
 
 The response contains no replacement secret. If a success response is lost,
@@ -58,16 +61,18 @@ This mechanism needs independent security and native review before use.
 
 With the existing experimental gate enabled, an owner authenticated with the
 existing bearer credential can `POST /reserve/{room}` with JSON
-`{"reservationId":"...","expiresAt":123}`. Generate a fresh 32-byte
-cryptographically random secret, encode it as unpadded base64url (43 characters),
-and retain it with the room and expiry before sending the request. Expiry is Unix
+`{"reservationId":"...","expiresAt":123}`. The experimental server derives
+a 32-byte reservation ID from its owner credential, invitation digest and fresh
+random room, then encodes it as unpadded base64url. The server persists the room
+and expiry before sending the request, and derives the same ID for retry without
+persisting the owner credential. Expiry is Unix
 seconds, at most 15 minutes ahead. A 204 reserves the previously untouched room;
 409 means unavailable or expired. Retrying the exact request after a lost
 response returns 204 while live. A different secret or expiry cannot acquire it.
 
 `POST /cleanup/{room}` uses the same owner authentication and exact JSON. A
 204 atomically revokes the room and clears its preview and signaling queues;
-an exact live retry also returns 204. Mismatches, expiry, and prior independent
+an exact retry, including after expiry, also returns 204. Mismatches and prior independent
 revocation return 403. Neither operation can reactivate a cleaned room. Both
 are serialized with existing room transactions. The broker stores a digest of
 the reservation secret and retains a permanent reservation/revocation tombstone;
@@ -80,6 +85,6 @@ distinguishes individual reservations, not separate broker administrators.
 An issued but unused legacy claim leaves no room state and cannot be detected
 by reservation. Callers must use unpredictable room IDs, reserve before issuing
 claims or writing previews, protect the reservation secret, and coordinate all
-legacy owner operations. Expired reservations cannot be cleaned with this API;
-the existing owner revoke route remains available. This prototype does not
-provide server integration, deployment, or automatic expiration cleanup.
+legacy owner operations. Cleanup requires an explicit owner retry; expired
+records remain on the server until cleanup is confirmed. This prototype does
+not provide deployment or automatic expiration cleanup.

@@ -89,6 +89,36 @@ impl BrokerClient {
         );
         Ok(format!("/{action}/{room}"))
     }
+    pub(crate) async fn reserve(
+        &self,
+        owner: &str,
+        room: &str,
+        reservation_id: &str,
+        expires_at: u64,
+    ) -> anyhow::Result<()> {
+        self.post(
+            &Self::room_path("reserve", room)?,
+            serde_json::json!({"reservationId":reservation_id,"expiresAt":expires_at}),
+            Some(owner),
+        )
+        .await?;
+        Ok(())
+    }
+    pub(crate) async fn cleanup(
+        &self,
+        owner: &str,
+        room: &str,
+        reservation_id: &str,
+        expires_at: u64,
+    ) -> anyhow::Result<()> {
+        self.post(
+            &Self::room_path("cleanup", room)?,
+            serde_json::json!({"reservationId":reservation_id,"expiresAt":expires_at}),
+            Some(owner),
+        )
+        .await?;
+        Ok(())
+    }
     pub(crate) async fn issue(
         &self,
         owner: &str,

@@ -1,6 +1,6 @@
 // Experimental claim state machine for the disabled-by-default Worker.
 export type Role = "producer" | "recipient";
-export type Claim = { room: string; role: Role; nonce: string; expiresAt: number };
+export type Claim = { room: string; role: Role; nonce: string; expiresAt: number; previousNonce?: string };
 export interface Transaction {
   get<T>(key: string): Promise<T | undefined>;
   put(key: string, value: unknown): Promise<void>;
@@ -11,7 +11,7 @@ export interface TransactionalStorage {
 
 /** The caller must verify the signed capability before invoking this function. */
 export async function claimRole(storage: TransactionalStorage, room: string, claim: Claim, now: number): Promise<boolean> {
-  if (claim.room !== room || !claim.nonce || claim.expiresAt <= now || !["producer", "recipient"].includes(claim.role)) return false;
+  if (claim.room !== room || !claim.nonce || claim.previousNonce !== undefined || claim.expiresAt <= now || !["producer", "recipient"].includes(claim.role)) return false;
   return storage.transaction(async txn => {
     if (await txn.get("revoked")) return false;
     const key = `claim:${claim.role}`;
@@ -23,11 +23,11 @@ export async function claimRole(storage: TransactionalStorage, room: string, cla
 }
 
 /** Both capabilities must be verified before entering the room transaction. */
-export async function rotateRole(storage: TransactionalStorage, room: string, current: Claim, next: Claim, clock: () => number): Promise<boolean> {
-  if (current.room !== room || next.room !== room || current.role !== next.role || !["producer", "recipient"].includes(current.role) || !current.nonce || !next.nonce || current.nonce === next.nonce || current.expiresAt !== next.expiresAt) return false;
+export async function rotateRole(storage: TransactionalStorage, room: string, current: Claim, next: Claim, generation: number, clock: () => number): Promise<boolean> {
+  if (current.room !== room || next.room !== room || current.role !== next.role || !["producer", "recipient"].includes(current.role) || !current.nonce || !next.nonce || current.nonce === next.nonce || next.previousNonce !== current.nonce || current.expiresAt !== next.expiresAt || !Number.isSafeInteger(generation) || generation < 0) return false;
   return storage.transaction(async txn => {
     const now = clock();
-    if (current.expiresAt <= now || await txn.get("revoked")) return false;
+    if (current.expiresAt <= now || await txn.get("revoked") || (await txn.get<number>("generation") ?? 0) !== generation) return false;
     const key = `claim:${current.role}`;
     const member = await txn.get<{ nonce: string; expiresAt: number }>(key);
     const rotations = await txn.get<number>(`rotations:${current.role}`) ?? 0;
@@ -37,6 +37,9 @@ export async function rotateRole(storage: TransactionalStorage, room: string, cu
     await txn.put(`used:${current.role}:${next.nonce}`, true);
     await txn.put(`rotations:${current.role}`, rotations + 1);
     await txn.put(key, { nonce: next.nonce, expiresAt: next.expiresAt });
+    await txn.put("queue:producer", []);
+    await txn.put("queue:recipient", []);
+    await txn.put("generation", generation + 1);
     return true;
   });
 }

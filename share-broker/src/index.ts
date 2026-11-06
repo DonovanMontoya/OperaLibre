@@ -108,7 +108,7 @@ export class SecureRoom implements DurableObject {
     if (!["/claim", "/resume", "/send", "/poll", "/preview-put", "/preview-read"].includes(url.pathname)) return new Response(null, { status: 404 });
     const text = await readBounded(request, url.pathname === "/preview-put" ? MAX_PREVIEW_MESSAGE_BYTES : 8192);
     if (text === null) return new Response(null, { status: 413 });
-    let body: { room: string; payload: string; signature: string; nextPayload?: string; nextSignature?: string; sequence?: number; kind?: string; message?: string; after?: number; nonce?: string; ciphertext?: string; expiresAt?: number };
+    let body: { room: string; payload: string; signature: string; nextPayload?: string; nextSignature?: string; generation?: number; sequence?: number; kind?: string; message?: string; after?: number; nonce?: string; ciphertext?: string; expiresAt?: number };
     try { body = JSON.parse(text); } catch { return new Response(null, { status: 400 }); }
     if (!body || typeof body.room !== "string") return new Response(null, { status: 400 });
     const now = Math.floor(Date.now() / 1000);
@@ -128,11 +128,11 @@ export class SecureRoom implements DurableObject {
     const claim = await verifyClaim(body.room, body.payload, body.signature, this.env.SIGNING_SECRET, now);
     if (!claim) return new Response(null, { status: 403 });
     if (url.pathname === "/resume") {
-      if (typeof body.nextPayload !== "string" || typeof body.nextSignature !== "string") return new Response(null, { status: 400 });
+      if (typeof body.nextPayload !== "string" || typeof body.nextSignature !== "string" || !Number.isSafeInteger(body.generation) || body.generation! < 0 || body.generation! >= Number.MAX_SAFE_INTEGER) return new Response(null, { status: 400 });
       const next = await verifyClaim(body.room, body.nextPayload, body.nextSignature, this.env.SIGNING_SECRET, now);
       if (!next) return new Response(null, { status: 403 });
-      const ok = await rotateRole(this.state.storage, body.room, claim, next, () => Math.floor(Date.now() / 1000));
-      return new Response(null, { status: ok ? 204 : 403, headers: { "cache-control": "no-store" } });
+      const ok = await rotateRole(this.state.storage, body.room, claim, next, body.generation!, () => Math.floor(Date.now() / 1000));
+      return new Response(null, { status: ok ? 204 : 403, headers: { "cache-control": "no-store", ...(ok ? { "x-signaling-generation": String(body.generation! + 1) } : {}) } });
     }
     if (url.pathname === "/preview-read") {
       if (claim.role !== "recipient") return new Response(null, { status: 403 });
@@ -145,12 +145,14 @@ export class SecureRoom implements DurableObject {
         return Response.json({ nonce: preview.nonce, ciphertext: preview.ciphertext }, { headers: { "cache-control": "no-store" } });
       });
     }
+    if (body.generation !== undefined && (!Number.isSafeInteger(body.generation) || body.generation < 0)) return new Response(null, { status: 400 });
     if (url.pathname === "/send" && (!Number.isSafeInteger(body.sequence) || body.sequence! < 1 || body.sequence! > 32 || typeof body.message !== "string" || new TextEncoder().encode(body.message).length > 4096 || !["offer", "answer", "ice"].includes(body.kind ?? "") || (body.kind === "offer" && claim.role !== "producer") || (body.kind === "answer" && claim.role !== "recipient"))) return new Response(null, { status: 400 });
     if (url.pathname === "/poll" && (!Number.isSafeInteger(body.after) || body.after! < 0 || body.after! > 32)) return new Response(null, { status: 400 });
     return this.state.storage.transaction(async txn => {
       if (await txn.get("revoked")) return new Response(null, { status: 403 });
       const member = await txn.get<{ nonce: string; expiresAt: number }>(`claim:${claim.role}`);
-      if (!member || member.nonce !== claim.nonce || member.expiresAt <= now) return new Response(null, { status: 403 });
+      if (!member || member.nonce !== claim.nonce || member.expiresAt !== claim.expiresAt || member.expiresAt <= Math.floor(Date.now() / 1000)) return new Response(null, { status: 403 });
+      if ((await txn.get<number>("generation") ?? 0) !== (body.generation ?? 0)) return new Response(null, { status: 409 });
       if (url.pathname === "/send") {
         const key = `queue:${claim.role}`;
         const queue = await txn.get<Array<{ sequence: number; kind: string; message: string }>>(key) ?? [];
@@ -218,6 +220,7 @@ export default {
     if (!origin) return response;
     const headers = new Headers(response.headers);
     headers.set("access-control-allow-origin", origin);
+    headers.set("access-control-expose-headers", "x-signaling-generation");
     headers.set("vary", "Origin");
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
   }
