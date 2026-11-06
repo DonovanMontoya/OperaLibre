@@ -87,6 +87,7 @@ public class OfflineDownloadWorker extends Worker {
         JSONArray files = job.optJSONArray("files");
         try {
             if (files == null) throw new IllegalStateException("The download is missing its file list.");
+            if ("libro".equals(job.optString("provider"))) retainedLibroBytes(job);
             job.put("state", "running");
             job.remove("error");
             if (!BackgroundDownloadStore.saveIfPresent(getApplicationContext(), jobId, job)) {
@@ -162,7 +163,7 @@ public class OfflineDownloadWorker extends Worker {
                     // A stop is not a failed optional file: skipping it here
                     // would count it done, and the resumed job would never
                     // fetch it.
-                    if (required || isStopped()) throw error;
+                    if (required || isStopped() || error instanceof BookDownloadBudget.Exceeded) throw error;
                     if (partial.exists()) partial.delete();
                     partial = null;
                 }
@@ -201,6 +202,16 @@ public class OfflineDownloadWorker extends Worker {
             return null;
         } catch (Exception error) {
             if (partial != null && partial.exists()) partial.delete();
+            if (error instanceof BookDownloadBudget.Exceeded) {
+                synchronized (BackgroundDownloadStore.class) {
+                    if (BackgroundDownloadStore.isCurrent(getApplicationContext(), jobId, job) && files != null) {
+                        for (int i = 0; i < files.length(); i++) {
+                            try { validatedDestination(files.getJSONObject(i).getString("path")).delete(); }
+                            catch (Exception ignored) { /* Only validated job-owned files are removed. */ }
+                        }
+                    }
+                }
+            }
             return recordFailure(jobId, job, error);
         }
     }
@@ -225,7 +236,7 @@ public class OfflineDownloadWorker extends Worker {
         if (isStopped()) return requeueForLater(jobId, job);
         try {
             int attempts = job.optInt("attempts", 0) + 1;
-            boolean retry = attempts < MAX_ATTEMPTS && !isStopped();
+            boolean retry = attempts < MAX_ATTEMPTS && !isStopped() && !(error instanceof BookDownloadBudget.Exceeded);
             job.put("attempts", attempts)
                 .put("state", retry ? "queued" : "failed")
                 .put("error", retry ? "Waiting to retry the download." : safeMessage(error));
@@ -243,6 +254,15 @@ public class OfflineDownloadWorker extends Worker {
         return null;
     }
 
+    private long retainedLibroBytes(JSONObject job) throws Exception {
+        JSONArray files = job.getJSONArray("files");
+        java.util.ArrayList<File> retained = new java.util.ArrayList<>();
+        for (int i = 0; i < files.length(); i++) {
+            retained.add(validatedDestination(files.getJSONObject(i).getString("path")));
+        }
+        return BookDownloadBudget.retained(retained, BookDownloadBudget.LIMIT);
+    }
+
     private void download(
         String jobId,
         JSONObject job,
@@ -252,9 +272,11 @@ public class OfflineDownloadWorker extends Worker {
         int requiredTotal
     ) throws Exception {
         boolean libro = "libro".equals(job.optString("provider"));
+        long retained = libro ? retainedLibroBytes(job) : 0;
         HttpURLConnection connection = openWithSameOriginRedirects(new URL(source), libro);
         try {
             long expected = connection.getContentLengthLong();
+            if (libro && expected >= 0) BookDownloadBudget.check(retained, expected, BookDownloadBudget.LIMIT);
             long received = 0;
             long lastUpdate = 0;
             byte[] buffer = new byte[64 * 1024];
@@ -265,7 +287,8 @@ public class OfflineDownloadWorker extends Worker {
                 int count;
                 while ((count = input.read(buffer)) != -1) {
                     if (isStopped()) throw new InterruptedException("Download stopped.");
-                    if (libro && (received + count > 25L * 1024 * 1024 * 1024 || destination.getUsableSpace() < 256L * 1024 * 1024)) {
+                    if (libro) BookDownloadBudget.check(retained, received + count, BookDownloadBudget.LIMIT);
+                    if (libro && destination.getUsableSpace() < 256L * 1024 * 1024) {
                         throw new IllegalStateException("Not enough space or download exceeds the 25 GiB limit.");
                     }
                     output.write(buffer, 0, count);

@@ -137,3 +137,31 @@ test("one address is one sign-in however it is written", () => {
   assert.equal(carriedTo(vault, "http://192.168.1.20:4921").token, null);
   assert.equal(carriedTo(vault, "https://192.168.1.20:4920").token, null);
 });
+
+
+test("case-sensitive proxy paths keep separate sign-ins across restarts", () => {
+  const storage = memoryStorage();
+  const upper = "https://BOOKS.example.org/Library";
+  const lower = "https://books.example.org/library";
+  const vault = new CredentialVault(storage, () => true, () => upper);
+  vault.update(upper, { token: "upper", mediaToken: "upper-media" });
+  assert.equal(vault.has(lower), false);
+  assert.deepEqual(reconnectCandidates(upper, upper, [lower], url => vault.has(url)), []);
+  vault.update(lower, { token: "lower" });
+  const reopened = new CredentialVault(storage, () => true, () => upper);
+  assert.equal(reopened.get(upper).token, "upper");
+  assert.equal(reopened.get(lower).token, "lower");
+  assert.equal(reopened.get("https://books.example.org/Library/").token, "upper");
+});
+
+test("legacy folded paths require sign-in while origin-only credentials migrate", () => {
+  const storage = memoryStorage({ "operalibre.credentials": JSON.stringify({
+    "https://books.example.org/library": { token: "ambiguous", mediaToken: "ambiguous-media" },
+    [HOME]: { token: "home-token" }
+  }) });
+  const vault = new CredentialVault(storage, () => true, () => "https://books.example.org/Library");
+  assert.equal(vault.has("https://books.example.org/Library"), false);
+  assert.equal(vault.has("https://books.example.org/library"), false);
+  assert.equal(vault.get(HOME).token, "home-token");
+  assert.equal(storage.getItem("operalibre.credentials"), null);
+});

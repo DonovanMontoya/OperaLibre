@@ -1,6 +1,6 @@
 import type { Book, CompanionFile, SyncMap } from "./types";
 
-export type OfflineAvailability = "available" | "missing" | "not-present" | "unsupported" | "needs-ebook";
+type OfflineAvailability = "available" | "missing" | "not-present" | "unsupported" | "needs-ebook";
 export type OfflineReadiness = {
   audio: boolean;
   ebook: OfflineAvailability;
@@ -57,6 +57,12 @@ const labels: Record<OfflineAvailability, string> = {
 export function offlineReadinessSummary(readiness?: OfflineReadiness) {
   if (!readiness) return "Checking offline files…";
   return `Audio: ${readiness.audio ? "ready" : "missing"} · Ebook: ${labels[readiness.ebook]} · Sentence sync: ${labels[readiness.sentenceSync]}`;
+}
+
+/** Whether a downloaded book is short of something it could have offline. */
+export function offlineReadinessNeedsAttention(readiness?: OfflineReadiness) {
+  return !!readiness && (!readiness.audio || readiness.missingFiles.length > 0
+    || readiness.ebook === "missing" || readiness.sentenceSync === "missing" || readiness.sentenceSync === "needs-ebook");
 }
 
 export function offlineDownloadMessage(title: string, readiness: OfflineReadiness) {

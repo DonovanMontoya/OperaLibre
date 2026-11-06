@@ -3,8 +3,8 @@ import type { FoldPosture } from "./deviceFold";
 export const READER_FONT_SCALE_MIN = 50;
 export const READER_FONT_SCALE_MAX = 300;
 
-export type ReaderOrientation = "portrait" | "landscape";
-export type ReaderFontScaleBucket = `${"closed" | "open"}.${ReaderOrientation}`;
+type ReaderOrientation = "portrait" | "landscape";
+type ReaderFontScaleBucket = `${"closed" | "open"}.${ReaderOrientation}`;
 
 /**
  * Text size follows both the physical reading surface and its orientation.

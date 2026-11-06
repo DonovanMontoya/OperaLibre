@@ -448,12 +448,35 @@ pub(crate) async fn save_queue(
 
 pub(crate) async fn restore_queue(state: &AppState) -> Result<(), ApiError> {
     let _schedule_guard = state.sync_schedule_lock.lock().await;
-    let bytes = match fs::read(state.database_path.with_file_name("sync-jobs.json")).await {
+    let path = state.database_path.with_file_name("sync-jobs.json");
+    let bytes = match fs::read(&path).await {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    let entries: Vec<JobStatus> = serde_json::from_slice(&bytes)?;
+    // The server starts without a queue it cannot read, such as one written by
+    // a newer version before a downgrade, so read-along work never keeps
+    // listening and progress sync offline. The file is kept beside the empty
+    // queue that replaces it, for the owner to recover. A file kept by an
+    // earlier start is never replaced.
+    let entries: Vec<JobStatus> = match serde_json::from_slice(&bytes) {
+        Ok(entries) => entries,
+        Err(error) => {
+            let mut kept = path.with_extension("json.unreadable");
+            let mut copy = 1;
+            while fs::try_exists(&kept).await? {
+                kept = path.with_extension(format!("json.unreadable.{copy}"));
+                copy += 1;
+            }
+            tracing::error!(
+                ?error,
+                kept = %kept.display(),
+                "the read-along queue could not be read; starting with an empty queue"
+            );
+            fs::rename(&path, &kept).await?;
+            return Ok(());
+        }
+    };
     let mut jobs = state.jobs.write().await;
     for mut job in entries {
         if job.kind != SYNC_GENERATE_JOB_KIND {
@@ -666,13 +689,21 @@ async fn rerun_request_chapters(
         tracks.to_vec(),
         chapters.to_vec(),
     );
+    let allowed_roots = vec![state.library_root.clone(), state.sync_dir.clone()];
     tokio::task::spawn_blocking(move || {
         let epub = alignment::parse_epub_file(&epub_path).map_err(|_| sync_report::BOOK_CHANGED)?;
         let plan =
             plan_scopes(&epub, &tracks, chapter_slicing).map_err(|_| sync_report::BOOK_CHANGED)?;
         let spans = sync_report::chapter_spans(&epub, &tracks, &plan.scopes);
-        sync_report::rerun_base(&sync_dir, &book_id, &map_path, &spans, &chapters)
-            .map(|base| base.chapters)
+        sync_report::rerun_base(
+            &sync_dir,
+            &book_id,
+            &map_path,
+            &spans,
+            &chapters,
+            &allowed_roots,
+        )
+        .map(|base| base.chapters)
     })
     .await
     .map_err(|error| ApiError::internal(error.to_string()))?
@@ -1271,8 +1302,9 @@ pub(crate) async fn run_sync_generation(
                 spans.clone(),
                 chapters.to_vec(),
             );
+            let allowed_roots = vec![state.library_root.clone(), state.sync_dir.clone()];
             let base = tokio::task::spawn_blocking(move || {
-                sync_report::rerun_base(&sync_dir, &book, &path, &spans, &chapters)
+                sync_report::rerun_base(&sync_dir, &book, &path, &spans, &chapters, &allowed_roots)
             })
             .await?
             .map_err(|message| anyhow::anyhow!(message))?;

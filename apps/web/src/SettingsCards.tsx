@@ -34,7 +34,7 @@ import {
   removeServerAlias,
   type ServerAlias
 } from "./api";
-import type { AppearanceMode } from "./appearance";
+import { DARK_THEMES, LIGHT_THEMES, type AppearanceMode, type DarkTheme, type LightTheme } from "./appearance";
 import type { AuthUser, Book, LibationAccount, LibroAccountSummary } from "./types";
 import type { DeviceNotice } from "./ConfirmDialogs";
 import type { NativeTab, StoreSettingsTarget } from "./nativeTabs";
@@ -52,24 +52,64 @@ export type DeviceDownloadActivity = {
   queuedAt: number;
 };
 
+function ThemeColumn<Id extends string>({
+  label,
+  themes,
+  selected,
+  select
+}: {
+  label: "Light" | "Dark";
+  themes: readonly { id: Id; label: string }[];
+  selected: Id;
+  select: (theme: Id) => void;
+}) {
+  return (
+    <div className="settings-theme-column" role="radiogroup" aria-label={`${label} theme`}>
+      <span className="settings-theme-heading" aria-hidden="true">{label}</span>
+      {themes.map((theme) => (
+        <button
+          key={theme.id}
+          type="button"
+          role="radio"
+          aria-checked={selected === theme.id}
+          className={selected === theme.id ? "selected" : undefined}
+          data-theme={theme.id}
+          onClick={() => select(theme.id)}
+        >
+          <span className="settings-theme-cloth" aria-hidden="true" />
+          {theme.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function DisplaySettings({
   appearanceMode,
+  darkTheme,
   ios,
+  lightTheme,
   rotationLockAvailable,
   rotationLockBusy,
   rotationLockEnabled,
   rotationLockError,
   toggleRotationLock,
-  updateAppearanceMode
+  updateAppearanceMode,
+  updateDarkTheme,
+  updateLightTheme
 }: {
   appearanceMode: AppearanceMode;
+  darkTheme: DarkTheme;
   ios: boolean;
+  lightTheme: LightTheme;
   rotationLockAvailable: boolean;
   rotationLockBusy: boolean;
   rotationLockEnabled: boolean;
   rotationLockError: string | null;
   toggleRotationLock: () => Promise<void>;
   updateAppearanceMode: (mode: AppearanceMode) => void;
+  updateDarkTheme: (theme: DarkTheme) => void;
+  updateLightTheme: (theme: LightTheme) => void;
 }) {
   return (
     <section className="settings-card">
@@ -92,6 +132,16 @@ export function DisplaySettings({
               {mode === "light" ? "Light" : mode === "dark" ? "Dark" : "System"}
             </button>
           ))}
+        </div>
+      </div> : null}
+      {ios ? <div className="settings-toggle-row settings-appearance-row">
+        <span>
+          <strong>Themes</strong>
+          <small>Pick one for light and one for dark.</small>
+        </span>
+        <div className="settings-theme-samples">
+          <ThemeColumn label="Light" themes={LIGHT_THEMES} selected={lightTheme} select={updateLightTheme} />
+          <ThemeColumn label="Dark" themes={DARK_THEMES} selected={darkTheme} select={updateDarkTheme} />
         </div>
       </div> : null}
       {rotationLockAvailable ? <div className="settings-toggle-row">

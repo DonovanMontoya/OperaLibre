@@ -201,6 +201,7 @@ pub(crate) async fn list_agent_tokens(
 pub(crate) async fn create_agent_token(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    Extension(session): Extension<CurrentSession>,
     Json(payload): Json<CreateAgentTokenRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let name = payload.name.trim().to_string();
@@ -226,6 +227,22 @@ pub(crate) async fn create_agent_token(
         ));
     }
 
+    // Body parsing may have waited since middleware authenticated the request.
+    // A reset that won the issuance lock must invalidate this authority too.
+    let _issuance = state.credential_issuance_lock.lock().await;
+    if !state
+        .sessions
+        .read()
+        .await
+        .get(&session.id)
+        .is_some_and(|current| {
+            current.user_id == auth.id && !current.is_expired(unix_now_seconds())
+        })
+    {
+        return Err(ApiError::unauthorized(
+            "Sign in again before connecting an agent.",
+        ));
+    }
     let secret = format!("{AGENT_TOKEN_PREFIX}{}", generate_session_token());
     let token = AgentToken {
         id: generate_agent_token_id(),

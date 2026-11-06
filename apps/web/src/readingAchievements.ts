@@ -1,6 +1,6 @@
 import type { Book, ProfileStats, SharedProgress } from "./types";
 
-export type Achievement = {
+type Achievement = {
   id: string;
   title: string;
   description: string;
@@ -10,7 +10,7 @@ export type Achievement = {
   unit: string;
   evidence?: { bookId: string; label: string };
 };
-export type ReadingRivalry = {
+type ReadingRivalry = {
   id: string;
   title: string;
   detail: string;

@@ -723,48 +723,95 @@ pub(crate) async fn enrich_books_with_progress(
     auth: &AuthUser,
     books: Vec<Book>,
 ) -> Result<Vec<Book>, ApiError> {
-    if books.is_empty() {
-        return Ok(books);
-    }
-    let own_gains = if let [book] = books.as_slice() {
-        HashMap::from([(
-            book.id.clone(),
-            state.book_settings.gain(&auth.id, &book.id).await?,
-        )])
-    } else {
-        state.book_settings.list_for_user(&auth.id).await?
-    };
-    let sharers = progress_sharers(state, auth).await;
-    let user_ids: HashSet<String> = sharers
-        .iter()
-        .map(|(id, _)| id.clone())
-        .chain(std::iter::once(auth.id.clone()))
-        .collect();
-    let saved_progress = state.progress.list_for_users(&user_ids).await?;
-    let works = state.works.read().await;
-    let history = state.reading_history.read().await;
-    let finished_works = FinishedWorks::new(
-        &works,
-        &books,
-        &saved_progress,
-        &history.completions,
-        &user_ids,
-    );
-    drop(history);
-    drop(works);
+    let refs: Vec<&Book> = books.iter().collect();
+    let enrichment = ProgressEnrichment::load(state, auth, &refs).await?;
     Ok(books
         .into_iter()
-        .map(|mut book| {
-            book.progress = progress_for_reader(&book, &auth.id, &saved_progress, &finished_works);
-            book.shared_progress =
-                collect_shared_progress(&book, &saved_progress, &sharers, &finished_works);
-            book.volume_gain = own_gains
-                .get(&book.id)
-                .copied()
-                .unwrap_or(BOOK_VOLUME_GAIN_DEFAULT);
-            book
-        })
+        .map(|book| enrichment.apply(book))
         .collect())
+}
+
+pub(crate) struct ProgressEnrichment {
+    user_id: String,
+    own_gains: HashMap<String, f64>,
+    sharers: Vec<(String, String)>,
+    saved_progress: HashMap<String, Progress>,
+    finished_works: FinishedWorks,
+}
+impl ProgressEnrichment {
+    pub(crate) async fn load(
+        state: &AppState,
+        auth: &AuthUser,
+        books: &[&Book],
+    ) -> Result<Self, ApiError> {
+        if books.is_empty() {
+            return Ok(Self {
+                user_id: auth.id.clone(),
+                own_gains: HashMap::new(),
+                sharers: Vec::new(),
+                saved_progress: HashMap::new(),
+                finished_works: FinishedWorks::default(),
+            });
+        }
+        let own_gains = if let [book] = books {
+            HashMap::from([(
+                book.id.clone(),
+                state.book_settings.gain(&auth.id, &book.id).await?,
+            )])
+        } else {
+            state.book_settings.list_for_user(&auth.id).await?
+        };
+        let sharers = progress_sharers(state, auth).await;
+        let user_ids: HashSet<String> = sharers
+            .iter()
+            .map(|(id, _)| id.clone())
+            .chain(std::iter::once(auth.id.clone()))
+            .collect();
+        let saved_progress = state.progress.list_for_users(&user_ids).await?;
+        let works = state.works.read().await;
+        let history = state.reading_history.read().await;
+        let requested = books.iter().map(|book| book.id.as_str()).collect();
+        let finished_works = FinishedWorks::for_book_ids(
+            &works,
+            requested,
+            &saved_progress,
+            &history.completions,
+            &user_ids,
+        );
+        Ok(Self {
+            user_id: auth.id.clone(),
+            own_gains,
+            sharers,
+            saved_progress,
+            finished_works,
+        })
+    }
+    pub(crate) fn apply(&self, mut book: Book) -> Book {
+        book.progress = progress_for_reader(
+            &book,
+            &self.user_id,
+            &self.saved_progress,
+            &self.finished_works,
+        );
+        book.shared_progress = collect_shared_progress(
+            &book,
+            &self.saved_progress,
+            &self.sharers,
+            &self.finished_works,
+        );
+        book.volume_gain = self
+            .own_gains
+            .get(&book.id)
+            .copied()
+            .unwrap_or(BOOK_VOLUME_GAIN_DEFAULT);
+        book
+    }
+
+    /// Check the borrowed source before cloning the potentially large book.
+    pub(crate) fn apply_catalogue(&self, book: &Book) -> Result<Book, ApiError> {
+        check_catalogue_book(book)?;
+        Ok(self.apply(book.clone()))
+    }
 }
 
 pub(crate) async fn book_with_progress(
@@ -808,6 +855,7 @@ pub(crate) struct FinishedWorks {
 }
 
 impl FinishedWorks {
+    #[cfg(test)]
     pub(crate) fn new(
         works: &WorkStore,
         books: &[Book],
@@ -815,7 +863,22 @@ impl FinishedWorks {
         completions: &[CompletionEvent],
         user_ids: &HashSet<String>,
     ) -> Self {
-        let requested: HashSet<&str> = books.iter().map(|book| book.id.as_str()).collect();
+        Self::for_book_ids(
+            works,
+            books.iter().map(|book| book.id.as_str()).collect(),
+            saved_progress,
+            completions,
+            user_ids,
+        )
+    }
+
+    fn for_book_ids(
+        works: &WorkStore,
+        requested: HashSet<&str>,
+        saved_progress: &HashMap<String, Progress>,
+        completions: &[CompletionEvent],
+        user_ids: &HashSet<String>,
+    ) -> Self {
         let mut index = Self::default();
         for work in works.works.iter().filter(|work| {
             work.book_ids
@@ -1248,4 +1311,66 @@ pub(crate) fn progress_write_is_unintentional_regression(
     !intentional_seek
         && incoming_book_position + PROGRESS_AUTOMATIC_REGRESSION_SLACK_SECONDS
             < previous_book_position
+}
+
+#[cfg(test)]
+mod catalogue_preparation_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_catalogue_preparation_rejects_before_cloning_nested_metadata() {
+        let enrichment = ProgressEnrichment {
+            user_id: "reader".into(),
+            own_gains: HashMap::new(),
+            sharers: Vec::new(),
+            saved_progress: HashMap::new(),
+            finished_works: FinishedWorks::default(),
+        };
+        let track = Track {
+            id: "track".into(),
+            title: "Track".into(),
+            file_name: "track.mp3".into(),
+            index: 0,
+            duration_seconds: None,
+            stream_url: "/stream".into(),
+            chapters: Vec::new(),
+            metadata: MetadataSummary {
+                description: Some("x".repeat(8 * 1024 * 1024)),
+                ..Default::default()
+            },
+        };
+        let book = Book {
+            id: "book".into(),
+            title: "Oversized nested metadata".into(),
+            author: None,
+            narrator: None,
+            duration_seconds: None,
+            track_count: 1,
+            cover_art_url: None,
+            has_cover_override: false,
+            cover_art_content_type: None,
+            description: None,
+            genres: Vec::new(),
+            tags: Vec::new(),
+            published_date: None,
+            asin: None,
+            added_at: "0".into(),
+            reading_file: None,
+            companions: Vec::new(),
+            sync_file: None,
+            chapters: Vec::new(),
+            metadata: MetadataSummary::default(),
+            tracks: vec![track],
+            progress: None,
+            shared_progress: Vec::new(),
+            volume_gain: BOOK_VOLUME_GAIN_DEFAULT,
+        };
+        let (result, allocated) =
+            crate::test_alloc::allocated_bytes(|| enrichment.apply_catalogue(&book));
+        assert!(
+            allocated < 64 * 1024,
+            "preparation allocated {allocated} bytes before rejecting an oversized book"
+        );
+        assert_eq!(result.unwrap_err().status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
 }

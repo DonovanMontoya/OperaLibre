@@ -1138,8 +1138,9 @@ test('a shelf warning opens book details and clears after retrying only missing 
   const failedSyncRequests = syncRequests;
   filesAvailable = true;
   await retry.click();
-  await expect(panel).toContainText('Ebook: ready');
-  await expect(panel).toContainText('Sentence sync: ready');
+  // A complete download needs no panel; the status line confirms what arrived.
+  await expect(page.locator('.player-pane').getByRole('status')).toContainText('Ebook: ready · Sentence sync: ready');
+  await expect(panel).toHaveCount(0);
   await expect(retry).toHaveCount(0);
   await expect(warning).toHaveCount(0);
   expect(audioRequests).toBe(originalAudioRequests);

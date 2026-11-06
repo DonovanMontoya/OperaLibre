@@ -163,7 +163,7 @@ function storeServerAliases(aliases: ServerAlias[]) {
 
 export function addServerAlias(name: string, rawUrl: string): ServerAlias {
   const trimmedName = name.trim();
-  const url = Capacitor.isNativePlatform()
+  const url = usesNativeCredentialStorage()
     ? requireSecurePublicServerAddress(rawUrl)
     : normalizeServerAddress(rawUrl);
   if (!trimmedName) throw new Error("Alias name is required.");
@@ -172,7 +172,7 @@ export function addServerAlias(name: string, rawUrl: string): ServerAlias {
   if (aliases.some((alias) => alias.name.toLowerCase() === trimmedName.toLowerCase())) {
     throw new Error("An alias with that name already exists.");
   }
-  if (aliases.some((alias) => alias.url.toLowerCase() === url.toLowerCase())) {
+  if (aliases.some((alias) => addressKey(alias.url) === addressKey(url))) {
     throw new Error("That server address is already saved.");
   }
   const alias = { id: crypto.randomUUID(), name: trimmedName, url };
@@ -307,7 +307,7 @@ function readStoredServerUrl(): string | null {
     return null;
   }
   const stored = window.localStorage.getItem(SERVER_URL_STORAGE_KEY) ?? "";
-  storedServerUrl = Capacitor.isNativePlatform()
+  storedServerUrl = usesNativeCredentialStorage()
     ? upgradeStoredNativeServerAddress(stored)
     : stored;
   if (storedServerUrl && storedServerUrl !== stored) {
@@ -322,7 +322,7 @@ function readStoredServerUrl(): string | null {
 // The server address, ignoring the on-device and demo modes layered over it.
 function configuredServerUrl(): string {
   const url = readStoredServerUrl() ?? configuredApiBase ?? defaultServerUrl(getServerType());
-  return Capacitor.isNativePlatform() ? upgradeStoredNativeServerAddress(url) : url;
+  return usesNativeCredentialStorage() ? upgradeStoredNativeServerAddress(url) : url;
 }
 
 export function getServerUrl(): string {
@@ -362,7 +362,7 @@ export function getServerIdentityUrl(): string {
   const url = typeof window === "undefined"
     ? getServerUrl()
     : window.localStorage.getItem(SERVER_IDENTITY_URL_STORAGE_KEY) ?? getServerUrl();
-  const secured = Capacitor.isNativePlatform() ? upgradeStoredNativeServerAddress(url) : url;
+  const secured = usesNativeCredentialStorage() ? upgradeStoredNativeServerAddress(url) : url;
   if (typeof window !== "undefined" && secured !== url) {
     window.localStorage.setItem(SERVER_IDENTITY_URL_STORAGE_KEY, secured);
   }
@@ -380,7 +380,7 @@ export function hasUserConfiguredServer(): boolean {
 }
 
 function setServerUrl(rawValue: string) {
-  const value = Capacitor.isNativePlatform()
+  const value = usesNativeCredentialStorage()
     ? requireSecurePublicServerAddress(rawValue)
     : normalizeServerAddress(rawValue);
   storedServerUrl = value;
@@ -437,7 +437,7 @@ function currentApiBase(): string {
 // Where unauthenticated requests to a candidate address are sent, after the
 // same checks a saved address must pass.
 function serverRequestBase(serverType: ServerType, rawValue: string): string {
-  const base = Capacitor.isNativePlatform()
+  const base = usesNativeCredentialStorage()
     ? requireSecurePublicServerAddress(rawValue)
     : normalizeServerAddress(rawValue);
   if (!base) {
@@ -489,7 +489,7 @@ let vault: CredentialVault | null = null;
 function originalServerUrl(): string {
   const url = (typeof window === "undefined" ? null : window.localStorage.getItem(SERVER_IDENTITY_URL_STORAGE_KEY))
     ?? configuredServerUrl();
-  return Capacitor.isNativePlatform() ? upgradeStoredNativeServerAddress(url) : url;
+  return usesNativeCredentialStorage() ? upgradeStoredNativeServerAddress(url) : url;
 }
 
 /**
@@ -584,6 +584,12 @@ export function isNetworkError(error: unknown): boolean {
 // proxy's own 503 carries no `Retry-After`, so it still reads as offline.
 export function isServerNotReadyError(error: unknown): error is ApiError {
   return error instanceof ApiError && error.status === 503 && error.retryAfterSeconds !== undefined;
+}
+
+// The server is up but already sending this account a catalogue (another
+// device, or an overlapping refresh), so it turned this one away for now.
+export function isServerBusyError(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.status === 429;
 }
 
 function retryAfterSeconds(response: Response): number | undefined {
@@ -806,7 +812,7 @@ export async function removeSyncAddon() {
   );
 }
 
-export type ServerRestoreResult = {
+type ServerRestoreResult = {
   restoredAt: string;
   safetyBackup: string;
   accounts: number;
@@ -1536,7 +1542,7 @@ export type SyncSweep = {
   eligibleCount: number;
 };
 
-export type SyncSweepRun = { queued: number; skipped: number; error: string | null };
+type SyncSweepRun = { queued: number; skipped: number; error: string | null };
 
 export function getSyncSweep() {
   return request<SyncSweep>("/api/sync-sweep");

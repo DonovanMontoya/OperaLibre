@@ -31,7 +31,7 @@ export function narrationTextOffset(fragment: SyncFragment, seconds: number, lea
   return offset;
 }
 
-export type PageGesture = "next" | "prev" | "tap" | null;
+type PageGesture = "next" | "prev" | "tap" | null;
 
 /** Only the outer margin turns a page; sentence taps own the reading area.
     32px capped at 8% left a corner tap on a wide unfolded screen an easy

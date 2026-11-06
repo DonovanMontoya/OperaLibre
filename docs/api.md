@@ -11,6 +11,8 @@ Browser clients that authenticate with the session cookie must send an `Origin` 
 
 The included React/Vite app is one client for this API. Custom web, mobile, desktop, or native frontends can use the same endpoints as long as they follow the authentication and media URL conventions below.
 
+Catalogue responses keep their existing JSON and OPDS shapes. Generation admits at most two responses across the server and one per reader, including slow downloads; excess requests receive `429` with `Retry-After`. Complete responses are prepared in temporary files rather than retained as full catalogue buffers. A response is limited to 64 MiB and any individual book's catalogue metadata to 2 MiB; oversized metadata receives `413`, without a partial catalogue. Native clients can request smaller pages with `limit` and `cursor`; Audiobookshelf-compatible listings cap explicit page and search limits at 500. Default unpaged listings remain complete when they fit the response budget.
+
 ## Authentication
 
 The web app obtains a session token and a separate scoped media token via `POST /api/auth/login`. Send the session token in `Authorization: Bearer ...` for API requests. Read-only cover, readalong, companion, sync-map, stream, download, and OPDS endpoints accept the media token as a `?token=` query parameter so plain `<audio>` and `<img>` elements work without exposing a full API bearer token in URLs. `GET /api/auth/status` returns the current session's media token when authenticated.
@@ -385,8 +387,8 @@ semantics. Job kind is `libro-import` and uses the standard jobs endpoints.
 | `GET` | `/api/libation/books` | Audible library known to Libation. |
 | `GET` | `/api/libation/covers/{picture_id}` | Audible cover-art proxy. Accepts the media token. |
 | `POST` | `/api/libation/sync` | Refresh Libation's library scan. Authenticated readers may call it; non-administrators are subject to the configured per-account hourly limit. |
-| `POST` | `/api/libation/books/{asin}/liberate` | Download one title. Admin or directly permitted reader. |
-| `POST` | `/api/libation/accounts/{profile_id}/books/{asin}/liberate` | Download one title through the selected Audible account. Admin or directly permitted reader. |
+| `POST` | `/api/libation/books/{asin}/liberate` | Download one title. Admin or directly permitted reader. Returns `429` at 100 unfinished downloads per user or 1,000 saved downloads overall. |
+| `POST` | `/api/libation/accounts/{profile_id}/books/{asin}/liberate` | Download one title through the selected Audible account. Admin or directly permitted reader, with the same unfinished-download limits. Duplicate requests reuse the existing job; a concurrent retry during registration returns `409`. |
 | `POST` | `/api/libation/liberate-all` | Download all eligible titles. Admin only. |
 | `GET` | `/api/libation/access` | Libation availability and the signed-in reader's direct/approval policy. |
 | `GET` | `/api/libation/requests` | The account's own requests; authorized approvers receive all requests. |

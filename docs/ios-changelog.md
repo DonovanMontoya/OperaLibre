@@ -11,6 +11,32 @@ Entries use **version (build)** and appear newest first. iOS versions are tracke
 independently of the server releases. From 1.3.2, the build number counts
 uploads of each app version from 1, and Android uses the same build number.
 
+## 1.3.2 (3)
+
+Uploaded to App Store Connect on November 5, 2026, from main at
+[`e29b82e4`](https://github.com/DonovanMontoya/OperaLibre/commit/e29b82e4).
+
+- Playback continues when iOS reloads the app during a background listen.
+- The library reconnects after an unsuccessful launch, and saved downloads and
+  CarPlay sessions are preserved when their records cannot be read.
+- Choose additional light themes, and find the current chapter more easily.
+- Refreshing Get books checks Audible for new purchases.
+
+## 1.3.2 (2)
+
+Uploaded to App Store Connect on November 2, 2026, from main at
+[`082d4bc7`](https://github.com/DonovanMontoya/OperaLibre/commit/082d4bc7b9d57daaf2d428655cab21745eb24803).
+
+- The player keeps updating when iOS interrupts the scheduling of screen
+  updates, including the elapsed time and navigation between tabs.
+- Choose Warm, Graphite, Midnight, Reading Room, or True Black in the
+  iPhone and iPad dark-theme settings. Long labels stay inside Settings
+  and store rows.
+- Libro.fm downloads enforce the per-book storage limit during downloads
+  and recovery after an interruption.
+- Saved sign-ins stay with their server, including servers hosted beneath
+  different paths on the same address. App fonts are bundled locally.
+
 ## 1.3.2 (1)
 
 Built from main at

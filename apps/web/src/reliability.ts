@@ -2,7 +2,7 @@ import type { BookProgress, Progress } from "./types";
 
 const PROGRESS_CHECKPOINT_PREFIX = "operalibre.progressCheckpoint.v1";
 
-export type ProgressStorage = Pick<Storage, "getItem" | "setItem">;
+type ProgressStorage = Pick<Storage, "getItem" | "setItem">;
 
 export function serverStorageKey(serverType: string, serverUrl: string): string {
   const value = `${serverType}:${serverUrl.toLowerCase()}`;

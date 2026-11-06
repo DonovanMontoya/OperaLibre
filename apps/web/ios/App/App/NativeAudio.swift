@@ -23,6 +23,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
         CAPPluginMethod(name: "getSleepTimer", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setNowPlaying", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getRecoveryState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getAdoptableSession", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise)
     ]
 
@@ -144,6 +145,30 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
         result["updatedAt"] = checkpoint.updatedAt
         if let duration = checkpoint.durationSeconds { result["durationSeconds"] = duration }
         call.resolve(result)
+    }
+
+    /// Answers an empty object unless the engine is already playing this
+    /// track from this file, which a reloaded page then takes over as is.
+    @objc public func getAdoptableSession(_ call: CAPPluginCall) {
+        guard
+            let scopeKey = call.getString("scopeKey"),
+            let trackId = call.getString("trackId"),
+            let source = call.getString("url").flatMap(resolveNativeAudioSourceURL)
+        else {
+            call.resolve([:])
+            return
+        }
+        engine.adoptableSession(scopeKey: scopeKey, trackId: trackId, source: source) { session in
+            guard let session else {
+                call.resolve([:])
+                return
+            }
+            call.resolve([
+                "positionSeconds": session.positionSeconds,
+                "sleepTimerSeconds": session.sleepTimerSeconds,
+                "sleepAtChapterEnd": session.sleepAtChapterEnd
+            ])
+        }
     }
 
     @objc public func stop(_ call: CAPPluginCall) {

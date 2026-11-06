@@ -213,15 +213,6 @@ pub(crate) struct AbsChapter {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AbsLibraryItemsResponse {
-    results: Vec<AbsLibraryItem>,
-    total: usize,
-    page: usize,
-    limit: usize,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct AbsPlaybackSession {
     id: String,
     library_item_id: String,
@@ -261,25 +252,9 @@ pub(crate) struct AbsSearchQuery {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AbsFilterData {
-    authors: Vec<AbsNamedEntity>,
-    genres: Vec<String>,
-    tags: Vec<String>,
-    series: Vec<AbsNamedEntity>,
-    narrators: Vec<String>,
-    languages: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
 pub(crate) struct AbsNamedEntity {
     id: String,
     name: String,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct AbsSearchResponse {
-    book: Vec<AbsSearchResult>,
 }
 
 #[derive(Debug, Serialize)]
@@ -302,14 +277,6 @@ pub(crate) struct AbsCollection {
     name: String,
     description: Option<String>,
     books: Vec<AbsLibraryItem>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AbsAuthorResponse {
-    id: String,
-    name: String,
-    library_items: Vec<AbsLibraryItem>,
 }
 
 /// Where a track begins within the whole book, and how long it runs.
@@ -655,10 +622,11 @@ pub(crate) async fn abs_library_items(
     Extension(session): Extension<CurrentSession>,
     Path(library_id): Path<String>,
     Query(query): Query<AbsItemsQuery>,
-) -> Result<Json<AbsLibraryItemsResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     if library_id != ABS_LIBRARY_ID {
         return Err(ApiError::not_found("Library not found."));
     }
+    let lease = CatalogueLease::acquire(&state, &auth).await?;
     ensure_startup_scan_finished(&state).await?;
     let filter = query
         .filter
@@ -694,40 +662,52 @@ pub(crate) async fn abs_library_items(
     let page = query.page.unwrap_or(0);
     // Count and page under the library lock, then copy and enrich only the
     // page, as the native listing does.
-    let (total, limit, selected) = {
-        let library = state.library.read().await;
-        let visible: Vec<&Book> = library
+    let library = state.library.clone().read_owned().await;
+    let visible: Vec<&Book> = library
+        .books
+        .iter()
+        .filter(|book| can_access_book(&auth, &book.id) && matches(book))
+        .collect();
+    let total = visible.len();
+    let limit = query
+        .limit
+        .filter(|limit| *limit > 0)
+        .map_or(total.max(1), |limit| limit.min(500));
+    let selected: Vec<&Book> = visible
+        .into_iter()
+        .skip(page.saturating_mul(limit))
+        .take(limit)
+        .collect();
+    let selected_ids: HashSet<String> = selected.iter().map(|book| book.id.clone()).collect();
+    let enrichment = ProgressEnrichment::load(&state, &auth, &selected).await?;
+    drop(selected);
+    let media_token = session.media_token;
+    tokio::task::spawn_blocking(move || {
+        let mut spool = CatalogueSpool::new(lease)?;
+        spool.bytes(b"{\"results\":[")?;
+        for (index, book) in library
             .books
             .iter()
-            .filter(|book| can_access_book(&auth, &book.id) && matches(book))
-            .collect();
-        let total = visible.len();
-        let limit = query
-            .limit
-            .filter(|limit| *limit > 0)
-            .unwrap_or(total.max(1));
-        let selected: Vec<Book> = visible
-            .into_iter()
-            .skip(page.saturating_mul(limit))
-            .take(limit)
-            .cloned()
-            .collect();
-        (total, limit, selected)
-    };
-    let media_token = session.media_token.clone();
-    let results = enrich_books_with_progress(&state, &auth, selected)
-        .await?
-        .iter()
-        // The listing carries no audio files: a client fetches the item or
-        // opens a playback session when it actually wants to play something.
-        .map(|book| library_item(book, &media_token, false))
-        .collect();
-    Ok(Json(AbsLibraryItemsResponse {
-        results,
-        total,
-        page,
-        limit,
-    }))
+            .filter(|book| selected_ids.contains(&book.id))
+            .enumerate()
+        {
+            spool.begin_item();
+            if index > 0 {
+                spool.bytes(b",")?;
+            }
+            spool.json(&library_item(
+                &enrichment.apply_catalogue(book)?,
+                &media_token,
+                false,
+            ))?;
+            spool.finish_item()?;
+        }
+        spool
+            .bytes(format!("],\"total\":{total},\"page\":{page},\"limit\":{limit}}}").as_bytes())?;
+        spool.response("application/json", None, None)
+    })
+    .await
+    .map_err(|_| ApiError::internal("Catalogue generation was interrupted."))?
 }
 
 /// `GET /abs/api/libraries/{id}/filterdata`
@@ -735,44 +715,85 @@ pub(crate) async fn abs_filter_data(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Path(library_id): Path<String>,
-) -> Result<Json<AbsFilterData>, ApiError> {
+) -> Result<Response, ApiError> {
     if library_id != ABS_LIBRARY_ID {
         return Err(ApiError::not_found("Library not found."));
     }
+    let lease = CatalogueLease::acquire(&state, &auth).await?;
     ensure_startup_scan_finished(&state).await?;
-    let mut authors = BTreeSet::new();
-    let mut series = BTreeSet::new();
-    let mut narrators = BTreeSet::new();
-    let mut genres = BTreeSet::new();
-    let mut tags = BTreeSet::new();
-    {
-        let library = state.library.read().await;
+    let library = state.library.clone().read_owned().await;
+    tokio::task::spawn_blocking(move || {
+        let (mut authors, mut series, mut narrators, mut genres, mut tags) = (
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+        );
+        let mut budget = CatalogueFieldsBudget::new();
         for book in library
             .books
             .iter()
             .filter(|book| can_access_book(&auth, &book.id))
         {
-            authors.extend(book.author.clone());
-            series.extend(book.metadata.series.clone());
-            narrators.extend(book.narrator.clone());
-            genres.extend(book.genres.iter().cloned());
-            tags.extend(book.tags.iter().map(|tag| tag.name.clone()));
+            check_catalogue_book(book)?;
+            if let Some(name) = book.author.as_deref() {
+                budget.insert(&mut authors, name)?;
+            }
+            if let Some(name) = book.metadata.series.as_deref() {
+                budget.insert(&mut series, name)?;
+            }
+            if let Some(name) = book.narrator.as_deref() {
+                budget.insert(&mut narrators, name)?;
+            }
+            for name in &book.genres {
+                budget.insert(&mut genres, name)?;
+            }
+            for tag in &book.tags {
+                budget.insert(&mut tags, &tag.name)?;
+            }
         }
+        let mut spool = CatalogueSpool::new(lease)?;
+        spool.bytes(b"{\"authors\":")?;
+        spool_named_entities(&mut spool, authors, true)?;
+        spool.bytes(b",\"genres\":")?;
+        spool.json(&genres)?;
+        spool.bytes(b",\"tags\":")?;
+        spool.json(&tags)?;
+        spool.bytes(b",\"series\":")?;
+        spool_named_entities(&mut spool, series, false)?;
+        spool.bytes(b",\"narrators\":")?;
+        spool.json(&narrators)?;
+        spool.bytes(b",\"languages\":[]}")?;
+        spool.response("application/json", None, None)
+    })
+    .await
+    .map_err(|_| ApiError::internal("Catalogue generation was interrupted."))?
+}
+
+fn spool_named_entities(
+    spool: &mut CatalogueSpool,
+    names: BTreeSet<&str>,
+    authors: bool,
+) -> Result<(), ApiError> {
+    #[derive(Serialize)]
+    struct Entity<'a> {
+        id: std::borrow::Cow<'a, str>,
+        name: &'a str,
     }
-    Ok(Json(AbsFilterData {
-        authors: authors
-            .into_iter()
-            .map(|name| AbsNamedEntity {
-                id: author_id(&name),
-                name,
-            })
-            .collect(),
-        genres: genres.into_iter().collect(),
-        tags: tags.into_iter().collect(),
-        series: named_entities(series),
-        narrators: narrators.into_iter().collect(),
-        languages: Vec::new(),
-    }))
+    spool.bytes(b"[")?;
+    for (index, name) in names.into_iter().enumerate() {
+        if index > 0 {
+            spool.bytes(b",")?;
+        }
+        let id = if authors {
+            std::borrow::Cow::Owned(author_id(name))
+        } else {
+            std::borrow::Cow::Borrowed(name)
+        };
+        spool.json(&Entity { id, name })?;
+    }
+    spool.bytes(b"]")
 }
 
 // Foundation appendingPathComponent preserves slashes. Reserve a prefix so
@@ -793,17 +814,6 @@ fn author_matches(name: &str, id: &str) -> bool {
     author_id(name) == id || (!id.starts_with('~') && name == id)
 }
 
-/// Series retain their existing name-based identifiers.
-fn named_entities(names: BTreeSet<String>) -> Vec<AbsNamedEntity> {
-    names
-        .into_iter()
-        .map(|name| AbsNamedEntity {
-            id: name.clone(),
-            name,
-        })
-        .collect()
-}
-
 /// `GET /abs/api/libraries/{id}/search`
 pub(crate) async fn abs_search(
     State(state): State<AppState>,
@@ -811,16 +821,17 @@ pub(crate) async fn abs_search(
     Extension(session): Extension<CurrentSession>,
     Path(library_id): Path<String>,
     Query(query): Query<AbsSearchQuery>,
-) -> Result<Json<AbsSearchResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     if library_id != ABS_LIBRARY_ID {
         return Err(ApiError::not_found("Library not found."));
     }
     let needle = query.q.trim().to_lowercase();
     let media_token = session.media_token.clone();
-    let limit = query.limit.unwrap_or(500);
+    let limit = query.limit.unwrap_or(500).min(500);
+    let lease = CatalogueLease::acquire(&state, &auth).await?;
     ensure_startup_scan_finished(&state).await?;
-    let selected: Vec<Book> = {
-        let library = state.library.read().await;
+    let library = state.library.clone().read_owned().await;
+    let selected: Vec<&Book> = {
         library
             .books
             .iter()
@@ -841,17 +852,34 @@ pub(crate) async fn abs_search(
                         .any(|tag| tag.name.to_lowercase().contains(&needle))
             })
             .take(limit)
-            .cloned()
             .collect()
     };
-    let book = enrich_books_with_progress(&state, &auth, selected)
-        .await?
-        .iter()
-        .map(|book| AbsSearchResult {
-            library_item: library_item(book, &media_token, false),
-        })
-        .collect();
-    Ok(Json(AbsSearchResponse { book }))
+    let selected_ids: HashSet<String> = selected.iter().map(|book| book.id.clone()).collect();
+    let enrichment = ProgressEnrichment::load(&state, &auth, &selected).await?;
+    drop(selected);
+    tokio::task::spawn_blocking(move || {
+        let mut spool = CatalogueSpool::new(lease)?;
+        spool.bytes(b"{\"book\":[")?;
+        for (index, book) in library
+            .books
+            .iter()
+            .filter(|book| selected_ids.contains(&book.id))
+            .enumerate()
+        {
+            spool.begin_item();
+            if index > 0 {
+                spool.bytes(b",")?;
+            }
+            spool.json(&AbsSearchResult {
+                library_item: library_item(&enrichment.apply_catalogue(book)?, &media_token, false),
+            })?;
+            spool.finish_item()?;
+        }
+        spool.bytes(b"]}")?;
+        spool.response("application/json", None, None)
+    })
+    .await
+    .map_err(|_| ApiError::internal("Catalogue generation was interrupted."))?
 }
 
 /// `GET /abs/api/libraries/{id}/collections`
@@ -879,27 +907,63 @@ pub(crate) async fn abs_author(
     Extension(auth): Extension<AuthUser>,
     Extension(session): Extension<CurrentSession>,
     Path(author_id): Path<String>,
-) -> Result<Json<AbsAuthorResponse>, ApiError> {
-    let media_token = session.media_token.clone();
+) -> Result<Response, ApiError> {
+    let lease = CatalogueLease::acquire(&state, &auth).await?;
     ensure_startup_scan_finished(&state).await?;
-    let books = visible_books_where(&state, &auth, |book| {
-        book.author
-            .as_deref()
-            .is_some_and(|name| author_matches(name, &author_id))
-    })
-    .await;
-    if books.is_empty() {
+    let library = state.library.clone().read_owned().await;
+    let selected: Vec<&Book> = library
+        .books
+        .iter()
+        .filter(|book| {
+            can_access_book(&auth, &book.id)
+                && book
+                    .author
+                    .as_deref()
+                    .is_some_and(|name| author_matches(name, &author_id))
+        })
+        .collect();
+    if selected.is_empty() {
         return Err(ApiError::not_found("Author not found."));
     }
-    let books = enrich_books_with_progress(&state, &auth, books).await?;
-    Ok(Json(AbsAuthorResponse {
-        id: self::author_id(books[0].author.as_deref().unwrap()),
-        name: books[0].author.clone().unwrap(),
-        library_items: books
+    let ids: HashSet<String> = selected.iter().map(|book| book.id.clone()).collect();
+    let enrichment = ProgressEnrichment::load(&state, &auth, &selected).await?;
+    drop(selected);
+    tokio::task::spawn_blocking(move || {
+        let first = library
+            .books
             .iter()
-            .map(|book| library_item(book, &media_token, false))
-            .collect(),
-    }))
+            .find(|book| ids.contains(&book.id))
+            .expect("selected author book");
+        check_catalogue_book(first)?;
+        let name = first.author.as_deref().expect("selected author");
+        let mut spool = CatalogueSpool::new(lease)?;
+        spool.bytes(b"{\"id\":")?;
+        spool.json(&self::author_id(name))?;
+        spool.bytes(b",\"name\":")?;
+        spool.json(&name)?;
+        spool.bytes(b",\"libraryItems\":[")?;
+        for (index, book) in library
+            .books
+            .iter()
+            .filter(|book| ids.contains(&book.id))
+            .enumerate()
+        {
+            spool.begin_item();
+            if index > 0 {
+                spool.bytes(b",")?;
+            }
+            spool.json(&library_item(
+                &enrichment.apply_catalogue(book)?,
+                &session.media_token,
+                false,
+            ))?;
+            spool.finish_item()?;
+        }
+        spool.bytes(b"]}")?;
+        spool.response("application/json", None, None)
+    })
+    .await
+    .map_err(|_| ApiError::internal("Catalogue generation was interrupted."))?
 }
 
 /// `GET /abs/api/items/{id}`
