@@ -359,12 +359,12 @@ pub(crate) fn decide_progress_write(
     let mut backup_previous = false;
     if let Some(previous) = previous {
         // Behind an untimed track the book position is only what clients
-        // report. Moving forward on the same track is progress whatever the
+        // report. Moving forward in track order is progress whatever the
         // reported offset says, so an earlier over-report cannot freeze saves.
+        // The reset guard still applies: a lost offset near the start is not
+        // forward movement.
         let reported_offset_moving_forward = unknown_earlier_track_count(book, track) > 0
-            && previous.track_id == track.id
-            && saved.position_seconds + PROGRESS_AUTOMATIC_REGRESSION_SLACK_SECONDS
-                >= previous.position_seconds;
+            && moves_forward_in_track_order(book, previous, track, saved.position_seconds);
         if !reported_offset_moving_forward
             && progress_write_is_unintentional_regression(
                 previous.book_position_seconds,
@@ -374,13 +374,11 @@ pub(crate) fn decide_progress_write(
         {
             return ProgressDecision::Keep;
         }
-        if !reported_offset_moving_forward
-            && progress_write_is_suspect_reset(
-                previous.book_position_seconds,
-                saved.book_position_seconds,
-                update.intentional_regression,
-            )
-        {
+        if progress_write_is_suspect_reset(
+            previous.book_position_seconds,
+            saved.book_position_seconds,
+            update.intentional_regression,
+        ) {
             return ProgressDecision::Keep;
         }
         backup_previous = previous.book_position_seconds - saved.book_position_seconds
@@ -667,7 +665,8 @@ pub(crate) fn decide_completion_write(
     saved.finished_override = Some(update.finished);
     saved.recording = None;
     let backup_previous = previous.is_some_and(|previous| {
-        enrich_progress(book, previous).book_position_seconds - saved.book_position_seconds
+        enrich_progress(book, previous).book_position_seconds
+            - enrich_progress(book, &saved).book_position_seconds
             > PROGRESS_BACKUP_REGRESSION_SECONDS
     });
     ProgressDecision::Store {
@@ -1193,6 +1192,22 @@ pub(crate) fn unknown_earlier_track_count(book: &Book, track: &Track) -> usize {
                 .is_some_and(|duration| duration > 0.0)
         })
         .count()
+}
+
+/// A later track, or a later position on the same one. Track ids and track
+/// positions are the server's own, unlike a reported whole-book offset.
+fn moves_forward_in_track_order(
+    book: &Book,
+    previous: &Progress,
+    track: &Track,
+    position_seconds: f64,
+) -> bool {
+    let index_of = |id: &str| book.tracks.iter().position(|candidate| candidate.id == id);
+    match (index_of(&previous.track_id), index_of(&track.id)) {
+        (Some(before), Some(now)) if now > before => true,
+        (Some(before), Some(now)) if now == before => position_seconds >= previous.position_seconds,
+        _ => false,
+    }
 }
 
 /// The most one untimed track may add to a client-reported book position.
