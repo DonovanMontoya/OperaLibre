@@ -2456,6 +2456,8 @@ async fn untrusted_origins_cannot_use_cors_or_make_cookie_authenticated_changes(
     for origin in [
         "https://evil.example",
         "https://localhost.evil.example",
+        // No shipped app loads from here; any local site on port 80 could.
+        "http://localhost",
         "https://localhost:4444",
         "https://127.0.0.1",
         "null",
@@ -2596,7 +2598,6 @@ async fn a_cookie_change_from_an_official_app_origin_is_allowed() {
 
     for origin in [
         "capacitor://localhost",
-        "http://localhost",
         "https://localhost",
         "http://127.0.0.1:49201",
     ] {

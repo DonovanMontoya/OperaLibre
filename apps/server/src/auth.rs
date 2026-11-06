@@ -40,11 +40,16 @@ pub(crate) const MAX_SESSIONS_PER_USER: usize = 20;
 
 pub(crate) const MAX_SESSIONS_TOTAL: usize = 1_000;
 
+/// Each entry is one shell's page origin, trusted on every install because the
+/// server cannot know which apps its readers use. Anything else served at one
+/// of these origins on a reader's device gets the same trust, so the list holds
+/// only origins a shipped app loads from.
 pub(crate) const OFFICIAL_APP_ORIGINS: &[&str] = &[
+    // Capacitor's iOS WebView origin.
     "capacitor://localhost",
-    "http://localhost",
     // Capacitor's default Android WebView origin.
     "https://localhost",
+    // The macOS app's bundled web server (apps/macos).
     "http://127.0.0.1:49201",
 ];
 
