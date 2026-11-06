@@ -326,6 +326,12 @@ pub(crate) fn decide_progress_write(
         // device recorded more recently.
         return ProgressDecision::Keep;
     }
+    // Rows migrated from the JSON store may hold only a track offset. Every
+    // guard below compares whole-book positions, so derive the stored one the
+    // way reads do; otherwise a 0:00 write over hours of progress looks like
+    // no regression at all.
+    let previous = previous.map(|previous| enrich_progress(book, previous));
+    let previous = previous.as_ref();
 
     let incoming_track_position =
         clamped_track_position(update.position_seconds, track.duration_seconds);
@@ -507,6 +513,9 @@ pub(crate) async fn record_progress_bookkeeping(
     bookkeeping: ProgressBookkeeping<'_>,
 ) {
     let tz_offset_minutes = sanitized_tz_offset_minutes(bookkeeping.tz_offset_minutes);
+    // A legacy row's raw zero would count the whole book as listening.
+    let previous = previous.map(|previous| enrich_progress(book, previous));
+    let previous = previous.as_ref();
     let listened_delta = plausible_listened_delta(previous, saved, bookkeeping.intentional_seek);
     if listened_delta > 0.0 {
         record_activity(state, &auth.id, listened_delta, tz_offset_minutes).await;
@@ -640,10 +649,15 @@ pub(crate) fn decide_completion_write(
         saved.duration_seconds = update.duration_seconds.or(track.duration_seconds);
         saved.updated_at = next_progress_timestamp(previous, now_millis);
     }
+    // A status-only change keeps the revision. The app does not rewrite its
+    // local checkpoint for one, so a new revision would make that device's next
+    // checkpoint carry a stale base and be refused. The Audiobookshelf route
+    // bumps it instead, because those clients pick the newest copy by lastUpdate.
     saved.finished_override = Some(update.finished);
     saved.recording = None;
     let backup_previous = previous.is_some_and(|previous| {
-        previous.book_position_seconds - saved.book_position_seconds
+        enrich_progress(book, previous).book_position_seconds
+            - enrich_progress(book, &saved).book_position_seconds
             > PROGRESS_BACKUP_REGRESSION_SECONDS
     });
     ProgressDecision::Store {
