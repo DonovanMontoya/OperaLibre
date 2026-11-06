@@ -316,18 +316,7 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 record(downloadTask, info: info, succeeded: true)
                 return
             }
-            guard let destinationValue = URL(string: info.destination) else {
-                throw DownloadError.invalidDestination
-            }
-            let destination = try validatedBackgroundMediaDestination(destinationValue)
-            try FileManager.default.createDirectory(
-                at: destination.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
-            }
-            try FileManager.default.moveItem(at: location, to: destination)
+            try publishServerFile(info, location: location)
             record(downloadTask, info: info, succeeded: true)
         } catch {
             record(downloadTask, info: info, succeeded: false)
@@ -433,6 +422,29 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         }
         do { try result.get() }
         catch { stopOversizedLibroJob(info); throw error }
+    }
+
+    /// Moves a finished server file into place under the job lock, so a
+    /// cancel or replacement that already removed the job's files cannot be
+    /// followed by this move and leave an orphan behind.
+    private func publishServerFile(_ info: StoredBackgroundTask, location: URL) throws {
+        let result: Result<Void, Error> = mutateJobs { jobs in
+            // Matched on destination only, like record(): a repeated enqueue
+            // keeps live tasks whose source URL carries an older token.
+            guard let job = jobs[info.jobId], job.attemptId == info.attemptId,
+                  job.files?.contains(where: { $0.destination == info.destination }) != false,
+                  job.state == "running" || job.state == "queued" else { return .failure(DownloadError.jobNotFound) }
+            do {
+                guard let value = URL(string: info.destination) else { throw DownloadError.invalidDestination }
+                let destination = try validatedBackgroundMediaDestination(value)
+                try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
+                try FileManager.default.moveItem(at: location, to: destination)
+                return .success(())
+            } catch { return .failure(error) }
+        }
+        if case .failure = result { try? FileManager.default.removeItem(at: location) }
+        try result.get()
     }
 
     private func reserveLibroBytes(_ info: StoredBackgroundTask, bytes: Int64) -> Bool {
