@@ -14,11 +14,27 @@ private let bundleStampName = ".bundle-stamp"
 private let staleStagingAge: TimeInterval = 60 * 60
 /// The web root an install replaced, kept so a release that cannot start can be undone.
 private let previousRootName = "Web.previous"
-/// Marks a web root that has not started yet. It lives inside the root, so it moves with the
-/// tree through every swap and a root can never lose it halfway through one.
+/// Marks a web root that has not started yet and holds its release key. It lives inside the
+/// root, so it moves with the tree through every swap and a root can never lose it halfway
+/// through one.
 private let unconfirmedName = ".unconfirmed-frontend"
-/// Versions that failed to start here, one per line, so the update check stops offering them.
-private let rejectedName = ".rejected-frontend-versions"
+/// Releases that failed to start here, one key per line, so the update check stops offering them.
+private let rejectedName = ".rejected-frontend-releases"
+/// Releases whose page was still blank when the start timeout ran out, one key per line.
+private let timedOutName = ".timed-out-frontend-releases"
+
+/// Identifies a release by its version and the SHA-256 the signed manifest gives its package,
+/// so a fixed package republished under the same version is not held back with the broken one.
+func frontendReleaseKey(version: String, sha256: String) -> String {
+    "\(version) \(sha256.lowercased())"
+}
+
+/// What `rollBackUnconfirmedRoot` did: the root to serve now, and whether the failed release
+/// was rejected for good or may be offered again.
+struct FrontendRollback {
+    let root: URL
+    let rejected: Bool
+}
 
 enum FrontendUpdateError: LocalizedError {
     case noMatchingAsset
@@ -102,6 +118,20 @@ final class FrontendUpdater {
         webRoot.appendingPathComponent(unconfirmedName)
     }
     private var rejectedURL: URL { container.appendingPathComponent(rejectedName) }
+    private var timedOutURL: URL { container.appendingPathComponent(timedOutName) }
+    /// Releases that timed out during this launch, so a second try in the same session does
+    /// not count as the second strike.
+    private var timedOutThisLaunch: Set<String> = []
+
+    /// The release key of an unconfirmed root, or nil when the root has started before. A
+    /// restored root has no package digest to hand, so its key is its version alone.
+    private func unconfirmedKey(in webRoot: URL) -> String? {
+        guard let text = try? String(contentsOf: unconfirmedMarker(in: webRoot), encoding: .utf8) else {
+            return nil
+        }
+        let key = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return key.isEmpty ? readVersion(at: webRoot) : key
+    }
 
     private func readVersion(at webRoot: URL) -> String {
         let marker = webRoot.appendingPathComponent("VERSION.txt")
@@ -134,8 +164,8 @@ final class FrontendUpdater {
 
         // A rollback cut short (the app quit, or a rename failed) leaves the rejected root in
         // place, still unconfirmed. Finish it rather than serving that root again.
-        if fileManager.fileExists(atPath: unconfirmedMarker(in: managedWebRoot).path),
-           isRejected(readVersion(at: managedWebRoot)),
+        if let key = unconfirmedKey(in: managedWebRoot),
+           isRejected(key),
            replaceFailedRoot() == bundledWebRoot,
            fileManager.fileExists(atPath: managedWebRoot.path)
         {
@@ -254,7 +284,9 @@ final class FrontendUpdater {
             // A "dev" build has no comparable version; any published release counts as available.
             newer = package != nil
         }
-        let heldBack = newer && isRejected(latestVersion)
+        let heldBack = newer && package.map {
+            isRejected(frontendReleaseKey(version: $0.version, sha256: $0.sha256))
+        } == true
 
         return FrontendUpdateStatus(
             currentVersion: current,
@@ -365,17 +397,18 @@ final class FrontendUpdater {
             throw FrontendUpdateError.invalidPackage("version marker does not match the release")
         }
 
-        try promote(stagedWeb, version: package.version)
+        try promote(stagedWeb, version: package.version, sha256: package.sha256)
     }
 
     /// Swaps a verified web tree into `managedWebRoot`, keeping the tree it replaces as the
     /// one fallback. The new root stays unconfirmed until `confirmServingRoot()`, so a
     /// release that cannot start can be undone by `rollBackUnconfirmedRoot()`.
-    func promote(_ stagedWeb: URL, version: String) throws {
+    func promote(_ stagedWeb: URL, version: String, sha256: String) throws {
         let fileManager = FileManager.default
         // Written before anything moves: a root that went live without it would count as
         // proven, and could never be rolled back.
-        try version.write(to: unconfirmedMarker(in: stagedWeb), atomically: true, encoding: .utf8)
+        try frontendReleaseKey(version: version, sha256: sha256)
+            .write(to: unconfirmedMarker(in: stagedWeb), atomically: true, encoding: .utf8)
         try fileManager.createDirectory(at: container, withIntermediateDirectories: true)
         let hadExisting = fileManager.fileExists(atPath: managedWebRoot.path)
         if hadExisting {
@@ -400,26 +433,29 @@ final class FrontendUpdater {
     }
 
     /// Called when the app failed to start. If the managed root is an install that has never
-    /// started, records its version as rejected and returns the root to serve instead: the
-    /// previous root when one was kept, otherwise the bundle. Returns nil for a root that has
-    /// started before, so a passing failure does not undo a release that was working.
-    func rollBackUnconfirmedRoot() -> URL? {
-        guard isServingManagedRoot,
-              FileManager.default.fileExists(atPath: unconfirmedMarker(in: managedWebRoot).path)
-        else { return nil }
+    /// started, rolls it back and returns the root to serve instead: the previous root when one
+    /// was kept, otherwise the bundle. Returns nil for a root that has started before, so a
+    /// passing failure does not undo a release that was working.
+    ///
+    /// A script that cannot load rejects the release at once. A page that is still blank when
+    /// the start timeout runs out (`timedOut`) may only mean the Mac was too busy to render it
+    /// in time, so the first time only rolls back and the release is offered again. It is
+    /// rejected when it times out again on a later launch, so it is tried at most twice.
+    func rollBackUnconfirmedRoot(timedOut: Bool = false) -> FrontendRollback? {
+        guard isServingManagedRoot, let key = unconfirmedKey(in: managedWebRoot) else { return nil }
 
-        let failed = readVersion(at: managedWebRoot)
-        var rejected = rejectedVersions()
-        if !rejected.contains(failed) {
-            rejected.append(failed)
-            // If this write fails, the failed root keeps its marker, so it is rolled back
-            // again the next time it fails to start rather than finished at launch.
-            try? (rejected.joined(separator: "\n") + "\n")
-                .write(to: rejectedURL, atomically: true, encoding: .utf8)
+        let reject = !timedOut
+            || (keys(in: timedOutURL).contains(key) && !timedOutThisLaunch.contains(key))
+        if timedOut {
+            timedOutThisLaunch.insert(key)
         }
+        // If the rejection cannot be saved, the failed root keeps its marker, so it is rolled
+        // back again the next time it fails to start rather than finished at launch.
+        record(key, in: reject ? rejectedURL : timedOutURL)
         installedVersion = nil
-        servingRoot = replaceFailedRoot()
-        return servingRoot
+        let root = replaceFailedRoot()
+        servingRoot = root
+        return FrontendRollback(root: root, rejected: reject)
     }
 
     /// Swaps the failed managed root out for the kept previous root, or removes it so the
@@ -448,13 +484,20 @@ final class FrontendUpdater {
         return bundledWebRoot
     }
 
-    private func rejectedVersions() -> [String] {
-        guard let text = try? String(contentsOf: rejectedURL, encoding: .utf8) else { return [] }
+    private func keys(in list: URL) -> [String] {
+        guard let text = try? String(contentsOf: list, encoding: .utf8) else { return [] }
         return text.split(whereSeparator: \.isNewline).map(String.init)
     }
 
-    func isRejected(_ version: String) -> Bool {
-        rejectedVersions().contains(version)
+    private func record(_ key: String, in list: URL) {
+        var saved = keys(in: list)
+        guard !saved.contains(key) else { return }
+        saved.append(key)
+        try? (saved.joined(separator: "\n") + "\n").write(to: list, atomically: true, encoding: .utf8)
+    }
+
+    func isRejected(_ key: String) -> Bool {
+        keys(in: rejectedURL).contains(key)
     }
 
     /// Streams an update into our scoped workspace instead of asking URLSession to create an

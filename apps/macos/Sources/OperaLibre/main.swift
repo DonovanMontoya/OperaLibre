@@ -367,7 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             frontendStarted = true
             frontendUpdater?.confirmServingRoot()
         case "frontendStartFailed":
-            frontendFailedToStart(String(describing: message.body))
+            frontendFailedToStart(String(describing: message.body), timedOut: false)
         default:
             break
         }
@@ -378,27 +378,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         return url.host == frontendURL.host && url.port == frontendURL.port
     }
 
-    private func frontendFailedToStart(_ detail: String) {
+    private func frontendFailedToStart(_ detail: String, timedOut: Bool) {
         guard pageCommitted, !frontendStarted else { return }
         NSLog("Frontend failed to start: %@", detail)
         // An update that has never started is undone instead of closing the app over it.
         let failedVersion = frontendUpdater?.currentVersion
-        if let fallback = frontendUpdater?.rollBackUnconfirmedRoot() {
-            NSLog("Frontend %@ failed to start; serving %@", failedVersion ?? "?", fallback.path)
+        if let rollback = frontendUpdater?.rollBackUnconfirmedRoot(timedOut: timedOut) {
+            NSLog("Frontend %@ failed to start; serving %@", failedVersion ?? "?", rollback.root.path)
             pageCommitted = false
             pageGeneration += 1
-            webServer?.setRoot(fallback)
+            webServer?.setRoot(rollback.root)
             webView?.reload()
             let restored = frontendUpdater?.currentVersion ?? "the previous version"
+            let outcome = rollback.rejected
+                ? "It will not offer that release again."
+                : "A busy Mac can cause this, so the release will be offered again. If it fails the same way on a later launch, it won't be offered after that."
             DispatchQueue.main.async {
                 let alert = NSAlert()
                 alert.messageText = "Update rolled back"
-                alert.informativeText = "OperaLibre \(failedVersion ?? "") could not start, so the app went back to \(restored). It will not offer that release again.\n\n\(detail)"
+                alert.informativeText = "OperaLibre \(failedVersion ?? "") could not start, so the app went back to \(restored). \(outcome)\n\n\(detail)"
                 alert.addButton(withTitle: "OK")
                 alert.runModal()
             }
             return
         }
+        // A blank page on a root that has started before may still be slow rather than broken,
+        // so it is left to finish instead of closing the app.
+        guard !timedOut else { return }
         showStartupError("The bundled frontend failed to load.\n\n\(detail)")
     }
 
@@ -419,7 +425,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         DispatchQueue.main.asyncAfter(deadline: .now() + frontendStartTimeout) { [weak self] in
             guard let self, self.pageGeneration == generation else { return }
             self.frontendFailedToStart(
-                self.lastFrontendError ?? "The page loaded, but the app did not appear."
+                self.lastFrontendError ?? "The page loaded, but the app did not appear.",
+                timedOut: true
             )
         }
     }
