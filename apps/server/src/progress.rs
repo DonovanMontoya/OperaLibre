@@ -326,6 +326,12 @@ pub(crate) fn decide_progress_write(
         // device recorded more recently.
         return ProgressDecision::Keep;
     }
+    // Rows migrated from the JSON store may hold only a track offset. Every
+    // guard below compares whole-book positions, so derive the stored one the
+    // way reads do; otherwise a 0:00 write over hours of progress looks like
+    // no regression at all.
+    let previous = previous.map(|previous| enrich_progress(book, previous));
+    let previous = previous.as_ref();
 
     let incoming_track_position =
         clamped_track_position(update.position_seconds, track.duration_seconds);
@@ -352,18 +358,29 @@ pub(crate) fn decide_progress_write(
 
     let mut backup_previous = false;
     if let Some(previous) = previous {
-        if progress_write_is_unintentional_regression(
-            previous.book_position_seconds,
-            saved.book_position_seconds,
-            update.intentional_seek || update.intentional_regression,
-        ) {
+        // Behind an untimed track the book position is only what clients
+        // report. Moving forward on the same track is progress whatever the
+        // reported offset says, so an earlier over-report cannot freeze saves.
+        let reported_offset_moving_forward = unknown_earlier_track_count(book, track) > 0
+            && previous.track_id == track.id
+            && saved.position_seconds + PROGRESS_AUTOMATIC_REGRESSION_SLACK_SECONDS
+                >= previous.position_seconds;
+        if !reported_offset_moving_forward
+            && progress_write_is_unintentional_regression(
+                previous.book_position_seconds,
+                saved.book_position_seconds,
+                update.intentional_seek || update.intentional_regression,
+            )
+        {
             return ProgressDecision::Keep;
         }
-        if progress_write_is_suspect_reset(
-            previous.book_position_seconds,
-            saved.book_position_seconds,
-            update.intentional_regression,
-        ) {
+        if !reported_offset_moving_forward
+            && progress_write_is_suspect_reset(
+                previous.book_position_seconds,
+                saved.book_position_seconds,
+                update.intentional_regression,
+            )
+        {
             return ProgressDecision::Keep;
         }
         backup_previous = previous.book_position_seconds - saved.book_position_seconds
@@ -507,6 +524,9 @@ pub(crate) async fn record_progress_bookkeeping(
     bookkeeping: ProgressBookkeeping<'_>,
 ) {
     let tz_offset_minutes = sanitized_tz_offset_minutes(bookkeeping.tz_offset_minutes);
+    // A legacy row's raw zero would count the whole book as listening.
+    let previous = previous.map(|previous| enrich_progress(book, previous));
+    let previous = previous.as_ref();
     let listened_delta = plausible_listened_delta(previous, saved, bookkeeping.intentional_seek);
     if listened_delta > 0.0 {
         record_activity(state, &auth.id, listened_delta, tz_offset_minutes).await;
@@ -640,10 +660,14 @@ pub(crate) fn decide_completion_write(
         saved.duration_seconds = update.duration_seconds.or(track.duration_seconds);
         saved.updated_at = next_progress_timestamp(previous, now_millis);
     }
+    // A status-only change keeps the revision. The app does not rewrite its
+    // local checkpoint for one, so a new revision would make that device's next
+    // checkpoint carry a stale base and be refused. The Audiobookshelf route
+    // bumps it instead, because those clients pick the newest copy by lastUpdate.
     saved.finished_override = Some(update.finished);
     saved.recording = None;
     let backup_previous = previous.is_some_and(|previous| {
-        previous.book_position_seconds - saved.book_position_seconds
+        enrich_progress(book, previous).book_position_seconds - saved.book_position_seconds
             > PROGRESS_BACKUP_REGRESSION_SECONDS
     });
     ProgressDecision::Store {
@@ -1142,23 +1166,38 @@ pub(crate) fn validated_book_position_seconds(
     position_seconds: f64,
     reported: Option<f64>,
 ) -> f64 {
-    let prefix_is_known = book
-        .tracks
+    let derived = book_position_seconds(book, track, position_seconds);
+    let unknown_earlier_tracks = unknown_earlier_track_count(book, track);
+    if unknown_earlier_tracks == 0 {
+        return derived;
+    }
+    // The derived offset counts unknown tracks as empty, so it is a floor. The
+    // ceiling keeps one wild report from becoming a stored position that every
+    // later checkpoint regresses from.
+    let ceiling = derived + unknown_earlier_tracks as f64 * PROGRESS_UNKNOWN_TRACK_MAX_SECONDS;
+    reported
+        .filter(|reported| reported.is_finite())
+        .unwrap_or(derived)
+        .clamp(derived, ceiling)
+}
+
+/// Earlier tracks the scan could not time. A whole-book position on a track
+/// after any of them is the client's word, not the server's arithmetic.
+pub(crate) fn unknown_earlier_track_count(book: &Book, track: &Track) -> usize {
+    book.tracks
         .iter()
         .take_while(|candidate| candidate.id != track.id)
-        .all(|candidate| {
-            candidate
+        .filter(|candidate| {
+            !candidate
                 .duration_seconds
                 .is_some_and(|duration| duration > 0.0)
-        });
-    if prefix_is_known {
-        book_position_seconds(book, track, position_seconds)
-    } else {
-        reported
-            .unwrap_or_else(|| book_position_seconds(book, track, position_seconds))
-            .max(0.0)
-    }
+        })
+        .count()
 }
+
+/// The most one untimed track may add to a client-reported book position.
+/// Multi-file books rarely have a part this long.
+pub(crate) const PROGRESS_UNKNOWN_TRACK_MAX_SECONDS: f64 = 48.0 * 60.0 * 60.0;
 
 /// Slack absorbs realistic clock skew between devices; a genuinely stale
 /// replay (offline queue flush, reinstalled client) is hours or days old.
