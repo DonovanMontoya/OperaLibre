@@ -32,6 +32,9 @@ final class GiftRecoveryStore {
 
     // Linux UAPI O_CLOEXEC (02000000), supported by Android's kernel on all
     // supported ABIs. The Java OsConstants field was only exposed in API 27.
+    // Android 7/API 24 ARM, arm64, x86 and MIPS headers inherit this definition:
+    // https://github.com/aosp-mirror/platform_bionic/blob/android-7.0.0_r1/libc/kernel/uapi/asm-generic/fcntl.h
+    // Java API history: https://developer.android.com/reference/android/system/OsConstants#O_CLOEXEC
     private static final int CLOSE_ON_EXEC = 0x80000;
     static FileDescriptor open(String path, int flags, int mode) throws Exception {
         // Nonblocking opens fail closed on a substituted FIFO before fstat.
