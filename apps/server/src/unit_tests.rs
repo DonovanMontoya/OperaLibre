@@ -8007,8 +8007,9 @@ fn account_lockouts_are_keyed_by_address_and_name() {
         super::login_ip_throttle_key(alice)
     );
 
-    // An IPv6 host can pick any address in its /64, so the /64 is what counts;
-    // an IPv4 client seen through a dual-stack socket counts as itself.
+    // A host on a public IPv6 network can pick any address in its /64, so the
+    // per-address counter covers the /64. The pair stays per device, so one
+    // device on the network cannot lock another out of an account.
     let ipv6 = |text: &str| text.parse::<std::net::IpAddr>().unwrap();
     assert_eq!(
         super::login_ip_throttle_key(ipv6("2001:db8:1:2::1")),
@@ -8018,9 +8019,29 @@ fn account_lockouts_are_keyed_by_address_and_name() {
         super::login_ip_throttle_key(ipv6("2001:db8:1:2::1")),
         super::login_ip_throttle_key(ipv6("2001:db8:1:3::1"))
     );
+    assert_ne!(
+        super::login_account_throttle_key(ipv6("2001:db8:1:2::1"), "reader"),
+        super::login_account_throttle_key(ipv6("2001:db8:1:2::2"), "reader")
+    );
+    // Link-local, unique local and Tailscale addresses are each one device.
+    for (first, second) in [
+        ("fe80::1", "fe80::2"),
+        ("fd12:3456:789a:1::1", "fd12:3456:789a:1::2"),
+        ("fd7a:115c:a1e0::1", "fd7a:115c:a1e0::2"),
+    ] {
+        assert_ne!(
+            super::login_ip_throttle_key(ipv6(first)),
+            super::login_ip_throttle_key(ipv6(second))
+        );
+    }
+    // An IPv4 client seen through a dual-stack socket counts as itself.
     assert_eq!(
         super::login_ip_throttle_key(ipv6("::ffff:203.0.113.5")),
         super::login_ip_throttle_key(alice)
+    );
+    assert_eq!(
+        super::login_account_throttle_key(ipv6("::ffff:203.0.113.5"), "reader"),
+        super::login_account_throttle_key(alice, "reader")
     );
 }
 
@@ -8261,6 +8282,53 @@ async fn a_full_login_throttle_map_evicts_stale_then_oldest_entries() {
     assert!(!attempts.contains_key("stale"));
     assert!(!attempts.contains_key("oldest"));
     assert!(attempts.contains_key("locked"));
+}
+
+/// Entries holding locks are never evicted. A map full of them grows past the
+/// eviction cap rather than refusing a newcomer, and only at the hard ceiling
+/// is a newcomer refused, with every lock left in place.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_login_throttle_map_full_of_locks_grows_to_a_ceiling_then_refuses() {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let now = super::unix_now_seconds();
+    let fill_with_locks = |attempts: &mut std::collections::HashMap<_, _>, size| {
+        attempts.clear();
+        for index in 0..size {
+            attempts.insert(
+                format!("ip:198.18.{}.{}", index / 256, index % 256),
+                super::LoginThrottle {
+                    failures: super::LOGIN_IP_MAX_FAILURES,
+                    last_failure: now,
+                },
+            );
+        }
+    };
+    let newcomer =
+        |host| super::LoginThrottleKeys::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, host)), "new");
+
+    fill_with_locks(
+        &mut *state.login_attempts.lock().await,
+        super::LOGIN_THROTTLE_MAX_ENTRIES,
+    );
+    assert!(super::record_login_failures(&state, newcomer(1).all()).await);
+    assert_eq!(
+        state.login_attempts.lock().await.len(),
+        super::LOGIN_THROTTLE_MAX_ENTRIES + 3
+    );
+
+    fill_with_locks(
+        &mut *state.login_attempts.lock().await,
+        super::LOGIN_THROTTLE_LOCKED_MAX_ENTRIES,
+    );
+    assert!(!super::record_login_failures(&state, newcomer(2).all()).await);
+    let attempts = state.login_attempts.lock().await;
+    assert_eq!(attempts.len(), super::LOGIN_THROTTLE_LOCKED_MAX_ENTRIES);
+    assert!(!attempts.contains_key(&newcomer(2).account));
+    assert!(attempts.contains_key("ip:198.18.0.0"));
 }
 
 #[test]

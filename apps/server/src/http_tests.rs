@@ -6040,16 +6040,11 @@ async fn spread_guessing_cannot_lock_the_owner_out() {
             u32::from(std::net::Ipv4Addr::new(10, 0, 0, 0)) + host,
         ))
     };
+    // Charged the way sign-in admission charges a wrong guess. Fifty real
+    // password checks can outlast the lockout window in a debug build.
     for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
-        let error = sign_in_from(
-            &server,
-            attacker(host),
-            "target",
-            &super::mint_identity_id(),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+        let keys = super::LoginThrottleKeys::new(attacker(host), "target");
+        assert!(super::record_login_failures(&server.state, keys.all()).await);
     }
 
     // An address that has guessed is refused before its password is checked,
@@ -6102,6 +6097,115 @@ async fn a_full_login_throttle_map_still_admits_a_correct_password() {
         .await
         .expect("a full map makes room for a new sign-in");
     assert!(server.state.login_attempts.lock().await.len() <= super::LOGIN_THROTTLE_MAX_ENTRIES);
+}
+
+/// Under a username attack, one failure is enough to hold an address off, so
+/// that single-failure entry must survive a full map. Otherwise newer one-off
+/// guesses would push it out and hand the guesser a fresh try.
+#[tokio::test]
+async fn a_full_login_throttle_map_keeps_holding_guessers_off_an_attacked_name() {
+    let server = TestServer::start(0).await;
+    let password = reader_with_generated_password(&server, "target").await;
+    let attacker = |host: u32| {
+        std::net::IpAddr::V4(std::net::Ipv4Addr::from(
+            u32::from(std::net::Ipv4Addr::new(10, 0, 0, 0)) + host,
+        ))
+    };
+    // Charged the way sign-in admission charges a wrong guess. Fifty real
+    // password checks can outlast the lockout window in a debug build.
+    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        let keys = super::LoginThrottleKeys::new(attacker(host), "target");
+        assert!(super::record_login_failures(&server.state, keys.all()).await);
+    }
+
+    // Make the guessers' entries the oldest single failures, then fill the
+    // map with newer ones.
+    let now = super::unix_now_seconds();
+    {
+        let mut attempts = server.state.login_attempts.lock().await;
+        for throttle in attempts.values_mut() {
+            throttle.last_failure = now - 1;
+        }
+        for index in attempts.len()..super::LOGIN_THROTTLE_MAX_ENTRIES {
+            attempts.insert(
+                format!("user:flood-{index}"),
+                super::LoginThrottle {
+                    failures: 1,
+                    last_failure: now,
+                },
+            );
+        }
+    }
+
+    // Enough new addresses to evict every guesser entry if any could go.
+    for host in 1..=40u8 {
+        let newcomer = std::net::IpAddr::from([192, 0, 2, host]);
+        let keys = super::LoginThrottleKeys::new(newcomer, &format!("someone-{host}"));
+        assert!(super::record_login_failures(&server.state, keys.all()).await);
+    }
+
+    let attempts = server.state.login_attempts.lock().await;
+    assert!(attempts.len() <= super::LOGIN_THROTTLE_MAX_ENTRIES);
+    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        let keys = super::LoginThrottleKeys::new(attacker(host), "target");
+        assert!(
+            keys.is_locked(&attempts, now),
+            "address {host} may guess again"
+        );
+    }
+    drop(attempts);
+    let error = sign_in_from(&server, attacker(1), "target", &password)
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// Devices that share an address prefix are still separate devices: one
+/// mistyping its way into a lock does not keep another out. On a public IPv6
+/// network the per-address counter covers the /64, so a host rotating through
+/// its own addresses still meets it.
+#[tokio::test]
+async fn devices_sharing_a_prefix_do_not_share_a_sign_in_lock() {
+    let server = TestServer::start(0).await;
+    let password = reader_with_generated_password(&server, "target").await;
+    let ipv6 = |text: &str| text.parse::<std::net::IpAddr>().unwrap();
+    for (guesser, device) in [
+        ("fe80::1", "fe80::2"),
+        // Tailscale hands out unique local addresses under fd7a:115c:a1e0::/48.
+        ("fd7a:115c:a1e0::1", "fd7a:115c:a1e0::2"),
+        ("2001:db8:1:2::1", "2001:db8:1:2::2"),
+    ] {
+        for _ in 0..super::LOGIN_MAX_FAILURES {
+            let error = sign_in_from(&server, ipv6(guesser), "target", &super::mint_identity_id())
+                .await
+                .unwrap_err();
+            assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+        }
+        let error = sign_in_from(&server, ipv6(guesser), "target", &password)
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS, "{guesser}");
+        sign_in_from(&server, ipv6(device), "target", &password)
+            .await
+            .unwrap_or_else(|_| panic!("{device} is refused after {guesser} locked itself"));
+    }
+
+    // One wrong guess from each of many addresses in one public /64 locks
+    // that /64, and only that /64.
+    for host in 1..=super::LOGIN_IP_MAX_FAILURES {
+        let address = ipv6(&format!("2001:db8:9:9::{host:x}"));
+        let error = sign_in_from(&server, address, "target", &super::mint_identity_id())
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+    }
+    let error = sign_in_from(&server, ipv6("2001:db8:9:9::ffff"), "target", &password)
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+    sign_in_from(&server, ipv6("2001:db8:9:a::1"), "target", &password)
+        .await
+        .expect("a neighbouring /64 is unaffected");
 }
 
 #[tokio::test]

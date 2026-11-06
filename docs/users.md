@@ -62,6 +62,8 @@ Tokens are random opaque strings. Sessions end on logout, account deletion, or 3
 
 Failed sign-ins are rate limited: after 5 failures for a username from one address (or 25 from one address across all usernames), further attempts from that address are rejected for 60 seconds. Other devices can still sign in. If a username draws 50 failures from many addresses, each address that has failed against it gets one attempt a minute until the guessing stops; a device that has not failed against it signs in as usual.
 
+The server sees an address, not a device. Devices behind one public address, such as a home router or a mobile carrier, count as one address when they reach the server from outside, and so do all clients of a reverse proxy unless it runs on the same machine and sends `X-Forwarded-For`. On a public IPv6 network, the 25-failure limit covers the device's whole /64 network, since a single device can use any address in it.
+
 ## Resetting a forgotten admin password
 
 The server owner — the person with shell access to the machine — can recover a lost owner password through the JSON export path:
