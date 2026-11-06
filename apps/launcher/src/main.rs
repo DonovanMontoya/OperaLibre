@@ -768,6 +768,14 @@ fn snapshot_data(data: &Path, snapshot: &Path) -> Result<(), String> {
             secure_file(&copy)?;
             sync_file(&copy)?;
         }
+        // The new build may migrate the database as soon as it starts, so the
+        // folders leading to the copy must be on disk before then too.
+        for directory in snapshot
+            .ancestors()
+            .take_while(|directory| *directory == snapshot || directory.starts_with(data))
+        {
+            sync_directory(directory);
+        }
         Ok(())
     })();
     if result.is_err() {
@@ -801,24 +809,43 @@ fn data_was_upgraded(data: &Path, snapshot: &Path) -> bool {
 }
 
 /// Puts the whole snapshot back, so the database and identities stay a pair.
+/// The snapshot is only read: until the previous build has started it is the
+/// one copy that build can open, and a restore that stops partway must be
+/// able to run again.
 fn restore_data(data: &Path, snapshot: &Path) -> Result<(), String> {
-    for name in [DATABASE, IDENTITIES] {
-        let saved = snapshot.join(name);
-        if !saved.is_file() {
-            continue;
+    let names: Vec<&str> = [DATABASE, IDENTITIES]
+        .into_iter()
+        .filter(|name| snapshot.join(name).is_file())
+        .collect();
+    // Synced copies beside the live files, so each lands with one rename on
+    // one volume: the live file is either the old one or the new one.
+    let staged = |name: &str| data.join(format!("{name}.restoring"));
+    let result = (|| {
+        for name in &names {
+            let copy = staged(name);
+            fs::copy(snapshot.join(name), &copy)
+                .map_err(|error| format!("Could not copy back {name}: {error}"))?;
+            secure_file(&copy)?;
+            sync_file(&copy)?;
         }
-        if name == DATABASE {
-            // The failed build's write-ahead log belongs to its database;
-            // replayed onto the restored one it would corrupt it.
-            remove_if_exists(&data.join(format!("{DATABASE}-wal")))?;
-            remove_if_exists(&data.join(format!("{DATABASE}-shm")))?;
+        for name in &names {
+            if *name == DATABASE {
+                // The failed build's write-ahead log belongs to its database;
+                // replayed onto the restored one it would corrupt it.
+                remove_if_exists(&data.join(format!("{DATABASE}-wal")))?;
+                remove_if_exists(&data.join(format!("{DATABASE}-shm")))?;
+            }
+            move_required(&staged(name), &data.join(name))?;
         }
-        // The snapshot lives inside the data folder, so this is a rename on
-        // one volume: the live file is either the old one or the new one.
-        move_required(&saved, &data.join(name))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        for name in &names {
+            let _ = fs::remove_file(staged(name));
+        }
     }
     sync_directory(data);
-    Ok(())
+    result
 }
 
 fn open_database(path: &Path) -> Result<rusqlite::Connection, String> {
@@ -1458,6 +1485,48 @@ mod tests {
             "{\"version\":1,\"books\":[]}"
         );
         assert!(!super::data_was_upgraded(&data, &snapshot));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_restore_that_stops_partway_keeps_the_snapshot_for_another_try() {
+        let root = scratch("data-partial-restore");
+        let data = root.join("data");
+        let snapshot = root.join("snapshot");
+        drop(seed_data(&data, 4, "{\"version\":1}"));
+        super::snapshot_data(&data, &snapshot).unwrap();
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute("UPDATE schema_version SET version = 5", [])
+            .unwrap();
+        // The database goes back, then the identities cannot be replaced.
+        let identities = data.join("library-identities.json");
+        fs::remove_file(&identities).unwrap();
+        fs::create_dir_all(identities.join("blocked")).unwrap();
+        assert!(super::restore_data(&data, &snapshot).is_err());
+        assert_eq!(
+            super::schema_version(&snapshot.join("operalibre.db")),
+            Ok(4)
+        );
+        assert_eq!(
+            fs::read_to_string(snapshot.join("library-identities.json")).unwrap(),
+            "{\"version\":1}"
+        );
+        assert!(!data.join("library-identities.json.restoring").exists());
+
+        // Restarting the failed build would migrate the restored database again.
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute("UPDATE schema_version SET version = 5", [])
+            .unwrap();
+        fs::remove_dir_all(&identities).unwrap();
+        fs::write(&identities, "{\"version\":2}").unwrap();
+        assert!(super::data_was_upgraded(&data, &snapshot));
+        super::restore_data(&data, &snapshot).unwrap();
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        assert_eq!(super::identity_version(&identities), Ok(1));
+        assert_eq!(progress_books(&data), ["before-update"]);
+        assert!(snapshot.join("operalibre.db").is_file());
         fs::remove_dir_all(root).unwrap();
     }
 
