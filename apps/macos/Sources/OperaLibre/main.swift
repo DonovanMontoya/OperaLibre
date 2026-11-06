@@ -120,6 +120,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     /// page being replaced (including one that just failed) are ignored.
     private var pageCommitted = false
     private var pageGeneration = 0
+    /// The unconfirmed release being served when this page's navigation started, before any of
+    /// its files were served. Only that release can be confirmed or rolled back by this page:
+    /// an update installed while the page is still starting is reloaded into a page of its own.
+    private var pageRelease: String?
     /// The last uncaught error on this page, shown if the app then fails to start.
     private var lastFrontendError: String?
 
@@ -365,7 +369,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         case "frontendStarted":
             guard !frontendStarted else { return }
             frontendStarted = true
-            frontendUpdater?.confirmServingRoot()
+            frontendUpdater?.confirmServingRoot(loadedRelease: pageRelease)
         case "frontendStartFailed":
             frontendFailedToStart(String(describing: message.body), timedOut: false)
         default:
@@ -383,7 +387,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         NSLog("Frontend failed to start: %@", detail)
         // An update that has never started is undone instead of closing the app over it.
         let failedVersion = frontendUpdater?.currentVersion
-        if let rollback = frontendUpdater?.rollBackUnconfirmedRoot(timedOut: timedOut) {
+        if let rollback = frontendUpdater?.rollBackUnconfirmedRoot(timedOut: timedOut, loadedRelease: pageRelease) {
             NSLog("Frontend %@ failed to start; serving %@", failedVersion ?? "?", rollback.root.path)
             pageCommitted = false
             pageGeneration += 1
@@ -413,6 +417,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         pageGeneration += 1
         frontendStarted = false
         lastFrontendError = nil
+        pageRelease = frontendUpdater?.servingReleaseKey
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {

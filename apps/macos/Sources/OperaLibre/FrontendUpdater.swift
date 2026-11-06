@@ -426,9 +426,20 @@ final class FrontendUpdater {
         installedVersion = version
     }
 
-    /// Called once the app has started on the page: the root that served it works.
-    func confirmServingRoot() {
-        guard isServingManagedRoot else { return }
+    /// The unconfirmed release being served right now, or nil when the served root has started
+    /// before. A page reads this as its navigation starts, before any file is served, and
+    /// passes it back to `confirmServingRoot` or `rollBackUnconfirmedRoot` so that it can only
+    /// settle the release it loaded. An install that lands while a page is still starting
+    /// changes the key, so that page can neither confirm nor reject the new release.
+    var servingReleaseKey: String? {
+        isServingManagedRoot ? unconfirmedKey(in: managedWebRoot) : nil
+    }
+
+    /// Called once the app has started on the page: the root that served it works. Does
+    /// nothing unless `loadedRelease` (the page's `servingReleaseKey`) is still the release
+    /// being served.
+    func confirmServingRoot(loadedRelease: String?) {
+        guard let key = servingReleaseKey, key == loadedRelease else { return }
         try? FileManager.default.removeItem(at: unconfirmedMarker(in: managedWebRoot))
     }
 
@@ -441,8 +452,11 @@ final class FrontendUpdater {
     /// the start timeout runs out (`timedOut`) may only mean the Mac was too busy to render it
     /// in time, so the first time only rolls back and the release is offered again. It is
     /// rejected when it times out again on a later launch, so it is tried at most twice.
-    func rollBackUnconfirmedRoot(timedOut: Bool = false) -> FrontendRollback? {
-        guard isServingManagedRoot, let key = unconfirmedKey(in: managedWebRoot) else { return nil }
+    ///
+    /// Returns nil as well when `loadedRelease` (the failed page's `servingReleaseKey`) is not
+    /// the release being served: that page never loaded it, so its failure says nothing about it.
+    func rollBackUnconfirmedRoot(timedOut: Bool = false, loadedRelease: String?) -> FrontendRollback? {
+        guard let key = servingReleaseKey, key == loadedRelease else { return nil }
 
         let reject = !timedOut
             || (keys(in: timedOutURL).contains(key) && !timedOutThisLaunch.contains(key))
