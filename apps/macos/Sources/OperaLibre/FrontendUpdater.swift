@@ -14,7 +14,8 @@ private let bundleStampName = ".bundle-stamp"
 private let staleStagingAge: TimeInterval = 60 * 60
 /// The web root an install replaced, kept so a release that cannot start can be undone.
 private let previousRootName = "Web.previous"
-/// Holds the version of an installed root that has not finished loading yet.
+/// Marks a web root that has not started yet. It lives inside the root, so it moves with the
+/// tree through every swap and a root can never lose it halfway through one.
 private let unconfirmedName = ".unconfirmed-frontend"
 /// Versions that failed to start here, one per line, so the update check stops offering them.
 private let rejectedName = ".rejected-frontend-versions"
@@ -97,7 +98,9 @@ final class FrontendUpdater {
 
     private var container: URL { managedWebRoot.deletingLastPathComponent() }
     var previousWebRoot: URL { container.appendingPathComponent(previousRootName, isDirectory: true) }
-    private var unconfirmedURL: URL { container.appendingPathComponent(unconfirmedName) }
+    private func unconfirmedMarker(in webRoot: URL) -> URL {
+        webRoot.appendingPathComponent(unconfirmedName)
+    }
     private var rejectedURL: URL { container.appendingPathComponent(rejectedName) }
 
     private func readVersion(at webRoot: URL) -> String {
@@ -128,6 +131,18 @@ final class FrontendUpdater {
         // otherwise never be revisited once resets stop happening, leaking a full copy of
         // the web bundle for good.
         removeStaleStagingDirectories(in: container)
+
+        // A rollback cut short (the app quit, or a rename failed) leaves the rejected root in
+        // place, still unconfirmed. Finish it rather than serving that root again.
+        if fileManager.fileExists(atPath: unconfirmedMarker(in: managedWebRoot).path),
+           isRejected(readVersion(at: managedWebRoot)),
+           replaceFailedRoot() == bundledWebRoot,
+           fileManager.fileExists(atPath: managedWebRoot.path)
+        {
+            // It could not be moved aside this time either.
+            servingRoot = bundledWebRoot
+            return bundledWebRoot
+        }
 
         let managedVersionMarker = managedWebRoot.appendingPathComponent("VERSION.txt")
         let managedExists = fileManager.fileExists(atPath: managedVersionMarker.path)
@@ -171,7 +186,6 @@ final class FrontendUpdater {
                 // The bundle is authoritative now, so an older release must not come back
                 // as a fallback for it.
                 try? fileManager.removeItem(at: previousWebRoot)
-                try? fileManager.removeItem(at: unconfirmedURL)
                 // Recorded only after the swap actually landed, so an interrupted reset is
                 // retried on the next launch rather than being mistaken for up to date.
                 if let fingerprint {
@@ -359,19 +373,18 @@ final class FrontendUpdater {
     /// release that cannot start can be undone by `rollBackUnconfirmedRoot()`.
     func promote(_ stagedWeb: URL, version: String) throws {
         let fileManager = FileManager.default
+        // Written before anything moves: a root that went live without it would count as
+        // proven, and could never be rolled back.
+        try version.write(to: unconfirmedMarker(in: stagedWeb), atomically: true, encoding: .utf8)
         try fileManager.createDirectory(at: container, withIntermediateDirectories: true)
         let hadExisting = fileManager.fileExists(atPath: managedWebRoot.path)
         if hadExisting {
             try? fileManager.removeItem(at: previousWebRoot)
             try fileManager.moveItem(at: managedWebRoot, to: previousWebRoot)
         }
-        // Written before the swap, so a launch that dies right after it still treats the
-        // new root as unproven.
-        try? version.write(to: unconfirmedURL, atomically: true, encoding: .utf8)
         do {
             try fileManager.moveItem(at: stagedWeb, to: managedWebRoot)
         } catch {
-            try? fileManager.removeItem(at: unconfirmedURL)
             if hadExisting {
                 try? fileManager.moveItem(at: previousWebRoot, to: managedWebRoot)
             }
@@ -380,48 +393,58 @@ final class FrontendUpdater {
         installedVersion = version
     }
 
-    /// Called once the page has finished loading: the root that served it can start.
+    /// Called once the app has started on the page: the root that served it works.
     func confirmServingRoot() {
         guard isServingManagedRoot else { return }
-        try? FileManager.default.removeItem(at: unconfirmedURL)
+        try? FileManager.default.removeItem(at: unconfirmedMarker(in: managedWebRoot))
     }
 
-    /// Called when the page failed before it finished loading. If the managed root is an
-    /// install that has never loaded, records its version as rejected and returns the root
-    /// to serve instead: the previous root when one was kept, otherwise the bundle. Returns
-    /// nil for a root that has loaded before, so a passing error does not undo a release
-    /// that was working.
+    /// Called when the app failed to start. If the managed root is an install that has never
+    /// started, records its version as rejected and returns the root to serve instead: the
+    /// previous root when one was kept, otherwise the bundle. Returns nil for a root that has
+    /// started before, so a passing failure does not undo a release that was working.
     func rollBackUnconfirmedRoot() -> URL? {
-        let fileManager = FileManager.default
         guard isServingManagedRoot,
-              let pending = try? String(contentsOf: unconfirmedURL, encoding: .utf8)
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-              pending == readVersion(at: managedWebRoot)
+              FileManager.default.fileExists(atPath: unconfirmedMarker(in: managedWebRoot).path)
         else { return nil }
 
+        let failed = readVersion(at: managedWebRoot)
         var rejected = rejectedVersions()
-        if !rejected.contains(pending) {
-            rejected.append(pending)
+        if !rejected.contains(failed) {
+            rejected.append(failed)
+            // If this write fails, the failed root keeps its marker, so it is rolled back
+            // again the next time it fails to start rather than finished at launch.
             try? (rejected.joined(separator: "\n") + "\n")
                 .write(to: rejectedURL, atomically: true, encoding: .utf8)
         }
-        try? fileManager.removeItem(at: unconfirmedURL)
         installedVersion = nil
+        servingRoot = replaceFailedRoot()
+        return servingRoot
+    }
 
+    /// Swaps the failed managed root out for the kept previous root, or removes it so the
+    /// bundle is copied in again, and returns the root to serve. Each step is a rename, so the
+    /// failed root is either still in place with its marker, to be finished at the next
+    /// launch, or out of the way; a half-deleted tree that looks proven is never left behind.
+    private func replaceFailedRoot() -> URL {
+        let fileManager = FileManager.default
+        let discarded = container
+            .appendingPathComponent("\(stagingPrefix)\(UUID().uuidString)", isDirectory: true)
         let previousIndex = previousWebRoot.appendingPathComponent("index.html")
-        if fileManager.fileExists(atPath: previousIndex.path),
-           (try? fileManager.removeItem(at: managedWebRoot)) != nil,
-           (try? fileManager.moveItem(at: previousWebRoot, to: managedWebRoot)) != nil
-        {
-            // The restored root is only as proven as the next load, so it can fall back
-            // to the bundle in turn.
-            try? readVersion(at: managedWebRoot).write(to: unconfirmedURL, atomically: true, encoding: .utf8)
-            servingRoot = managedWebRoot
+        // The restored root is only as proven as its next start, so it is marked before it
+        // moves and can fall back to the bundle in turn. Without the mark it is not restored.
+        let restorable = fileManager.fileExists(atPath: previousIndex.path)
+            && (try? readVersion(at: previousWebRoot)
+                .write(to: unconfirmedMarker(in: previousWebRoot), atomically: true, encoding: .utf8)) != nil
+        guard (try? fileManager.moveItem(at: managedWebRoot, to: discarded)) != nil else {
+            return bundledWebRoot
+        }
+        // Left behind if this fails; the stale staging sweep collects it.
+        defer { try? fileManager.removeItem(at: discarded) }
+        if restorable, (try? fileManager.moveItem(at: previousWebRoot, to: managedWebRoot)) != nil {
             return managedWebRoot
         }
-        // With the broken tree gone, the next launch copies the bundle in again.
-        try? fileManager.removeItem(at: managedWebRoot)
-        servingRoot = bundledWebRoot
+        // With no managed root, the next launch copies the bundle in again.
         return bundledWebRoot
     }
 

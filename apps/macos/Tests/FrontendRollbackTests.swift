@@ -100,6 +100,75 @@ struct FrontendRollbackTests {
         precondition(!fileManager.fileExists(atPath: updater.previousWebRoot.path))
         precondition(updater.rollBackUnconfirmedRoot() == nil)
 
+        let support = managed.deletingLastPathComponent()
+        func setWritable(_ url: URL, _ writable: Bool) {
+            try! fileManager.setAttributes(
+                [.posixPermissions: writable ? 0o755 : 0o555], ofItemAtPath: url.path)
+        }
+        // What a rollback records before it swaps anything.
+        func reject(_ version: String) {
+            let url = support.appendingPathComponent(".rejected-frontend-versions")
+            let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            try! (existing + version + "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        // An install whose root cannot be marked unproven does not go live.
+        let unmarkable = stage("2.1.0")
+        setWritable(unmarkable, false)
+        do {
+            try updater.promote(unmarkable, version: "2.1.0")
+            preconditionFailure("an install without its mark must fail")
+        } catch {}
+        setWritable(unmarkable, true)
+        precondition(version(at: managed) == "2.0.0" && updater.currentVersion == "2.0.0")
+        precondition(!fileManager.fileExists(atPath: updater.previousWebRoot.path))
+
+        // A kept root that cannot be marked unproven is not restored; the bundle is used.
+        try! updater.promote(stage("2.2.0"), version: "2.2.0")
+        updater.confirmServingRoot()
+        try! updater.promote(stage("2.3.0"), version: "2.3.0")
+        setWritable(updater.previousWebRoot, false)
+        precondition(updater.rollBackUnconfirmedRoot()?.standardizedFileURL == bundled.standardizedFileURL)
+        setWritable(updater.previousWebRoot, true)
+        precondition(!fileManager.fileExists(atPath: managed.path), "the failed root is moved aside")
+        updater = launch()
+        precondition(version(at: managed) == "2.0.0")
+
+        // A rollback cut short after recording the rejection is finished at the next launch,
+        // and the restored root is still unproven.
+        try! updater.promote(stage("2.4.0"), version: "2.4.0")
+        updater.confirmServingRoot()
+        try! updater.promote(stage("2.5.0"), version: "2.5.0")
+        reject("2.5.0")
+        updater = launch()
+        precondition(updater.isServingManagedRoot && version(at: managed) == "2.4.0")
+        precondition(!fileManager.fileExists(atPath: updater.previousWebRoot.path))
+        precondition(updater.rollBackUnconfirmedRoot()?.standardizedFileURL == bundled.standardizedFileURL)
+        updater = launch()
+
+        // When the failed root cannot be moved (or the rejection saved), this session serves
+        // the bundle and the failed root keeps its mark, so its next failure rolls it back.
+        try! updater.promote(stage("2.6.0"), version: "2.6.0")
+        updater.confirmServingRoot()
+        try! updater.promote(stage("2.7.0"), version: "2.7.0")
+        setWritable(support, false)
+        precondition(updater.rollBackUnconfirmedRoot()?.standardizedFileURL == bundled.standardizedFileURL)
+        setWritable(support, true)
+        precondition(!updater.isRejected("2.7.0") && version(at: managed) == "2.7.0")
+        updater = launch()
+        precondition(updater.currentVersion == "2.7.0")
+        precondition(version(at: updater.rollBackUnconfirmedRoot()!) == "2.6.0")
+        precondition(updater.isRejected("2.7.0"))
+
+        // The same failure after the rejection was saved is finished at the next launch.
+        try! updater.promote(stage("2.8.0"), version: "2.8.0")
+        reject("2.8.0")
+        setWritable(support, false)
+        precondition(updater.rollBackUnconfirmedRoot()?.standardizedFileURL == bundled.standardizedFileURL)
+        setWritable(support, true)
+        updater = launch()
+        precondition(updater.isServingManagedRoot && version(at: managed) == "2.6.0")
+
         print("Frontend rollback tests passed")
     }
 }

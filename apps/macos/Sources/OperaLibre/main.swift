@@ -100,19 +100,28 @@ final class BundledWebServer {
     }
 }
 
+/// How long a page that finished loading has to show the app before it counts as failed.
+private let frontendStartTimeout: TimeInterval = 15
+
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     private var window: NSWindow?
     private var webView: WKWebView?
     private var webServer: BundledWebServer?
     private var frontendUpdater: FrontendUpdater?
     private var isCheckingForUpdates = false
-    /// Set once the current page has finished loading. Until then a script
-    /// error means the frontend cannot start; afterwards it is one failed
-    /// action in a running app, and closing the app over it loses the session.
-    private var frontendLoaded = false
-    /// Set after a rollback until the reload commits, so further errors from the page that
-    /// already failed do not roll back the root that replaced it.
-    private var awaitingFallbackLoad = false
+    /// The local server's page, so startup is judged only for the app and not for any other
+    /// page the web view shows.
+    private var frontendURL: URL?
+    /// Set once the app has rendered on the current page. Until then the frontend may still
+    /// fail to start; afterwards an error is one failed action in a running app, and closing
+    /// the app over it loses the session.
+    private var frontendStarted = false
+    /// False from the start of a navigation until it commits, so messages and timers from the
+    /// page being replaced (including one that just failed) are ignored.
+    private var pageCommitted = false
+    private var pageGeneration = 0
+    /// The last uncaught error on this page, shown if the app then fails to start.
+    private var lastFrontendError: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -122,6 +131,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         configuration.websiteDataStore = .default()
         configuration.mediaTypesRequiringUserActionForPlayback = []
         configuration.userContentController.add(self, name: "frontendError")
+        configuration.userContentController.add(self, name: "frontendStarted")
+        configuration.userContentController.add(self, name: "frontendStartFailed")
         configuration.userContentController.addUserScript(WKUserScript(
             // The web app has no other way to tell it's inside this shell rather than a
             // same-origin browser tab; without this it deletes the persisted auth token
@@ -141,6 +152,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
               window.webkit.messageHandlers.frontendError.postMessage(
                 event.reason?.stack || String(event.reason || 'Unhandled promise rejection')
               );
+            });
+            // A module script that cannot load (a missing entry chunk) is an error event on
+            // the script element, which does not bubble, so it is caught while capturing.
+            window.addEventListener('error', event => {
+              const script = event.target;
+              if (script instanceof HTMLScriptElement && script.type === 'module') {
+                window.webkit.messageHandlers.frontendStartFailed.postMessage(
+                  `Could not load ${script.src}`
+                );
+              }
+            }, true);
+            // Every bundle, old or new, renders into #root, so content there means React
+            // mounted. A fatal first render leaves it empty.
+            document.addEventListener('DOMContentLoaded', () => {
+              const root = document.getElementById('root');
+              if (!root) return;
+              const check = () => {
+                if (!root.firstElementChild) return;
+                observer.disconnect();
+                window.webkit.messageHandlers.frontendStarted.postMessage(true);
+              };
+              const observer = new MutationObserver(check);
+              observer.observe(root, { childList: true });
+              check();
             });
             """,
             injectionTime: .atDocumentStart,
@@ -208,6 +243,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         server.start { [weak self, weak webView] result in
             switch result {
             case .success(let url):
+                self?.frontendURL = url
                 webView?.load(URLRequest(url: url))
                 self?.checkForUpdatesOnLaunchIfAppropriate()
             case .failure(let error):
@@ -318,15 +354,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == "frontendError" else { return }
-        let detail = String(describing: message.body)
-        NSLog("Frontend error: %@", detail)
-        guard !frontendLoaded, !awaitingFallbackLoad else { return }
-        // An update that has never loaded is undone instead of closing the app over it.
+        guard pageCommitted, isFrontendPage(message.frameInfo.request.url) else { return }
+        switch message.name {
+        case "frontendError":
+            let detail = String(describing: message.body)
+            NSLog("Frontend error: %@", detail)
+            // Not a startup failure on its own: an app that renders anyway is working, and
+            // one that does not is caught by the start timeout.
+            lastFrontendError = detail
+        case "frontendStarted":
+            guard !frontendStarted else { return }
+            frontendStarted = true
+            frontendUpdater?.confirmServingRoot()
+        case "frontendStartFailed":
+            frontendFailedToStart(String(describing: message.body))
+        default:
+            break
+        }
+    }
+
+    private func isFrontendPage(_ url: URL?) -> Bool {
+        guard let url, let frontendURL else { return false }
+        return url.host == frontendURL.host && url.port == frontendURL.port
+    }
+
+    private func frontendFailedToStart(_ detail: String) {
+        guard pageCommitted, !frontendStarted else { return }
+        NSLog("Frontend failed to start: %@", detail)
+        // An update that has never started is undone instead of closing the app over it.
         let failedVersion = frontendUpdater?.currentVersion
         if let fallback = frontendUpdater?.rollBackUnconfirmedRoot() {
             NSLog("Frontend %@ failed to start; serving %@", failedVersion ?? "?", fallback.path)
-            awaitingFallbackLoad = true
+            pageCommitted = false
+            pageGeneration += 1
             webServer?.setRoot(fallback)
             webView?.reload()
             let restored = frontendUpdater?.currentVersion ?? "the previous version"
@@ -343,16 +403,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        frontendLoaded = false
+        pageCommitted = false
+        pageGeneration += 1
+        frontendStarted = false
+        lastFrontendError = nil
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        awaitingFallbackLoad = false
+        pageCommitted = true
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        frontendLoaded = true
-        frontendUpdater?.confirmServingRoot()
+        guard isFrontendPage(webView.url) else { return }
+        let generation = pageGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + frontendStartTimeout) { [weak self] in
+            guard let self, self.pageGeneration == generation else { return }
+            self.frontendFailedToStart(
+                self.lastFrontendError ?? "The page loaded, but the app did not appear."
+            )
+        }
     }
 
     private func installMainMenu() {
