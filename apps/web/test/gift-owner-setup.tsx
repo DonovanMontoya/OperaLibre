@@ -12,7 +12,7 @@ const api: GiftOwnerSetupApi = {
   async load() { calls.push({ kind: "load" }); return structuredClone(snapshot); },
   async save(input) {
     calls.push({ kind: "save", input });
-    snapshot = { ...snapshot, brokerOrigin: input.brokerOrigin, allowReaders: input.allowReaders, retainSenderState: input.retainSenderState ?? snapshot.retainSenderState, ...(input.connectivity ? { connectivity: { relayAllowed: input.connectivity.relayAllowed, requireRelay: input.connectivity.requireRelay, iceServers: input.connectivity.iceServers.map(server => ({ urls: [...server.urls], usernameConfigured: false, credentialConfigured: false, turnRestSecretConfigured: !!server.turnRestSecret })) } } : {}) };
+    snapshot = { ...snapshot, brokerOrigin: input.brokerOrigin, allowReaders: input.allowReaders, retainSenderState: input.retainSenderState ?? snapshot.retainSenderState, autoRecoverSenders: input.autoRecoverSenders ?? snapshot.autoRecoverSenders, ...(input.connectivity ? { connectivity: { relayAllowed: input.connectivity.relayAllowed, requireRelay: input.connectivity.requireRelay, iceServers: input.connectivity.iceServers.map(server => ({ urls: [...server.urls], usernameConfigured: false, credentialConfigured: false, turnRestSecretConfigured: !!server.turnRestSecret })) } } : {}) };
     return structuredClone(snapshot);
   },
   async remove() { calls.push({ kind: "delete" }); },

@@ -250,6 +250,9 @@ async fn main() -> anyhow::Result<()> {
     // retries it on a backoff, and any other trigger's rescan counts too.
     start_startup_scan(state.clone()).await;
     libation_recovery::recover(state.clone());
+    // Keep gift activation behind the same compile-time production gate as
+    // its routes. Even a manually copied configuration cannot cause egress.
+    share_setup::start_boot_recovery(state.clone(), cfg!(test));
     schedule_automatic_libation_refresh(state.clone());
     schedule_libro_imports(state.clone());
     schedule_reading_session_sweeper(state.clone());

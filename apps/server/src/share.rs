@@ -165,7 +165,16 @@ fn open_share_file(path: &FsPath, root: &FsPath) -> anyhow::Result<std::fs::File
     Ok(file)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+#[path = "share_open_windows.rs"]
+mod windows_open;
+
+#[cfg(windows)]
+fn open_share_file(path: &FsPath, root: &FsPath) -> anyhow::Result<std::fs::File> {
+    windows_open::open(path, root)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn open_share_file(_path: &FsPath, _root: &FsPath) -> anyhow::Result<std::fs::File> {
     anyhow::bail!("selected-asset sharing is unavailable on this platform")
 }
@@ -2258,7 +2267,8 @@ pub(crate) async fn start_invitation_sender_with_recovery(
 #[path = "share_recovery.rs"]
 mod recovery;
 pub(crate) use recovery::{
-    SenderRecoveryReport, abandon_retained_senders, prune_confirmed_recovery, recover_saved_senders,
+    SenderRecoveryReport, abandon_retained_senders, pause_sender_runtime, prune_confirmed_recovery,
+    recover_saved_senders,
 };
 
 /// Transfer the server's bounded book archive after the recipient accepts the

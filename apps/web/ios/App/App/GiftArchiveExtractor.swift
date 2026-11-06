@@ -51,6 +51,7 @@ enum GiftArchiveExtractor {
             try verifyCommitted(destination, expected: expected)
             return destination
         }
+        try validateDirectory(archiveURL, expectedCount: expected.count)
         let staging = root.appendingPathComponent(".gift-staging-" + UUID().uuidString, isDirectory: true)
         try fm.createDirectory(at: staging, withIntermediateDirectories: false)
         do {
@@ -87,6 +88,124 @@ enum GiftArchiveExtractor {
             try? fm.removeItem(at: staging)
             throw error
         }
+    }
+
+    /// APPNOTE 4.3.14-16. Bound unsigned ZIP64 metadata before ZIPFoundation
+    /// builds its central-directory index. Only single-disk gift ZIPs apply.
+    /// This also permits ZIP64 local headers with an ordinary small directory,
+    /// as emitted by the server's large_file(true) stored-entry writer.
+    static func validateDirectory(_ url: URL, expectedCount: Int) throws {
+        guard expectedCount >= 1, expectedCount <= 256 else { throw Failure.invalid }
+        let file = try FileHandle(forReadingFrom: url)
+        defer { try? file.close() }
+        let length = try file.seekToEnd()
+        guard length >= 22, length <= maxBytes else { throw Failure.invalid }
+        func read(_ offset: UInt64, _ count: Int) throws -> Data {
+            guard count >= 0, offset <= length, UInt64(count) <= length - offset else { throw Failure.invalid }
+            if count == 0 { return Data() }
+            try file.seek(toOffset: offset)
+            guard let bytes = try file.read(upToCount: count), bytes.count == count else { throw Failure.invalid }
+            return bytes
+        }
+        func number(_ bytes: Data, _ at: Int, _ width: Int) throws -> UInt64 {
+            guard at >= 0, at <= bytes.count - width else { throw Failure.invalid }
+            var value: UInt64 = 0
+            for index in (0..<width).reversed() { value = (value << 8) | UInt64(bytes[at + index]) }
+            return value
+        }
+        let tailSize = Int(min(length, 22 + 65535))
+        let tail = try read(length - UInt64(tailSize), tailSize)
+        var found: Int?
+        for at in stride(from: tail.count - 22, through: 0, by: -1) {
+            if try number(tail, at, 4) == 0x06054b50 && number(tail, at + 20, 2) == UInt64(tail.count - at - 22) { found = at; break }
+        }
+        guard let end = found, try number(tail, end + 4, 2) == 0,
+              try number(tail, end + 6, 2) == 0 else { throw Failure.invalid }
+        let endOffset = length - UInt64(tailSize) + UInt64(end)
+        var diskCount = try number(tail, end + 8, 2), count = try number(tail, end + 10, 2)
+        var size = try number(tail, end + 12, 4), offset = try number(tail, end + 16, 4)
+        var directoryEnd = endOffset
+        let required = diskCount == 65535 || count == 65535 || size == 0xffffffff || offset == 0xffffffff
+        let locator = endOffset >= 20 ? try read(endOffset - 20, 20) : Data(repeating: 0, count: 20)
+        if try number(locator, 0, 4) == 0x07064b50 {
+            guard try number(locator, 4, 4) == 0, try number(locator, 16, 4) == 1 else { throw Failure.invalid }
+            let zip64Offset = try number(locator, 8, 8)
+            guard endOffset >= 76, zip64Offset <= endOffset - 76 else { throw Failure.invalid }
+            let zip64 = try read(zip64Offset, 56)
+            let recordSize = try number(zip64, 4, 8)
+            // Bound optional ZIP64 extensible metadata before library indexing.
+            guard try number(zip64, 0, 4) == 0x06064b50, recordSize >= 44, recordSize <= 64 * 1024,
+                  recordSize == endOffset - 20 - zip64Offset - 12,
+                  try number(zip64, 14, 2) >= 45, try number(zip64, 16, 4) == 0,
+                  try number(zip64, 20, 4) == 0 else { throw Failure.invalid }
+            let wideDiskCount = try number(zip64, 24, 8), wideCount = try number(zip64, 32, 8)
+            let wideSize = try number(zip64, 40, 8), wideOffset = try number(zip64, 48, 8)
+            guard (diskCount == 65535 || diskCount == wideDiskCount), (count == 65535 || count == wideCount),
+                  (size == 0xffffffff || size == wideSize), (offset == 0xffffffff || offset == wideOffset) else { throw Failure.invalid }
+            diskCount = wideDiskCount; count = wideCount; size = wideSize; offset = wideOffset; directoryEnd = zip64Offset
+        } else if required { throw Failure.invalid }
+        let maximumDirectory: UInt64 = 256 * (46 + 255 + 65535 + 65535)
+        guard count >= 1, count <= 256, count == diskCount, count == UInt64(expectedCount),
+              size >= count * 46, size <= maximumDirectory, offset <= directoryEnd,
+              size == directoryEnd - offset else { throw Failure.invalid }
+
+        func expanded(_ extra: Data, _ size: UInt64, _ compressed: UInt64, _ offset: UInt64, _ disk: UInt64) throws -> [UInt64] {
+            var values = [size, compressed, offset, disk]
+            let wide = [size == 0xffffffff, compressed == 0xffffffff, offset == 0xffffffff, disk == 65535]
+            var at = 0, found = false
+            while at < extra.count {
+                guard extra.count - at >= 4 else { throw Failure.invalid }
+                let kind = try number(extra, at, 2), length = Int(try number(extra, at + 2, 2))
+                at += 4
+                guard length <= extra.count - at else { throw Failure.invalid }
+                if kind == 1 {
+                    guard !found else { throw Failure.invalid }
+                    found = true
+                    var cursor = at
+                    for index in 0..<4 where wide[index] {
+                        let width = index == 3 ? 4 : 8
+                        guard width <= at + length - cursor else { throw Failure.invalid }
+                        values[index] = try number(extra, cursor, width); cursor += width
+                    }
+                    guard cursor == at + length else { throw Failure.invalid }
+                }
+                at += length
+            }
+            guard found || !wide.contains(true) else { throw Failure.invalid }
+            return values
+        }
+        var cursor = offset, total: UInt64 = 0
+        for _ in 0..<Int(count) {
+            guard directoryEnd - cursor >= 46 else { throw Failure.invalid }
+            let header = try read(cursor, 46)
+            let nameLength = Int(try number(header, 28, 2)), extraLength = Int(try number(header, 30, 2))
+            let variable = UInt64(nameLength + extraLength) + (try number(header, 32, 2))
+            guard try number(header, 0, 4) == 0x02014b50, nameLength >= 1, nameLength <= 255,
+                  variable <= directoryEnd - cursor - 46 else { throw Failure.invalid }
+            let name = try read(cursor + 46, nameLength)
+            let extra = try read(cursor + 46 + UInt64(nameLength), extraLength)
+            let wide = try expanded(extra, number(header, 24, 4), number(header, 20, 4), number(header, 42, 4), number(header, 34, 2))
+            let entrySize = wide[0], compressed = wide[1], localOffset = wide[2]
+            guard entrySize <= maxBytes - total, compressed <= maxBytes, wide[3] == 0,
+                  offset >= 30, localOffset <= offset - 30 else { throw Failure.invalid }
+            total += entrySize
+            let local = try read(localOffset, 30)
+            let localName = Int(try number(local, 26, 2)), localExtra = Int(try number(local, 28, 2))
+            let dataOffset = localOffset + 30 + UInt64(localName + localExtra)
+            guard try number(local, 0, 4) == 0x04034b50, localName == nameLength, dataOffset <= offset,
+                  compressed <= offset - dataOffset,
+                  try number(local, 6, 2) == number(header, 8, 2),
+                  try number(local, 8, 2) == number(header, 10, 2),
+                  try read(localOffset + 30, localName) == name else { throw Failure.invalid }
+            let localFields = try read(localOffset + 30 + UInt64(localName), localExtra)
+            let localWide = try expanded(localFields, number(local, 22, 4), number(local, 18, 4), 0, 0)
+            if try number(local, 6, 2) & 8 == 0 {
+                guard localWide[0] == entrySize, localWide[1] == compressed,
+                      try number(local, 14, 4) == number(header, 16, 4) else { throw Failure.invalid }
+            }
+            cursor += 46 + variable
+        }
+        guard cursor == directoryEnd else { throw Failure.invalid }
     }
 
     /// Read only the selected descriptor under the caller's staging guard.

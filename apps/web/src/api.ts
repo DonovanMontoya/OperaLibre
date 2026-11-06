@@ -5,7 +5,7 @@ import { ApiError } from "./apiError";
 import { fetchWithTimeout } from "./fetchWithTimeout";
 import { giftBrokerTransportSecure } from "./giftBrokerOrigin";
 import { parseCreatedGift, parseGiftInventory, type SelectedGiftRequest } from "./giftSelectionModel";
-import { parseGiftOwnerConfiguration, type GiftOwnerConfigurationRequest } from "./giftOwnerSetupModel";
+import { giftOwnerConfigurationPayload, parseGiftOwnerConfiguration, type GiftOwnerConfigurationRequest } from "./giftOwnerSetupModel";
 import type {
   AlignmentStatus,
   AuthStatus,
@@ -661,7 +661,7 @@ export async function getGiftOwnerConfiguration(signal?: AbortSignal) {
 export async function saveGiftOwnerConfiguration(input: GiftOwnerConfigurationRequest, signal?: AbortSignal) {
   requireGiftSetupTransport();
   if (input.ownerControlsBroker !== true) throw new ApiError("Confirm that you control this broker before saving credentials.", 400);
-  const body: GiftOwnerConfigurationRequest = { brokerOrigin: input.brokerOrigin, allowReaders: input.allowReaders, ownerControlsBroker: input.ownerControlsBroker, ...(input.retainSenderState !== undefined ? { retainSenderState: input.retainSenderState } : {}), ...(input.ownerSecret !== undefined ? { ownerSecret: input.ownerSecret } : {}), ...(input.connectivity !== undefined ? { connectivity: { relayAllowed: input.connectivity.relayAllowed, requireRelay: input.connectivity.requireRelay, iceServers: input.connectivity.iceServers.map(server => ({ urls: [...server.urls], ...(server.turnRestSecret !== undefined ? { turnRestSecret: server.turnRestSecret } : {}) })) } } : {}) };
+  const body = giftOwnerConfigurationPayload(input);
   return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config", { method: "PUT", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }));
 }
 

@@ -46,6 +46,9 @@ async fn sender_retention_is_owner_opt_in_and_recovery_is_an_explicit_gated_acti
     let saved = put(&server, &owner, input, true).await;
     assert_eq!(saved.status, StatusCode::OK);
     assert_eq!(saved.json()["retainSenderState"], false);
+    assert_eq!(saved.json()["autoRecoverSenders"], false);
+    let invalid_auto = put(&server, &owner, serde_json::json!({"brokerOrigin":"https://broker.example","autoRecoverSenders":true,"ownerControlsBroker":true}), true).await;
+    assert_eq!(invalid_auto.status, StatusCode::BAD_REQUEST);
     assert_eq!(
         server
             .send_json("POST", recover, &owner, serde_json::json!({}))
@@ -92,8 +95,98 @@ async fn sender_retention_is_owner_opt_in_and_recovery_is_an_explicit_gated_acti
         true,
         "old clients must not clear retention by omission"
     );
-    let disabled = put(&server, &owner, serde_json::json!({"brokerOrigin":"https://broker.example","retainSenderState":false,"ownerControlsBroker":true}), true).await;
+    let automatic = put(&server, &owner, serde_json::json!({"brokerOrigin":"https://broker.example","autoRecoverSenders":true,"ownerControlsBroker":true}), true).await;
+    assert_eq!(automatic.status, StatusCode::OK);
+    assert_eq!(automatic.json()["autoRecoverSenders"], true);
+    let preserve = put(
+        &server,
+        &owner,
+        serde_json::json!({"brokerOrigin":"https://broker.example","ownerControlsBroker":true}),
+        true,
+    )
+    .await;
+    assert_eq!(preserve.json()["autoRecoverSenders"], true);
+    let dependency = put(&server, &owner, serde_json::json!({"brokerOrigin":"https://broker.example","retainSenderState":false,"ownerControlsBroker":true}), true).await;
+    assert_eq!(dependency.status, StatusCode::BAD_REQUEST);
+    let disabled = put(&server, &owner, serde_json::json!({"brokerOrigin":"https://broker.example","retainSenderState":false,"autoRecoverSenders":false,"ownerControlsBroker":true}), true).await;
     assert_eq!(disabled.json()["retainSenderState"], false);
+}
+
+#[tokio::test]
+async fn boot_recovery_never_contacts_a_broker_without_gate_optin_and_ready_library()
+-> anyhow::Result<()> {
+    let server = TestServer::start(0).await;
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = count.clone();
+    let router = Router::new().fallback(move || {
+        let count = counter.clone();
+        async move {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let origin = format!("http://{}", listener.local_addr()?);
+    let provider = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    struct AbortOnDrop(tokio::task::JoinHandle<()>);
+    impl Drop for AbortOnDrop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let _provider = AbortOnDrop(provider);
+    for auto in [false, true] {
+        let payload = serde_json::json!({"version":1,"brokerOrigin":origin,"ownerSecret":"only-local-test-owner-secret-1234567890","allowReaders":false,"retainSenderState":true,"autoRecoverSenders":auto,"connectivity":{}}).to_string();
+        server
+            .state
+            .database
+            .transaction(move |db| write_document(db, "share-owner-configuration-v1", &payload))
+            .await
+            .unwrap();
+        assert!(crate::share_setup::start_boot_recovery(server.state.clone(), false).is_none());
+        if auto {
+            server.state.library.write().await.catalogue_ready = false;
+        }
+        let task = crate::share_setup::start_boot_recovery(server.state.clone(), true).unwrap();
+        if auto {
+            let _ = server.state.shutdown.send(());
+        }
+        tokio::time::timeout(Duration::from_secs(3), task).await??;
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn startup_recovery_shutdown_does_not_wait_for_a_stalled_configuration_database() {
+    let fixture = TestServer::start(0).await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let notified = entered.clone();
+    let (release, held) = std::sync::mpsc::channel();
+    let database = fixture.state.database.clone();
+    let blocker = tokio::spawn(async move {
+        database
+            .call(move |_| {
+                notified.notify_one();
+                held.recv().unwrap();
+                Ok(())
+            })
+            .await
+    });
+    entered.notified().await;
+    let task = crate::share_setup::start_boot_recovery(fixture.state.clone(), true).unwrap();
+    let _ = fixture.state.shutdown.send(());
+    let result = tokio::time::timeout(Duration::from_secs(3), task).await;
+    // Always release the fixture's worker, even when the assertion fails.
+    release.send(()).unwrap();
+    blocker.await.unwrap().unwrap();
+    assert!(
+        result.is_ok(),
+        "startup shutdown waited for the unrelated database worker"
+    );
+    result.unwrap().unwrap();
 }
 
 #[tokio::test]

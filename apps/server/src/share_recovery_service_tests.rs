@@ -9,6 +9,9 @@ use tokio::io::AsyncBufReadExt;
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
 use webrtc::peer_connection::{PeerConnection, PeerConnectionEventHandler, RTCIceGatheringState};
 
+#[path = "share_process_restart_tests.rs"]
+mod process_restart_tests;
+
 const FIXTURE_OWNER: &str = "fixture-owner-not-a-real-credential-123";
 
 struct ProbeServer(tokio::task::JoinHandle<()>);
@@ -244,6 +247,19 @@ async fn receive_zip(
     pins: &Pins,
     generation: u64,
 ) -> anyhow::Result<(Vec<u8>, PeerOwner)> {
+    receive_zip_from(broker, record, pins, generation, Vec::new(), false).await
+}
+
+async fn receive_zip_from(
+    broker: &crate::share_broker::BrokerClient,
+    record: &PersistedSender,
+    pins: &Pins,
+    generation: u64,
+    prefix: Vec<u8>,
+    interrupt_after_chunk: bool,
+) -> anyhow::Result<(Vec<u8>, PeerOwner)> {
+    let offset = prefix.len() as u64;
+    let prefix_sha = sha(&prefix);
     let challenge = URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>());
     signal(
         broker,
@@ -252,7 +268,8 @@ async fn receive_zip(
         generation,
         1,
         "ready",
-        serde_json::json!({"challenge":challenge}),
+        if offset == 0 { serde_json::json!({"challenge":challenge}) }
+        else { serde_json::json!({"challenge":challenge,"resume":{"offset":offset,"prefixSha256":prefix_sha}}) },
     )
     .await?;
     let envelope = offer(broker, record, pins, generation).await?;
@@ -271,8 +288,8 @@ async fn receive_zip(
     assert_eq!(offer["archiveSize"], record.archive_size);
     assert_eq!(offer["archiveSha256"], record.archive_sha256);
     assert_eq!(offer["expiresAt"], record.expires_at);
-    assert_eq!(offer["offset"], 0);
-    assert_eq!(offer["prefixSha256"], sha(&[]));
+    assert_eq!(offer["offset"], offset);
+    assert_eq!(offer["prefixSha256"], prefix_sha);
     let description = offer["offer"].as_str().unwrap();
     let (gathered, mut gather) = tokio::sync::mpsc::channel(1);
     let (frames, mut received) = tokio::sync::mpsc::channel(16);
@@ -301,14 +318,15 @@ async fn receive_zip(
             .ok_or_else(|| anyhow::anyhow!("missing local answer"))?,
     )?;
     let transcript = format!(
-        "operalibre-peer-proof-v1\n{}\n{}\n{}\n{}\n{}\n{}\n0\n{}\n{}\n{}\n{}",
+        "operalibre-peer-proof-v1\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
         record.room,
         pins.gift_id,
         record.expires_at,
         generation,
         record.archive_size,
         record.archive_sha256,
-        sha(&[]),
+        offset,
+        prefix_sha,
         challenge,
         sha(description.as_bytes()),
         sha(answer.as_bytes())
@@ -336,12 +354,10 @@ async fn receive_zip(
         .collect::<Vec<_>>()
         .try_into()
         .unwrap();
-    let mut receiver = crate::share_transfer::Receiver::resume(
-        tempfile::tempfile()?,
-        0,
-        record.archive_size,
-        digest,
-    )?;
+    let mut staging = tempfile::tempfile()?;
+    std::io::Write::write_all(&mut staging, &prefix)?;
+    let mut receiver =
+        crate::share_transfer::Receiver::resume(staging, offset, record.archive_size, digest)?;
     loop {
         let (channel, text, frame) = received
             .recv()
@@ -358,6 +374,13 @@ async fn receive_zip(
                         .to_string(),
                 )
                 .await?;
+            if interrupt_after_chunk {
+                let mut partial = receiver.interrupt();
+                std::io::Seek::rewind(&mut partial)?;
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut partial, &mut bytes)?;
+                return Ok((bytes, peer));
+            }
             continue;
         }
         assert_eq!(offset, record.archive_size);

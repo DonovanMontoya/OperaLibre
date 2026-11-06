@@ -16,6 +16,8 @@ struct StoredConfiguration {
     #[serde(default)]
     retain_sender_state: bool,
     #[serde(default)]
+    auto_recover_senders: bool,
+    #[serde(default)]
     connectivity: crate::share_connectivity::Connectivity,
 }
 
@@ -28,6 +30,7 @@ pub(crate) struct ConfigureGiftSharing {
     #[serde(default)]
     allow_readers: bool,
     retain_sender_state: Option<bool>,
+    auto_recover_senders: Option<bool>,
     owner_controls_broker: bool,
     /// Omit to retain owner TURN secrets; GET returns only configured markers.
     connectivity: Option<crate::share_connectivity::Connectivity>,
@@ -41,6 +44,7 @@ pub(crate) struct GiftSharingConfiguration {
     owner_secret_configured: bool,
     allow_readers: bool,
     retain_sender_state: bool,
+    auto_recover_senders: bool,
     production_enabled: bool,
     connectivity: serde_json::Value,
 }
@@ -56,6 +60,7 @@ fn snapshot(config: Option<&StoredConfiguration>) -> Result<GiftSharingConfigura
         owner_secret_configured: config.is_some(),
         allow_readers: config.is_some_and(|config| config.allow_readers),
         retain_sender_state: config.is_some_and(|config| config.retain_sender_state),
+        auto_recover_senders: config.is_some_and(|config| config.auto_recover_senders),
         production_enabled: false,
         connectivity: config
             .map(|config| &config.connectivity)
@@ -78,7 +83,8 @@ async fn load(state: &AppState) -> Result<Option<StoredConfiguration>, ApiError>
     if config.version != 1
         || !valid_secret(&config.owner_secret)
         || config.connectivity.validate().is_err()
-        || crate::share_broker::BrokerClient::new(&config.broker_origin).is_err()
+        || configured_broker(&config.broker_origin).is_err()
+        || (config.auto_recover_senders && !config.retain_sender_state)
     {
         return Err(ApiError::internal("Gift configuration is invalid."));
     }
@@ -137,6 +143,16 @@ pub(crate) async fn put_configuration(
             .as_ref()
             .is_some_and(|config| config.retain_sender_state)
     });
+    let auto_recover_senders = input.auto_recover_senders.unwrap_or_else(|| {
+        previous
+            .as_ref()
+            .is_some_and(|config| config.auto_recover_senders)
+    });
+    if auto_recover_senders && !retain_sender_state {
+        return Err(ApiError::bad_request(
+            "Automatic sender recovery requires private sender retention. Disable automatic recovery before disabling retention.",
+        ));
+    }
     if input.owner_secret.is_none()
         && previous
             .as_ref()
@@ -178,6 +194,7 @@ pub(crate) async fn put_configuration(
         owner_secret,
         allow_readers: input.allow_readers,
         retain_sender_state,
+        auto_recover_senders,
         connectivity,
     };
     let response = snapshot(Some(&config))?;
@@ -239,7 +256,7 @@ pub(crate) async fn recover_configured_senders(
             "Private sender retention is not enabled.",
         ));
     }
-    let broker = crate::share_broker::BrokerClient::new(&config.broker_origin)
+    let broker = configured_broker(&config.broker_origin)
         .map_err(|_| ApiError::service_unavailable("Gift broker configuration is invalid."))?;
     Ok(Json(
         crate::share::recover_saved_senders(
@@ -252,6 +269,29 @@ pub(crate) async fn recover_configured_senders(
         .await?,
     ))
 }
+
+fn configured_broker(origin: &str) -> anyhow::Result<crate::share_broker::BrokerClient> {
+    // A local HTTP adapter is available only in the test executable. Released
+    // server binaries still require the exact owner-configured HTTPS origin.
+    #[cfg(test)]
+    if let Ok(url) = reqwest::Url::parse(origin)
+        && url.scheme() == "http"
+        && url.host_str() == Some("127.0.0.1")
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.origin().ascii_serialization() == origin
+    {
+        return crate::share_broker::BrokerClient::local(origin);
+    }
+    crate::share_broker::BrokerClient::new(origin)
+}
+
+#[path = "share_boot.rs"]
+mod boot;
+pub(crate) use boot::start_boot_recovery;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -11,6 +11,7 @@ export function GiftOwnerConfiguration({ secure, api = setupApi }: { secure: boo
   const [broker, setBroker] = useState("");
   const [allowReaders, setAllowReaders] = useState(false);
   const [retainSenderState, setRetainSenderState] = useState(false);
+  const [autoRecoverSenders, setAutoRecoverSenders] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [deleteConfirmed, setDeleteConfirmed] = useState(false);
   const [abandonConfirmed, setAbandonConfirmed] = useState(false);
@@ -32,6 +33,7 @@ export function GiftOwnerConfiguration({ secure, api = setupApi }: { secure: boo
     const redacted = parseGiftOwnerConfiguration(value);
     setConfiguration(redacted); setBroker(redacted.brokerOrigin ?? ""); setAllowReaders(redacted.allowReaders); setConfirmed(false); setDeleteConfirmed(false);
     setRetainSenderState(redacted.retainSenderState === true);
+    setAutoRecoverSenders(redacted.autoRecoverSenders === true);
     setAbandonConfirmed(false);
     setChangeIce(false); setStunUrl(""); setTurnUrl(""); setRelayAllowed(false); setRequireRelay(false);
     if (turnSecret.current) turnSecret.current.value = "";
@@ -63,7 +65,7 @@ export function GiftOwnerConfiguration({ secure, api = setupApi }: { secure: boo
     try {
       const input = giftOwnerConfigurationRequest({ brokerInput: broker, ownerSecret: entered, allowReaders, ownerConfirmed: confirmed, existing: configuration });
       const connectivity = giftConnectivityEdit({ changeIce, stunUrl, turnUrl, turnRestSecret: enteredTurnSecret, relayAllowed, requireRelay });
-      void run("save", { ...input, retainSenderState, ...(connectivity !== undefined ? { connectivity } : {}) });
+      void run("save", { ...input, retainSenderState, autoRecoverSenders, ...(connectivity !== undefined ? { connectivity } : {}) });
     }
     catch (failure) { setMessage(failure instanceof Error ? failure.message : "Check the gift configuration."); }
   }
@@ -84,8 +86,9 @@ export function GiftOwnerConfiguration({ secure, api = setupApi }: { secure: boo
         <label>New broker owner secret<input ref={secret} type="password" autoComplete="new-password" maxLength={1024} /></label>
         <p>32–1024 printable ASCII characters without spaces. Leave blank only to retain the current secret for this same broker. No masked placeholder is sent. This field is cleared on submit, including invalid submissions.</p>
         <label className="gift-owner-configuration__check"><input type="checkbox" checked={allowReaders} onChange={event => setAllowReaders(event.currentTarget.checked)} /><span>Experimental policy: allow authorized non-owner readers to create gifts (off by default; does not enable production sharing)</span></label>
-        <label className="gift-owner-configuration__check"><input type="checkbox" checked={retainSenderState} onChange={event => setRetainSenderState(event.currentTarget.checked)} /><span>Retain private selected archives and signing/decryption keys for sender restart recovery (off by default)</span></label>
-        <p>Retained gift files and keys are sensitive data in the server data directory. Protect this directory and any system backups; restoring only the server database does not restore these archives. Recovery rechecks invitation expiry, revocation, current book access and broker membership; it cannot extend an invitation. It may contact the configured broker after an explicit recovery action. Storage and provider charges remain your responsibility.</p>
+        <label className="gift-owner-configuration__check"><input type="checkbox" checked={retainSenderState} onChange={event => { setRetainSenderState(event.currentTarget.checked); if (!event.currentTarget.checked) setAutoRecoverSenders(false); }} /><span>Retain private selected archives and signing/decryption keys for sender restart recovery (off by default)</span></label>
+        <label className="gift-owner-configuration__check"><input type="checkbox" disabled={!retainSenderState} checked={autoRecoverSenders} onChange={event => setAutoRecoverSenders(event.currentTarget.checked)} /><span>Automatically recover retained gift senders after server restart (contacts your broker; off by default)</span></label>
+        <p>Retained gift files and keys are sensitive data in the server data directory. Protect this directory and any system backups; restoring only the server database does not restore these archives. Recovery rechecks invitation expiry, revocation, current book access and broker membership; it cannot extend an invitation. Only the separate automatic-recovery opt-in authorizes startup connections to your configured broker. Production sharing and automatic recovery remain disabled in this build. Storage and provider charges remain your responsibility.</p>
         <label className="gift-owner-configuration__check"><input type="checkbox" checked={changeIce} onChange={event => {
           if (turnSecret.current) turnSecret.current.value = "";
           setChangeIce(event.currentTarget.checked);

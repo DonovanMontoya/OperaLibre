@@ -1,11 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { giftConnectivityEdit, giftOwnerConfigurationRequest, parseGiftOwnerConfiguration, type GiftOwnerConfiguration } from "../src/giftOwnerSetupModel.ts";
+import { giftConnectivityEdit, giftOwnerConfigurationPayload, giftOwnerConfigurationRequest, parseGiftOwnerConfiguration, type GiftOwnerConfiguration } from "../src/giftOwnerSetupModel.ts";
 
 function configured(): GiftOwnerConfiguration {
   return { configured: true, brokerOrigin: "https://broker.example", ownerSecretConfigured: true, allowReaders: false, productionEnabled: false, connectivity: { iceServers: [{ urls: ["turn:relay.example:3478?transport=udp"], usernameConfigured: false, credentialConfigured: false, turnRestSecretConfigured: true }], relayAllowed: true, requireRelay: false } };
 }
+
+test("automatic startup recovery is separate, redacted and requires retention", () => {
+  assert.equal(parseGiftOwnerConfiguration(configured()).autoRecoverSenders, undefined);
+  assert.throws(() => parseGiftOwnerConfiguration({ ...configured(), autoRecoverSenders: true }));
+  assert.throws(() => parseGiftOwnerConfiguration({ ...configured(), retainSenderState: true, autoRecoverSenders: "true" }));
+  const parsed = parseGiftOwnerConfiguration({ ...configured(), retainSenderState: true, autoRecoverSenders: true, ownerSecret: "NEVER_RETAIN" });
+  assert.equal(parsed.autoRecoverSenders, true);
+  assert.doesNotMatch(JSON.stringify(parsed), /NEVER_RETAIN/);
+});
+
+test("the actual save payload preserves automatic recovery true, false and omission", () => {
+  const base = { brokerOrigin: "https://broker.example", allowReaders: false, ownerControlsBroker: true as const };
+  assert.equal("autoRecoverSenders" in giftOwnerConfigurationPayload(base), false);
+  for (const autoRecoverSenders of [true, false]) {
+    const payload = giftOwnerConfigurationPayload({ ...base, retainSenderState: true, autoRecoverSenders });
+    assert.equal(JSON.parse(JSON.stringify(payload)).autoRecoverSenders, autoRecoverSenders);
+  }
+  assert.equal("unrelatedCredential" in giftOwnerConfigurationPayload({ ...base, unrelatedCredential: "private" } as typeof base), false);
+});
 
 const connectivityDraft = { changeIce: true, stunUrl: "stun:stun.example:3478", turnUrl: "turn:relay.example:3478?transport=udp", turnRestSecret: "s".repeat(32), relayAllowed: true, requireRelay: false };
 

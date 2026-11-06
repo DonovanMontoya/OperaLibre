@@ -174,9 +174,19 @@ SHA-256 and broker membership before starting a peer. It retains/retries the
 same pending successor across ambiguous or cancelled rotation responses; a
 current claim being valid is not proof that an older rotation cannot still
 commit. Recovery keeps the original gift URL and pinned identity, clears stale
-signaling in a new generation, and never extends expiry. No automatic server
-boot recovery is registered. Tests cover persisted reopen and simulated runtime
-restart, not killing and relaunching a complete server binary.
+signaling in a new generation, and never extends expiry. A separate owner opt-in
+authorizes automatic startup recovery; retention alone does not. The startup
+supervisor waits for a ready library, rechecks saved authorization, retries at
+30-second intervals for at most 15 minutes, and pauses peers on shutdown.
+It also retries already-durable revocations without abandoning valid dormant
+gifts. Its production gate remains off, so saved configuration cannot activate
+startup egress in released binaries.
+
+An opt-in process test kills and relaunches the gated test server executable
+against the same database and selected archive. It uses the real startup
+configuration/state/router/scanner, actual Worker code over loopback and real
+Rust peers, and verifies original-link identity, prefix-bound resume and durable
+revocation. This is not a released-binary or physical-device test.
 
 Cleanup retries preserve valid dormant recoverable gifts. A separate explicitly
 confirmed owner abandonment action revokes every retained gift for that broker,
@@ -228,8 +238,17 @@ proof. A restarted standalone shelf reloads the exact local map without an API
 server or map-generation capability. Follow mode requires a loaded verified
 sentence map; missing/tampered files fall back without advertising sentence
 follow. Closing or switching the reader cancels its local map read. Platform
-extraction, audio playback, large ZIP64 and background behavior still require
+extraction, audio playback, large-file ZIP64 and background behavior still require
 real-device verification; the overall import and entry gates remain off.
+Native parsers now validate bounded ZIP64 directory/local-header structure and
+unsigned arithmetic. Host tests cover 42 small-payload valid/malformed boundary
+cases. The separate opt-in `GiftLargeZip64InteropTest` uses a sparse ZIP64 input
+with 4,294,967,297 genuine zero bytes and writes/hashes the full extracted output,
+then checks duplicate verification and same-size corruption rejection with a
+128-MiB JVM heap. This passed locally, but is not Android/iOS device or playable
+audio evidence. The test requires an explicitly supplied empty task-owned
+workspace directory and output capacity plus a 512-MiB reserve; it has no `/tmp`
+fallback. CI compiles it but does not run the large disk-write test by default.
 Only share material you have permission to distribute; nothing removes DRM.
 Retained invitations and heavy preparation are bounded, including cancellation
 of the HTTP waiter. A private management token is returned only to the signed-in
@@ -307,7 +326,7 @@ if Playwright's managed browser is unavailable.
 The server CI job exports real Rust HTTP/archive/crypto fixtures, feeds them to
 the TypeScript import/reader contracts and the Android host-JVM extractor, and
 explicitly runs `retained_invitation_recovers_with_actual_worker_and_real_recipient_peer`.
-That ignored-by-default Rust test uses the actual Worker entrypoint through
+It also runs `selected_sender_survives_full_process_restart`. These ignored-by-default tests use the actual Worker entrypoint through
 `test/node-fixture-server.mjs`, simulated transactional Durable Object storage,
 and real Rust sender/recipient peers. Compile the Worker first and set
 `OPERALIBRE_WORKER_FIXTURE_SCRIPT` to that script to run it locally. This is not

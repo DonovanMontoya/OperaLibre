@@ -3,6 +3,18 @@
 //! invitation, account, current library book, reserved room and broker claim.
 use super::*;
 
+/// Stop this installation's peers without revoking retained invitations. This
+/// is a graceful runtime pause; the next opted-in boot rechecks all authority.
+pub(crate) async fn pause_sender_runtime(state: &AppState) {
+    let prefix = format!("{}:", state.server_id);
+    let mut gate = INVITATION_GATE.lock().await;
+    for (_, senders) in gate.iter_mut().filter(|(key, _)| key.starts_with(&prefix)) {
+        for sender in senders.iter() {
+            let _ = sender.cancel.send(true);
+        }
+    }
+}
+
 pub(super) fn recovery_store(
     state: &AppState,
 ) -> Result<crate::share_sender_recovery::RecoveryStore, ApiError> {

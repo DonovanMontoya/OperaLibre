@@ -105,6 +105,7 @@ jobs:
           npm ci
           npx tsc -p share-broker/tsconfig.test.json
           cargo test --locked --manifest-path apps/server/Cargo.toml retained_invitation_recovers_with_actual_worker_and_real_recipient_peer -- --ignored --nocapture
+          cargo test --locked --manifest-path apps/server/Cargo.toml selected_sender_survives_full_process_restart -- --ignored --nocapture
           node --experimental-strip-types --test apps/web/test/giftInventoryHttpContract.test.ts apps/web/test/giftMetadata.test.ts apps/web/test/giftLocalSync.test.ts apps/web/test/giftSignedPreview.test.ts apps/web/test/giftPeerAuthentication.test.ts
 
       - name: Test actual selected server ZIPs with native host extractor
@@ -155,6 +156,9 @@ jobs:
 
       - name: Test Windows Libation job cleanup
         run: cargo test --locked libation_download::windows_tests -- --nocapture
+
+      - name: Test Windows gift selected-file denial boundary
+        run: cargo test --locked share::windows_open::tests -- --nocapture
 
   launcher:
     needs: changes
@@ -355,6 +359,7 @@ jobs:
           javac -d "$gift_test_dir" \
             apps/web/android/app/src/main/java/com/operalibre/mobile/GiftArchiveExtractor.java \
             apps/web/android/tests/GiftArchiveExtractorTest.java \
+            apps/web/android/tests/GiftLargeZip64InteropTest.java \
             apps/web/android/app/src/main/java/com/operalibre/mobile/GiftDocumentLifecycle.java \
             apps/web/android/tests/GiftDocumentLifecycleTest.java \
             apps/web/android/tests/GiftAndroidPublicApiTest.java

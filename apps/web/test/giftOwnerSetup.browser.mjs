@@ -12,14 +12,20 @@ test("private sender retention is opt-in and recovery contacts the adapter only 
     await page.goto(`${origin}/test/gift-owner-setup.html?secure=1`);
     await page.getByRole("button", { name: "Load saved setup" }).click();
     const retain = page.getByRole("checkbox", { name: /Retain private selected archives/ });
+    const automatic = page.getByRole("checkbox", { name: /Automatically recover retained gift senders/ });
     assert.equal(await retain.isChecked(), false);
+    assert.equal(await automatic.isChecked(), false);
+    assert.equal(await automatic.isDisabled(), true);
     const recover = page.getByRole("button", { name: "Recover retained gift senders" });
     assert.equal(await recover.isDisabled(), true);
     await retain.check();
+    assert.equal(await automatic.isEnabled(), true);
+    await automatic.check();
     await page.getByRole("checkbox", { name: /I control this broker/ }).check();
     await page.getByRole("button", { name: "Save private server configuration" }).click();
     await page.getByRole("status").filter({ hasText: "Configuration saved privately" }).waitFor();
     assert.deepEqual((await page.evaluate(() => window.ownerSetupCalls)).map(call => call.kind), ["load", "save"]);
+    assert.equal((await page.evaluate(() => window.ownerSetupCalls)).find(call => call.kind === "save").input.autoRecoverSenders, true);
     assert.equal(await recover.isEnabled(), true);
     await recover.click();
     await page.getByRole("status").filter({ hasText: "1 started; 0 already active; 0 pending" }).waitFor();
@@ -54,7 +60,7 @@ test("owner setup loads only explicitly, omits retained secrets/connectivity, an
     await confirm.check();
     await page.getByRole("button", { name: "Save private server configuration" }).click();
     await page.getByRole("status").filter({ hasText: "Configuration saved privately" }).waitFor();
-    assert.deepEqual((await page.evaluate(() => window.ownerSetupCalls)).find(call => call.kind === "save").input, { brokerOrigin: "https://broker.example", allowReaders: false, retainSenderState: false, ownerControlsBroker: true });
+    assert.deepEqual((await page.evaluate(() => window.ownerSetupCalls)).find(call => call.kind === "save").input, { brokerOrigin: "https://broker.example", allowReaders: false, retainSenderState: false, autoRecoverSenders: false, ownerControlsBroker: true });
     await page.getByLabel("New broker owner secret").fill("bad"); await confirm.check();
     await page.getByRole("button", { name: "Save private server configuration" }).click();
     await page.getByRole("status").filter({ hasText: "32–1024" }).waitFor();
@@ -163,7 +169,7 @@ test("advanced connectivity is opt-in, clears private inputs, and posts only exp
     await page.getByRole("button", { name: "Save private server configuration" }).click();
     await page.getByRole("status").filter({ hasText: "Configuration saved privately" }).waitFor();
     const save = (await page.evaluate(() => window.ownerSetupCalls)).find(call => call.kind === "save");
-    assert.deepEqual(save.input, { brokerOrigin: "https://broker.example", allowReaders: false, retainSenderState: false, ownerControlsBroker: true, connectivity: { iceServers: [{ urls: ["stun:stun.example:3478"] }, { urls: ["turn:relay.example:3478?transport=udp"], turnRestSecret: "PRIVATE_COTURN_SECRET_FOR_TEST_1234" }], relayAllowed: true, requireRelay: true } });
+    assert.deepEqual(save.input, { brokerOrigin: "https://broker.example", allowReaders: false, retainSenderState: false, autoRecoverSenders: false, ownerControlsBroker: true, connectivity: { iceServers: [{ urls: ["stun:stun.example:3478"] }, { urls: ["turn:relay.example:3478?transport=udp"], turnRestSecret: "PRIVATE_COTURN_SECRET_FOR_TEST_1234" }], relayAllowed: true, requireRelay: true } });
     assert.equal(await change.isChecked(), false);
     assert.equal(await password.count(), 0);
     assert.equal((await page.locator("body").innerText()).includes("PRIVATE_COTURN_SECRET_FOR_TEST_1234"), false);

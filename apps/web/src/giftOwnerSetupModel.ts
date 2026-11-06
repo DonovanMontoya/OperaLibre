@@ -1,8 +1,18 @@
 import { giftBrokerOrigin } from "./giftBrokerOrigin.ts";
 
 export type GiftConnectivity = { iceServers: { urls: string[]; turnRestSecret?: string }[]; relayAllowed: boolean; requireRelay: boolean };
-export type GiftOwnerConfiguration = { configured: boolean; brokerOrigin: string | null; ownerSecretConfigured: boolean; allowReaders: boolean; retainSenderState?: boolean; productionEnabled: false; connectivity: { iceServers: { urls: string[]; usernameConfigured: boolean; credentialConfigured: boolean; turnRestSecretConfigured: boolean }[]; relayAllowed: boolean; requireRelay: boolean } };
-export type GiftOwnerConfigurationRequest = { brokerOrigin: string; ownerSecret?: string; allowReaders: boolean; retainSenderState?: boolean; ownerControlsBroker: true; connectivity?: GiftConnectivity };
+export type GiftOwnerConfiguration = { configured: boolean; brokerOrigin: string | null; ownerSecretConfigured: boolean; allowReaders: boolean; retainSenderState?: boolean; autoRecoverSenders?: boolean; productionEnabled: false; connectivity: { iceServers: { urls: string[]; usernameConfigured: boolean; credentialConfigured: boolean; turnRestSecretConfigured: boolean }[]; relayAllowed: boolean; requireRelay: boolean } };
+export type GiftOwnerConfigurationRequest = { brokerOrigin: string; ownerSecret?: string; allowReaders: boolean; retainSenderState?: boolean; autoRecoverSenders?: boolean; ownerControlsBroker: true; connectivity?: GiftConnectivity };
+
+/** Whitelist the actual server request, preserving explicit false separately
+ * from omission (which asks the server to retain its existing setting). */
+export function giftOwnerConfigurationPayload(input: GiftOwnerConfigurationRequest): GiftOwnerConfigurationRequest {
+  return { brokerOrigin: input.brokerOrigin, allowReaders: input.allowReaders, ownerControlsBroker: input.ownerControlsBroker,
+    ...(input.retainSenderState !== undefined ? { retainSenderState: input.retainSenderState } : {}),
+    ...(input.autoRecoverSenders !== undefined ? { autoRecoverSenders: input.autoRecoverSenders } : {}),
+    ...(input.ownerSecret !== undefined ? { ownerSecret: input.ownerSecret } : {}),
+    ...(input.connectivity !== undefined ? { connectivity: { relayAllowed: input.connectivity.relayAllowed, requireRelay: input.connectivity.requireRelay, iceServers: input.connectivity.iceServers.map(server => ({ urls: [...server.urls], ...(server.turnRestSecret !== undefined ? { turnRestSecret: server.turnRestSecret } : {}) })) } } : {}) };
+}
 
 function udpIceUrl(value: string, kind: "stun" | "turn"): string {
   const fail = () => new Error(`Enter a ${kind === "turn" ? "UDP coturn TURN" : "UDP STUN"} URL with a host and explicit port; TCP/TLS, credentials and extra URL components are unsupported.`);
@@ -44,7 +54,8 @@ export function parseGiftOwnerConfiguration(value: unknown): GiftOwnerConfigurat
     return { urls: [...server.urls], usernameConfigured: server.usernameConfigured, credentialConfigured: server.credentialConfigured, turnRestSecretConfigured: server.turnRestSecretConfigured };
   });
   if (v.retainSenderState !== undefined && typeof v.retainSenderState !== "boolean") throw new Error("Gift setup could not be read.");
-  return { configured: v.configured, brokerOrigin: v.brokerOrigin, ownerSecretConfigured: v.ownerSecretConfigured, allowReaders: v.allowReaders, ...(v.retainSenderState !== undefined ? { retainSenderState: v.retainSenderState } : {}), productionEnabled: false, connectivity: { iceServers, relayAllowed: v.connectivity.relayAllowed, requireRelay: v.connectivity.requireRelay } };
+  if ((v.autoRecoverSenders !== undefined && typeof v.autoRecoverSenders !== "boolean") || (v.autoRecoverSenders && !v.retainSenderState)) throw new Error("Gift setup could not be read.");
+  return { configured: v.configured, brokerOrigin: v.brokerOrigin, ownerSecretConfigured: v.ownerSecretConfigured, allowReaders: v.allowReaders, ...(v.retainSenderState !== undefined ? { retainSenderState: v.retainSenderState } : {}), ...(v.autoRecoverSenders !== undefined ? { autoRecoverSenders: v.autoRecoverSenders } : {}), productionEnabled: false, connectivity: { iceServers, relayAllowed: v.connectivity.relayAllowed, requireRelay: v.connectivity.requireRelay } };
 }
 
 export function giftOwnerConfigurationRequest(input: { brokerInput: string; ownerSecret: string; allowReaders: boolean; ownerConfirmed: boolean; existing: GiftOwnerConfiguration }): GiftOwnerConfigurationRequest {
