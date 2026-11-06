@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Settings → Display on iPhone and iPad offers five dark themes: Warm, Graphite, Midnight, Reading Room, and True Black. ([#412](https://github.com/DonovanMontoya/OperaLibre/pull/412))
+- Settings → Display on iPhone and iPad also offers five light themes: Parchment, Linen, Sage, Harbor, and Pure White. ([#416](https://github.com/DonovanMontoya/OperaLibre/pull/416))
+- Refreshing Get books asks Audible for new purchases instead of only rereading the last Libation scan. ([#417](https://github.com/DonovanMontoya/OperaLibre/pull/417))
 - Stand a folded iPhone Duo on its edges and the playing book fills the cover screen with large playback controls. The screen stays awake while it plays. ([#383](https://github.com/DonovanMontoya/OperaLibre/pull/383))
 - Private support questions can go to operalibre@agentmail.to. Public bugs stay on GitHub. ([#381](https://github.com/DonovanMontoya/OperaLibre/pull/381))
 - While a book plays, the Shelf lists it first under Now listening, with a pause button, and keeps the rest under Up next. ([#375](https://github.com/DonovanMontoya/OperaLibre/pull/375))
@@ -81,6 +84,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- App fonts (Fraunces, Instrument Serif, and JetBrains Mono) load from the app instead of Google Fonts. ([#405](https://github.com/DonovanMontoya/OperaLibre/pull/405))
+- A rebuilt follow-along map is picked up right away instead of keeping an older cached copy. ([#400](https://github.com/DonovanMontoya/OperaLibre/pull/400))
 - Settings, sign-in, and the account menu link to the privacy policy, and the policy describes what an assistant can be allowed to read. ([#386](https://github.com/DonovanMontoya/OperaLibre/pull/386))
 - The file picker includes the privacy manifest Apple requires. ([#385](https://github.com/DonovanMontoya/OperaLibre/pull/385))
 - The iPhone and iPad app requires a 64-bit device and ships Apple's privacy manifest. ([#384](https://github.com/DonovanMontoya/OperaLibre/pull/384))
@@ -130,6 +135,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The library reconnects on its own when the first request at launch fails. ([#421](https://github.com/DonovanMontoya/OperaLibre/pull/421))
+- Playback continues when the iOS app's page reloads instead of loading the book again. ([#422](https://github.com/DonovanMontoya/OperaLibre/pull/422))
+- iOS keeps saved downloads and CarPlay sessions it cannot read, instead of dropping them on save. ([#425](https://github.com/DonovanMontoya/OperaLibre/pull/425))
+- An unreadable read-along job file no longer stops the server from starting. ([#424](https://github.com/DonovanMontoya/OperaLibre/pull/424))
+- An unreadable permissions version no longer re-grants admin rights. ([#423](https://github.com/DonovanMontoya/OperaLibre/pull/423))
+- The mini player uses the selected light theme's Shelf color. ([#420](https://github.com/DonovanMontoya/OperaLibre/pull/420))
+- The Chapters sheet opens with the playing chapter centered. ([#419](https://github.com/DonovanMontoya/OperaLibre/pull/419))
+- Store purchase cards open from anywhere on the row and close with a downward swipe. ([#418](https://github.com/DonovanMontoya/OperaLibre/pull/418))
+- Secondary actions on the book page and mini player look and act as buttons. ([#415](https://github.com/DonovanMontoya/OperaLibre/pull/415))
+- Long book titles in Settings → On Device stay inside the card, and store status labels stay on one line. ([#413](https://github.com/DonovanMontoya/OperaLibre/pull/413))
+- The iPhone player keeps drawing when a scheduler message is lost. ([#411](https://github.com/DonovanMontoya/OperaLibre/pull/411))
+- Native Libro.fm downloads stop when a book's retained parts would exceed 25 GiB. ([#408](https://github.com/DonovanMontoya/OperaLibre/pull/408))
+- Embedded cover art and audio tags are read with size limits so a bad file cannot exhaust memory. ([#410](https://github.com/DonovanMontoya/OperaLibre/pull/410))
+- Library scans stay under the library folder and do not follow links out of it. ([#409](https://github.com/DonovanMontoya/OperaLibre/pull/409))
+- Large library catalogue responses are bounded so a busy server returns a retry later response instead of running out of memory. ([#407](https://github.com/DonovanMontoya/OperaLibre/pull/407))
+- Session creation waits for password changes and credential revocation to finish, so a just-replaced password cannot still issue a session. ([#402](https://github.com/DonovanMontoya/OperaLibre/pull/402))
+- Sign-in throttling counts attempts before checking the password, so concurrent tries cannot slip past the limit. ([#399](https://github.com/DonovanMontoya/OperaLibre/pull/399))
+- Libro.fm responses on iPhone are rejected when they grow past a size limit. ([#403](https://github.com/DonovanMontoya/OperaLibre/pull/403))
+- Public server addresses must use HTTPS in the macOS app as well. Private LAN and loopback HTTP still work. ([#404](https://github.com/DonovanMontoya/OperaLibre/pull/404))
+- Saved sign-ins keep the original case of reverse-proxy paths. Older path-based vault keys need a fresh sign-in. ([#398](https://github.com/DonovanMontoya/OperaLibre/pull/398))
+- Direct Libation downloads stop accepting new work after a per-user and overall limit, and return a retry later response when full. ([#395](https://github.com/DonovanMontoya/OperaLibre/pull/395))
 - HTML book descriptions show as readable text, and published dates show as dates. ([#393](https://github.com/DonovanMontoya/OperaLibre/pull/393))
 - A whole-book download keeps every track when two filenames would collide inside the archive. ([#391](https://github.com/DonovanMontoya/OperaLibre/pull/391))
 - A failed pull-to-refresh says that it failed, and a pull the system cancels does not start a refresh. ([#390](https://github.com/DonovanMontoya/OperaLibre/pull/390))
