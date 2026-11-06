@@ -15,10 +15,10 @@ pub(crate) const LOGIN_MAX_FAILURES: u32 = 5;
 /// locked: catches an attacker walking a list of names.
 pub(crate) const LOGIN_IP_MAX_FAILURES: u32 = 25;
 
-/// Failures against one username from every address before the account is
-/// locked: the ceiling on guessing spread across many addresses. Looser than
-/// the per-address lock so a stranger cannot cheaply deny a victim from one
-/// address, but still bounding how many guesses one account absorbs a minute.
+/// Failures against one username from every address before the username is
+/// under attack. From then on, an address that has already failed against
+/// that name is refused until it has gone a lockout window without failing,
+/// while an address with no failures against it may still try.
 pub(crate) const LOGIN_ACCOUNT_MAX_FAILURES: u32 = 50;
 
 pub(crate) const LOGIN_LOCKOUT_SECONDS: u64 = 60;
@@ -940,16 +940,6 @@ pub(crate) async fn authenticate_and_open_session(
                 "Too many failed sign-in attempts. Try again in a minute.",
             ));
         }
-        let missing = throttle_keys
-            .all()
-            .into_iter()
-            .filter(|key| !attempts.contains_key(*key))
-            .count();
-        if attempts.len().saturating_add(missing) > LOGIN_THROTTLE_MAX_ENTRIES {
-            return Err(ApiError::too_many_requests(
-                "Too many sign-in attempts. Try again in a minute.",
-            ));
-        }
         // Charge admission before yielding to password work. Cancelled or
         // overloaded attempts stay charged until the ordinary lockout expires.
         // Otherwise a disconnected request could buy an uncounted guess.
@@ -979,12 +969,14 @@ pub(crate) async fn authenticate_and_open_session(
     if !verify_password_async(state, payload.password, user.password_hash.clone()).await? {
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
-    // A success clears only the counters about this account. The per-address
-    // counter stays: otherwise anyone holding one valid account could sign in
-    // to it between guesses at others and never meet the address limit.
+    // A success clears only this address's counter for the account. The
+    // per-address counter stays: otherwise anyone holding one valid account
+    // could sign in to it between guesses at others and never meet the address
+    // limit. The username counter stays too: it no longer stands in the way of
+    // a clean address, and clearing it would hand everyone guessing at this
+    // name a fresh allowance each time its owner signs in.
     let mut attempts = state.login_attempts.lock().await;
     attempts.remove(&throttle_keys.account);
-    attempts.remove(&throttle_keys.username);
     if let Some(ip) = attempts.get_mut(&throttle_keys.ip) {
         ip.failures = ip.failures.saturating_sub(1);
     }
@@ -1032,11 +1024,28 @@ pub(crate) fn login_throttle_key(username: &str) -> String {
 /// account locked with a handful of bad passwords a minute; the per-address
 /// counter below still catches an attacker walking many names.
 pub(crate) fn login_account_throttle_key(client_ip: IpAddr, username: &str) -> String {
-    format!("ip:{client_ip}:{}", login_throttle_key(username))
+    format!(
+        "ip:{}:{}",
+        login_throttle_address(client_ip),
+        login_throttle_key(username)
+    )
 }
 
 pub(crate) fn login_ip_throttle_key(client_ip: IpAddr) -> String {
-    format!("ip:{client_ip}")
+    format!("ip:{}", login_throttle_address(client_ip))
+}
+
+/// The address a sign-in is counted against. An IPv6 host is normally handed
+/// a whole /64 and can pick any address in it, so counting each address alone
+/// would let one machine present a clean address on every attempt.
+pub(crate) fn login_throttle_address(client_ip: IpAddr) -> String {
+    match client_ip.to_canonical() {
+        IpAddr::V4(address) => address.to_string(),
+        IpAddr::V6(address) => {
+            let prefix = u128::from(address) & !(u128::from(u64::MAX));
+            format!("{}/64", std::net::Ipv6Addr::from(prefix))
+        }
+    }
 }
 
 /// The three counters one sign-in attempt is checked against, layered so
@@ -1047,13 +1056,16 @@ pub(crate) fn login_ip_throttle_key(client_ip: IpAddr) -> String {
 ///   deny its owner from somewhere else.
 /// - `ip`, address alone, locks at [`LOGIN_IP_MAX_FAILURES`]: an attacker
 ///   walking many names from one address.
-/// - `username`, name alone, locks at [`LOGIN_ACCOUNT_MAX_FAILURES`]: the
-///   ceiling across addresses. Without it, guessing spread over many
-///   addresses would face no bound per account at all.
+/// - `username`, name alone, trips at [`LOGIN_ACCOUNT_MAX_FAILURES`]: the
+///   bound on guessing spread across many addresses. Once tripped, every
+///   address that has failed against the name is held off until it goes a
+///   full lockout window without failing, so each one gets a single guess a
+///   window instead of [`LOGIN_MAX_FAILURES`]. An address with no failures
+///   against the name is still let in: refusing it would let anyone who
+///   knows a username keep its owner out everywhere.
 ///
-/// A failure counts against all three; a sign-in is refused if any is over
-/// its limit; a success clears the two about its own account and leaves the
-/// address counter to expire on its own.
+/// A failure counts against all three; a success clears only this address's
+/// counter for the account and leaves the other two to expire on their own.
 pub(crate) struct LoginThrottleKeys {
     pub(crate) account: String,
     pub(crate) ip: String,
@@ -1078,17 +1090,17 @@ impl LoginThrottleKeys {
         attempts: &HashMap<String, LoginThrottle>,
         now_seconds: u64,
     ) -> bool {
-        [
-            (&self.account, LOGIN_MAX_FAILURES),
-            (&self.ip, LOGIN_IP_MAX_FAILURES),
-            (&self.username, LOGIN_ACCOUNT_MAX_FAILURES),
-        ]
-        .into_iter()
-        .any(|(key, max_failures)| {
+        let over = |key: &String, max_failures| {
             attempts
                 .get(key)
                 .is_some_and(|throttle| throttle.is_locked(now_seconds, max_failures))
-        })
+        };
+        let failed_here = attempts
+            .get(&self.account)
+            .is_some_and(|throttle| !throttle.is_stale(now_seconds));
+        over(&self.account, LOGIN_MAX_FAILURES)
+            || over(&self.ip, LOGIN_IP_MAX_FAILURES)
+            || (failed_here && over(&self.username, LOGIN_ACCOUNT_MAX_FAILURES))
     }
 }
 
@@ -1107,13 +1119,13 @@ fn record_login_failures_in<'a>(
     throttle_keys: impl IntoIterator<Item = &'a String>,
     now: u64,
 ) {
-    // A flood of unique bogus usernames within the lockout window can't grow
-    // the map without bound: stop tracking new names at the cap. Entries for
-    // already-tracked names keep counting, and stale ones are pruned on every
-    // login attempt.
-    for throttle_key in throttle_keys {
+    let throttle_keys: Vec<&String> = throttle_keys.into_iter().collect();
+    for &throttle_key in &throttle_keys {
+        // The map is bounded so a flood of made-up usernames cannot grow it
+        // without limit. A full map makes room rather than refusing new keys,
+        // which would turn the flood into a lockout for every sign-in.
         if attempts.len() >= LOGIN_THROTTLE_MAX_ENTRIES && !attempts.contains_key(throttle_key) {
-            continue;
+            evict_weakest_login_throttle(attempts, &throttle_keys, now);
         }
         let entry = attempts
             .entry(throttle_key.clone())
@@ -1126,6 +1138,31 @@ fn record_login_failures_in<'a>(
         }
         entry.failures += 1;
         entry.last_failure = now;
+    }
+}
+
+/// Drop the entry that says least about an attack: a stale one first, then
+/// the one with the fewest failures, then the oldest. A flood of single
+/// guesses at made-up names therefore pushes out its own entries before it
+/// reaches a lock, which only goes once the map holds nothing weaker.
+fn evict_weakest_login_throttle(
+    attempts: &mut HashMap<String, LoginThrottle>,
+    keep: &[&String],
+    now: u64,
+) {
+    let weakest = attempts
+        .iter()
+        .filter(|(key, _)| !keep.contains(key))
+        .min_by_key(|(_, throttle)| {
+            (
+                !throttle.is_stale(now),
+                throttle.failures,
+                throttle.last_failure,
+            )
+        })
+        .map(|(key, _)| key.clone());
+    if let Some(key) = weakest {
+        attempts.remove(&key);
     }
 }
 

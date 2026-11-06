@@ -60,7 +60,7 @@ The web app exchanges a username + password for a session token and a separate, 
 
 Tokens are random opaque strings. Sessions end on logout, account deletion, or 30 days after sign-in.
 
-Failed sign-ins are rate limited: after 5 consecutive failures for a username (or 25 from one address), further attempts are rejected for 60 seconds.
+Failed sign-ins are rate limited: after 5 failures for a username from one address (or 25 from one address across all usernames), further attempts from that address are rejected for 60 seconds. Other devices can still sign in. If a username draws 50 failures from many addresses, each address that has failed against it gets one attempt a minute until the guessing stops; a device that has not failed against it signs in as usual.
 
 ## Resetting a forgotten admin password
 

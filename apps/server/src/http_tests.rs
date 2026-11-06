@@ -5988,7 +5988,98 @@ async fn successful_login_keeps_the_address_throttle() {
         "the address counter survives the sign-in"
     );
     assert!(!attempts.contains_key(&mallory.account));
-    assert!(!attempts.contains_key(&mallory.username));
+    // Clearing the username counter would hand everyone guessing at the name
+    // a fresh allowance whenever its owner signs in.
+    assert!(attempts.contains_key(&mallory.username));
+}
+
+async fn sign_in_from(
+    server: &TestServer,
+    address: std::net::IpAddr,
+    username: &str,
+    password: &str,
+) -> Result<(super::User, String), super::ApiError> {
+    super::authenticate_and_open_session(
+        &server.state,
+        SocketAddr::new(address, 40_000),
+        &HeaderMap::new(),
+        super::LoginRequest {
+            username: username.to_string(),
+            password: password.to_string(),
+        },
+    )
+    .await
+}
+
+/// Guessing spread across many addresses holds each of them to one guess a
+/// window, but cannot keep the owner out: a device that has not failed
+/// against the name signs in with the right password.
+#[tokio::test]
+async fn spread_guessing_cannot_lock_the_owner_out() {
+    let server = TestServer::start(0).await;
+    server.setup_owner().await;
+    let attacker = |host: u32| {
+        std::net::IpAddr::V4(std::net::Ipv4Addr::from(
+            u32::from(std::net::Ipv4Addr::new(10, 0, 0, 0)) + host,
+        ))
+    };
+    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        let error = sign_in_from(&server, attacker(host), "owner", "guess-password-1234")
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+    }
+
+    // An address that has guessed is refused before its password is checked,
+    // even when this guess would have been right.
+    let error = sign_in_from(&server, attacker(1), "owner", "owner-password-1234")
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+
+    let owner_device = std::net::IpAddr::from([192, 0, 2, 44]);
+    let (user, _) = sign_in_from(&server, owner_device, "owner", "owner-password-1234")
+        .await
+        .expect("the owner signs in from a device that has not failed");
+    assert_eq!(user.username, "owner");
+
+    // The owner signing in does not reopen the name to the guessers.
+    let error = sign_in_from(&server, attacker(2), "owner", "guess-password-1234")
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// A flood of made-up names that fills the throttle map must not turn into a
+/// lockout for everyone else.
+#[tokio::test]
+async fn a_full_login_throttle_map_still_admits_a_correct_password() {
+    let server = TestServer::start(0).await;
+    server.setup_owner().await;
+    let now = super::unix_now_seconds();
+    {
+        let mut attempts = server.state.login_attempts.lock().await;
+        for index in 0..super::LOGIN_THROTTLE_MAX_ENTRIES {
+            attempts.insert(
+                format!("user:flood-{index}"),
+                super::LoginThrottle {
+                    failures: 1,
+                    last_failure: now,
+                },
+            );
+        }
+    }
+
+    let address = std::net::IpAddr::from([192, 0, 2, 44]);
+    let error = sign_in_from(&server, address, "owner", "wrong-password-1234")
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+    let other = std::net::IpAddr::from([192, 0, 2, 45]);
+    sign_in_from(&server, other, "owner", "owner-password-1234")
+        .await
+        .expect("a full map makes room for a new sign-in");
+    assert!(server.state.login_attempts.lock().await.len() <= super::LOGIN_THROTTLE_MAX_ENTRIES);
 }
 
 #[tokio::test]

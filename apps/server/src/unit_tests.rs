@@ -8006,6 +8006,22 @@ fn account_lockouts_are_keyed_by_address_and_name() {
         super::login_account_throttle_key(alice, "reader"),
         super::login_ip_throttle_key(alice)
     );
+
+    // An IPv6 host can pick any address in its /64, so the /64 is what counts;
+    // an IPv4 client seen through a dual-stack socket counts as itself.
+    let ipv6 = |text: &str| text.parse::<std::net::IpAddr>().unwrap();
+    assert_eq!(
+        super::login_ip_throttle_key(ipv6("2001:db8:1:2::1")),
+        super::login_ip_throttle_key(ipv6("2001:db8:1:2:abcd::99"))
+    );
+    assert_ne!(
+        super::login_ip_throttle_key(ipv6("2001:db8:1:2::1")),
+        super::login_ip_throttle_key(ipv6("2001:db8:1:3::1"))
+    );
+    assert_eq!(
+        super::login_ip_throttle_key(ipv6("::ffff:203.0.113.5")),
+        super::login_ip_throttle_key(alice)
+    );
 }
 
 #[test]
@@ -8103,12 +8119,13 @@ fn malformed_port_environment_values_are_errors() {
 
 /// Failures count against three counters at once. The (address, username)
 /// pair locks fast, so a handful of bad passwords from one address cannot
-/// deny the account's owner from anywhere else; the username alone locks
-/// only after many more, so guessing spread across many addresses still
-/// meets a ceiling.
+/// deny the account's owner from anywhere else. Once a username has drawn
+/// many failures from many addresses, each address that has failed against
+/// it is held to one guess a lockout window, while an address that has not
+/// failed against it is still let in.
 #[cfg(unix)]
 #[tokio::test]
-async fn account_lockouts_layer_a_fast_pair_lock_under_a_username_ceiling() {
+async fn account_lockouts_slow_spread_guessing_without_locking_out_the_owner() {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     let root = tempfile::tempdir().unwrap();
@@ -8129,33 +8146,47 @@ async fn account_lockouts_layer_a_fast_pair_lock_under_a_username_ceiling() {
         assert!(!super::LoginThrottleKeys::new(alice, "other").is_locked(&attempts, now));
     }
 
-    // Fifty failures from fifty addresses lock the username for a fifty-first.
-    let stranger = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 51));
-    let stranger_on_target = super::LoginThrottleKeys::new(stranger, "target");
-    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
-        {
-            let attempts = state.login_attempts.lock().await;
-            assert!(
-                !stranger_on_target.is_locked(&attempts, now),
-                "locked after {} failures",
-                host - 1
-            );
-        }
-        let address = IpAddr::V4(Ipv4Addr::new(10, 0, 0, host as u8));
-        let keys = super::LoginThrottleKeys::new(address, "target");
-        super::record_login_failures(&state, keys.all()).await;
-    }
+    // Below the username ceiling an address keeps its ordinary allowance.
+    let attacker = |host: u32| {
+        let address = IpAddr::V4(Ipv4Addr::from(u32::from(Ipv4Addr::new(10, 0, 0, 0)) + host));
+        super::LoginThrottleKeys::new(address, "target")
+    };
+    super::record_login_failures(&state, attacker(1).all()).await;
     {
         let attempts = state.login_attempts.lock().await;
-        assert!(stranger_on_target.is_locked(&attempts, now));
-        assert!(!super::LoginThrottleKeys::new(stranger, "other").is_locked(&attempts, now));
+        assert!(!attacker(1).is_locked(&attempts, now));
+    }
+    for host in 2..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        super::record_login_failures(&state, attacker(host).all()).await;
     }
 
-    // The refusal is what the sign-in handler answers with, before it does
-    // any password work.
-    let refused = super::authenticate_and_open_session(
+    // At the ceiling, every address that has guessed is refused after a single
+    // failure, far short of the pair lock.
+    {
+        let attempts = state.login_attempts.lock().await;
+        for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+            let keys = attacker(host);
+            assert_eq!(attempts[&keys.account].failures, 1);
+            assert!(
+                keys.is_locked(&attempts, now),
+                "address {host} may guess again"
+            );
+        }
+        // The window passing gives an address back one guess, not five.
+        assert!(!attacker(1).is_locked(&attempts, now + super::LOGIN_LOCKOUT_SECONDS));
+    }
+
+    // An address that has not failed against the name is still let in, and
+    // its own first wrong guess puts it under the same one-guess rule.
+    let owner_device = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 44));
+    let owner_keys = super::LoginThrottleKeys::new(owner_device, "target");
+    {
+        let attempts = state.login_attempts.lock().await;
+        assert!(!owner_keys.is_locked(&attempts, now));
+    }
+    let wrong = super::authenticate_and_open_session(
         &state,
-        SocketAddr::new(stranger, 40_000),
+        SocketAddr::new(owner_device, 40_000),
         &super::HeaderMap::new(),
         super::LoginRequest {
             username: "target".to_string(),
@@ -8163,8 +8194,73 @@ async fn account_lockouts_layer_a_fast_pair_lock_under_a_username_ceiling() {
         },
     )
     .await
-    .expect_err("the username ceiling refuses the sign-in");
+    .expect_err("there is no such account");
+    assert_eq!(wrong.status, super::StatusCode::UNAUTHORIZED);
+
+    // The refusal is what the sign-in handler answers with, before it does
+    // any password work.
+    let refused = super::authenticate_and_open_session(
+        &state,
+        SocketAddr::new(owner_device, 40_001),
+        &super::HeaderMap::new(),
+        super::LoginRequest {
+            username: "target".to_string(),
+            password: "whatever-password-1234".to_string(),
+        },
+    )
+    .await
+    .expect_err("an address that just failed waits out the window");
     assert_eq!(refused.status, super::StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// A full throttle map makes room for a new attempt instead of refusing it:
+/// stale entries go first, then the weakest and oldest, and an entry that is
+/// holding a lock outlasts them.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_full_login_throttle_map_evicts_stale_then_oldest_entries() {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let now = super::unix_now_seconds();
+    let entry = |failures, age| super::LoginThrottle {
+        failures,
+        last_failure: now - age,
+    };
+    {
+        let mut attempts = state.login_attempts.lock().await;
+        attempts.insert(
+            "stale".to_string(),
+            entry(super::LOGIN_IP_MAX_FAILURES, super::LOGIN_LOCKOUT_SECONDS),
+        );
+        attempts.insert(
+            "locked".to_string(),
+            entry(
+                super::LOGIN_IP_MAX_FAILURES,
+                super::LOGIN_LOCKOUT_SECONDS - 5,
+            ),
+        );
+        attempts.insert(
+            "oldest".to_string(),
+            entry(1, super::LOGIN_LOCKOUT_SECONDS - 10),
+        );
+        for index in attempts.len()..super::LOGIN_THROTTLE_MAX_ENTRIES {
+            attempts.insert(format!("filler-{index}"), entry(1, 1));
+        }
+    }
+
+    let newcomer = super::LoginThrottleKeys::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)), "new");
+    super::record_login_failures(&state, newcomer.all()).await;
+
+    let attempts = state.login_attempts.lock().await;
+    assert_eq!(attempts.len(), super::LOGIN_THROTTLE_MAX_ENTRIES);
+    for key in newcomer.all() {
+        assert_eq!(attempts[key].failures, 1, "{key} was not recorded");
+    }
+    assert!(!attempts.contains_key("stale"));
+    assert!(!attempts.contains_key("oldest"));
+    assert!(attempts.contains_key("locked"));
 }
 
 #[test]
