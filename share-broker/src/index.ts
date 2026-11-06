@@ -105,7 +105,7 @@ export class SecureRoom implements DurableObject {
       const ok = url.pathname === "/reserve" ? await reserveRoom(this.state.storage, body, clock) : await cleanupRoom(this.state.storage, body, clock);
       return new Response(null, { status: ok ? 204 : url.pathname === "/reserve" ? 409 : 403, headers: { "cache-control": "no-store" } });
     }
-    if (!["/claim", "/resume", "/send", "/poll", "/preview-put", "/preview-read"].includes(url.pathname)) return new Response(null, { status: 404 });
+    if (!["/claim", "/resume", "/session", "/send", "/poll", "/preview-put", "/preview-read"].includes(url.pathname)) return new Response(null, { status: 404 });
     const text = await readBounded(request, url.pathname === "/preview-put" ? MAX_PREVIEW_MESSAGE_BYTES : 8192);
     if (text === null) return new Response(null, { status: 413 });
     let body: { room: string; payload: string; signature: string; nextPayload?: string; nextSignature?: string; generation?: number; sequence?: number; kind?: string; message?: string; after?: number; nonce?: string; ciphertext?: string; expiresAt?: number };
@@ -152,6 +152,9 @@ export class SecureRoom implements DurableObject {
       if (await txn.get("revoked")) return new Response(null, { status: 403 });
       const member = await txn.get<{ nonce: string; expiresAt: number }>(`claim:${claim.role}`);
       if (!member || member.nonce !== claim.nonce || member.expiresAt !== claim.expiresAt || member.expiresAt <= Math.floor(Date.now() / 1000)) return new Response(null, { status: 403 });
+      if (url.pathname === "/session") {
+        return Response.json({ generation: await txn.get<number>("generation") ?? 0 }, { headers: { "cache-control": "no-store" } });
+      }
       if ((await txn.get<number>("generation") ?? 0) !== (body.generation ?? 0)) return new Response(null, { status: 409 });
       if (url.pathname === "/send") {
         const key = `queue:${claim.role}`;
@@ -192,7 +195,7 @@ async function experimentalRoute(request: Request, env: Env): Promise<Response> 
       if (text === null) return new Response(null, { status: 413 });
       return env.ROOMS.get(env.ROOMS.idFromName(match[2])).fetch(new Request(`https://internal/${match[1]}`, { method: "POST", body: text }));
     }
-    if (/^\/(claim|resume|send|poll|preview-put|preview-read)\//.test(url.pathname)) {
+    if (/^\/(claim|resume|session|send|poll|preview-put|preview-read)\//.test(url.pathname)) {
       const [, action, room] = url.pathname.split("/");
       if (!/^[A-Za-z0-9_-]{16,128}$/.test(room)) return new Response(null, { status: 400 });
       if (action === "preview-put" && !await ownerAuthorized(request, env)) return new Response(null, { status: 401 });

@@ -12,6 +12,21 @@ use webrtc::peer_connection::{
 const CHUNK: usize = 16 * 1024;
 const MAX_OUTSTANDING: usize = 256 * 1024;
 
+async fn cancellable_send<F>(
+    operation: F,
+    cancelled: &mut tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = anyhow::Result<()>>,
+{
+    anyhow::ensure!(!*cancelled.borrow(), "share cancelled");
+    tokio::select! {
+        biased;
+        result = cancelled.changed() => { result?; anyhow::bail!("share cancelled"); }
+        result = operation => result,
+    }
+}
+
 struct GatherHandler(tokio::sync::mpsc::Sender<()>);
 
 #[derive(serde::Deserialize)]
@@ -40,8 +55,27 @@ pub(crate) async fn run_peer(
     size: u64,
     offset: u64,
     expires_at: u64,
+    stop: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    run_peer_generation(
+        broker, room, capability, 0, file, size, offset, expires_at, stop,
+    )
+    .await
+}
+
+/// Run one peer using an already active capability and signaling generation.
+pub(crate) async fn run_peer_generation(
+    broker: crate::share_broker::BrokerClient,
+    room: String,
+    capability: crate::share_broker::Capability,
+    generation: u64,
+    file: tokio::fs::File,
+    size: u64,
+    offset: u64,
+    expires_at: u64,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
+    crate::share_broker::validate_generation(generation)?;
     anyhow::ensure!(!*stop.borrow(), "share cancelled");
     anyhow::ensure!(
         offset == 0,
@@ -77,11 +111,15 @@ pub(crate) async fn run_peer(
                 .await
                 .ok_or_else(|| anyhow::anyhow!("missing offer"))?,
         )?;
-        broker.send(&room, &capability, 1, "offer", &offer).await?;
+        broker
+            .send_generation(&room, &capability, generation, 1, "offer", &offer)
+            .await?;
         let mut cursor = 0;
         let mut resume = None;
         loop {
-            let signals = broker.poll(&room, &capability, cursor).await?;
+            let signals = broker
+                .poll_generation(&room, &capability, generation, cursor)
+                .await?;
             let mut answer = None;
             for signal in signals {
                 anyhow::ensure!(signal.sequence > cursor, "broker signal replay");
@@ -128,10 +166,11 @@ pub(crate) async fn run_peer(
         } else {
             (file, 0)
         };
-        send_with_broker_watch(
+        send_with_broker_watch_generation(
             &broker,
             &room,
             &capability,
+            generation,
             &*channel,
             file,
             "archive",
@@ -165,8 +204,34 @@ pub(crate) async fn send_with_broker_watch(
     expires_at: u64,
     interval: std::time::Duration,
 ) -> anyhow::Result<()> {
+    send_with_broker_watch_generation(
+        broker, room, capability, 0, channel, file, asset_id, size, offset, expires_at, interval,
+    )
+    .await
+}
+
+pub(crate) async fn send_with_broker_watch_generation(
+    broker: &crate::share_broker::BrokerClient,
+    room: &str,
+    capability: &crate::share_broker::Capability,
+    generation: u64,
+    channel: &dyn DataChannel,
+    file: tokio::fs::File,
+    asset_id: &str,
+    size: u64,
+    offset: u64,
+    expires_at: u64,
+    interval: std::time::Duration,
+) -> anyhow::Result<()> {
+    crate::share_broker::validate_generation(generation)?;
+    // Do not begin sending until the broker confirms this claim and generation.
+    // Subsequent revocation is still subject to polling and queued bytes.
+    broker
+        .poll_generation(room, capability, generation, 0)
+        .await?;
     let (cancel, cancelled) = tokio::sync::watch::channel(false);
-    let monitor = broker.monitor_transfer(room, capability, interval, cancel);
+    let monitor =
+        broker.monitor_transfer_generation(room, capability, generation, interval, cancel);
     let sender = send_archive(channel, file, asset_id, size, offset, expires_at, cancelled);
     tokio::pin!(monitor, sender);
     tokio::select! {
@@ -211,10 +276,16 @@ pub(crate) async fn send_archive(
         let wanted = ((size - position) as usize).min(CHUNK);
         file.read_exact(&mut buffer[..wanted]).await?;
         let frame = encode_chunk(asset_id, position, false, &buffer[..wanted])?;
-        tokio::select! {
-            result = channel.send(bytes::BytesMut::from(frame.as_slice())) => result?,
-            result = cancelled.changed() => { result?; anyhow::bail!("share cancelled"); }
-        }
+        cancellable_send(
+            async {
+                channel
+                    .send(bytes::BytesMut::from(frame.as_slice()))
+                    .await
+                    .map_err(Into::into)
+            },
+            &mut cancelled,
+        )
+        .await?;
         position += wanted as u64;
     }
     anyhow::ensure!(
@@ -223,8 +294,44 @@ pub(crate) async fn send_archive(
         "share expired or cancelled"
     );
     let frame = encode_chunk(asset_id, position, true, &[])?;
-    channel
-        .send(bytes::BytesMut::from(frame.as_slice()))
-        .await?;
+    cancellable_send(
+        async {
+            channel
+                .send(bytes::BytesMut::from(frame.as_slice()))
+                .await
+                .map_err(Into::into)
+        },
+        &mut cancelled,
+    )
+    .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn cancellation_interrupts_a_blocked_final_send() {
+        let (sender, mut receiver) = tokio::sync::watch::channel(false);
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let blocked = tokio::spawn(async move {
+            cancellable_send(
+                async move {
+                    let _ = entered.send(());
+                    std::future::pending::<anyhow::Result<()>>().await
+                },
+                &mut receiver,
+            )
+            .await
+        });
+        waiting.await.unwrap();
+        sender.send(true).unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), blocked)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+    }
 }

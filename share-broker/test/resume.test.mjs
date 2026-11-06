@@ -34,13 +34,21 @@ test("resume rotates only a current, scoped claim atomically and revocation wins
   const extended = await issue("producer", "extended________", { expiresAt: expiresAt + 1 });
   const resume = (current, successor, target = room, generation = 0) => call(`resume/${target}`, { ...current, nextPayload: successor.payload, nextSignature: successor.signature, generation });
   assert.equal((await resume(old, next)).status, 403);
+  assert.equal((await call(`session/${room}`, old)).status, 403);
   assert.equal((await call(`claim/${room}`, old)).status, 204);
+  assert.deepEqual(await (await call(`session/${room}`, old)).json(), { generation: 0 });
   assert.equal((await resume(old, recipient)).status, 403);
   assert.equal((await resume(old, foreign)).status, 403);
   assert.equal((await resume(old, next, other)).status, 403);
   assert.equal((await resume(old, extended)).status, 403);
   assert.equal((await resume(old, { ...next, signature: "0".repeat(64) })).status, 403);
   assert.deepEqual((await Promise.all([resume(old, next), resume(old, next)])).map(r => r.status).sort(), [204, 403]);
+  // A lost rotation response can be resolved only with a currently claimed
+  // capability; a prior credential cannot learn the new generation.
+  assert.equal((await call(`session/${room}`, old)).status, 403);
+  assert.deepEqual(await (await call(`session/${room}`, next)).json(), { generation: 1 });
+  assert.equal((await call(`session/${other}`, next)).status, 403);
+  assert.equal((await call(`session/${room}`, { ...next, signature: "0".repeat(64) })).status, 403);
   assert.equal((await call(`poll/${room}`, { ...old, after: 0 })).status, 403);
   assert.equal((await call(`poll/${room}`, { ...next, after: 0, generation: 1 })).status, 200);
   assert.equal((await resume(old, another)).status, 403);
@@ -48,6 +56,7 @@ test("resume rotates only a current, scoped claim atomically and revocation wins
   assert.equal((await resume(next, another, room, 1)).status, 204);
   assert.equal((await resume(another, next, room, 2)).status, 403);
   assert.equal((await call(`revoke/${room}`, {}, true)).status, 204);
+  assert.equal((await call(`session/${room}`, another)).status, 403);
   assert.equal((await resume(another, unused, room, 2)).status, 403);
   assert.equal((await call(`poll/${room}`, { ...another, after: 0 })).status, 403);
 });

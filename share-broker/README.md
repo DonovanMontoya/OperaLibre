@@ -51,9 +51,11 @@ their sequences. There is no implemented generation-discovery protocol. Each rol
 limited to 16 rotations per room; nonce records require eventual room cleanup.
 
 The response contains no replacement secret. If a success response is lost,
-the caller cannot safely distinguish it from failure using the old claim alone;
-the peer must retain the successor and check its membership through an existing
-operation. No sender or recipient currently performs this exchange, persists
+the caller must retain both capabilities: `POST /session/{room}` with a claimed,
+unexpired capability returns the current generation, while a prior or revoked
+claim receives 403. This is a point-in-time observation; every subsequent signal
+still checks the generation transactionally. No sender or recipient currently
+performs this exchange, persists
 claims, negotiates a new connection, or resumes from a verified transfer offset.
 This mechanism needs independent security and native review before use.
 

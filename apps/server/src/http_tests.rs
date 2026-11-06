@@ -1613,7 +1613,7 @@ async fn invitation_archive_runs_through_experimental_service_and_peer() -> anyh
         let session = crate::share_service::start(true, &broker, "owner", "room____________", "nonce___________", now + 60, move |_, _| async move {
             let digest = Sha256::digest(&archive).into();
             let mut staged = crate::share_transfer::Receiver::resume(tempfile::tempfile()?, 0, archive.len() as u64, digest)?;
-            crate::share_peer_tests::transfer_round(&archive, 0, archive.len(), &mut staged, false).await?;
+            crate::share_peer_tests::transfer_round(&archive, 0, archive.len(), &mut staged, false, false).await?;
             let mut zip = zip::ZipArchive::new(staged.finish()?)?;
             assert_eq!(zip.len(), 1);
             assert!(zip.by_name("book.epub").is_ok());

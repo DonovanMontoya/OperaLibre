@@ -13,6 +13,83 @@ struct Handler {
     runtime: Arc<dyn Runtime>,
 }
 
+#[tokio::test]
+async fn producer_peer_uses_requested_generation_for_offer_and_answer_poll() -> anyhow::Result<()> {
+    use axum::{Json, Router, extract::Path, http::StatusCode, routing::post};
+    let (requests, mut seen) = tokio::sync::mpsc::unbounded_channel();
+    let app = Router::new().route(
+        "/{*path}",
+        post(
+            move |Path(path): Path<String>, Json(body): Json<serde_json::Value>| {
+                let requests = requests.clone();
+                async move {
+                    requests.send((path.clone(), body)).unwrap();
+                    if path.starts_with("send/") {
+                        StatusCode::NO_CONTENT
+                    } else {
+                        StatusCode::FORBIDDEN
+                    }
+                }
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let broker = crate::share_broker::BrokerClient::local(&format!("http://{address}/"))?;
+    let cap = crate::share_broker::Capability {
+        payload: "p".into(),
+        signature: "s".into(),
+    };
+    for generation in [0, 3] {
+        let (_stop, receiver) = tokio::sync::watch::channel(false);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            crate::share_sender::run_peer_generation(
+                broker.clone(),
+                "room____________".into(),
+                cap.clone(),
+                generation,
+                tokio::fs::File::from_std(tempfile::tempfile()?),
+                0,
+                0,
+                u64::MAX,
+                receiver,
+            ),
+        )
+        .await?;
+        assert!(result.is_err());
+        for action in ["send/", "poll/"] {
+            let (path, body) = seen.try_recv()?;
+            assert!(path.starts_with(action));
+            if generation == 0 {
+                assert!(body.get("generation").is_none());
+            } else {
+                assert_eq!(body["generation"], generation);
+            }
+        }
+    }
+    let (_stop, receiver) = tokio::sync::watch::channel(false);
+    assert!(
+        crate::share_sender::run_peer_generation(
+            broker,
+            "room____________".into(),
+            cap,
+            crate::share_broker::MAX_GENERATION + 1,
+            tokio::fs::File::from_std(tempfile::tempfile()?),
+            0,
+            0,
+            u64::MAX,
+            receiver
+        )
+        .await
+        .is_err()
+    );
+    assert!(seen.try_recv().is_err());
+    server.abort();
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for Handler {
     async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
@@ -41,6 +118,7 @@ pub(crate) async fn transfer_round(
     end: usize,
     receiver: &mut crate::share_transfer::Receiver<std::fs::File>,
     revoke_after_first: bool,
+    deny_before_send: bool,
 ) -> anyhow::Result<()> {
     use axum::{Json, Router, extract::Path, http::StatusCode, routing::post};
     let signals = Arc::new(tokio::sync::Mutex::new((String::new(), String::new())));
@@ -125,6 +203,9 @@ pub(crate) async fn transfer_round(
         }
     }
     if end == bytes.len() {
+        if deny_before_send {
+            revoked.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         use std::io::Write;
         let mut source = tempfile::tempfile()?;
         source.write_all(bytes)?;
@@ -152,6 +233,20 @@ pub(crate) async fn transfer_round(
             )
             .await
         });
+        if deny_before_send {
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), sender).await??;
+            anyhow::ensure!(result.is_err(), "sender ignored initial denial");
+            anyhow::ensure!(
+                tokio::time::timeout(std::time::Duration::from_millis(300), received_rx.recv())
+                    .await
+                    .is_err(),
+                "frame sent before authorization"
+            );
+            a.close().await?;
+            b.close().await?;
+            server.abort();
+            return Ok(());
+        }
         loop {
             let frame = received_rx
                 .recv()
@@ -243,7 +338,7 @@ async fn selected_archive_resumes_over_local_webrtc_and_checks_digest() -> anyho
         let mut receiver =
             crate::share_transfer::Receiver::resume(stage, 0, source.len() as u64, digest)?;
         let split = 32 * 1024;
-        transfer_round(&source, 0, split, &mut receiver, false).await?;
+        transfer_round(&source, 0, split, &mut receiver, false, false).await?;
         let stage = receiver.interrupt();
         let mut receiver = crate::share_transfer::Receiver::resume(
             stage,
@@ -251,7 +346,7 @@ async fn selected_archive_resumes_over_local_webrtc_and_checks_digest() -> anyho
             source.len() as u64,
             digest,
         )?;
-        transfer_round(&source, split, source.len(), &mut receiver, false).await?;
+        transfer_round(&source, split, source.len(), &mut receiver, false, false).await?;
         let verified = receiver.finish()?;
         let mut zip = zip::ZipArchive::new(verified)?;
         assert_eq!(zip.len(), 1);
@@ -275,7 +370,7 @@ async fn revoked_transfer_cannot_finalize() -> anyhow::Result<()> {
             bytes.len() as u64,
             digest,
         )?;
-        transfer_round(&bytes, 0, bytes.len(), &mut receiver, true).await?;
+        transfer_round(&bytes, 0, bytes.len(), &mut receiver, true, false).await?;
         assert!(
             receiver.finish().is_err(),
             "partial archive must not finalize"
@@ -283,6 +378,26 @@ async fn revoked_transfer_cannot_finalize() -> anyhow::Result<()> {
         Ok::<(), anyhow::Error>(())
     })
     .await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn denied_initial_authorization_sends_no_archive_frames() -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+    let bytes = vec![7_u8; 64];
+    let digest = Sha256::digest(&bytes).into();
+    let mut receiver = crate::share_transfer::Receiver::resume(
+        tempfile::tempfile()?,
+        0,
+        bytes.len() as u64,
+        digest,
+    )?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        transfer_round(&bytes, 0, bytes.len(), &mut receiver, false, true),
+    )
+    .await??;
+    assert!(receiver.finish().is_err());
     Ok(())
 }
 

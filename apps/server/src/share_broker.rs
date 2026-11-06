@@ -2,7 +2,12 @@
 use crate::*;
 
 const MAX_RESPONSE: usize = 160 * 1024;
-const MAX_GENERATION: u64 = 9_007_199_254_740_991;
+pub(crate) const MAX_GENERATION: u64 = 9_007_199_254_740_991;
+
+pub(crate) fn validate_generation(generation: u64) -> anyhow::Result<()> {
+    anyhow::ensure!(generation <= MAX_GENERATION, "invalid signaling generation");
+    Ok(())
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Capability {
@@ -306,6 +311,29 @@ impl BrokerClient {
         .await?;
         Ok(())
     }
+    /// Read the generation for an active claim. This is a point-in-time result;
+    /// subsequent operations still need to handle rotation or revocation.
+    pub(crate) async fn session_generation(
+        &self,
+        room: &str,
+        capability: &Capability,
+    ) -> anyhow::Result<u64> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Session {
+            generation: u64,
+        }
+        let bytes = self
+            .post(
+                &Self::room_path("session", room)?,
+                serde_json::to_value(capability)?,
+                None,
+            )
+            .await?;
+        let session: Session = serde_json::from_slice(&bytes)?;
+        validate_generation(session.generation)?;
+        Ok(session.generation)
+    }
     pub(crate) async fn send(
         &self,
         room: &str,
@@ -326,7 +354,7 @@ impl BrokerClient {
         kind: &str,
         message: &str,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(generation <= MAX_GENERATION, "invalid signaling generation");
+        validate_generation(generation)?;
         anyhow::ensure!(
             (1..=32).contains(&sequence)
                 && matches!(kind, "offer" | "ice")
@@ -356,7 +384,7 @@ impl BrokerClient {
         generation: u64,
         after: u32,
     ) -> anyhow::Result<Vec<Signal>> {
-        anyhow::ensure!(generation <= MAX_GENERATION, "invalid signaling generation");
+        validate_generation(generation)?;
         anyhow::ensure!(after <= 32, "invalid signal cursor");
         let mut body = serde_json::json!({"payload":capability.payload,"signature":capability.signature,"after":after});
         if generation != 0 {
@@ -404,8 +432,23 @@ impl BrokerClient {
         interval: Duration,
         cancel: tokio::sync::watch::Sender<bool>,
     ) {
+        self.monitor_transfer_generation(room, capability, 0, interval, cancel)
+            .await;
+    }
+    pub(crate) async fn monitor_transfer_generation(
+        &self,
+        room: &str,
+        capability: &Capability,
+        generation: u64,
+        interval: Duration,
+        cancel: tokio::sync::watch::Sender<bool>,
+    ) {
         loop {
-            if self.poll(room, capability, 0).await.is_err() {
+            if self
+                .poll_generation(room, capability, generation, 0)
+                .await
+                .is_err()
+            {
                 let _ = cancel.send(true);
                 return;
             }
@@ -421,6 +464,125 @@ impl BrokerClient {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[tokio::test]
+    async fn ambiguous_rotation_can_be_checked_with_session_generation() {
+        use axum::response::IntoResponse;
+        let app = Router::new().route(
+            "/{*path}",
+            post(
+                |Path(path): Path<String>, Json(body): Json<serde_json::Value>| async move {
+                    if path.starts_with("resume/") {
+                        // Rotation took effect, but the confirmation was lost or malformed.
+                        return StatusCode::NO_CONTENT.into_response();
+                    }
+                    if path.starts_with("session/") {
+                        if let Some(payload) = body["payload"].as_str()
+                            && let Ok(claim) = serde_json::from_str::<serde_json::Value>(payload)
+                        {
+                            return if claim["nonce"] == "next____________" {
+                                Json(serde_json::json!({"generation": 1})).into_response()
+                            } else {
+                                StatusCode::FORBIDDEN.into_response()
+                            };
+                        }
+                        return match body["payload"].as_str() {
+                            Some("old") => StatusCode::FORBIDDEN.into_response(),
+                            Some("next") => {
+                                Json(serde_json::json!({"generation": 1})).into_response()
+                            }
+                            Some("max") => Json(serde_json::json!({"generation": MAX_GENERATION}))
+                                .into_response(),
+                            Some("overflow") => {
+                                Json(serde_json::json!({"generation": MAX_GENERATION + 1}))
+                                    .into_response()
+                            }
+                            _ => Json(serde_json::json!({"generation": -1})).into_response(),
+                        };
+                    }
+                    StatusCode::NOT_FOUND.into_response()
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = BrokerClient::local(&format!("http://{address}/")).unwrap();
+        let room = "room____________";
+        let current = Capability { payload: serde_json::json!({"room":room,"role":"producer","nonce":"nonce___________","expiresAt":12345}).to_string(), signature: "a".repeat(64) };
+        let next = Capability { payload: serde_json::json!({"room":room,"role":"producer","nonce":"next____________","previousNonce":"nonce___________","expiresAt":12345}).to_string(), signature: "b".repeat(64) };
+        assert!(client.rotate(room, &current, &next, 0).await.is_err());
+        let cap = |payload: &str| Capability {
+            payload: payload.into(),
+            signature: "sig".into(),
+        };
+        assert!(client.session_generation(room, &current).await.is_err());
+        assert_eq!(client.session_generation(room, &next).await.unwrap(), 1);
+        assert_eq!(
+            client.session_generation(room, &cap("max")).await.unwrap(),
+            MAX_GENERATION
+        );
+        assert!(
+            client
+                .session_generation(room, &cap("overflow"))
+                .await
+                .is_err()
+        );
+        assert!(
+            client
+                .session_generation(room, &cap("negative"))
+                .await
+                .is_err()
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn generation_monitor_fails_closed_and_uses_selected_generation() {
+        let (requests, mut seen) = tokio::sync::mpsc::unbounded_channel();
+        let app = Router::new().route(
+            "/{*path}",
+            post(move |Json(body): Json<serde_json::Value>| {
+                let requests = requests.clone();
+                async move {
+                    requests.send(body).unwrap();
+                    StatusCode::FORBIDDEN
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = BrokerClient::local(&format!("http://{address}/")).unwrap();
+        let cap = Capability {
+            payload: "p".into(),
+            signature: "s".into(),
+        };
+        for generation in [0, 7, MAX_GENERATION + 1] {
+            let (cancel, cancelled) = tokio::sync::watch::channel(false);
+            client
+                .monitor_transfer_generation(
+                    "room____________",
+                    &cap,
+                    generation,
+                    Duration::from_secs(1),
+                    cancel,
+                )
+                .await;
+            assert!(*cancelled.borrow());
+            if generation <= MAX_GENERATION {
+                let body = seen.try_recv().unwrap();
+                if generation == 0 {
+                    assert!(body.get("generation").is_none());
+                } else {
+                    assert_eq!(body["generation"], generation);
+                }
+            } else {
+                assert!(seen.try_recv().is_err());
+            }
+        }
+        server.abort();
+    }
 
     #[tokio::test]
     async fn successor_and_generation_protocol() {
