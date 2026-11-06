@@ -1,0 +1,34 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Local gift reader integration</title></head><body><div id="root"></div><script>
+// Only the native file boundary is simulated. Real receipt hashing, import,
+// shelf JSON, local map loading, reader hook and EPUB rendering run unchanged.
+window.CapacitorCustomPlatform = { name: "android" };
+window.giftReaderFiles = new Map();
+window.giftReaderSlow = false; window.giftReaderReadStarted = false; window.giftReaderReadAborted = false;
+window.Capacitor = {
+  PluginHeaders: [{ name: "Filesystem", methods: [{ name: "stat", rtype: "promise" }, { name: "getUri", rtype: "promise" }] }],
+  convertFileSrc: uri => location.origin + "/_capacitor_file_" + uri.slice("file://".length),
+  nativePromise: async (plugin, method, options) => {
+    const bytes = window.giftReaderFiles.get(options.path);
+    if (plugin !== "Filesystem" || !bytes) throw new Error("Missing simulated private file");
+    if (method === "stat") return { type: "file", size: bytes.length };
+    if (method === "getUri") return { uri: "file:///app/" + options.path };
+    throw new Error("Unexpected native operation");
+  }
+};
+const originalFetch = window.fetch.bind(window);
+window.fetch = async (input, init) => {
+  const url = new URL(typeof input === "string" ? input : input.url, location.href);
+  if (url.pathname.startsWith("/_capacitor_file_/app/")) {
+    if (window.giftReaderSlow && url.pathname.endsWith("/alignment.sync.json")) {
+      window.giftReaderReadStarted = true;
+      return new Promise((resolve, reject) => {
+        const abort = () => { window.giftReaderReadAborted = true; reject(new DOMException("Local map read aborted", "AbortError")); };
+        if (init?.signal?.aborted) abort(); else init?.signal?.addEventListener("abort", abort, { once: true });
+      });
+    }
+    const bytes = window.giftReaderFiles.get(decodeURIComponent(url.pathname.slice("/_capacitor_file_/app/".length)));
+    return bytes ? new Response(bytes, { headers: { "Content-Length": String(bytes.length) } }) : new Response(null, { status: 404 });
+  }
+  return originalFetch(input, init);
+};
+</script><script type="module" src="./gift-local-reader.tsx"></script></body></html>

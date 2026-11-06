@@ -49,7 +49,7 @@ Grab a release from the [GitHub releases page](https://github.com/DonovanMontoya
 
 Combined installations notify administrators about new versions, and owners can install verified updates from the app. For step-by-step setup, see [Install a Release](docs/installing-a-release.md), then [Using OperaLibre](docs/using-operalibre.md) for phones, reader accounts, uploads, readalong, and Audible imports.
 
-An iPhone TestFlight build is also available: https://testflight.apple.com/join/x69Ffa33
+OperaLibre for iPhone and iPad is on the [App Store](https://apps.apple.com/us/app/operalibre/id6792065037). Beta builds are distributed through [TestFlight](https://testflight.apple.com/join/x69Ffa33); beta availability may vary.
 
 ## Build and run from source
 

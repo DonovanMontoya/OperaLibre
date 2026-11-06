@@ -17281,6 +17281,7 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 .admin-sync-scheduled em { font-style: normal; opacity: 0.75; }
 .admin-sync-monitor .admin-sync-scheduled button { font-size: 0.72rem; font-weight: 500; }
 .admin-sync-schedule-form { display: grid; gap: 10px; padding: 12px; margin-bottom: 12px; border-radius: 8px; background: rgba(var(--ink-rgb), 0.04); }
+.admin-sync-schedule-form fieldset { display: grid; gap: 10px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .admin-sync-schedule-form label { font-size: 0.75rem; }
 .admin-sync-schedule-form input { width: 100%; min-width: 0; box-sizing: border-box; min-height: 40px; padding: 8px 10px; border: 1px solid rgba(var(--ink-rgb), 0.2); border-radius: 6px; color: var(--ink); background: rgba(255, 255, 255, 0.35); font: inherit; font-size: 0.85rem; }
 .admin-sync-schedule-form > div { display: flex; flex-wrap: wrap; gap: 8px; }

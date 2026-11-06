@@ -8,6 +8,8 @@ license-file = "../../LICENSE.md"
 
 [dependencies]
 anyhow = "1.0"
+async-trait = "0.1"
+bytes = "1"
 argon2 = "0.6"
 axum = { version = "0.8", features = ["multipart"] }
 base64 = "0.23"
@@ -15,6 +17,7 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 chrono-tz = "0.10"
 fs2 = "0.4"
 rand = "0.10"
+ring = "0.17"
 same-file = "1.0"
 id3 = "1.16"
 lofty = "0.25.1"
@@ -47,6 +50,9 @@ ed25519-dalek = "3"
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# WebRTC peer transport; integration remains feature-gated until the server
+# handshake and platform-specific builds are validated.
+webrtc = "0.21.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

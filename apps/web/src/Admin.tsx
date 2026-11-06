@@ -71,6 +71,9 @@ import { ExperimentSection } from "./ExperimentSection";
 import { SyncJobMonitor } from "./SyncJobMonitor";
 import { LibroImports } from "./LibroImports";
 import { LibroCatalog } from "./LibroCatalog";
+import { GiftBrokerExperiment } from "./GiftBrokerExperiment";
+import { getServerType } from "./api";
+import { isDemoMode } from "./demo";
 
 type AdminSection = "overview" | "users" | "requests" | "books" | "experiments" | "imports";
 type AccountRole = "owner" | "admin" | "reader";
@@ -1063,6 +1066,7 @@ export function AdminPanel({
                 </ExperimentSection>
               </article>
               <AgentAccessExperiment isOwner={currentUser.isOwner} />
+              {import.meta.env.DEV && import.meta.env.VITE_EXPERIMENTAL_GIFT_BROKER === "true" && currentUser.isOwner && !isDemoMode() && getServerType() === "operalibre" ? <GiftBrokerExperiment /> : null}
             </div>
           </section>
         </div>

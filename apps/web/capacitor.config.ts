@@ -8,6 +8,8 @@ const config: CapacitorConfig = {
   // Bridge payloads now include transient provider passwords and signed URLs.
   // Never emit automatic native bridge payload logging, including debug builds.
   loggingBehavior: "none",
+  // Adding App solely for gift URL delivery must not change Android Back.
+  plugins: { App: { disableBackButtonHandler: true } },
   android: {
     allowMixedContent: true,
     backgroundColor: "#f1e7d0"

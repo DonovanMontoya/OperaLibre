@@ -70,6 +70,66 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+        env:
+          OPERALIBRE_GIFT_HTTP_INVENTORY_FIXTURE: ${{ runner.temp }}/gift-inventory.json
+          OPERALIBRE_GIFT_METADATA_FIXTURE: ${{ runner.temp }}/gift-metadata.json
+          OPERALIBRE_GIFT_NATIVE_ARCHIVE_FIXTURE: ${{ runner.temp }}/gift-native.zip.json
+          OPERALIBRE_GIFT_ALIGNMENT_ARCHIVE_FIXTURE: ${{ runner.temp }}/gift-alignment.zip.json
+          OPERALIBRE_PEER_FIXTURE_PATH: ${{ runner.temp }}/gift-peer-offer.json
+          OPERALIBRE_PREVIEW_FIXTURE_PATH: ${{ runner.temp }}/gift-preview.json
+          OPERALIBRE_COVER_PREVIEW_FIXTURE: ${{ runner.temp }}/gift-cover.json
+
+      - name: Setup Node for cross-runtime gift contracts
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Java for server ZIP interoperability
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Test actual Worker, peer recovery and recipient contracts
+        working-directory: ${{ github.workspace }}
+        env:
+          OPERALIBRE_WORKER_FIXTURE_SCRIPT: ${{ github.workspace }}/share-broker/test/node-fixture-server.mjs
+          OPERALIBRE_GIFT_HTTP_INVENTORY_FIXTURE: ${{ runner.temp }}/gift-inventory.json
+          OPERALIBRE_GIFT_METADATA_FIXTURE: ${{ runner.temp }}/gift-metadata.json
+          OPERALIBRE_GIFT_ALIGNMENT_ARCHIVE_FIXTURE: ${{ runner.temp }}/gift-alignment.zip.json
+          OPERALIBRE_PEER_FIXTURE_PATH: ${{ runner.temp }}/gift-peer-offer.json
+          OPERALIBRE_PREVIEW_FIXTURE_PATH: ${{ runner.temp }}/gift-preview.json
+          OPERALIBRE_COVER_PREVIEW_FIXTURE: ${{ runner.temp }}/gift-cover.json
+        run: |
+          npm ci
+          npx tsc -p share-broker/tsconfig.test.json
+          cargo test --locked --manifest-path apps/server/Cargo.toml retained_invitation_recovers_with_actual_worker_and_real_recipient_peer -- --ignored --nocapture
+          cargo test --locked --manifest-path apps/server/Cargo.toml selected_sender_survives_full_process_restart -- --ignored --nocapture
+          node --experimental-strip-types --test apps/web/test/giftInventoryHttpContract.test.ts apps/web/test/giftMetadata.test.ts apps/web/test/giftLocalSync.test.ts apps/web/test/giftSignedPreview.test.ts apps/web/test/giftPeerAuthentication.test.ts
+
+      - name: Test actual selected server ZIPs with native host extractor
+        working-directory: ${{ github.workspace }}
+        run: |
+          OPERALIBRE_GIFT_NATIVE_ARCHIVE_FIXTURE="$RUNNER_TEMP/gift-native.zip.json" node --test script/test_gift_server_archive.mjs
+          OPERALIBRE_GIFT_NATIVE_ARCHIVE_FIXTURE="$RUNNER_TEMP/gift-alignment.zip.json" node --test script/test_gift_server_archive.mjs
+
+      - name: Test actual selected EPUB in standalone reader
+        working-directory: ${{ github.workspace }}
+        env:
+          OPERALIBRE_GIFT_ALIGNMENT_ARCHIVE_FIXTURE: ${{ runner.temp }}/gift-alignment.zip.json
+        run: |
+          npx playwright install --with-deps chromium
+          node script/test_book_gifts.mjs --local-reader-only
+
+      - name: Upload actual gift reader fixture screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: operalibre-gift-cross-runtime
+          path: output/book-gifts/gift-local-readalong-*.png
+          retention-days: 7
+          if-no-files-found: ignore
 
   server-windows:
     needs: changes
@@ -96,6 +156,9 @@ jobs:
 
       - name: Test Windows Libation job cleanup
         run: cargo test --locked libation_download::windows_tests -- --nocapture
+
+      - name: Test Windows gift selected-file denial boundary
+        run: cargo test --locked share::windows_open::tests -- --nocapture
 
   launcher:
     needs: changes
@@ -163,6 +226,9 @@ jobs:
       - name: Test
         run: npm test -w @operalibre/web
 
+      - name: Test book gifting broker
+        run: npm run test:broker
+
       - name: Test development proxy
         run: node --experimental-strip-types --test script/dev_proxy.test.mjs
 
@@ -173,6 +239,18 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
           npm run test:lifecycle -w @operalibre/web -- --project=browser
+
+      - name: Test experimental gift browser integration
+        run: npm run test:book-gifts
+
+      - name: Upload gift fixture screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: operalibre-book-gifts
+          path: output/book-gifts/*.png
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Upload cover editor screenshot
         if: always()
@@ -275,6 +353,20 @@ jobs:
       - name: Build unsigned release APK
         run: npm run build:android -- release
 
+      - name: Test staged gift extraction on the JVM
+        run: |
+          gift_test_dir="$(mktemp -d "$RUNNER_TEMP/operalibre-gift-extractor.XXXXXX")"
+          javac -d "$gift_test_dir" \
+            apps/web/android/app/src/main/java/com/operalibre/mobile/GiftArchiveExtractor.java \
+            apps/web/android/tests/GiftArchiveExtractorTest.java \
+            apps/web/android/tests/GiftLargeZip64InteropTest.java \
+            apps/web/android/app/src/main/java/com/operalibre/mobile/GiftDocumentLifecycle.java \
+            apps/web/android/tests/GiftDocumentLifecycleTest.java \
+            apps/web/android/tests/GiftAndroidPublicApiTest.java
+          java -cp "$gift_test_dir" GiftArchiveExtractorTest
+          java -cp "$gift_test_dir" com.operalibre.mobile.GiftDocumentLifecycleTest
+          java -cp "$gift_test_dir" GiftAndroidPublicApiTest
+
       - name: Test Android download policy
         run: cd apps/web/android && ./gradlew testDebugUnitTest
 
@@ -327,6 +419,31 @@ jobs:
 
       - name: Test simulator runtime selection
         run: python3 script/test_simulator_runtime.py
+
+      # Compile the otherwise excluded gift bridge without enabling the web,
+      # broker or server feature, signing an app, or publishing an artifact.
+      - name: Setup Node for native gift compile
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Prepare iOS simulator sources
+        run: |
+          npm ci
+          npm run sync:ios
+
+      - name: Compile experimental iOS gift bridge
+        run: |
+          xcodebuild \
+            -project apps/web/ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/operalibre-gift-compile" \
+            'OTHER_SWIFT_FLAGS=$(inherited) -DOPERALIBRE_EXPERIMENTAL_GIFTS' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
 
   carplay:
     needs: changes

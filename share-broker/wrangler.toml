@@ -1,0 +1,14 @@
+name = "operalibre-share-broker"
+main = "src/index.ts"
+compatibility_date = "2026-11-05"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "SecureRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SecureRoom"]
+
+[vars]
+# Set CAPABILITY_SECRET as an owner-managed secret; never commit it.

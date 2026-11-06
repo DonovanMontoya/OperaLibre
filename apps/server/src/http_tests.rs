@@ -15,6 +15,11 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
+#[path = "share_recovery_service_tests.rs"]
+mod share_recovery_service_tests;
+#[path = "share_setup_http_tests.rs"]
+mod share_setup_http_tests;
+
 #[tokio::test]
 async fn libro_nicknames_are_private_persistent_and_do_not_change_purchase_identity() {
     let server = TestServer::start(0).await;
@@ -1094,6 +1099,697 @@ struct TestResponse {
     status: StatusCode,
     headers: HeaderMap,
     body: Vec<u8>,
+}
+
+#[tokio::test]
+async fn share_recovery_route_requires_owner_and_https_broker() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "share-recovery-reader").await;
+    let route = "/api/admin/shares/revocations/retry";
+    let body = serde_json::json!({"brokerOrigin":"http://127.0.0.1:9/","ownerSecret":"secret"});
+    assert_eq!(
+        server
+            .send_json("POST", route, &reader, body.clone())
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        server.send_json("POST", route, &owner, body).await.status,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn corrupt_share_store_fails_closed_instead_of_discarding_revocations() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    server
+        .state
+        .database
+        .transaction(|transaction| {
+            write_document(
+                transaction,
+                crate::share::SHARE_INVITATIONS_DOCUMENT,
+                "{invalid",
+            )
+        })
+        .await
+        .unwrap();
+    let response = server.get("/api/shares/not-a-token/preview", "").await;
+    assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let created = server.send_json("POST", "/api/shares", &owner, serde_json::json!({"manifest": {"version":1,"bookId":book_id,"title":"not a matching book","senderDisplayName":"Owner","assets":[],"totalBytes":0}})).await;
+    assert_ne!(created.status, StatusCode::OK);
+    let stored = server
+        .state
+        .database
+        .call(|connection| read_document(connection, crate::share::SHARE_INVITATIONS_DOCUMENT))
+        .await
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("{invalid"));
+}
+
+#[tokio::test]
+async fn revocation_serializes_with_sender_registration() {
+    let server = TestServer::start(1).await;
+    let owner_token = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner_token).await;
+    assert_eq!(
+        server
+            .upload_ebook(
+                &book_id,
+                &owner_token,
+                "book.epub",
+                alignment::build_test_epub()
+            )
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let library = server.state.library.read().await;
+    let book = library.book(&book_id).unwrap().clone();
+    let reading = book.reading_file.as_ref().unwrap();
+    let size = std::fs::metadata(library.reading_paths.get(&reading.id).unwrap())
+        .unwrap()
+        .len();
+    let selected_bytes = std::fs::read(library.reading_paths.get(&reading.id).unwrap()).unwrap();
+    drop(library);
+    let response = server.send_json("POST", "/api/shares", &owner_token, serde_json::json!({"manifest":{"version":1,"bookId":book_id,"title":book.title,"senderDisplayName":"Owner","assets":[{"id":reading.id,"kind":"ebook","fileName":"book.epub","sizeBytes":size,"sha256":"a".repeat(64)}],"totalBytes":size}})).await;
+    assert_eq!(response.status, StatusCode::OK);
+    let token = response.json()["token"].as_str().unwrap().to_string();
+    let auth = {
+        let users = server.state.users.read().await;
+        AuthUser::from(&users.users[0])
+    };
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let preview = Arc::new(std::sync::Mutex::new(None));
+    let revocations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let app = Router::new().route(
+        "/{*path}",
+        post({
+            let entered = entered.clone();
+            let release = release.clone();
+            let preview = preview.clone();
+            let revocations = revocations.clone();
+            move |Path(path): Path<String>, Json(body): Json<serde_json::Value>| {
+                let entered = entered.clone();
+                let release = release.clone();
+                let preview = preview.clone();
+                let revocations = revocations.clone();
+                async move {
+                    if path == "issue" && body["role"] == "recipient" {
+                        entered.notify_one();
+                        release.notified().await;
+                        return (
+                            StatusCode::OK,
+                            Json(serde_json::json!({"payload":"test","signature":"test"})),
+                        );
+                    }
+                    if path == "issue" {
+                        return (
+                            StatusCode::OK,
+                            Json(serde_json::json!({"payload":"test","signature":"test"})),
+                        );
+                    }
+                    if path.starts_with("preview-put/") {
+                        *preview.lock().unwrap() = Some(body);
+                    }
+                    if path.starts_with("cleanup/")
+                        && revocations.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+                    {
+                        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({})));
+                    }
+                    (StatusCode::OK, Json(serde_json::json!([])))
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let broker_server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let broker = crate::share_broker::BrokerClient::local(&format!("http://{address}/")).unwrap();
+    let state = server.state.clone();
+    let sender_auth = auth.clone();
+    let sender_token = token.clone();
+    let sender_broker = broker.clone();
+    let start = tokio::spawn(async move {
+        crate::share::start_invitation_sender(
+            true,
+            &state,
+            &sender_auth,
+            &sender_token,
+            &sender_broker,
+            "owner",
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .unwrap();
+    let state = server.state.clone();
+    let revoke_auth = auth.clone();
+    let revoke_token = token.clone();
+    let revoke = tokio::spawn(async move {
+        crate::share::revoke_share(State(state), Extension(revoke_auth), Path(revoke_token)).await
+    });
+    tokio::task::yield_now().await;
+    assert!(!revoke.is_finished());
+    release.notify_one();
+    let session = start.await.unwrap().unwrap();
+    {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use ed25519_dalek::Verifier;
+        use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+        let url = reqwest::Url::parse(&session.gift_url).unwrap();
+        assert!(url.query().is_none());
+        let query = reqwest::Url::parse(&format!(
+            "https://example.test/?{}",
+            url.fragment().unwrap()
+        ))
+        .unwrap();
+        let fields: std::collections::HashMap<_, _> = query.query_pairs().into_owned().collect();
+        let key = URL_SAFE_NO_PAD.decode(&fields["key"]).unwrap();
+        let public: [u8; 32] = URL_SAFE_NO_PAD
+            .decode(&fields["signing"])
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let stored = preview.lock().unwrap().clone().unwrap();
+        assert!(!stored.to_string().contains("Owner"));
+        let nonce: [u8; 12] = URL_SAFE_NO_PAD
+            .decode(stored["nonce"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let mut ciphertext = URL_SAFE_NO_PAD
+            .decode(stored["ciphertext"].as_str().unwrap())
+            .unwrap();
+        let plaintext = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &key).unwrap())
+            .open_in_place(
+                Nonce::assume_unique_for_key(nonce),
+                Aad::from(b"operalibre-gift-preview-v1".as_slice()),
+                &mut ciphertext,
+            )
+            .unwrap();
+        let signed: serde_json::Value = serde_json::from_slice(plaintext).unwrap();
+        let payload = URL_SAFE_NO_PAD
+            .decode(signed["payload"].as_str().unwrap())
+            .unwrap();
+        let signature = ed25519_dalek::Signature::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(signed["signature"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        ed25519_dalek::VerifyingKey::from_bytes(&public)
+            .unwrap()
+            .verify(&payload, &signature)
+            .unwrap();
+        let decoded: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(decoded["sender"], "Owner");
+        assert_eq!(decoded["assets"].as_array().unwrap().len(), 1);
+        assert_eq!(decoded["assets"][0]["name"], "book.epub");
+        assert_ne!(decoded["assets"][0]["sha256"], "a".repeat(64));
+        use sha2::Digest;
+        let actual: String = sha2::Sha256::digest(&selected_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(decoded["assets"][0]["sha256"], actual);
+    }
+    assert!(
+        matches!(revoke.await.unwrap(), Err(error) if error.status == StatusCode::SERVICE_UNAVAILABLE)
+    );
+    let saved = server
+        .state
+        .database
+        .call(|connection| {
+            Ok(read_document(connection, crate::share::SHARE_INVITATIONS_DOCUMENT)?.unwrap())
+        })
+        .await
+        .unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    let rooms = saved[0]["brokerRooms"].as_array().unwrap();
+    assert_eq!(rooms.len(), 1);
+    assert_eq!(rooms[0]["room"].as_str().unwrap().len(), 43);
+    assert_eq!(
+        rooms[0].as_object().unwrap().len(),
+        5,
+        "credentials must not be persisted"
+    );
+    // Simulate losing runtime state after the local revoke was persisted.
+    crate::share::forget_invitation_runtime_for_test(&server.state, &token).await;
+    let mut restarted = server.state.clone();
+    restarted.database = Database::open(&server.state.database_path).unwrap();
+    assert!(
+        matches!(crate::share::revoke_share(State(restarted.clone()), Extension(auth.clone()), Path(token.clone())).await, Err(error) if error.status == StatusCode::SERVICE_UNAVAILABLE)
+    );
+    let wrong_broker = crate::share_broker::BrokerClient::local("http://127.0.0.1:9/").unwrap();
+    let mut stranger = auth.clone();
+    stranger.id = "other-user".into();
+    assert!(
+        crate::share::retry_share_broker_revocation(
+            &restarted, &stranger, &token, &broker, "owner"
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        crate::share::retry_share_broker_revocation(
+            &restarted,
+            &auth,
+            &token,
+            &wrong_broker,
+            "owner"
+        )
+        .await
+        .is_err()
+    );
+    let retried = crate::share::retry_revocations_for_owner(&restarted, &broker, "owner")
+        .await
+        .unwrap();
+    assert_eq!((retried.completed, retried.pending), (1, 0));
+    assert_eq!(revocations.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), session.wait())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    let after =
+        crate::share::start_invitation_sender(true, &server.state, &auth, &token, &broker, "owner")
+            .await;
+    assert!(matches!(after, Err(error) if error.status == StatusCode::NOT_FOUND));
+    broker_server.abort();
+}
+
+#[tokio::test]
+async fn failed_reserved_setup_is_cleaned_or_durably_retried() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    assert_eq!(
+        server
+            .upload_ebook(&book_id, &owner, "book.epub", alignment::build_test_epub())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let library = server.state.library.read().await;
+    let book = library.book(&book_id).unwrap().clone();
+    let reading = book.reading_file.as_ref().unwrap();
+    let size = std::fs::metadata(library.reading_paths.get(&reading.id).unwrap())
+        .unwrap()
+        .len();
+    drop(library);
+    let created = server.send_json("POST", "/api/shares", &owner, serde_json::json!({"manifest":{"version":1,"bookId":book_id,"title":book.title,"senderDisplayName":"Owner","assets":[{"id":reading.id,"kind":"ebook","fileName":"book.epub","sizeBytes":size,"sha256":"a".repeat(64)}],"totalBytes":size}})).await;
+    assert_eq!(created.status, StatusCode::OK);
+    let token = created.json()["token"].as_str().unwrap().to_string();
+    let auth = {
+        let users = server.state.users.read().await;
+        AuthUser::from(&users.users[0])
+    };
+    let fail_cleanup = Arc::new(AtomicBool::new(false));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = Router::new().route(
+        "/{*path}",
+        post({
+            let fail_cleanup = fail_cleanup.clone();
+            let calls = calls.clone();
+            move |Path(path): Path<String>,
+                  headers: HeaderMap,
+                  Json(body): Json<serde_json::Value>| {
+                let fail_cleanup = fail_cleanup.clone();
+                let calls = calls.clone();
+                async move {
+                    assert_eq!(
+                        headers.get(AUTHORIZATION).and_then(|h| h.to_str().ok()),
+                        Some("Bearer owner")
+                    );
+                    if path == "issue" {
+                        return StatusCode::SERVICE_UNAVAILABLE;
+                    }
+                    if path.starts_with("reserve/") || path.starts_with("cleanup/") {
+                        assert_eq!(body["reservationId"].as_str().unwrap().len(), 43);
+                    }
+                    if path.starts_with("cleanup/") {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        if fail_cleanup.load(Ordering::SeqCst) {
+                            return StatusCode::SERVICE_UNAVAILABLE;
+                        }
+                    }
+                    StatusCode::NO_CONTENT
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let broker = crate::share_broker::BrokerClient::local(&format!("http://{address}/")).unwrap();
+    assert!(
+        crate::share::start_invitation_sender(true, &server.state, &auth, &token, &broker, "owner")
+            .await
+            .is_err()
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let saved = server
+        .state
+        .database
+        .call(|db| Ok(read_document(db, crate::share::SHARE_INVITATIONS_DOCUMENT)?.unwrap()))
+        .await
+        .unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert!(saved[0]["brokerRooms"].as_array().unwrap().is_empty());
+    fail_cleanup.store(true, Ordering::SeqCst);
+    assert!(
+        crate::share::start_invitation_sender(true, &server.state, &auth, &token, &broker, "owner")
+            .await
+            .is_err()
+    );
+    let saved = server
+        .state
+        .database
+        .call(|db| Ok(read_document(db, crate::share::SHARE_INVITATIONS_DOCUMENT)?.unwrap()))
+        .await
+        .unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(saved[0]["brokerRooms"][0]["cleanupPending"], true);
+    fail_cleanup.store(false, Ordering::SeqCst);
+    let result = crate::share::retry_revocations_for_owner(&server.state, &broker, "owner")
+        .await
+        .unwrap();
+    assert_eq!((result.completed, result.pending), (1, 0));
+    // Permanently uncleanable legacy entries must not starve a later room.
+    let template = saved[0]["brokerRooms"][0].clone();
+    let mut rooms = Vec::new();
+    for index in 0..16 {
+        let mut legacy = template.clone();
+        legacy["room"] = format!("unreserved_{index:06}").into();
+        legacy["reservationVersion"] = 0.into();
+        rooms.push(legacy);
+    }
+    let mut later = template;
+    later["room"] = "recoverable_room_".into();
+    rooms.push(later);
+    let mut document = saved;
+    document[0]["brokerRooms"] = rooms.into();
+    let payload = serde_json::to_string(&document).unwrap();
+    server
+        .state
+        .database
+        .transaction(move |tx| {
+            write_document(tx, crate::share::SHARE_INVITATIONS_DOCUMENT, &payload)
+        })
+        .await
+        .unwrap();
+    let first = crate::share::retry_revocations_for_owner(&server.state, &broker, "owner")
+        .await
+        .unwrap();
+    assert_eq!((first.completed, first.pending), (0, 17));
+    let second = crate::share::retry_revocations_for_owner(&server.state, &broker, "owner")
+        .await
+        .unwrap();
+    assert_eq!((second.completed, second.pending), (1, 16));
+    task.abort();
+}
+
+#[tokio::test]
+async fn owner_can_cleanup_unrevoked_orphan_after_runtime_restart() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    assert_eq!(
+        server
+            .upload_ebook(&book_id, &owner, "book.epub", alignment::build_test_epub())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let library = server.state.library.read().await;
+    let book = library.book(&book_id).unwrap().clone();
+    let reading = book.reading_file.as_ref().unwrap();
+    let size = std::fs::metadata(library.reading_paths.get(&reading.id).unwrap())
+        .unwrap()
+        .len();
+    drop(library);
+    let created = server.send_json("POST", "/api/shares", &owner, serde_json::json!({"manifest":{"version":1,"bookId":book_id,"title":book.title,"senderDisplayName":"Owner","assets":[{"id":reading.id,"kind":"ebook","fileName":"book.epub","sizeBytes":size,"sha256":"a".repeat(64)}],"totalBytes":size}})).await;
+    let token = created.json()["token"].as_str().unwrap().to_string();
+    let auth = {
+        let users = server.state.users.read().await;
+        AuthUser::from(&users.users[0])
+    };
+    let app = Router::new().route(
+        "/{*path}",
+        post(|Path(path): Path<String>| async move {
+            if path.starts_with("session/") {
+                return (StatusCode::OK, Json(serde_json::json!({"generation": 0})));
+            }
+            if path == "issue" {
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({"payload":"test","signature":"test"})),
+                );
+            }
+            (StatusCode::OK, Json(serde_json::json!([])))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let broker = crate::share_broker::BrokerClient::local(&format!("http://{address}/")).unwrap();
+    let session =
+        crate::share::start_invitation_sender(true, &server.state, &auth, &token, &broker, "owner")
+            .await
+            .unwrap();
+    let active = crate::share::retry_revocations_for_owner(&server.state, &broker, "owner")
+        .await
+        .unwrap();
+    assert_eq!((active.completed, active.pending), (0, 0));
+    crate::share::forget_invitation_runtime_for_test(&server.state, &token).await;
+    let mut restarted = server.state.clone();
+    restarted.database = Database::open(&server.state.database_path).unwrap();
+    let orphan = crate::share::retry_revocations_for_owner(&restarted, &broker, "owner")
+        .await
+        .unwrap();
+    assert_eq!((orphan.completed, orphan.pending), (1, 0));
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), session.wait())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn invitation_archive_runs_through_experimental_service_and_peer() -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let server = TestServer::start(1).await;
+        let owner = server.setup_owner().await;
+        let (book_id, _) = server.first_book_and_track(&owner).await;
+        let upload = server.upload_ebook(&book_id, &owner, "book.epub", alignment::build_test_epub()).await;
+        assert_eq!(upload.status, StatusCode::OK);
+        let library = server.state.library.read().await;
+        let book = library.book(&book_id).unwrap().clone();
+        let reading = book.reading_file.as_ref().unwrap();
+        let size = std::fs::metadata(library.reading_paths.get(&reading.id).unwrap())?.len();
+        drop(library);
+        let created = server.send_json("POST", "/api/shares", &owner, serde_json::json!({"manifest": {
+            "version":1,"bookId":book_id,"title":book.title,"senderDisplayName":"Owner",
+            "assets":[{"id":reading.id,"kind":"ebook","fileName":"book.epub","sizeBytes":size,"sha256":"a".repeat(64)}],"totalBytes":size
+        }})).await;
+        assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+        let token = created.json()["token"].as_str().unwrap().to_string();
+        let download = server.get(&format!("/api/shares/{token}/download"), "").await;
+        assert_eq!(download.status, StatusCode::OK);
+        let archive = download.body;
+        let broker_app = Router::new().route("/{*path}", post(|Path(path): Path<String>| async move {
+            if path == "issue" { return (StatusCode::OK, Json(serde_json::json!({"payload":"producer","signature":"test"}))); }
+            (StatusCode::OK, Json(serde_json::json!({})))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let broker_task = tokio::spawn(async move { axum::serve(listener, broker_app).await });
+        let broker = crate::share_broker::BrokerClient::local(&format!("http://{address}/"))?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+        let session = crate::share_service::start(true, &broker, "owner", "room____________", "nonce___________", now + 60, move |_, _| async move {
+            let digest = Sha256::digest(&archive).into();
+            let mut staged = crate::share_transfer::Receiver::resume(tempfile::tempfile()?, 0, archive.len() as u64, digest)?;
+            crate::share_peer_tests::transfer_round(&archive, 0, archive.len(), &mut staged, false, false).await?;
+            let mut zip = zip::ZipArchive::new(staged.finish()?)?;
+            assert_eq!(zip.len(), 1);
+            assert!(zip.by_name("book.epub").is_ok());
+            assert!(zip.by_name("01 Track.wav").is_err());
+            Ok(())
+        }).await?;
+        session.wait().await?;
+        broker_task.abort();
+        Ok::<(), anyhow::Error>(())
+    }).await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn share_http_download_contains_only_selected_ebook_and_generated_metadata() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let upload = server
+        .upload_ebook(&book_id, &owner, "book.epub", alignment::build_test_epub())
+        .await;
+    assert_eq!(upload.status, StatusCode::OK, "{}", upload.text());
+    let library = server.state.library.read().await;
+    let book = library.book(&book_id).unwrap().clone();
+    let reading = book.reading_file.as_ref().unwrap();
+    let ebook_size = std::fs::metadata(library.reading_paths.get(&reading.id).unwrap())
+        .unwrap()
+        .len();
+    let metadata_size = canonical_share_metadata(&book).unwrap().len() as u64;
+    drop(library);
+    let created = server.send_json("POST", "/api/shares", &owner, serde_json::json!({
+        "manifest": {
+            "version": 1, "bookId": book_id, "title": book.title,
+            "senderDisplayName": "Owner", "personalMessage": "Enjoy",
+            "assets": [
+                {"id": reading.id, "kind": "ebook", "fileName": "book.epub", "sizeBytes": ebook_size, "sha256": "a".repeat(64)},
+                {"id": format!("metadata:{}", book.id), "kind": "metadata", "fileName": "metadata.json", "sizeBytes": metadata_size, "sha256": "b".repeat(64)}
+            ], "totalBytes": ebook_size + metadata_size
+        }
+    })).await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let token = created.json()["token"].as_str().unwrap().to_string();
+    let reader_token = server.add_reader(&owner, "unrelated-share-reader").await;
+    let reader_json = server.get("/api/auth/me", &reader_token).await.json();
+    let reader_id = reader_json["id"].as_str().unwrap();
+    let reader = {
+        let users = server.state.users.read().await;
+        AuthUser::from(
+            users
+                .users
+                .iter()
+                .find(|user| user.id == reader_id)
+                .unwrap(),
+        )
+    };
+    let broker = crate::share_broker::BrokerClient::local("http://127.0.0.1:9/").unwrap();
+    let unauthorized = crate::share::start_invitation_sender(
+        true,
+        &server.state,
+        &reader,
+        &token,
+        &broker,
+        "secret",
+    )
+    .await;
+    assert!(matches!(unauthorized, Err(error) if error.status == StatusCode::NOT_FOUND));
+    let preview = server
+        .get(&format!("/api/shares/{token}/preview"), "")
+        .await;
+    assert_eq!(preview.status, StatusCode::OK);
+    let download = server
+        .get(&format!("/api/shares/{token}/download"), "")
+        .await;
+    assert_eq!(download.status, StatusCode::OK, "{}", download.text());
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(download.body)).unwrap();
+    assert!(zip.by_name("book.epub").is_ok());
+    assert!(zip.by_name("metadata.json").is_ok());
+    assert!(zip.by_name("01 Track.wav").is_err());
+}
+
+#[tokio::test]
+async fn share_http_revoke_and_expiry_are_enforced() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    assert_eq!(
+        server
+            .upload_ebook(&book_id, &owner, "book.epub", alignment::build_test_epub())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let library = server.state.library.read().await;
+    let book = library.book(&book_id).unwrap().clone();
+    let reading = book.reading_file.as_ref().unwrap();
+    let size = std::fs::metadata(library.reading_paths.get(&reading.id).unwrap())
+        .unwrap()
+        .len();
+    drop(library);
+    let created = server.send_json("POST", "/api/shares", &owner, serde_json::json!({
+        "manifest": {"version": 1, "bookId": book_id, "title": book.title, "senderDisplayName": "Owner", "assets": [{"id": reading.id, "kind": "ebook", "fileName": "book.epub", "sizeBytes": size, "sha256": "a".repeat(64)}], "totalBytes": size}
+    })).await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let token = created.json()["token"].as_str().unwrap().to_string();
+    let expired_payload = server
+        .state
+        .database
+        .call(|connection| read_document(connection, SHARE_INVITATIONS_DOCUMENT))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut invitations: Vec<ShareInvitation> = serde_json::from_str(&expired_payload).unwrap();
+    invitations[0].expires_at = 0;
+    let expired_payload = serde_json::to_string(&invitations).unwrap();
+    server
+        .state
+        .database
+        .transaction(move |transaction| {
+            write_document(transaction, SHARE_INVITATIONS_DOCUMENT, &expired_payload)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        server
+            .get(&format!("/api/shares/{token}/preview"), "")
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // A fresh invitation exercises revocation independently of expiry.
+    let created = server.send_json("POST", "/api/shares", &owner, serde_json::json!({
+        "manifest": {"version": 1, "bookId": book.id, "title": book.title, "senderDisplayName": "Owner", "assets": [{"id": reading.id, "kind": "ebook", "fileName": "book.epub", "sizeBytes": size, "sha256": "a".repeat(64)}], "totalBytes": size}
+    })).await;
+    assert_eq!(created.status, StatusCode::OK);
+    let token = created.json()["token"].as_str().unwrap().to_string();
+    let reader = server.add_reader(&owner, "share-reader").await;
+    assert_eq!(
+        server
+            .send_json(
+                "DELETE",
+                &format!("/api/shares/{token}"),
+                &reader,
+                serde_json::json!({})
+            )
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        server
+            .send_json(
+                "DELETE",
+                &format!("/api/shares/{token}"),
+                &owner,
+                serde_json::json!({})
+            )
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        server
+            .get(&format!("/api/shares/{token}/preview"), "")
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
 }
 
 impl TestResponse {
