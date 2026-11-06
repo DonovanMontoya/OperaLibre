@@ -4,6 +4,7 @@ import { ExperimentSection } from "./ExperimentSection";
 import { giftBrokerOrigin } from "./giftBrokerOrigin";
 import { giftBrokerReadiness } from "./giftBrokerReadiness";
 import { GiftReadinessSteps } from "./GiftReadinessSteps";
+import { GiftOwnerConfiguration } from "./GiftOwnerConfiguration";
 
 export function GiftBrokerExperiment() {
   const secretRef = useRef<HTMLInputElement>(null);
@@ -41,7 +42,7 @@ export function GiftBrokerExperiment() {
     <article>
       <div className="admin-software-version-head"><div><span>Book gift owner setup</span><strong>Experimental, not operational</strong></div><span className="admin-experimental-badge">Test only</span></div>
       <p>Plan an optional broker on infrastructure and a provider account you control. You are responsible for its credentials, costs and operation, not every OperaLibre installation. There is no centralized hosting or billing.</p>
-      <p>This development-only guide does not enable sharing, deploy anything or save configuration. Editing these fields performs no network requests. Only the explicit cleanup action below sends a request.</p>
+      <p>This development-only guide does not enable sharing or deploy anything. Editing these guide fields performs no network requests. Manual cleanup and the separate saved-setup controls require explicit actions.</p>
       <form className="admin-sync-schedule-form" onSubmit={(event) => void retry(event)} autoComplete="off">
         <label>Broker HTTPS origin<input name="brokerOrigin" type="url" value={brokerInput} onChange={event => { setBrokerInput(event.currentTarget.value); setOwnerConfirmed(false); setMessage(""); }} placeholder="https://broker.example" maxLength={2048} required disabled={busy} /></label>
         <label className="admin-all-access"><input type="checkbox" style={{ width: "auto", minHeight: 0, flexShrink: 0 }} checked={ownerConfirmed} onChange={event => setOwnerConfirmed(event.currentTarget.checked)} disabled={busy} /><span>I control and trust this broker. This is my statement, not a verified ownership check.</span></label>
@@ -60,6 +61,9 @@ export function GiftBrokerExperiment() {
           {message ? <p role="status">{message}</p> : null}
         </ExperimentSection>
       </form>
+      <ExperimentSection title="Optional saved setup (experimental server routes)">
+        <GiftOwnerConfiguration secure={secure} />
+      </ExperimentSection>
     </article>
   );
 }

@@ -99,6 +99,7 @@ async function run() {
   const previewRecord = {
     version: 1, giftId, room, expiresAt, archiveSize: archive.length, archiveSha256: archiveHash,
     sender: "Alex", title: "Persistent gift", author: "A writer", summary: "Recovery fixture", message: "Private note",
+    connectivity: { giftId, expiresAt, iceTransportPolicy: "relay", iceServers: [{ urls: ["turn:relay.example:3478?transport=udp"], username: `${expiresAt}:operalibre:${giftId}:recipient:fixture`, credential: "A".repeat(27) + "=" }] },
     assets: [{ name: "book.epub", kind: "ebook", size: 12, sha256: await hash(encoder.encode("ebook fixture")) }],
   };
   const payload = encoder.encode(JSON.stringify(previewRecord));
@@ -289,7 +290,10 @@ async function run() {
     result.transportInstances++;
     return createPersistentGiftTransport(fetchVerifiedGiftPreview, {
       storage, stages, fetch: fixtureFetch,
-      peer() { const attempt = result.attempts[result.attempts.length - 1]; ensure(attempt, "peer before ready"); const peer = new FakePeer(attempt); peers.set(attempt.generation, peer); return peer as unknown as RTCPeerConnection; },
+      peer(configuration) {
+        ensure(configuration.iceTransportPolicy === "relay" && JSON.stringify(configuration.iceServers) === JSON.stringify(previewRecord.connectivity.iceServers), "peer did not use authenticated invitation ICE");
+        const attempt = result.attempts[result.attempts.length - 1]; ensure(attempt, "peer before ready"); const peer = new FakePeer(attempt); peers.set(attempt.generation, peer); return peer as unknown as RTCPeerConnection;
+      },
     });
   }
   let transport = makeTransport(), details = await transport.preview(link, new AbortController().signal);

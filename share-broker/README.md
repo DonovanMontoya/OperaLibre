@@ -157,11 +157,65 @@ appends through the generic Filesystem plugin. Extraction holds the same staging
 lock. After verified commit, incoming ZIP/recovery sidecars can be cleaned while
 the published book remains recoverable from its committed directory. Stable lock
 files are retained to avoid inode-replacement races. Native CAS uses separate
-record locks and atomic rename. Platform builds and device behavior remain
-unverified. Recipient records can survive an app restart, but the sender's archive
+record locks and atomic rename. CI compiles the gated iOS simulator sources and
+Android app; native device behavior remains unverified. Recipient records can
+survive an app restart, but the sender's archive
 and keys cannot yet survive a server restart, which ends that live transfer.
 All application, import and broker production gates remain
 disabled pending independent security and platform review.
+
+## Experimental sender setup and selection
+
+The test router now connects owner setup, an authorized scanned-book inventory,
+selected-asset invitation creation and sender startup. The development UI has
+separate disabled-by-default sender and recipient gates; setting up a broker
+does not activate either. These routes are not available in production builds.
+
+Owner configuration is held in the private server database and therefore also
+in its backups. Responses expose configured markers, never the broker owner
+secret or TURN REST shared secret. Credential submission requires `proxy`
+deployment mode, a loopback proxy peer and its HTTPS forwarding declaration.
+The app additionally requires direct HTTPS administration, not a development
+proxy or plain Tailscale HTTP. Loading, editing and saving settings do not
+contact the provider. Cleanup is an explicit owner action using the retained
+configuration; pending room recovery prevents replacing or deleting it. Removing
+local settings does not rotate provider credentials or cancel provider billing.
+Reader gifting is off unless the owner explicitly permits it.
+
+The sender selects server asset IDs, not paths, hashes, metadata or access
+grants. Metadata is required; the lightweight default selects an available EPUB
+and cover, never audio automatically. The inventory explains unavailable files
+and dependencies and reports selected byte sizes; ZIP overhead changes the
+actual transfer size shown to the recipient. Read-along alignment remains
+disabled until native import, track timing and local sentence-follow agree.
+Only share material you have permission to distribute; nothing removes DRM.
+Retained invitations and heavy preparation are bounded, including cancellation
+of the HTTP waiter. A private management token is returned only to the signed-in
+sender for authenticated revocation and is not put in the recipient gift URL.
+
+The implemented owner relay configuration is **coturn-compatible TURN REST**,
+not the Cloudflare Realtime credential API. It derives independent, short-lived
+sender and recipient credentials following the
+[coturn credential format](https://github.com/coturn/coturn/blob/master/README.turnserver).
+The master secret stays on the server. Static owner passwords cannot be copied
+into recipient previews. Expiry limits credential lifetime, not transfer bytes,
+allocation destinations, or billing. No account is enrolled or relay deployed.
+
+The installed Rust gatherers currently support only UDP `stun:` and `turn:`
+URLs. They skip secure and TCP variants; configuration rejects those variants
+instead of accepting a relay that cannot work. Relay-only is explicit and
+requires owner relay consent and a suitable TURN server. Local tests exercise
+actual Rust peers with STUN candidates and authenticated relay-only UDP through
+a disposable test TURN responder. They do not verify Internet NAT traversal,
+coturn/Cloudflare deployment, TCP/443 fallback or mobile connectivity. Networks
+that block outbound UDP remain unsupported by this transport.
+
+Selected cover previews come from the verified selected archive, not an
+additional library path or remote URL. Raster decoding and normalized thumbnails
+have input, allocation, dimension and output bounds; the thumbnail belongs only
+in the signed encrypted preview. Large/unsupported covers or a full preview
+budget use the placeholder while retaining any selected full cover in the
+archive. This is not a hard CPU-time sandbox.
 
 ## Development verification
 

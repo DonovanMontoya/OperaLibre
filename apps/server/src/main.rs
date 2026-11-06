@@ -98,6 +98,10 @@ mod share;
 #[allow(dead_code)]
 mod share_broker;
 #[allow(dead_code)]
+mod share_connectivity;
+#[allow(dead_code)]
+mod share_cover_preview;
+#[allow(dead_code)]
 mod share_peer_proof;
 #[cfg(test)]
 mod share_peer_tests;
@@ -107,6 +111,8 @@ mod share_preview_crypto;
 mod share_sender;
 #[allow(dead_code)]
 mod share_service;
+#[allow(dead_code)]
+mod share_setup;
 #[allow(dead_code)]
 mod share_transfer;
 mod storage;

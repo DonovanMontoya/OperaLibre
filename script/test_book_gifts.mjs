@@ -15,7 +15,7 @@ try {
   await server.listen();
   const address = server.httpServer.address();
   if (!address || typeof address === "string") throw new Error("Gift test server has no local port.");
-  const files = ["giftRecipient.browser.mjs", "giftRecoveryPeer.browser.mjs", "giftPersistentTransport.browser.mjs", "giftNativeLinks.browser.mjs"]
+  const files = ["giftRecipient.browser.mjs", "giftRecoveryPeer.browser.mjs", "giftPersistentTransport.browser.mjs", "giftNativeLinks.browser.mjs", "giftSender.browser.mjs", "giftOwnerSetup.browser.mjs"]
     .map(name => fileURLToPath(new URL(`../apps/web/test/${name}`, import.meta.url)));
   const child = spawn(process.execPath, ["--test", ...files], {
     env: { ...process.env, OPERALIBRE_GIFT_TEST_ORIGIN: `http://127.0.0.1:${address.port}`, OPERALIBRE_GIFT_SCREENSHOT_DIR: fileURLToPath(new URL("../output/book-gifts", import.meta.url)) },

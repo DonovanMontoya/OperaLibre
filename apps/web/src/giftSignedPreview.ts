@@ -1,8 +1,10 @@
 import type { GiftDetails } from "./ExperimentalGiftRoute";
 import type { NativeGiftAsset } from "./giftDeviceImport";
+import { parseGiftIceConfiguration } from "./giftIceConfiguration.ts";
+import { giftCoverPreviewDataUrl } from "./giftCoverPreview.ts";
 
 export type EncryptedGiftPreview = { nonce: string; ciphertext: string };
-export type VerifiedPreview = GiftDetails & { transfer: { room: string; size: number; sha256: string; expiresAt: number } };
+export type VerifiedPreview = GiftDetails & { connectivity?: RTCConfiguration; transfer: { room: string; size: number; sha256: string; expiresAt: number } };
 const MAX_PREVIEW_BYTES = 128 * 1024;
 const MAX_CONTENT_BYTES = 25 * 1024 ** 3;
 const context = new TextEncoder().encode("operalibre-gift-preview-v1");
@@ -51,7 +53,7 @@ function decode(value: unknown, maximum: number): Uint8Array<ArrayBuffer> {
 }
 function text(value: unknown, max: number, required = false): string | null {
   if (value == null && !required) return null;
-  if (typeof value !== "string" || value.length > max || (required && !value.trim())) throw new Error("Invalid preview text.");
+  if (typeof value !== "string" || Array.from(value).length > max || (required && !value.trim())) throw new Error("Invalid preview text.");
   return value;
 }
 
@@ -93,5 +95,8 @@ export async function verifyEncryptedGiftPreview(envelope: EncryptedGiftPreview,
     return /^[a-z0-9]{1,8}$/i.test(extension) ? extension.toUpperCase() : asset.kind === "ebook" ? "Ebook" : "Audiobook";
   }))];
   if (!formats.length) throw new Error("Gift has no book files.");
-  return { giftId, assets, metadata: { title, author, description: summary }, preview: { sender, title, author, summary, message, coverUrl: null, formats, sizeBytes: archiveSize as number }, transfer: { room, size: archiveSize as number, sha256: archiveSha256, expiresAt: expiresAt as number } };
+  const connectivity = parseGiftIceConfiguration(record.connectivity, giftId, expiresAt as number);
+  if (record.cover !== undefined && record.cover !== null && !assets.some(asset => asset.kind === "cover")) throw new Error("Preview includes an unselected cover.");
+  const coverUrl = giftCoverPreviewDataUrl(record.cover);
+  return { giftId, assets, metadata: { title, author, description: summary }, preview: { sender, title, author, summary, message, coverUrl, formats, sizeBytes: archiveSize as number }, transfer: { room, size: archiveSize as number, sha256: archiveSha256, expiresAt: expiresAt as number }, ...(connectivity ? { connectivity } : {}) };
 }

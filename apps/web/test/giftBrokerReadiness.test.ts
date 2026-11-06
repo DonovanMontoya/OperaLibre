@@ -37,10 +37,10 @@ test("invalid origin is blocked despite owner statement and never reflects crede
 
 test("guide explicitly preserves server, platform, domain, relay and billing blockers", () => {
   const text = giftBrokerReadiness(input).map(step => step.detail).join(" ");
-  for (const phrase of ["Production gift sharing is disabled", "no shared OperaLibre hosting account or centralized billing", "Nothing is deployed, enrolled or saved", "Tailscale-only", "experimental gift-capable", "native background behavior", "custom scheme", "Another installed app", "not automatically associated", "TURN", "spending controls", "no enforceable hard billing cap", "no guarantee of free operation"]) assert.ok(text.includes(phrase), phrase);
+  for (const phrase of ["Production gift sharing is disabled", "no shared OperaLibre hosting account or centralized billing", "separate explicit setup action", "Tailscale-only", "experimental gift-capable", "native background behavior", "custom scheme", "Another installed app", "not automatically associated", "TURN", "spending controls", "no enforceable hard billing cap", "no guarantee of free operation"]) assert.ok(text.includes(phrase), phrase);
 });
 
-test("setup stays local and secrets remain request-only in the existing explicit cleanup action", async () => {
+test("editing readiness stays local, saved setup is separate, and manual cleanup secrets remain request-only", async () => {
   const panel = await readFile(new URL("../src/GiftBrokerExperiment.tsx", import.meta.url), "utf8");
   const guide = await readFile(new URL("../src/giftBrokerReadiness.ts", import.meta.url), "utf8");
   assert.doesNotMatch(panel + guide, /\bfetch\s*\(|\buseEffect\s*\(|localStorage|sessionStorage|console\.|sendBeacon|\.setItem\s*\(/);
@@ -51,6 +51,9 @@ test("setup stays local and secrets remain request-only in the existing explicit
   assert.match(panel, /type="password" autoComplete="new-password" maxLength=\{1024\}/);
   assert.match(panel, /<fieldset disabled=\{busy \|\| !secure\}>/);
   assert.match(panel, /role="status"/);
+  assert.match(panel, /separate saved-setup controls require explicit actions/);
+  assert.match(panel, /<GiftOwnerConfiguration secure=\{secure\}/);
+  assert.doesNotMatch(panel, /Only the explicit cleanup action below sends a request|does not enable sharing, deploy anything or save configuration/);
   assert.doesNotMatch(panel, /setSecret|value=\{secret/);
   const admin = await readFile(new URL("../src/Admin.tsx", import.meta.url), "utf8");
   assert.match(admin, /import\.meta\.env\.DEV && import\.meta\.env\.VITE_EXPERIMENTAL_GIFT_BROKER === "true" && currentUser\.isOwner/);

@@ -136,7 +136,7 @@ export function createPersistentGiftTransport(verifiedPreview: VerifiedPreviewSo
           finally { await response.body?.cancel(); }
         } finally { clearTimeout(timer); controller.abort(); signal.removeEventListener("abort", abort); }
       }
-      const protocol = createExperimentalRecoveryPeer({ ...options, load: async giftId => {
+      const protocol = createExperimentalRecoveryPeer({ ...options, ...(trusted.connectivity ? { iceServers: trusted.connectivity.iceServers, iceTransportPolicy: trusted.connectivity.iceTransportPolicy } : {}), load: async giftId => {
         const loaded = await options.storage.loadOptional(giftId);
         if (!loaded) throw new GiftScreenError("unavailable"); return loaded;
       }, compareAndSwap: options.storage.compareAndSwap });

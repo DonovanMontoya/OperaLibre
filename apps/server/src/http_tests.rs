@@ -15,6 +15,9 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
+#[path = "share_setup_http_tests.rs"]
+mod share_setup_http_tests;
+
 #[tokio::test]
 async fn libro_nicknames_are_private_persistent_and_do_not_change_purchase_identity() {
     let server = TestServer::start(0).await;

@@ -65,6 +65,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ServerCapabilities } from "./serverCapabilities";
 import { usePhoneWidthWindow } from "./useOrientation";
 import { useReadingQueue } from "./useReadingQueue";
+import { GiftShareAction, EXPERIMENTAL_GIFT_SENDER_ENABLED } from "./GiftShareDialog";
 
 // Beyond this the segments are too thin to read or tap, and their fixed
 // borders/gaps overflow a phone screen; fall back to one continuous bar.
@@ -888,6 +889,7 @@ export function PlayerPane({
                   <Bookmark size={13} /> {isViewingPlayingBook ? "Now Reading" : "Book Details"}
                 </span>
                 <div className={`heading-actions book-detail-actions ${compactActions ? "is-compact" : ""}`} ref={bookActionsRef}>
+                  <GiftShareAction key={selectedBook.id} bookId={selectedBook.id} enabled={EXPERIMENTAL_GIFT_SENDER_ENABLED && import.meta.env.DEV && import.meta.env.VITE_EXPERIMENTAL_GIFT_BROKER === "true" && isOperaLibre && !demoMode && !localMode && selectedBook.source !== "device"} />
                   {compactActions ? (
                     <div className="book-action-bar">
                       <div className="book-action-rail">

@@ -473,6 +473,24 @@ pub(crate) fn build_router(
 
     #[cfg(test)]
     let protected_share_routes = Router::new()
+        .route(
+            "/api/books/{book_id}/gift-inventory",
+            get(crate::share::gift_inventory),
+        )
+        .route(
+            "/api/shares/selected",
+            post(crate::share_setup::create_configured_share),
+        )
+        .route(
+            "/api/admin/shares/config",
+            get(crate::share_setup::get_configuration)
+                .put(crate::share_setup::put_configuration)
+                .delete(crate::share_setup::delete_configuration),
+        )
+        .route(
+            "/api/admin/shares/config/cleanup",
+            post(crate::share_setup::retry_configured_cleanup),
+        )
         .route("/api/shares", post(create_share))
         .route("/api/shares/{token}", delete(revoke_share))
         .route(

@@ -1,13 +1,16 @@
 //! Experimental sender primitive. No production entry point starts it.
+use crate::share_connectivity::ConnectivityConfig;
 use crate::share_transfer::encode_chunk;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use webrtc::data_channel::DataChannel;
+#[cfg(test)]
+use webrtc::peer_connection::RTCConfigurationBuilder;
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
-    RTCConfigurationBuilder, RTCIceGatheringState, Registry, register_default_interceptors,
+    RTCIceGatheringState, Registry, register_default_interceptors,
 };
 
 const CHUNK: usize = 16 * 1024;
@@ -52,6 +55,62 @@ const MAX_PEER_ATTEMPTS: usize = 17;
 const GENERATION_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 const PEER_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Own close separately from the transfer future. Aborting a session, including
+/// while its file drain or close join is pending, must not drop the only close
+/// future: the dependency's general-runtime Drop otherwise detaches its driver.
+struct PeerCloseGuard {
+    request: Option<tokio::sync::oneshot::Sender<()>>,
+    cleanup: Option<tokio::task::JoinHandle<anyhow::Result<()>>>,
+}
+
+impl PeerCloseGuard {
+    fn new(peer: Arc<dyn PeerConnection>) -> Self {
+        Self::with_close(async move { peer.close().await.map_err(Into::into) })
+    }
+
+    fn with_close<F>(close: F) -> Self
+    where
+        F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+    {
+        let (request, requested) = tokio::sync::oneshot::channel();
+        let cleanup = tokio::spawn(async move {
+            let _ = requested.await;
+            close.await
+        });
+        Self {
+            request: Some(request),
+            cleanup: Some(cleanup),
+        }
+    }
+
+    fn request_close(&mut self) {
+        if let Some(request) = self.request.take() {
+            let _ = request.send(());
+        }
+    }
+
+    async fn close(&mut self) -> anyhow::Result<()> {
+        self.request_close();
+        let Some(cleanup) = self.cleanup.as_mut() else {
+            return Ok(());
+        };
+        let result = tokio::time::timeout(PEER_CLEANUP_TIMEOUT, cleanup)
+            .await
+            .map_err(|_| anyhow::anyhow!("share peer close timed out"))?;
+        self.cleanup.take();
+        result?
+    }
+}
+
+impl Drop for PeerCloseGuard {
+    fn drop(&mut self) {
+        self.request_close();
+        // Dropping a Tokio JoinHandle detaches, not aborts. Cleanup keeps the
+        // actual peer alive until close finishes, even if its owner was aborted.
+        // A bounded join timeout must never cancel that close operation.
+    }
+}
+
 /// Retain the trusted archive and pinned authentication only for this process's
 /// invitation lifetime. Recipient rotation keeps the producer claim valid, but
 /// invalidates its old signaling generation. Never run two archive readers.
@@ -66,6 +125,39 @@ pub(crate) async fn run_authenticated_sender(
     auth: PeerAuthentication,
     stop: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
+    run_authenticated_sender_with_connectivity(
+        broker,
+        room,
+        capability,
+        archive,
+        size,
+        expires_at,
+        auth,
+        ConnectivityConfig::default(),
+        stop,
+    )
+    .await
+}
+
+/// Explicit opt-in configuration path. The compatibility wrapper remains
+/// host-only; callers derive a fresh config for this exact invitation.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_authenticated_sender_with_connectivity(
+    broker: crate::share_broker::BrokerClient,
+    room: String,
+    capability: crate::share_broker::Capability,
+    archive: tokio::fs::File,
+    size: u64,
+    expires_at: u64,
+    auth: PeerAuthentication,
+    connectivity: ConnectivityConfig,
+    stop: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    connectivity.validate_invitation(
+        &auth.gift_id,
+        expires_at,
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+    )?;
     let monitor_broker = broker.clone();
     let monitor_room = room.clone();
     let monitor_capability = capability.clone();
@@ -80,7 +172,7 @@ pub(crate) async fn run_authenticated_sender(
             async move { broker.session_generation(&room, &capability).await }
         },
         move |generation, file, stop| {
-            run_authenticated_peer(
+            run_authenticated_peer_with_connectivity(
                 broker.clone(),
                 room.clone(),
                 capability.clone(),
@@ -89,6 +181,7 @@ pub(crate) async fn run_authenticated_sender(
                 size,
                 expires_at,
                 auth.clone(),
+                connectivity.clone(),
                 stop,
             )
         },
@@ -403,9 +496,42 @@ pub(crate) async fn run_authenticated_peer(
     size: u64,
     expires_at: u64,
     auth: PeerAuthentication,
+    stop: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    run_authenticated_peer_with_connectivity(
+        broker,
+        room,
+        capability,
+        generation,
+        file,
+        size,
+        expires_at,
+        auth,
+        ConnectivityConfig::default(),
+        stop,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_authenticated_peer_with_connectivity(
+    broker: crate::share_broker::BrokerClient,
+    room: String,
+    capability: crate::share_broker::Capability,
+    generation: u64,
+    file: tokio::fs::File,
+    size: u64,
+    expires_at: u64,
+    auth: PeerAuthentication,
+    connectivity: ConnectivityConfig,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(!*stop.borrow(), "share cancelled");
+    connectivity.validate_invitation(
+        &auth.gift_id,
+        expires_at,
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+    )?;
     let signaling = AuthSignaling::new(&broker, room.clone(), capability, generation)?;
     let ready_message = tokio::select! {
         result = signaling.wait_for(0, 1, "ready") => result?,
@@ -449,22 +575,9 @@ pub(crate) async fn run_authenticated_peer(
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
         )
     };
-    let runtime = webrtc::runtime::default_runtime()
-        .ok_or_else(|| anyhow::anyhow!("WebRTC runtime unavailable"))?;
-    let mut media = MediaEngine::default();
-    media.register_default_codecs()?;
-    let registry = register_default_interceptors(Registry::new(), &mut media)?;
     let (gathered, mut gather_rx) = tokio::sync::mpsc::channel(1);
-    let peer = PeerConnectionBuilder::new()
-        .with_configuration(RTCConfigurationBuilder::new().build())
-        .with_media_engine(media)
-        .with_interceptor_registry(registry)
-        .with_runtime(runtime)
-        .with_handler(Arc::new(GatherHandler(gathered)))
-        .with_udp_addrs(vec!["0.0.0.0:0".to_string()])
-        .with_data_channel_send_buffer_limit(MAX_OUTSTANDING)
-        .build()
-        .await?;
+    let peer = create_configured_peer(&connectivity, Arc::new(GatherHandler(gathered))).await?;
+    let mut peer_close = PeerCloseGuard::new(peer.clone());
     let result = {
         let outcome = async {
             let channel = peer.create_data_channel("operalibre-share", None).await?;
@@ -584,8 +697,32 @@ pub(crate) async fn run_authenticated_peer(
     // handle outside the cancelled outcome and drain before the supervisor can
     // clone/seek the shared OS cursor for another generation.
     drop(file.into_std().await);
-    peer.close().await?;
+    peer_close.close().await?;
     result
+}
+
+/// Shared by the authenticated sender and its actual peer integration tests.
+/// Preserve the existing bind, media/interceptor and bounded-channel defaults.
+pub(crate) async fn create_configured_peer(
+    connectivity: &ConnectivityConfig,
+    handler: Arc<dyn PeerConnectionEventHandler>,
+) -> anyhow::Result<Arc<dyn PeerConnection>> {
+    let runtime = webrtc::runtime::default_runtime()
+        .ok_or_else(|| anyhow::anyhow!("WebRTC runtime unavailable"))?;
+    let mut media = MediaEngine::default();
+    media.register_default_codecs()?;
+    let registry = register_default_interceptors(Registry::new(), &mut media)?;
+    let peer = PeerConnectionBuilder::new()
+        .with_configuration(connectivity.rtc_configuration())
+        .with_media_engine(media)
+        .with_interceptor_registry(registry)
+        .with_runtime(runtime)
+        .with_handler(handler)
+        .with_udp_addrs(vec!["0.0.0.0:0".to_string()])
+        .with_data_channel_send_buffer_limit(MAX_OUTSTANDING)
+        .build()
+        .await?;
+    Ok(Arc::new(peer))
 }
 
 #[async_trait::async_trait]
@@ -653,6 +790,8 @@ pub(crate) async fn run_peer_generation(
         .with_data_channel_send_buffer_limit(MAX_OUTSTANDING)
         .build()
         .await?;
+    let peer: Arc<dyn PeerConnection> = Arc::new(peer);
+    let mut peer_close = PeerCloseGuard::new(peer.clone());
     let outcome = async {
         let channel = peer.create_data_channel("operalibre-share", None).await?;
         peer.set_local_description(peer.create_offer(None).await?)
@@ -742,7 +881,7 @@ pub(crate) async fn run_peer_generation(
         result = &mut outcome => result,
         changed = stop.changed() => { changed?; Err(anyhow::anyhow!("share cancelled")) },
     };
-    peer.close().await?;
+    peer_close.close().await?;
     result
 }
 
@@ -1018,6 +1157,10 @@ async fn send_persisted_archive<C: PersistedChannel>(
 #[cfg(test)]
 #[path = "share_sender_ack_tests.rs"]
 mod ack_tests;
+
+#[cfg(test)]
+#[path = "share_sender_peer_cleanup_tests.rs"]
+mod peer_cleanup_tests;
 
 #[cfg(test)]
 mod tests {

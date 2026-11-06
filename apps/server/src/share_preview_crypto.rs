@@ -107,21 +107,21 @@ pub(crate) fn preview_from_archive(
     );
     anyhow::ensure!(
         !sender.trim().is_empty()
-            && sender.encode_utf16().count() <= 128
+            && sender.chars().count() <= 128
             && !book.title.trim().is_empty()
-            && book.title.encode_utf16().count() <= 1024,
+            && book.title.chars().count() <= 1024,
         "invalid preview text"
     );
     anyhow::ensure!(
-        message.is_none_or(|value| value.encode_utf16().count() <= 1000)
+        message.is_none_or(|value| value.chars().count() <= 1000)
             && book
                 .author
                 .as_ref()
-                .is_none_or(|value| value.encode_utf16().count() <= 1024)
+                .is_none_or(|value| value.chars().count() <= 1024)
             && book
                 .description
                 .as_ref()
-                .is_none_or(|value| value.encode_utf16().count() <= 32000),
+                .is_none_or(|value| value.chars().count() <= 32000),
         "preview text too large"
     );
     anyhow::ensure!(

@@ -7,7 +7,7 @@ import { verifySignedPeerOffer, type SignedPeerOffer } from "./giftSignedPreview
 import { createGiftPeerProof } from "./giftPeerProof";
 import { buildGiftDeviceBook } from "./giftDeviceImport";
 
-export type VerifiedRecipientDetails = GiftDetails & { transfer: { room: string; size: number; sha256: string; expiresAt: number } };
+export type VerifiedRecipientDetails = GiftDetails & { connectivity?: RTCConfiguration; transfer: { room: string; size: number; sha256: string; expiresAt: number } };
 type Capability = { payload: string; signature: string };
 type Signal = { sequence: number; kind: "offer" | "ice"; message: string };
 type Staging = GiftChunkSink & { close(): void | Promise<void> };
@@ -104,7 +104,7 @@ export function createExperimentalRecipientTransport(
         stage = await (options.stage ?? createNativeGiftStaging)(details.giftId);
         receiver = new GiftChunkReceiver(stage, transfer.size, transfer.sha256);
         const activeReceiver = receiver;
-        peer = (options.peer ?? (config => new RTCPeerConnection(config)))({ iceServers: options.iceServers ?? [] });
+        peer = (options.peer ?? (config => new RTCPeerConnection(config)))((details as VerifiedRecipientDetails).connectivity ?? { iceServers: options.iceServers ?? [] });
         const connection = peer;
         const finished = new Promise<void>((resolve, reject) => {
           const fail = () => reject(new GiftScreenError("unavailable"));

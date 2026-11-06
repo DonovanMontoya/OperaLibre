@@ -7,7 +7,7 @@ use std::{
 
 pub(crate) struct ShareSession {
     stop: tokio::sync::watch::Sender<bool>,
-    task: tokio::task::JoinHandle<anyhow::Result<()>>,
+    task: Option<tokio::task::JoinHandle<anyhow::Result<()>>>,
 }
 
 impl ShareSession {
@@ -17,17 +17,53 @@ impl ShareSession {
     /// Request cancellation and await the peer task's cleanup.
     pub(crate) async fn stop(mut self) -> anyhow::Result<()> {
         let _ = self.stop.send(true);
-        match tokio::time::timeout(Duration::from_secs(5), &mut self.task).await {
-            Ok(result) => result??,
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            self.task.as_mut().expect("owned share task"),
+        )
+        .await
+        {
+            Ok(result) => {
+                drop(self.task.take());
+                result??;
+            }
             Err(_) => {
-                self.task.abort();
+                if let Some(task) = self.task.take() {
+                    task.abort();
+                }
                 anyhow::bail!("share session did not stop in time")
             }
         }
         Ok(())
     }
-    pub(crate) async fn wait(self) -> anyhow::Result<()> {
-        self.task.await?
+    pub(crate) async fn wait(mut self) -> anyhow::Result<()> {
+        // Keep ownership across await so cancellation of this waiter still
+        // runs Drop and closes an otherwise detached peer task.
+        let result = self.task.as_mut().expect("owned share task").await;
+        drop(self.task.take());
+        result?
+    }
+}
+
+impl Drop for ShareSession {
+    fn drop(&mut self) {
+        let _ = self.stop.send(true);
+        let Some(mut task) = self.task.take() else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if tokio::time::timeout(Duration::from_secs(5), &mut task)
+                    .await
+                    .is_err()
+                {
+                    task.abort();
+                    let _ = task.await;
+                }
+            });
+        } else {
+            task.abort();
+        }
     }
 }
 
@@ -71,7 +107,10 @@ where
             }
         }
     });
-    Ok(ShareSession { stop, task })
+    Ok(ShareSession {
+        stop,
+        task: Some(task),
+    })
 }
 
 /// Start a sender for an archive already selected and opened by the server.
@@ -115,4 +154,50 @@ pub(crate) async fn start_sender(
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    fn session() -> (ShareSession, tokio::sync::oneshot::Receiver<()>) {
+        let (stop, mut receiver) = tokio::sync::watch::channel(false);
+        let (closed, outcome) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            if !*receiver.borrow() {
+                let _ = receiver.changed().await;
+            }
+            let _ = closed.send(());
+            Ok(())
+        });
+        (
+            ShareSession {
+                stop,
+                task: Some(task),
+            },
+            outcome,
+        )
+    }
+
+    #[tokio::test]
+    async fn dropping_unregistered_session_closes_peer_task() {
+        let (session, closed) = session();
+        drop(session);
+        tokio::time::timeout(Duration::from_secs(1), closed)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_waiter_preserves_peer_cleanup_ownership() {
+        let (session, closed) = session();
+        let waiter = tokio::spawn(session.wait());
+        waiter.abort();
+        let _ = waiter.await;
+        tokio::time::timeout(Duration::from_secs(1), closed)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 }

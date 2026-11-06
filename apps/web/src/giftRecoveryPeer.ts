@@ -19,6 +19,7 @@ function pause(milliseconds: number, signal: AbortSignal): Promise<void> {
  * Signaling uses complete gathered SDP, not unauthenticated trickle messages. */
 export function createExperimentalRecoveryPeer(options: RecipientRecoverySignalingOptions & {
   iceServers?: RTCIceServer[];
+  iceTransportPolicy?: RTCIceTransportPolicy;
   peer?: (configuration: RTCConfiguration) => RTCPeerConnection;
 }): RecipientRecoveryProtocol {
   return { async open(link, binding, outerSignal) {
@@ -48,7 +49,7 @@ export function createExperimentalRecoveryPeer(options: RecipientRecoverySignali
       live();
       const signaling = await openRecipientRecoverySignaling(link, binding, controller.signal, options);
       live();
-      peer = (options.peer ?? (configuration => new RTCPeerConnection(configuration)))({ iceServers: options.iceServers ?? [] });
+      peer = (options.peer ?? (configuration => new RTCPeerConnection(configuration)))({ iceServers: options.iceServers ?? [], iceTransportPolicy: options.iceTransportPolicy ?? "all" });
       const connection = peer;
       connection.addEventListener("connectionstatechange", () => {
         if (connection.connectionState === "failed" || connection.connectionState === "closed") fail();

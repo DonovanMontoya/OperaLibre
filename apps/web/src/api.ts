@@ -4,6 +4,8 @@ import { Capacitor } from "@capacitor/core";
 import { ApiError } from "./apiError";
 import { fetchWithTimeout } from "./fetchWithTimeout";
 import { giftBrokerTransportSecure } from "./giftBrokerOrigin";
+import { parseCreatedGift, parseGiftInventory, type SelectedGiftRequest } from "./giftSelectionModel";
+import { parseGiftOwnerConfiguration, type GiftOwnerConfigurationRequest } from "./giftOwnerSetupModel";
 import type {
   AlignmentStatus,
   AuthStatus,
@@ -620,6 +622,57 @@ async function request<T>(path: string, options?: RequestOptions, timeoutMs = 30
 export function isGiftBrokerTransportSecure(): boolean {
   if (typeof window === "undefined") return false;
   return giftBrokerTransportSecure(currentApiBase(), window.location.href, window.isSecureContext === true, import.meta.env.DEV);
+}
+
+export async function getBookGiftInventory(bookId: string, signal?: AbortSignal) {
+  const value = await request<unknown>(`/api/books/${encodeURIComponent(bookId)}/gift-inventory`, { signal, redirect: "error", ignoreUnauthorized: true });
+  return parseGiftInventory(value, bookId);
+}
+
+export async function createSelectedBookGift(input: SelectedGiftRequest, signal?: AbortSignal) {
+  requireOperaLibreServer();
+  // Bind both values before the POST. A later server switch must never send
+  // this private management token or old authentication to the new server.
+  const originalBase = currentApiBase(), originalToken = getStoredToken();
+  // Only selection IDs and the optional note/expiry cross this boundary. Never
+  // serialize a client Book, filesystem path, hash, manifest or private secret.
+  const body: SelectedGiftRequest = { bookId: input.bookId, selectedAssetIds: [...input.selectedAssetIds], ...(input.personalMessage !== undefined ? { personalMessage: input.personalMessage } : {}), ...(input.expiresInSeconds !== undefined ? { expiresInSeconds: input.expiresInSeconds } : {}) };
+  const gift = parseCreatedGift(await requestAt<unknown>(originalBase, originalToken, "/api/shares/selected", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }, 120_000));
+  const managementToken = gift.managementToken;
+  return { ...gift, ...(managementToken ? { revoke: async (revokeSignal?: AbortSignal) => {
+    await requestAt<void>(originalBase, originalToken, `/api/shares/${encodeURIComponent(managementToken)}`, { method: "DELETE", signal: revokeSignal, redirect: "error", ignoreUnauthorized: true });
+  } } : {}) };
+}
+
+function requireGiftSetupTransport() {
+  if (!isGiftBrokerTransportSecure()) throw new ApiError("Use a secure HTTPS page and direct HTTPS server connection for gift setup.", 400);
+}
+
+export function captureGiftOwnerSetupGuard(): () => boolean {
+  const base = currentApiBase(), token = getStoredToken();
+  return () => getServerType() === "operalibre" && currentApiBase() === base && getStoredToken() === token;
+}
+
+export async function getGiftOwnerConfiguration(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config", { signal, redirect: "error", ignoreUnauthorized: true }));
+}
+
+export async function saveGiftOwnerConfiguration(input: GiftOwnerConfigurationRequest, signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  if (input.ownerControlsBroker !== true) throw new ApiError("Confirm that you control this broker before saving credentials.", 400);
+  const body: GiftOwnerConfigurationRequest = { brokerOrigin: input.brokerOrigin, allowReaders: input.allowReaders, ownerControlsBroker: input.ownerControlsBroker, ...(input.ownerSecret !== undefined ? { ownerSecret: input.ownerSecret } : {}), ...(input.connectivity !== undefined ? { connectivity: { relayAllowed: input.connectivity.relayAllowed, requireRelay: input.connectivity.requireRelay, iceServers: input.connectivity.iceServers.map(server => ({ urls: [...server.urls], ...(server.turnRestSecret !== undefined ? { turnRestSecret: server.turnRestSecret } : {}) })) } } : {}) };
+  return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config", { method: "PUT", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }));
+}
+
+export async function deleteGiftOwnerConfiguration(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  await request<void>("/api/admin/shares/config", { method: "DELETE", signal, redirect: "error", ignoreUnauthorized: true });
+}
+
+export async function cleanupConfiguredGiftBroker(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  return request<{ completed: number; pending: number }>("/api/admin/shares/config/cleanup", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true }, 120_000);
 }
 
 export async function retryGiftBrokerRevocations(brokerOrigin: string, ownerSecret: string) {

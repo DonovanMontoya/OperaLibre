@@ -37,6 +37,14 @@ test("rejects modified ciphertext, invalid signature and expired selection", asy
   await assert.rejects(verifyEncryptedGiftPreview(input.envelope, input.key, input.publicKey, 200));
 });
 
+test("preview message limits count Unicode code points consistently with sender selection", async () => {
+  const valid = await envelope({ ...record, message: "🎁".repeat(1000) });
+  const verified = await verifyEncryptedGiftPreview(valid.envelope, valid.key, valid.publicKey, 100);
+  assert.equal(Array.from(verified.preview.message!).length, 1000);
+  const invalid = await envelope({ ...record, message: "🎁".repeat(1001) });
+  await assert.rejects(verifyEncryptedGiftPreview(invalid.envelope, invalid.key, invalid.publicKey, 100));
+});
+
 test("rejects unselected paths and alignment without matching audio", async () => {
   for (const assets of [
     [{ ...record.assets[0], name: "../book.epub" }],
@@ -47,9 +55,29 @@ test("rejects unselected paths and alignment without matching audio", async () =
   }
 });
 
+test("only authenticated per-invitation ICE reaches the recipient peer configuration", async () => {
+  const connectivity = { giftId: record.giftId, expiresAt: record.expiresAt, iceTransportPolicy: "relay", iceServers: [{ urls: ["turn:relay.example:3478?transport=udp"], username: `${record.expiresAt}:operalibre:${record.giftId}:recipient:nonce`, credential: "A".repeat(27) + "=" }] };
+  const input = await envelope({ ...record, connectivity });
+  const verified = await verifyEncryptedGiftPreview(input.envelope, input.key, input.publicKey, 100);
+  assert.deepEqual(verified.connectivity, { iceTransportPolicy: "relay", iceServers: connectivity.iceServers });
+  for (const changed of [{ ...connectivity, expiresAt: 201 }, { ...connectivity, giftId: "other___________" }, { ...connectivity, providerToken: "owner-secret" }]) {
+    const invalid = await envelope({ ...record, connectivity: changed });
+    await assert.rejects(verifyEncryptedGiftPreview(invalid.envelope, invalid.key, invalid.publicKey, 100));
+  }
+});
+
 test("accepts the Rust server's encrypted and signed envelope", { skip: !process.env.OPERALIBRE_PREVIEW_FIXTURE_PATH }, async () => {
   const fixture = JSON.parse(readFileSync(process.env.OPERALIBRE_PREVIEW_FIXTURE_PATH!, "utf8"));
   const verified = await verifyEncryptedGiftPreview(fixture.envelope, fixture.key, fixture.publicKey, 100);
   assert.equal(verified.preview.message, "Private note");
   assert.equal(verified.assets[0].name, "book.epub");
+});
+
+test("a Rust thumbnail is usable only when its cover is selected in the authenticated preview", { skip: !process.env.OPERALIBRE_COVER_PREVIEW_FIXTURE }, async () => {
+  const cover = JSON.parse(readFileSync(process.env.OPERALIBRE_COVER_PREVIEW_FIXTURE!, "utf8"));
+  const input = await envelope({ ...record, assets: [...record.assets, { name: "cover.jpg", kind: "cover", size: 123, sha256: "c".repeat(64) }], cover });
+  const verified = await verifyEncryptedGiftPreview(input.envelope, input.key, input.publicKey, 100);
+  assert.ok(verified.preview.coverUrl?.startsWith("data:image/jpeg;base64,"));
+  const unselected = await envelope({ ...record, cover });
+  await assert.rejects(verifyEncryptedGiftPreview(unselected.envelope, unselected.key, unselected.publicKey, 100), /unselected cover/);
 });

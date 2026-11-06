@@ -26,6 +26,54 @@ pub(crate) fn canonical_share_metadata(book: &Book) -> anyhow::Result<Vec<u8>> {
 }
 pub(crate) const SHARE_INVITATIONS_DOCUMENT: &str = "share-invitations";
 pub(crate) const SHARE_DEFAULT_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
+const SHARE_MAX_INVITATIONS_PER_USER: usize = 16;
+const SHARE_MAX_INVITATIONS: usize = 256;
+
+fn share_now() -> Result<i64, ApiError> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ApiError::internal("Invalid system clock."))?
+        .as_secs() as i64)
+}
+
+fn purge_finished_invitations(invitations: &mut Vec<ShareInvitation>, now: i64) {
+    invitations
+        .retain(|item| (item.expires_at > now && !item.revoked) || !item.broker_rooms.is_empty());
+}
+
+fn ensure_invitation_capacity(
+    invitations: &[ShareInvitation],
+    user_id: &str,
+) -> Result<(), ApiError> {
+    if invitations.len() >= SHARE_MAX_INVITATIONS
+        || invitations
+            .iter()
+            .filter(|item| item.sender_user_id == user_id)
+            .count()
+            >= SHARE_MAX_INVITATIONS_PER_USER
+    {
+        return Err(ApiError::too_many_requests(
+            "Too many retained share invitations. Revoke or clean up existing shares before creating another.",
+        ));
+    }
+    Ok(())
+}
+
+fn selected_share_max_bytes(state: &AppState) -> u64 {
+    state
+        .max_book_download_bytes
+        .unwrap_or(DEFAULT_MAX_BOOK_DOWNLOAD_GIB * GIBIBYTE_BYTES)
+        .min(DEFAULT_MAX_BOOK_DOWNLOAD_GIB * GIBIBYTE_BYTES)
+}
+
+/// Keep admission charged to blocking work even when its HTTP waiter is dropped.
+/// Successful preparation transfers the same permit to the sender or stream.
+async fn blocking_share_preparation<T: Send + 'static>(
+    permit: tokio::sync::OwnedSemaphorePermit,
+    prepare: impl FnOnce() -> T + Send + 'static,
+) -> Result<(T, tokio::sync::OwnedSemaphorePermit), tokio::task::JoinError> {
+    tokio::task::spawn_blocking(move || (prepare(), permit)).await
+}
 
 /// Serializes invitation-store updates and sender registration in this process.
 /// No sender survives a server restart. The key includes the server identity so
@@ -378,6 +426,16 @@ pub(crate) fn write_verified_archive(
     root: &FsPath,
     max_bytes: u64,
 ) -> anyhow::Result<VerifiedArchive> {
+    write_verified_archive_roots(output, files, generated, &[root], max_bytes)
+}
+
+fn write_verified_archive_roots(
+    output: &FsPath,
+    files: &[PlannedShareFile],
+    generated: &[GeneratedArchiveEntry],
+    roots: &[&FsPath],
+    max_bytes: u64,
+) -> anyhow::Result<VerifiedArchive> {
     use std::io::{Seek, SeekFrom};
     anyhow::ensure!(
         !files.is_empty() && files.len() + generated.len() <= SHARE_MAX_ASSETS,
@@ -401,7 +459,7 @@ pub(crate) fn write_verified_archive(
             safe_archive_name(&item.archive_name) && names.insert(item.archive_name.to_lowercase()),
             "invalid or duplicate archive name"
         );
-        let mut source = open_share_file(&item.path, root)?;
+        let mut source = open_selected_source(&item.path, roots)?;
         anyhow::ensure!(
             source.metadata()?.len() == item.size_bytes,
             "selected asset size changed"
@@ -519,9 +577,10 @@ fn trusted_candidates_for_book(
     let mut candidates = Vec::new();
     for track in &book.tracks {
         if let Some(path) = state.track_paths.get(&track.id) {
-            let size = std::fs::metadata(path)
-                .map_err(|_| ApiError::not_found("Book asset is unavailable."))?
-                .len();
+            let Ok(metadata) = std::fs::metadata(path) else {
+                continue;
+            };
+            let size = metadata.len();
             candidates.push(TrustedShareFile {
                 id: track.id.clone(),
                 kind: ShareAssetKind::Audio,
@@ -533,10 +592,9 @@ fn trusted_candidates_for_book(
     }
     if let Some(reading) = &book.reading_file
         && let Some(path) = state.reading_paths.get(&reading.id)
+        && let Ok(metadata) = std::fs::metadata(path)
     {
-        let size = std::fs::metadata(path)
-            .map_err(|_| ApiError::not_found("Book asset is unavailable."))?
-            .len();
+        let size = metadata.len();
         candidates.push(TrustedShareFile {
             id: reading.id.clone(),
             kind: ShareAssetKind::Ebook,
@@ -547,10 +605,9 @@ fn trusted_candidates_for_book(
     }
     if book.sync_file.is_some()
         && let Some(path) = state.sync_paths.get(book_id)
+        && let Ok(metadata) = std::fs::metadata(path)
     {
-        let size = std::fs::metadata(path)
-            .map_err(|_| ApiError::not_found("Book asset is unavailable."))?
-            .len();
+        let size = metadata.len();
         candidates.push(TrustedShareFile {
             id: format!("sync:{book_id}"),
             kind: ShareAssetKind::Alignment,
@@ -565,13 +622,481 @@ fn trusted_candidates_for_book(
             kind: ShareAssetKind::Cover,
             file_name: format!(
                 "cover.{}",
-                cover.mime_type.rsplit('/').next().unwrap_or("bin")
+                match cover.mime_type.as_str() {
+                    "image/jpeg" => "jpg",
+                    "image/png" => "png",
+                    "image/webp" => "webp",
+                    _ => "bin",
+                }
             ),
             path: cover.path.clone(),
             size_bytes: cover.len,
         });
     }
     Ok(candidates)
+}
+
+fn open_selected_source(path: &FsPath, roots: &[&FsPath]) -> anyhow::Result<std::fs::File> {
+    for root in roots {
+        if path.starts_with(root) {
+            return open_share_file(path, root);
+        }
+    }
+    anyhow::bail!("asset is outside trusted share roots")
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ShareInventoryAsset {
+    pub(crate) id: String,
+    pub(crate) kind: ShareAssetKind,
+    pub(crate) file_name: String,
+    pub(crate) size_bytes: u64,
+    pub(crate) available: bool,
+    pub(crate) required: bool,
+    pub(crate) default_selected: bool,
+    pub(crate) requires_asset_ids: Vec<String>,
+    pub(crate) disabled_reason: Option<String>,
+    pub(crate) unsupported_reason: Option<String>,
+    pub(crate) unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ShareInventory {
+    pub(crate) book_id: String,
+    pub(crate) title: String,
+    pub(crate) max_bytes: u64,
+    pub(crate) assets: Vec<ShareInventoryAsset>,
+    pub(crate) default_selected_asset_ids: Vec<String>,
+}
+
+struct SelectionInventory {
+    book: Book,
+    inventory: ShareInventory,
+    candidates: Vec<TrustedShareFile>,
+    metadata: Vec<u8>,
+}
+
+fn selection_inventory(
+    library: &LibraryState,
+    book_id: &str,
+    roots: &[&FsPath],
+    max_bytes: u64,
+) -> Result<SelectionInventory, ApiError> {
+    let book = library.book(book_id)?.clone();
+    let metadata = canonical_share_metadata(&book)
+        .map_err(|_| ApiError::internal("Cannot prepare share metadata."))?;
+    let mut assets = vec![ShareInventoryAsset {
+        id: format!("metadata:{book_id}"),
+        kind: ShareAssetKind::Metadata,
+        file_name: "metadata.json".into(),
+        size_bytes: metadata.len() as u64,
+        available: true,
+        required: true,
+        default_selected: true,
+        requires_asset_ids: Vec::new(),
+        disabled_reason: None,
+        unsupported_reason: None,
+        unavailable_reason: None,
+    }];
+    let mut candidates = Vec::new();
+    let mut add = |id: String,
+                   kind: ShareAssetKind,
+                   file_name: String,
+                   path: Option<&PathBuf>,
+                   supported: bool,
+                   depends_on: Vec<String>| {
+        let opened = path.and_then(|path| open_selected_source(path, roots).ok());
+        let size = opened
+            .as_ref()
+            .and_then(|file| file.metadata().ok())
+            .map(|meta| meta.len());
+        let unsupported_reason = if kind == ShareAssetKind::Alignment {
+            Some("Read-along gifts are not supported by the recipient yet.".into())
+        } else if !supported {
+            Some("This file format is not supported by the recipient.".into())
+        } else {
+            None
+        };
+        let unavailable_reason = if size.is_none() {
+            Some("The scanned asset is unavailable or outside trusted roots.".into())
+        } else if !safe_archive_name(&file_name) || file_name.eq_ignore_ascii_case("metadata.json")
+        {
+            Some("The asset filename is not safe for a gift archive.".into())
+        } else {
+            None
+        };
+        let available = unsupported_reason.is_none() && unavailable_reason.is_none();
+        if let (Some(path), Some(size)) = (path, size) {
+            candidates.push(TrustedShareFile {
+                id: id.clone(),
+                kind,
+                file_name: file_name.clone(),
+                path: path.clone(),
+                size_bytes: size,
+            });
+        }
+        assets.push(ShareInventoryAsset {
+            id,
+            kind,
+            file_name,
+            size_bytes: size.unwrap_or(0),
+            available,
+            required: false,
+            default_selected: available
+                && matches!(kind, ShareAssetKind::Ebook | ShareAssetKind::Cover),
+            requires_asset_ids: depends_on,
+            disabled_reason: unsupported_reason
+                .clone()
+                .or_else(|| unavailable_reason.clone()),
+            unsupported_reason,
+            unavailable_reason,
+        });
+    };
+    if let Some(reading) = &book.reading_file {
+        add(
+            reading.id.clone(),
+            ShareAssetKind::Ebook,
+            reading.file_name.clone(),
+            library.reading_paths.get(&reading.id),
+            reading.extension.eq_ignore_ascii_case("epub"),
+            Vec::new(),
+        );
+    }
+    if let Some(cover) = library.cover_art.get(book_id) {
+        let extension = match cover.mime_type.as_str() {
+            "image/jpeg" => "jpg",
+            "image/png" => "png",
+            "image/webp" => "webp",
+            _ => "bin",
+        };
+        add(
+            format!("cover:{book_id}"),
+            ShareAssetKind::Cover,
+            format!("cover.{extension}"),
+            Some(&cover.path),
+            extension != "bin",
+            Vec::new(),
+        );
+    }
+    for track in &book.tracks {
+        let extension = FsPath::new(&track.file_name)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        add(
+            track.id.clone(),
+            ShareAssetKind::Audio,
+            track.file_name.clone(),
+            library.track_paths.get(&track.id),
+            matches!(
+                extension.as_str(),
+                "mp3" | "m4a" | "m4b" | "mp4" | "aac" | "aiff" | "flac" | "ogg" | "opus" | "wav"
+            ),
+            Vec::new(),
+        );
+    }
+    if book.sync_file.is_some() {
+        let mut dependencies: Vec<String> = book
+            .reading_file
+            .iter()
+            .map(|reading| reading.id.clone())
+            .collect();
+        dependencies.extend(book.tracks.iter().map(|track| track.id.clone()));
+        add(
+            format!("sync:{book_id}"),
+            ShareAssetKind::Alignment,
+            "alignment.sync.json".into(),
+            library.sync_paths.get(book_id),
+            false,
+            dependencies,
+        );
+    }
+    let default_selected_asset_ids = assets
+        .iter()
+        .filter(|asset| asset.default_selected)
+        .map(|asset| asset.id.clone())
+        .collect();
+    let title = book.title.clone();
+    Ok(SelectionInventory {
+        book,
+        inventory: ShareInventory {
+            book_id: book_id.into(),
+            title,
+            max_bytes,
+            assets,
+            default_selected_asset_ids,
+        },
+        candidates,
+        metadata,
+    })
+}
+
+pub(crate) async fn gift_inventory(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(book_id): Path<String>,
+) -> Result<Json<ShareInventory>, ApiError> {
+    require_book_access(&auth, &book_id)?;
+    let library = state.library.read().await;
+    Ok(Json(
+        selection_inventory(
+            &library,
+            &book_id,
+            &[
+                state.library_root.as_path(),
+                state.covers_dir.as_path(),
+                state.sync_dir.as_path(),
+            ],
+            selected_share_max_bytes(&state),
+        )?
+        .inventory,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CreateSelectedShareRequest {
+    pub(crate) book_id: String,
+    pub(crate) selected_asset_ids: Vec<String>,
+    pub(crate) personal_message: Option<String>,
+    pub(crate) expires_in_seconds: Option<i64>,
+}
+
+/// Only the authorized scanner inventory and opened source bytes supply the manifest.
+pub(crate) async fn create_selected_share_for_user(
+    state: &AppState,
+    auth: &AuthUser,
+    input: CreateSelectedShareRequest,
+) -> Result<ShareLinkResponse, ApiError> {
+    require_book_access(auth, &input.book_id)?;
+    if input
+        .personal_message
+        .as_ref()
+        .is_some_and(|value| value.chars().count() > SHARE_MAX_MESSAGE_CHARS)
+    {
+        return Err(ApiError::bad_request("Share message is too long."));
+    }
+    if input.selected_asset_ids.is_empty() || input.selected_asset_ids.len() > SHARE_MAX_ASSETS {
+        return Err(ApiError::bad_request("Invalid selected asset count."));
+    }
+    {
+        let _gate = INVITATION_GATE.lock().await;
+        let mut invitations = read_invitations(&state.database).await?;
+        purge_finished_invitations(&mut invitations, share_now()?);
+        ensure_invitation_capacity(&invitations, &auth.id)?;
+    }
+    let selection = {
+        let library = state.library.read().await;
+        selection_inventory(
+            &library,
+            &input.book_id,
+            &[
+                state.library_root.as_path(),
+                state.covers_dir.as_path(),
+                state.sync_dir.as_path(),
+            ],
+            selected_share_max_bytes(state),
+        )?
+    };
+    let mut seen = HashSet::new();
+    for id in &input.selected_asset_ids {
+        if !seen.insert(id.clone()) {
+            return Err(ApiError::bad_request(
+                "An asset was selected more than once.",
+            ));
+        }
+        let asset = selection
+            .inventory
+            .assets
+            .iter()
+            .find(|asset| asset.id == *id)
+            .ok_or_else(|| ApiError::bad_request("Unknown selected asset."))?;
+        if !asset.available {
+            return Err(ApiError::bad_request(
+                "Selected asset is unavailable or unsupported.",
+            ));
+        }
+        if asset
+            .requires_asset_ids
+            .iter()
+            .any(|dependency| !input.selected_asset_ids.contains(dependency))
+        {
+            return Err(ApiError::bad_request(
+                "Selected asset dependencies are missing.",
+            ));
+        }
+    }
+    let selected: Vec<TrustedShareFile> = selection
+        .candidates
+        .into_iter()
+        .filter(|candidate| seen.contains(&candidate.id))
+        .collect();
+    if !selected.iter().any(|candidate| {
+        matches!(
+            candidate.kind,
+            ShareAssetKind::Ebook | ShareAssetKind::Audio
+        )
+    }) {
+        return Err(ApiError::bad_request("Select an ebook or audio to share."));
+    }
+    if selected.len() + 1 > SHARE_MAX_ASSETS {
+        return Err(ApiError::bad_request("Too many selected assets."));
+    }
+    let limit = state
+        .max_book_download_bytes
+        .unwrap_or(DEFAULT_MAX_BOOK_DOWNLOAD_GIB * GIBIBYTE_BYTES)
+        .min(DEFAULT_MAX_BOOK_DOWNLOAD_GIB * GIBIBYTE_BYTES);
+    let library_root = state.library_root.clone();
+    let covers_root = state.covers_dir.clone();
+    let metadata = selection.metadata;
+    let book_id = input.book_id.clone();
+    let permit = state
+        .download_task_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError::too_many_requests("Share preparation capacity is full."))?;
+    let assets = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let mut assets = Vec::new();
+        let mut total = metadata.len() as u64;
+        let mut names = HashSet::from(["metadata.json".to_string()]);
+        for candidate in selected {
+            anyhow::ensure!(
+                total
+                    .checked_add(candidate.size_bytes)
+                    .is_some_and(|size| size <= limit),
+                "selected share exceeds size limit"
+            );
+            anyhow::ensure!(
+                safe_archive_name(&candidate.file_name)
+                    && names.insert(candidate.file_name.to_lowercase()),
+                "duplicate or invalid archive filename"
+            );
+            let mut file = open_selected_source(
+                &candidate.path,
+                &[library_root.as_path(), covers_root.as_path()],
+            )?;
+            anyhow::ensure!(
+                file.metadata()?.len() == candidate.size_bytes,
+                "selected asset size changed"
+            );
+            let mut hash = Sha256::new();
+            let mut size = 0_u64;
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                let count = file.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                size = size
+                    .checked_add(count as u64)
+                    .ok_or_else(|| anyhow::anyhow!("asset size overflow"))?;
+                total = total
+                    .checked_add(count as u64)
+                    .ok_or_else(|| anyhow::anyhow!("share size overflow"))?;
+                anyhow::ensure!(
+                    size <= candidate.size_bytes && total <= limit,
+                    "selected share exceeds size limit"
+                );
+                hash.update(&buffer[..count]);
+            }
+            anyhow::ensure!(size == candidate.size_bytes, "selected asset size changed");
+            assets.push(ShareAsset {
+                id: candidate.id,
+                kind: candidate.kind,
+                file_name: candidate.file_name,
+                size_bytes: size,
+                sha256: hex_digest(hash.finalize()),
+            });
+        }
+        anyhow::ensure!(total <= limit, "selected share exceeds size limit");
+        assets.push(ShareAsset {
+            id: format!("metadata:{book_id}"),
+            kind: ShareAssetKind::Metadata,
+            file_name: "metadata.json".into(),
+            size_bytes: metadata.len() as u64,
+            sha256: hex_digest(Sha256::digest(&metadata)),
+        });
+        Ok::<_, anyhow::Error>(assets)
+    })
+    .await
+    .map_err(|_| ApiError::internal("Share preparation failed."))?
+    .map_err(|_| ApiError::conflict("Selected assets changed or exceed the configured limit."))?;
+    let manifest = ShareManifest {
+        version: 1,
+        book_id: input.book_id,
+        title: selection.book.title,
+        author: selection.book.author,
+        description: selection.book.description,
+        sender_display_name: auth.username.clone(),
+        personal_message: input.personal_message,
+        total_bytes: assets.iter().map(|asset| asset.size_bytes).sum(),
+        assets,
+    };
+    manifest
+        .validate(limit)
+        .map_err(|_| ApiError::bad_request("Invalid share selection."))?;
+    let _gate = INVITATION_GATE.lock().await;
+    let now = share_now()?;
+    let expires_at = now
+        + input
+            .expires_in_seconds
+            .unwrap_or(SHARE_DEFAULT_TTL_SECONDS)
+            .clamp(60, 30 * 24 * 60 * 60);
+    let token = generate_session_token();
+    let mut invitations = read_invitations(&state.database).await?;
+    purge_finished_invitations(&mut invitations, now);
+    ensure_invitation_capacity(&invitations, &auth.id)?;
+    invitations.push(ShareInvitation {
+        token_digest: share_digest_string(&token),
+        selected_asset_ids: manifest
+            .assets
+            .iter()
+            .filter(|asset| asset.kind != ShareAssetKind::Metadata)
+            .map(|asset| asset.id.clone())
+            .collect(),
+        manifest: manifest.clone(),
+        sender_user_id: auth.id.clone(),
+        created_at: now,
+        expires_at,
+        revoked: false,
+        include_metadata: true,
+        trusted_selection: true,
+        broker_rooms: Vec::new(),
+    });
+    write_invitations(&state.database, invitations).await?;
+    Ok(ShareLinkResponse {
+        token,
+        preview: manifest,
+        expires_at,
+    })
+}
+
+pub(crate) async fn create_selected_share(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(input): Json<CreateSelectedShareRequest>,
+) -> Result<Json<ShareLinkResponse>, ApiError> {
+    Ok(Json(
+        create_selected_share_for_user(&state, &auth, input).await?,
+    ))
+}
+
+pub(crate) async fn ensure_no_pending_broker_rooms(state: &AppState) -> Result<(), ApiError> {
+    let _gate = INVITATION_GATE.lock().await;
+    if read_invitations(&state.database)
+        .await?
+        .iter()
+        .any(|invitation| !invitation.broker_rooms.is_empty())
+    {
+        return Err(ApiError::conflict(
+            "Existing share sessions require broker cleanup before changing setup.",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -602,6 +1127,8 @@ pub(crate) struct ShareInvitation {
     pub(crate) selected_asset_ids: Vec<String>,
     #[serde(default)]
     pub(crate) include_metadata: bool,
+    #[serde(default)]
+    trusted_selection: bool,
     #[serde(default)]
     broker_rooms: Vec<PendingBrokerRoom>,
 }
@@ -739,6 +1266,75 @@ async fn write_invitations(
         .await
 }
 
+fn verify_invitation_receipt(
+    invitation: &ShareInvitation,
+    receipt: &VerifiedArchive,
+) -> Result<(), ApiError> {
+    if invitation.trusted_selection
+        && (receipt.assets.len() != invitation.manifest.assets.len()
+            || invitation.manifest.assets.iter().any(|expected| {
+                !receipt.assets.iter().any(|actual| {
+                    actual.name == expected.file_name
+                        && actual.kind == expected.kind
+                        && actual.size == expected.size_bytes
+                        && actual.sha256 == expected.sha256
+                })
+            }))
+    {
+        return Err(ApiError::conflict(
+            "Selected contents changed after the invitation was created.",
+        ));
+    }
+    Ok(())
+}
+
+/// Thumbnail only receipt-verified selected ZIP bytes. The helper's cloned file
+/// shares our cursor, so restore it before any sender can consume the archive.
+async fn selected_archive_cover_preview(
+    archive: &mut fs::File,
+    receipt: &VerifiedArchive,
+) -> Result<Option<crate::share_cover_preview::GiftCoverPreview>, ApiError> {
+    let Some(selected) = receipt
+        .assets
+        .iter()
+        .find(|asset| asset.kind == ShareAssetKind::Cover)
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let opened = archive
+        .try_clone()
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .into_std()
+        .await;
+    let cover =
+        crate::share_cover_preview::create_selected_cover_preview(opened, Some(selected)).await;
+    archive
+        .seek(SeekFrom::Start(0))
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    cover.map_err(|_| ApiError::conflict("Selected cover no longer matches the archive receipt."))
+}
+
+fn omit_cover_if_preview_exceeds_payload_limit(
+    preview: &mut serde_json::Value,
+) -> Result<(), ApiError> {
+    // The encrypted preview permits 64 KiB of raw JSON (half its 128 KiB
+    // envelope bound). An optional thumbnail must not displace valid metadata.
+    // Encryption still independently enforces its own authoritative bound.
+    if preview.get("cover").is_some()
+        && serde_json::to_vec(preview)
+            .map_err(|_| ApiError::internal("Cannot serialize share preview."))?
+            .len()
+            > 64 * 1024
+        && let Some(fields) = preview.as_object_mut()
+    {
+        fields.remove("cover");
+    }
+    Ok(())
+}
+
 pub(crate) async fn create_share(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -746,6 +1342,10 @@ pub(crate) async fn create_share(
 ) -> Result<Json<ShareLinkResponse>, ApiError> {
     let _gate = INVITATION_GATE.lock().await;
     require_book_access(&auth, &input.manifest.book_id)?;
+    let now = share_now()?;
+    let mut invitations = read_invitations(&state.database).await?;
+    purge_finished_invitations(&mut invitations, now);
+    ensure_invitation_capacity(&invitations, &auth.id)?;
     let canonical_book = state
         .library
         .read()
@@ -787,7 +1387,7 @@ pub(crate) async fn create_share(
     plan_selected_assets(
         &candidates,
         &selected_ids,
-        &[state.library_root.as_path()],
+        &[state.library_root.as_path(), state.covers_dir.as_path()],
         state.max_book_download_bytes.unwrap_or(u64::MAX),
     )
     .map_err(|error| ApiError::bad_request(error.to_string()))?;
@@ -806,10 +1406,6 @@ pub(crate) async fn create_share(
         }
     }
     let token = generate_session_token();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| ApiError::internal("System clock is before Unix epoch."))?
-        .as_secs() as i64;
     let expires_at = now
         + input
             .expires_in_seconds
@@ -828,11 +1424,9 @@ pub(crate) async fn create_share(
             .assets
             .iter()
             .any(|asset| matches!(asset.kind, ShareAssetKind::Metadata)),
+        trusted_selection: false,
         broker_rooms: Vec::new(),
     };
-    let mut invitations = read_invitations(&state.database).await?;
-    invitations
-        .retain(|item| (item.expires_at > now && !item.revoked) || !item.broker_rooms.is_empty());
     invitations.push(invitation);
     write_invitations(&state.database, invitations).await?;
     Ok(Json(ShareLinkResponse {
@@ -1085,6 +1679,7 @@ pub(crate) async fn retry_revocations_for_owner(
 /// and sender task. Not exposed through the production router.
 pub(crate) struct PreparedShareSession {
     pub(crate) gift_url: String,
+    pub(crate) expires_at: u64,
     session: crate::share_service::ShareSession,
 }
 
@@ -1101,6 +1696,27 @@ pub(crate) async fn start_invitation_sender(
     token: &str,
     broker: &crate::share_broker::BrokerClient,
     owner_secret: &str,
+) -> Result<PreparedShareSession, ApiError> {
+    start_invitation_sender_with_connectivity(
+        enabled,
+        state,
+        auth,
+        token,
+        broker,
+        owner_secret,
+        &crate::share_connectivity::Connectivity::default(),
+    )
+    .await
+}
+
+pub(crate) async fn start_invitation_sender_with_connectivity(
+    enabled: bool,
+    state: &AppState,
+    auth: &AuthUser,
+    token: &str,
+    broker: &crate::share_broker::BrokerClient,
+    owner_secret: &str,
+    connectivity: &crate::share_connectivity::Connectivity,
 ) -> Result<PreparedShareSession, ApiError> {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     if !enabled {
@@ -1148,7 +1764,7 @@ pub(crate) async fn start_invitation_sender(
     let planned = plan_selected_assets(
         &candidates,
         &invitation.selected_asset_ids,
-        &[state.library_root.as_path()],
+        &[state.library_root.as_path(), state.covers_dir.as_path()],
         state.max_book_download_bytes.unwrap_or(u64::MAX),
     )
     .map_err(|error| ApiError::conflict(format!("Share contents changed: {error}")))?;
@@ -1175,13 +1791,22 @@ pub(crate) async fn start_invitation_sender(
     let path = temp.to_path_buf();
     let archive_path = path.clone();
     let root = state.library_root.clone();
-    let receipt = tokio::task::spawn_blocking(move || {
-        write_verified_archive(&archive_path, &planned, &generated, &root, limit)
+    let covers_root = state.covers_dir.clone();
+    let (receipt, permit) = blocking_share_preparation(permit, move || {
+        write_verified_archive_roots(
+            &archive_path,
+            &planned,
+            &generated,
+            &[root.as_path(), covers_root.as_path()],
+            limit,
+        )
     })
     .await
-    .map_err(|error| ApiError::internal(error.to_string()))?
-    .map_err(|error| ApiError::conflict(format!("Share contents changed: {error}")))?;
-    let archive = fs::File::open(path)
+    .map_err(|error| ApiError::internal(error.to_string()))?;
+    let receipt =
+        receipt.map_err(|error| ApiError::conflict(format!("Share contents changed: {error}")))?;
+    verify_invitation_receipt(&invitation, &receipt)?;
+    let mut archive = fs::File::open(path)
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?;
     let size = archive
@@ -1194,13 +1819,17 @@ pub(crate) async fn start_invitation_sender(
             "Share archive changed during preparation.",
         ));
     }
+    let cover = selected_archive_cover_preview(&mut archive, &receipt).await?;
     let expires_at = (invitation.expires_at as u64).min(now.saturating_add(900));
     let random_id = || URL_SAFE_NO_PAD.encode(rand::random::<[u8; 24]>());
     let recipient_nonce = random_id();
     let gift_id = random_id();
+    let connectivity = connectivity
+        .for_invitation(&gift_id, expires_at, now)
+        .map_err(|_| ApiError::bad_request("Invalid invitation connectivity configuration."))?;
     let signing = ed25519_dalek::SigningKey::from_bytes(&rand::random::<[u8; 32]>());
     let preview_key = rand::random::<[u8; 32]>();
-    let preview = crate::share_preview_crypto::preview_from_archive(
+    let mut preview = crate::share_preview_crypto::preview_from_archive(
         &book,
         &invitation.manifest.sender_display_name,
         invitation.manifest.personal_message.as_deref(),
@@ -1210,6 +1839,15 @@ pub(crate) async fn start_invitation_sender(
         &receipt,
     )
     .map_err(|error| ApiError::internal(format!("Cannot prepare share preview: {error}")))?;
+    if let Some(cover) = cover {
+        preview["cover"] = serde_json::to_value(cover)
+            .map_err(|_| ApiError::internal("Cannot prepare selected cover preview."))?;
+    }
+    if let Some(recipient) = connectivity.recipient_configuration() {
+        preview["connectivity"] = serde_json::to_value(recipient)
+            .map_err(|_| ApiError::internal("Cannot prepare recipient connectivity."))?;
+    }
+    omit_cover_if_preview_exceeds_payload_limit(&mut preview)?;
     let encrypted =
         crate::share_preview_crypto::encrypt_signed_preview(&preview, &signing, &preview_key)
             .map_err(|error| {
@@ -1319,7 +1957,7 @@ pub(crate) async fn start_invitation_sender(
         expires_at,
         move |capability, stop| async move {
             let _guards = (temp, permit);
-            crate::share_sender::run_authenticated_sender(
+            crate::share_sender::run_authenticated_sender_with_connectivity(
                 peer_broker,
                 peer_room,
                 capability,
@@ -1332,6 +1970,7 @@ pub(crate) async fn start_invitation_sender(
                     signing,
                     preview_key,
                 },
+                connectivity,
                 stop,
             )
             .await
@@ -1394,6 +2033,7 @@ pub(crate) async fn start_invitation_sender(
     });
     Ok(PreparedShareSession {
         gift_url: gift_url.to_string(),
+        expires_at,
         session,
     })
 }
@@ -1425,7 +2065,7 @@ pub(crate) async fn share_download(
     let planned = plan_selected_assets(
         &candidates,
         &invitation.selected_asset_ids,
-        &[state.library_root.as_path()],
+        &[state.library_root.as_path(), state.covers_dir.as_path()],
         state.max_book_download_bytes.unwrap_or(u64::MAX),
     )
     .map_err(|error| ApiError::conflict(format!("Share contents changed: {error}")))?;
@@ -1456,12 +2096,21 @@ pub(crate) async fn share_download(
     let path = temp_path.to_path_buf();
     let archive_path = path.clone();
     let library_root = state.library_root.clone();
-    let receipt = tokio::task::spawn_blocking(move || {
-        write_verified_archive(&archive_path, &planned, &generated, &library_root, limit)
+    let covers_root = state.covers_dir.clone();
+    let (receipt, permit) = blocking_share_preparation(permit, move || {
+        write_verified_archive_roots(
+            &archive_path,
+            &planned,
+            &generated,
+            &[library_root.as_path(), covers_root.as_path()],
+            limit,
+        )
     })
     .await
-    .map_err(|error| ApiError::internal(error.to_string()))?
-    .map_err(|error| ApiError::conflict(format!("Share contents changed: {error}")))?;
+    .map_err(|error| ApiError::internal(error.to_string()))?;
+    let receipt =
+        receipt.map_err(|error| ApiError::conflict(format!("Share contents changed: {error}")))?;
+    verify_invitation_receipt(&invitation, &receipt)?;
     let file = fs::File::open(&path)
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?;
@@ -1549,6 +2198,10 @@ impl ShareManifest {
 pub(crate) fn share_token_digest(token: &[u8]) -> [u8; 32] {
     Sha256::digest(token).into()
 }
+
+#[cfg(test)]
+#[path = "share_selection_tests.rs"]
+mod selection_tests;
 
 #[cfg(test)]
 mod tests {
