@@ -2,11 +2,55 @@
 use crate::*;
 
 const MAX_RESPONSE: usize = 160 * 1024;
+const MAX_GENERATION: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Capability {
     pub(crate) payload: String,
     pub(crate) signature: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Claim {
+    room: String,
+    role: String,
+    nonce: String,
+    expires_at: u64,
+    previous_nonce: Option<String>,
+}
+
+fn valid_identifier(value: &str) -> bool {
+    (16..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+fn claim(capability: &Capability, room: &str) -> anyhow::Result<Claim> {
+    anyhow::ensure!(
+        capability.payload.len() <= 4096
+            && capability.signature.len() == 64
+            && capability
+                .signature
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "invalid capability encoding"
+    );
+    let claim: Claim = serde_json::from_str(&capability.payload)?;
+    anyhow::ensure!(
+        claim.room == room
+            && valid_identifier(&claim.room)
+            && matches!(claim.role.as_str(), "producer" | "recipient")
+            && valid_identifier(&claim.nonce)
+            && claim.expires_at <= MAX_GENERATION
+            && claim
+                .previous_nonce
+                .as_ref()
+                .is_none_or(|p| valid_identifier(p) && p != &claim.nonce),
+        "invalid capability scope"
+    );
+    Ok(claim)
 }
 
 #[derive(Deserialize)]
@@ -62,6 +106,14 @@ impl BrokerClient {
         body: serde_json::Value,
         owner: Option<&str>,
     ) -> anyhow::Result<Vec<u8>> {
+        Ok(self.post_response(path, body, owner).await?.2)
+    }
+    async fn post_response(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+        owner: Option<&str>,
+    ) -> anyhow::Result<(StatusCode, reqwest::header::HeaderMap, Vec<u8>)> {
         let mut request = self.client.post(self.base.join(path)?).json(&body);
         if let Some(owner) = owner {
             request = request.bearer_auth(owner);
@@ -69,6 +121,7 @@ impl BrokerClient {
         let mut response = request.send().await?;
         let status = response.status();
         anyhow::ensure!(status.is_success(), "broker returned HTTP {status}");
+        let headers = response.headers().clone();
         let mut data = Vec::new();
         while let Some(chunk) = response.chunk().await? {
             anyhow::ensure!(
@@ -77,7 +130,7 @@ impl BrokerClient {
             );
             data.extend_from_slice(&chunk);
         }
-        Ok(data)
+        Ok((status, headers, data))
     }
     fn room_path(action: &str, room: &str) -> anyhow::Result<String> {
         anyhow::ensure!(
@@ -157,6 +210,76 @@ impl BrokerClient {
             .await?;
         Ok(serde_json::from_slice(&bytes)?)
     }
+    /// The current payload is parsed for scope, not authenticated locally; the broker
+    /// authenticates both claims during rotation. The caller must generate a fresh nonce.
+    pub(crate) async fn issue_successor(
+        &self,
+        owner: &str,
+        room: &str,
+        current: &Capability,
+        nonce: &str,
+    ) -> anyhow::Result<Capability> {
+        let current = claim(current, room)?;
+        anyhow::ensure!(
+            valid_identifier(nonce) && nonce != current.nonce,
+            "invalid successor nonce"
+        );
+        let bytes = self
+            .post(
+                "/issue",
+                serde_json::json!({
+                    "room": room, "role": current.role, "nonce": nonce,
+                    "expiresAt": current.expires_at, "previousNonce": current.nonce
+                }),
+                Some(owner),
+            )
+            .await?;
+        let next: Capability = serde_json::from_slice(&bytes)?;
+        let issued = claim(&next, room)?;
+        anyhow::ensure!(
+            issued.role == current.role
+                && issued.nonce == nonce
+                && issued.expires_at == current.expires_at
+                && issued.previous_nonce.as_deref() == Some(current.nonce.as_str()),
+            "invalid successor scope"
+        );
+        Ok(next)
+    }
+
+    /// A failed or malformed response may follow a successful rotation; retain both claims.
+    pub(crate) async fn rotate(
+        &self,
+        room: &str,
+        current: &Capability,
+        next: &Capability,
+        generation: u64,
+    ) -> anyhow::Result<u64> {
+        anyhow::ensure!(generation < MAX_GENERATION, "invalid signaling generation");
+        let old = claim(current, room)?;
+        let new = claim(next, room)?;
+        anyhow::ensure!(
+            old.role == new.role
+                && old.expires_at == new.expires_at
+                && old.nonce != new.nonce
+                && new.previous_nonce.as_deref() == Some(old.nonce.as_str()),
+            "invalid successor scope"
+        );
+        let (status, headers, _) = self.post_response(&Self::room_path("resume", room)?, serde_json::json!({
+            "payload":current.payload, "signature":current.signature,
+            "nextPayload":next.payload, "nextSignature":next.signature, "generation":generation
+        }), None).await?;
+        let expected = (generation + 1).to_string();
+        anyhow::ensure!(
+            status == StatusCode::NO_CONTENT
+                && headers.get_all("x-signaling-generation").iter().count() == 1
+                && headers
+                    .get("x-signaling-generation")
+                    .and_then(|h| h.to_str().ok())
+                    == Some(expected.as_str()),
+            "invalid rotation response; outcome may be uncertain"
+        );
+        Ok(generation + 1)
+    }
     pub(crate) async fn publish_preview(
         &self,
         owner: &str,
@@ -191,13 +314,31 @@ impl BrokerClient {
         kind: &str,
         message: &str,
     ) -> anyhow::Result<()> {
+        self.send_generation(room, capability, 0, sequence, kind, message)
+            .await
+    }
+    pub(crate) async fn send_generation(
+        &self,
+        room: &str,
+        capability: &Capability,
+        generation: u64,
+        sequence: u32,
+        kind: &str,
+        message: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(generation <= MAX_GENERATION, "invalid signaling generation");
         anyhow::ensure!(
             (1..=32).contains(&sequence)
                 && matches!(kind, "offer" | "ice")
                 && message.len() <= 4096,
             "invalid producer signal"
         );
-        self.post(&Self::room_path("send", room)?, serde_json::json!({"payload":capability.payload,"signature":capability.signature,"sequence":sequence,"kind":kind,"message":message}), None).await?;
+        let mut body = serde_json::json!({"payload":capability.payload,"signature":capability.signature,"sequence":sequence,"kind":kind,"message":message});
+        if generation != 0 {
+            body["generation"] = generation.into();
+        }
+        self.post(&Self::room_path("send", room)?, body, None)
+            .await?;
         Ok(())
     }
     pub(crate) async fn poll(
@@ -206,8 +347,24 @@ impl BrokerClient {
         capability: &Capability,
         after: u32,
     ) -> anyhow::Result<Vec<Signal>> {
+        self.poll_generation(room, capability, 0, after).await
+    }
+    pub(crate) async fn poll_generation(
+        &self,
+        room: &str,
+        capability: &Capability,
+        generation: u64,
+        after: u32,
+    ) -> anyhow::Result<Vec<Signal>> {
+        anyhow::ensure!(generation <= MAX_GENERATION, "invalid signaling generation");
         anyhow::ensure!(after <= 32, "invalid signal cursor");
-        let bytes = self.post(&Self::room_path("poll", room)?, serde_json::json!({"payload":capability.payload,"signature":capability.signature,"after":after}), None).await?;
+        let mut body = serde_json::json!({"payload":capability.payload,"signature":capability.signature,"after":after});
+        if generation != 0 {
+            body["generation"] = generation.into();
+        }
+        let bytes = self
+            .post(&Self::room_path("poll", room)?, body, None)
+            .await?;
         let signals: Vec<Signal> = serde_json::from_slice(&bytes)?;
         anyhow::ensure!(
             signals.len() <= 32
@@ -215,7 +372,15 @@ impl BrokerClient {
                     .iter()
                     .all(|signal| (1..=32).contains(&signal.sequence)
                         && matches!(signal.kind.as_str(), "answer" | "ice")
-                        && signal.message.len() <= 4096),
+                        && signal.message.len() <= 4096)
+                && signals
+                    .iter()
+                    .scan(after, |last, signal| {
+                        let valid = signal.sequence > *last;
+                        *last = signal.sequence;
+                        Some(valid)
+                    })
+                    .all(|valid| valid),
             "invalid broker signals"
         );
         Ok(signals)
@@ -256,6 +421,92 @@ impl BrokerClient {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[tokio::test]
+    async fn successor_and_generation_protocol() {
+        use axum::response::IntoResponse;
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let app = Router::new().route("/{*path}", post({
+            let seen = seen.clone();
+            move |Path(path): Path<String>, headers: HeaderMap, Json(body): Json<serde_json::Value>| {
+                let seen = seen.clone();
+                async move {
+                    seen.lock().unwrap().push((path.clone(), body.clone()));
+                    if path == "issue" {
+                        assert_eq!(headers.get(AUTHORIZATION).unwrap(), "Bearer owner");
+                        return Json(serde_json::json!({"payload":body.to_string(),"signature":"a".repeat(64)})).into_response();
+                    }
+                    if path.starts_with("resume/") {
+                        return (StatusCode::NO_CONTENT, [("x-signaling-generation", "1")]).into_response();
+                    }
+                    if path.starts_with("poll/") {
+                        return Json(serde_json::json!([{"sequence":2,"kind":"answer","message":"ok"}])).into_response();
+                    }
+                    StatusCode::NO_CONTENT.into_response()
+                }
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = BrokerClient::local(&format!("http://{address}/")).unwrap();
+        let room = "room____________";
+        let current = Capability {
+            payload: serde_json::json!({"room":room,"role":"producer","nonce":"nonce___________","expiresAt":12345}).to_string(),
+            signature: "b".repeat(64),
+        };
+        let next = client
+            .issue_successor("owner", room, &current, "next____________")
+            .await
+            .unwrap();
+        assert_eq!(client.rotate(room, &current, &next, 0).await.unwrap(), 1);
+        client
+            .send_generation(room, &next, 1, 1, "offer", "sdp")
+            .await
+            .unwrap();
+        assert_eq!(
+            client.poll_generation(room, &next, 1, 1).await.unwrap()[0].message,
+            "ok"
+        );
+        assert!(client.poll_generation(room, &next, 1, 2).await.is_err());
+        assert!(client.rotate(room, &current, &next, 1).await.is_err());
+        let count = seen.lock().unwrap().len();
+        assert!(
+            client
+                .issue_successor("owner", room, &current, "nonce___________")
+                .await
+                .is_err()
+        );
+        assert!(
+            client
+                .issue_successor("owner", "other___________", &current, "next____________")
+                .await
+                .is_err()
+        );
+        assert!(
+            client
+                .rotate(room, &current, &next, MAX_GENERATION)
+                .await
+                .is_err()
+        );
+        assert!(
+            client
+                .send_generation(room, &next, MAX_GENERATION + 1, 1, "offer", "x")
+                .await
+                .is_err()
+        );
+        assert!(client.poll_generation(room, &next, 1, 33).await.is_err());
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), count);
+        assert_eq!(seen[0].1["previousNonce"], "nonce___________");
+        assert_eq!(seen[0].1["expiresAt"], 12345);
+        assert_eq!(seen[1].1["nextPayload"], next.payload);
+        assert_eq!(seen[1].1["generation"], 0);
+        assert_eq!(seen[2].1["generation"], 1);
+        assert_eq!(seen[3].1["generation"], 1);
+        drop(seen);
+        server.abort();
+    }
 
     #[tokio::test]
     async fn client_handles_issuance_signals_revocation_and_errors() {

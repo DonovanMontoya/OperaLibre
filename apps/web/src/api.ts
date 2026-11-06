@@ -3,6 +3,7 @@ import type { ServerBackend, ProgressWrite, ProgressWriteOptions } from "./serve
 import { Capacitor } from "@capacitor/core";
 import { ApiError } from "./apiError";
 import { fetchWithTimeout } from "./fetchWithTimeout";
+import { giftBrokerTransportSecure } from "./giftBrokerOrigin";
 import type {
   AlignmentStatus,
   AuthStatus,
@@ -608,6 +609,24 @@ async function request<T>(path: string, options?: RequestOptions, timeoutMs = 30
   requireOperaLibreServer();
   // Read together: the token is the one issued by the address it is sent to.
   return requestAt<T>(currentApiBase(), getStoredToken(), path, options, timeoutMs);
+}
+
+export function isGiftBrokerTransportSecure(): boolean {
+  if (typeof window === "undefined") return false;
+  return giftBrokerTransportSecure(currentApiBase(), window.location.href, window.isSecureContext === true, import.meta.env.DEV);
+}
+
+export async function retryGiftBrokerRevocations(brokerOrigin: string, ownerSecret: string) {
+  requireOperaLibreServer();
+  const base = currentApiBase();
+  if (typeof window === "undefined" || !giftBrokerTransportSecure(base, window.location.href, window.isSecureContext === true, import.meta.env.DEV)) {
+    throw new Error("Secure HTTPS transport is required.");
+  }
+  return requestAt<{ completed: number; pending: number }>(base, getStoredToken(), "/api/admin/shares/revocations/retry", {
+    method: "POST",
+    redirect: "error",
+    body: JSON.stringify({ brokerOrigin, ownerSecret })
+  }, 120_000);
 }
 
 async function requestAt<T>(

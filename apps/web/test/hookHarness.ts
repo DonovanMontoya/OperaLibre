@@ -16,6 +16,11 @@ let loads = 0;
 export function loadHook(name: string, dependencies: Record<string, unknown>) {
   const key = `${name}:${loads++}`;
   registry.set(key, (id: string) => {
+    // Gift import is disabled by default; these hook fixtures have no staged
+    // gift data. A test can supply its own dependency to exercise recovery.
+    if (name === "useLibrary" && id === "./giftDeviceImport" && !(id in dependencies)) {
+      return { recoverNativeGiftImport: async () => {} };
+    }
     if (!(id in dependencies)) throw new Error(`Unmocked dependency: ${id}`);
     return dependencies[id];
   });
