@@ -3,8 +3,8 @@ import broker, { SecureRoom } from "../../../share-broker/src/index";
 import { ExperimentalGiftRoute, type GiftLink } from "../src/ExperimentalGiftRoute";
 import { createExperimentalRecipientTransport, type VerifiedRecipientDetails } from "../src/giftRecipientTransport";
 
-declare global { interface Window { stagedBytes: number; verifiedArchive: boolean; importCount: number } }
-window.stagedBytes = 0; window.verifiedArchive = false; window.importCount = 0;
+declare global { interface Window { stagedBytes: number; verifiedArchive: boolean; importCount: number; remoteDescriptionCalls: number } }
+window.stagedBytes = 0; window.verifiedArchive = false; window.importCount = 0; window.remoteDescriptionCalls = 0;
 const room = "recipient_______", giftId = "gift____________", ownerSecret = "owner-secret";
 const bytes = new TextEncoder().encode("verified archive bytes");
 const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("");
@@ -27,9 +27,10 @@ async function member(role: string, nonce: string) {
 const producer = await member("producer", "producer________");
 const recipient = await member("recipient", "recipient_______");
 if (!(await post(`claim/${room}`, producer)).ok) throw new Error("fixture claim failed");
-if (!(await post(`send/${room}`, { ...producer, sequence: 1, kind: "offer", message: JSON.stringify({ type: "offer", sdp: "fake" }) })).ok) throw new Error("fixture offer failed");
 const token = btoa(JSON.stringify(recipient)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-const link: GiftLink = { broker: "https://broker.test", token };
+const signing = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+const encode = (data: Uint8Array) => btoa(String.fromCharCode(...data)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+const link: GiftLink = { broker: "https://broker.test", token, signingKey: encode(new Uint8Array(await crypto.subtle.exportKey("raw", signing.publicKey))), previewKey: encode(new Uint8Array(32).fill(7)) };
 const details: VerifiedRecipientDetails = { giftId, assets: [{ name: "book.epub", size: 10, sha256: "a".repeat(64), kind: "ebook" }], metadata: { title: "Gift" }, preview: { sender: "Alex", title: "Gift", author: null, summary: null, message: null, coverUrl: null, formats: ["EPUB"], sizeBytes: 10 }, transfer: { room, size: bytes.length, sha256: hash, expiresAt: expiry } };
 if (new URLSearchParams(location.search).has("expired")) details.transfer.expiresAt = Math.floor(Date.now() / 1000) - 1;
 if (new URLSearchParams(location.search).has("revoked")) await post(`revoke/${room}`, {}, true);
@@ -38,10 +39,10 @@ function frame(offset: number, final: boolean, data: Uint8Array) {
   const output = new Uint8Array(header + 13 + data.length), view = new DataView(output.buffer);
   output[0] = id.length; output.set(id, 1); view.setBigUint64(header, BigInt(offset)); output[header + 8] = final ? 1 : 0; view.setUint32(header + 9, data.length); output.set(data, header + 13); return output;
 }
-class FakeChannel extends EventTarget { binaryType = ""; close() {} }
+class FakeChannel extends EventTarget { binaryType = ""; close() {} send(value: string) { const ack = JSON.parse(value); if (!window.verifiedArchive || ack.type !== "verified" || ack.size !== bytes.length || ack.sha256 !== hash) throw new Error("invalid acknowledgement"); queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "receipt-confirmed", size: bytes.length, sha256: hash }) }))); } }
 class FakePeer extends EventTarget {
   iceGatheringState = "complete"; localDescription: unknown = null; channel = new FakeChannel();
-  async setRemoteDescription() {}
+  async setRemoteDescription() { window.remoteDescriptionCalls++; }
   async createAnswer() { return { type: "answer", sdp: "fake" }; }
   async setLocalDescription(value: unknown) { this.localDescription = value; }
   close() {}
@@ -60,7 +61,19 @@ window.fetch = async (input, init) => {
   const request = new Request(input, init);
   if (new URL(request.url).hostname !== "broker.test") return originalFetch(input, init);
   const response = await broker.fetch(request, env);
-  if (new URL(request.url).pathname.startsWith("/send/") && response.ok) setTimeout(() => peer.deliver(), 0);
+  if (new URL(request.url).pathname.startsWith("/send/") && response.ok) {
+    const payload = JSON.parse(String(init?.body));
+    if (payload.kind === "ready") {
+      const challenge = JSON.parse(payload.message).challenge;
+      const signedPayload = new TextEncoder().encode(JSON.stringify({ version: 1, giftId, room, expiresAt: expiry, archiveSize: bytes.length, archiveSha256: hash, generation: 0, offset: 0, prefixSha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", challenge, offer: JSON.stringify({ type: "offer", sdp: "fake" }) }));
+      const context = new TextEncoder().encode("operalibre-gift-peer-offer-v1\0");
+      const message = new Uint8Array(context.length + signedPayload.length); message.set(context); message.set(signedPayload, context.length);
+      const signature = new Uint8Array(await crypto.subtle.sign("Ed25519", signing.privateKey, message));
+      if (new URLSearchParams(location.search).has("tampered-offer")) signature[0] ^= 1;
+      await post(`send/${room}`, { ...producer, sequence: 1, kind: "offer", message: JSON.stringify({ payload: encode(signedPayload), signature: encode(signature) }) });
+    }
+    if (payload.kind === "answer") setTimeout(() => peer.deliver(), 0);
+  }
   return response;
 };
 const collected: Uint8Array[] = [];

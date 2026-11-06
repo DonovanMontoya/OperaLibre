@@ -97,6 +97,8 @@ mod scan_input;
 mod share;
 #[allow(dead_code)]
 mod share_broker;
+#[allow(dead_code)]
+mod share_peer_proof;
 #[cfg(test)]
 mod share_peer_tests;
 #[allow(dead_code)]

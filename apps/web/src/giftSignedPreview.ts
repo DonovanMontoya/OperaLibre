@@ -6,6 +6,41 @@ export type VerifiedPreview = GiftDetails & { transfer: { room: string; size: nu
 const MAX_PREVIEW_BYTES = 128 * 1024;
 const MAX_CONTENT_BYTES = 25 * 1024 ** 3;
 const context = new TextEncoder().encode("operalibre-gift-preview-v1");
+const peerContext = new TextEncoder().encode("operalibre-gift-peer-offer-v1\0");
+
+export type PeerOfferBinding = {
+  giftId: string; room: string; expiresAt: number; archiveSize: number; archiveSha256: string;
+  generation: number; offset: number; prefixSha256: string; challenge: string;
+};
+export type SignedPeerOffer = { payload: string; signature: string };
+
+/** Verify before applying the returned complete SDP (including ICE). `expected`
+ * must come from the verified link/preview and local recovery state, never the
+ * broker. Generate a fresh random 32-byte challenge for every attempt and keep
+ * the consumed set for the lifetime of those challenges, across concurrent
+ * verifications. This primitive does not persist replay state or wire signaling. */
+export async function verifySignedPeerOffer(
+  signed: SignedPeerOffer, pinnedPublicKey: string, expected: PeerOfferBinding,
+  consumedChallenges: Set<string>, nowSeconds?: number,
+): Promise<string> {
+  const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{16,128}$/.test(value);
+  const validHash = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+  const currentTime = () => nowSeconds ?? Math.floor(Date.now() / 1000);
+  const challenge = decode(expected.challenge, 32);
+  if (!validId(expected.giftId) || !validId(expected.room) || !Number.isSafeInteger(expected.expiresAt) || !Number.isSafeInteger(currentTime()) || expected.expiresAt <= currentTime() || !Number.isSafeInteger(expected.archiveSize) || expected.archiveSize <= 0 || expected.archiveSize > MAX_CONTENT_BYTES || !validHash(expected.archiveSha256) || !Number.isSafeInteger(expected.generation) || expected.generation < 0 || !Number.isSafeInteger(expected.offset) || expected.offset < 0 || expected.offset > expected.archiveSize || !validHash(expected.prefixSha256) || challenge.length !== 32 || !/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(expected.challenge) || consumedChallenges.has(expected.challenge)) throw new Error("Invalid or expired peer binding.");
+  const payload = decode(signed.payload, 400 * 1024), signature = decode(signed.signature, 64), publicBytes = decode(pinnedPublicKey, 32);
+  if (signature.length !== 64 || publicBytes.length !== 32) throw new Error("Invalid peer key or signature.");
+  const message = new Uint8Array(peerContext.length + payload.length);
+  message.set(peerContext); message.set(payload, peerContext.length);
+  const publicKey = await crypto.subtle.importKey("raw", publicBytes, "Ed25519", false, ["verify"]);
+  if (!await crypto.subtle.verify("Ed25519", publicKey, signature, message)) throw new Error("Peer authentication failed.");
+  const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload));
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid peer offer.");
+  const record = value as Record<string, unknown>;
+  if (record.version !== 1 || Object.entries(expected).some(([key, expectedValue]) => record[key] !== expectedValue) || typeof record.offer !== "string" || !record.offer || new TextEncoder().encode(record.offer).length > 64 * 1024 || expected.expiresAt <= currentTime() || consumedChallenges.has(expected.challenge)) throw new Error("Invalid, expired or replayed peer offer.");
+  consumedChallenges.add(expected.challenge);
+  return record.offer;
+}
 
 function decode(value: unknown, maximum: number): Uint8Array<ArrayBuffer> {
   if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value) || value.length > Math.ceil(maximum * 4 / 3) + 4) throw new Error("Invalid preview encoding.");

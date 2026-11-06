@@ -38,3 +38,22 @@ test("file commit before index survives interruption and retries verification", 
   assert.equal(JSON.parse(storage.getItem("operalibre.deviceLibrary.v1")!).length, 1);
   assert.equal(await recoverGiftExtraction(storage, extract), null);
 });
+
+test("overlapping recovery cannot erase a later import's journal", async () => {
+  const data = new Map<string, string>();
+  const storage = { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
+  const destination = (giftId: string) => ({ directory: `device-library/gift-${giftId}` });
+  await assert.rejects(stageGiftImport(storage, id, [ebook], { title: "Gift" }, async () => { throw new Error("interrupted"); }), /interrupted/);
+  let finish!: (result: { directory: string }) => void;
+  const recovery = recoverGiftExtraction(storage, () => new Promise(resolve => { finish = resolve; }));
+  await assert.rejects(recoverGiftExtraction(storage, async () => destination(id)), /already in progress/);
+  const nextId = "another_gift____";
+  await assert.rejects(stageGiftImport(storage, nextId, [ebook], { title: "Next" }, async () => destination(nextId)), /already in progress/);
+  finish(destination(id));
+  assert.equal(await recovery, "imported");
+
+  await assert.rejects(stageGiftImport(storage, nextId, [ebook], { title: "Next" }, async () => { throw new Error("interrupted"); }), /interrupted/);
+  assert.equal(await recoverGiftExtraction(storage, async () => destination(nextId)), "imported");
+  assert.equal(await stageGiftImport(storage, id, [ebook], { title: "Gift" }, async () => destination(id)), "duplicate");
+  assert.deepEqual(JSON.parse(storage.getItem("operalibre.deviceLibrary.v1")!).map((book: { id: string }) => book.id), [`device:gift:${id}`, `device:gift:${nextId}`]);
+});

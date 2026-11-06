@@ -1320,14 +1320,20 @@ pub(crate) async fn start_invitation_sender(
         expires_at,
         move |capability, stop| async move {
             let _guards = (temp, permit);
-            crate::share_sender::run_peer(
+            crate::share_sender::run_authenticated_peer(
                 peer_broker,
                 peer_room,
                 capability,
+                0,
                 archive,
                 size,
-                0,
                 expires_at,
+                crate::share_sender::PeerAuthentication {
+                    gift_id,
+                    archive_sha256: receipt.sha256,
+                    signing,
+                    preview_key,
+                },
                 stop,
             )
             .await

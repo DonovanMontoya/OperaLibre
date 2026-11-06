@@ -3,6 +3,8 @@ import type { GiftDetails, GiftLink, GiftTransport } from "./ExperimentalGiftRou
 import { GiftChunkReceiver, type GiftChunkSink } from "./giftChunkReceiver";
 import { createNativeGiftStaging, recoverNativeGiftStaging } from "./giftNativeStaging";
 import { receiveRecoveredGift, type RecipientRecoveryProtocol } from "./giftRecipientRecovery";
+import { verifySignedPeerOffer, type SignedPeerOffer } from "./giftSignedPreview";
+import { createGiftPeerProof } from "./giftPeerProof";
 
 export type VerifiedRecipientDetails = GiftDetails & { transfer: { room: string; size: number; sha256: string; expiresAt: number } };
 type Capability = { payload: string; signature: string };
@@ -56,6 +58,14 @@ function waitForGathering(peer: RTCPeerConnection, signal: AbortSignal): Promise
   });
 }
 
+function base64url(bytes: Uint8Array): string {
+  let value = "";
+  for (const byte of bytes) value += String.fromCharCode(byte);
+  return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
 /** The caller supplies owner-controlled ICE servers; no public TURN service is
  * configured implicitly. Recovery requires an explicitly supplied authenticated
  * protocol adapter; the application does not supply one. */
@@ -82,6 +92,9 @@ export function createExperimentalRecipientTransport(
           return;
         }
         await brokerPost(link, `/claim/${transfer.room}`, credential, controller.signal);
+        if (!link.previewKey || !link.signingKey) throw new GiftScreenError("unavailable");
+        const challenge = base64url(crypto.getRandomValues(new Uint8Array(32)));
+        await brokerPost(link, `/send/${transfer.room}`, { ...credential, sequence: 1, kind: "ready", message: JSON.stringify({ challenge }) }, controller.signal);
         stage = await (options.stage ?? createNativeGiftStaging)(details.giftId);
         receiver = new GiftChunkReceiver(stage, transfer.size, transfer.sha256);
         const activeReceiver = receiver;
@@ -92,11 +105,29 @@ export function createExperimentalRecipientTransport(
           controller.signal.addEventListener("abort", fail, { once: true });
           connection.addEventListener("datachannel", event => {
             const channel = event.channel; channel.binaryType = "arraybuffer";
+            let awaitingConfirmation = false;
             channel.addEventListener("message", message => {
+              if (typeof message.data === "string" && awaitingConfirmation) {
+                try {
+                  if (message.data.length > 512) throw new Error();
+                  const confirmation = JSON.parse(message.data) as { type?: unknown; size?: unknown; sha256?: unknown };
+                  if (!confirmation || Object.keys(confirmation).sort().join(",") !== "sha256,size,type" || confirmation.type !== "receipt-confirmed" || confirmation.size !== transfer.size || confirmation.sha256 !== transfer.sha256) throw new Error();
+                  awaitingConfirmation = false;
+                  resolve();
+                } catch { channel.close(); fail(); }
+                return;
+              }
               if (!(message.data instanceof ArrayBuffer)) { channel.close(); fail(); return; }
               const frame = new Uint8Array(message.data);
               const final = frame.length > frame[0] + 9 && frame[frame[0] + 9] === 1;
-              void activeReceiver.receive(frame).then(() => { if (final) resolve(); }).catch(() => { channel.close(); fail(); });
+              void activeReceiver.receive(frame).then(() => {
+                if (final) {
+                  // Native finish has verified the complete archive digest.
+                  // This acknowledges receipt, not publication to the library.
+                  awaitingConfirmation = true;
+                  channel.send(JSON.stringify({ type: "verified", size: transfer.size, sha256: transfer.sha256 }));
+                }
+              }).catch(() => { channel.close(); fail(); });
             });
             channel.addEventListener("error", fail, { once: true });
             channel.addEventListener("close", fail, { once: true });
@@ -109,17 +140,23 @@ export function createExperimentalRecipientTransport(
           const signals = await brokerPost(link, `/poll/${transfer.room}`, { ...credential, after: cursor }, controller.signal) as Signal[];
           if (!Array.isArray(signals) || signals.length > 32) throw new GiftScreenError("unavailable");
           for (const item of signals) {
-            if (!Number.isSafeInteger(item.sequence) || item.sequence <= cursor || item.sequence > 32 || typeof item.message !== "string" || item.message.length > 4096) throw new GiftScreenError("unavailable");
+            if (!Number.isSafeInteger(item.sequence) || item.sequence <= cursor || item.sequence > 32 || typeof item.message !== "string" || new TextEncoder().encode(item.message).length > 7168) throw new GiftScreenError("unavailable");
             cursor = item.sequence;
             if (item.kind === "offer") { offer = item.message; break; }
             throw new GiftScreenError("unavailable");
           }
           if (!offer) await new Promise<void>((resolve, reject) => { const wait = setTimeout(resolve, 250); controller.signal.addEventListener("abort", () => { clearTimeout(wait); reject(new GiftScreenError("unavailable")); }, { once: true }); });
         }
-        await connection.setRemoteDescription(JSON.parse(offer));
+        const binding = { giftId: details.giftId, room: transfer.room, expiresAt: transfer.expiresAt, archiveSize: transfer.size, archiveSha256: transfer.sha256, generation: 0, offset: 0, prefixSha256: EMPTY_SHA256, challenge };
+        const authenticatedOffer = await verifySignedPeerOffer(JSON.parse(offer) as SignedPeerOffer, link.signingKey, binding, new Set());
+        if (controller.signal.aborted) throw new GiftScreenError("unavailable");
+        await connection.setRemoteDescription(JSON.parse(authenticatedOffer));
         await connection.setLocalDescription(await connection.createAnswer());
         await waitForGathering(connection, controller.signal);
-        await brokerPost(link, `/send/${transfer.room}`, { ...credential, sequence: 1, kind: "answer", message: JSON.stringify(connection.localDescription) }, controller.signal);
+        const descriptionJson = JSON.stringify(connection.localDescription);
+        if (!descriptionJson) throw new GiftScreenError("unavailable");
+        const proof = await createGiftPeerProof(link.previewKey, binding, authenticatedOffer, descriptionJson);
+        await brokerPost(link, `/send/${transfer.room}`, { ...credential, sequence: 2, kind: "answer", message: JSON.stringify({ descriptionJson, proof: base64url(proof) }) }, controller.signal);
         // Revocation is observed on the next broker poll; queued bytes cannot
         // be recalled. Denial or network loss fails closed.
         const monitor = async () => {

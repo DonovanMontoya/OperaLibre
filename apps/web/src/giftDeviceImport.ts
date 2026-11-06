@@ -9,6 +9,7 @@ type GiftMetadata = { title: string; author?: string | null; description?: strin
 type JournalStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 const IMPORT_JOURNAL = "operalibre.giftExtractionJournal.v1";
 const nativeGift = registerPlugin<NativeGiftPlugin>("GiftImport");
+const activeImports = new WeakSet<JournalStorage>();
 // The app has no reviewed entry point or native crash recovery yet.
 const GIFT_IMPORT_ENABLED = false;
 
@@ -39,7 +40,7 @@ export function buildGiftDeviceBook(giftId: string, assets: NativeGiftAsset[], m
 }
 
 /** A retry must re-verify the already committed native directory. */
-export async function recoverGiftExtraction(storage: JournalStorage, extract: NativeGiftPlugin["extract"]): Promise<"imported" | "duplicate" | null> {
+async function recoverExtraction(storage: JournalStorage, extract: NativeGiftPlugin["extract"]): Promise<"imported" | "duplicate" | null> {
   const raw = storage.getItem(IMPORT_JOURNAL);
   if (!raw) return null;
   const pending = JSON.parse(raw) as { giftId: string; assets: NativeGiftAsset[]; metadata: GiftMetadata };
@@ -51,15 +52,32 @@ export async function recoverGiftExtraction(storage: JournalStorage, extract: Na
   return result;
 }
 
+/** Serialize journal operations within this app process. */
+async function withImportLock<T>(storage: JournalStorage, action: () => Promise<T>): Promise<T> {
+  if (activeImports.has(storage)) throw new Error("A gift import is already in progress.");
+  activeImports.add(storage);
+  try {
+    return await action();
+  } finally {
+    activeImports.delete(storage);
+  }
+}
+
+export async function recoverGiftExtraction(storage: JournalStorage, extract: NativeGiftPlugin["extract"]): Promise<"imported" | "duplicate" | null> {
+  return withImportLock(storage, () => recoverExtraction(storage, extract));
+}
+
 export async function stageGiftImport(storage: JournalStorage, giftId: string, assets: NativeGiftAsset[], metadata: GiftMetadata, extract: NativeGiftPlugin["extract"]): Promise<"imported" | "duplicate"> {
   buildGiftDeviceBook(giftId, assets, metadata);
-  if (storage.getItem(IMPORT_JOURNAL)) throw new Error("Recover the pending gift before importing another.");
-  // Journal precedes native extraction. If the app dies after the native
-  // directory rename, retry checks all committed files before publishing.
-  storage.setItem(IMPORT_JOURNAL, JSON.stringify({ giftId, assets, metadata }));
-  const result = await recoverGiftExtraction(storage, extract);
-  if (!result) throw new Error("Gift journal was lost.");
-  return result;
+  return withImportLock(storage, async () => {
+    if (storage.getItem(IMPORT_JOURNAL)) throw new Error("Recover the pending gift before importing another.");
+    // Journal precedes native extraction. If the app dies after the native
+    // directory rename, retry checks all committed files before publishing.
+    storage.setItem(IMPORT_JOURNAL, JSON.stringify({ giftId, assets, metadata }));
+    const result = await recoverExtraction(storage, extract);
+    if (!result) throw new Error("Gift journal was lost.");
+    return result;
+  });
 }
 
 /** Unreachable while disabled; requires verified metadata and a native staged ZIP. */

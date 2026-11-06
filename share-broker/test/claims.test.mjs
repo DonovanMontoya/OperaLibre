@@ -82,16 +82,23 @@ test("claimed peers exchange ordered offer and answer and reject role abuse", as
   }
   const producer = await member("producer", "producer________");
   const recipient = await member("recipient", "recipient_______");
+  assert.equal((await call(`send/${room}`, { ...producer, sequence: 1, kind: "ready", message: "bad" })).status, 400);
+  assert.equal((await call(`send/${room}`, { ...recipient, sequence: 1, kind: "answer", message: "bad" })).status, 400);
+  assert.equal((await call(`send/${room}`, { ...recipient, sequence: 1, kind: "ice", message: "bad" })).status, 400);
+  const ready = JSON.stringify({ challenge: "A".repeat(43) });
+  assert.equal((await call(`send/${room}`, { ...recipient, sequence: 1, kind: "ready", message: ready })).status, 204);
+  assert.equal((await (await call(`poll/${room}`, { ...producer, after: 0 })).json())[0].message, ready);
   assert.equal((await call(`send/${room}`, { ...recipient, sequence: 1, kind: "offer", message: "bad" })).status, 400);
   assert.equal((await call(`send/${room}`, { ...producer, sequence: 1, kind: "offer", message: "sdp-offer" })).status, 204);
   assert.equal((await call(`send/${room}`, { ...producer, sequence: 1, kind: "offer", message: "replay" })).status, 409);
   assert.equal((await (await call(`poll/${room}`, { ...recipient, after: 0 })).json())[0].message, "sdp-offer");
-  assert.equal((await call(`send/${room}`, { ...recipient, sequence: 1, kind: "answer", message: "sdp-answer" })).status, 204);
-  assert.equal((await (await call(`poll/${room}`, { ...producer, after: 0 })).json())[0].message, "sdp-answer");
+  assert.equal((await call(`send/${room}`, { ...recipient, sequence: 2, kind: "answer", message: "sdp-answer" })).status, 204);
+  assert.equal((await (await call(`poll/${room}`, { ...producer, after: 1 })).json())[0].message, "sdp-answer");
+  assert.equal((await call(`send/${room}`, { ...producer, sequence: 2, kind: "ice", message: "x".repeat(7169) })).status, 400);
   assert.equal((await call(`revoke/${room}`, {}, { authorization: "Bearer wrong" })).status, 401);
   assert.equal((await call(`revoke/${room}`, {}, { authorization: "Bearer secret" })).status, 204);
   assert.equal((await call(`poll/${room}`, { ...producer, after: 0 })).status, 403);
-  assert.equal((await call(`send/${room}`, { ...recipient, sequence: 2, kind: "ice", message: "candidate" })).status, 403);
+  assert.equal((await call(`send/${room}`, { ...recipient, sequence: 3, kind: "ice", message: "candidate" })).status, 403);
   assert.equal((await call(`claim/${room}`, producer)).status, 403);
 });
 

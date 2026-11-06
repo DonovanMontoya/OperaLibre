@@ -77,6 +77,7 @@ where
 /// Start a sender for an archive already selected and opened by the server.
 /// This remains unregistered; callers must bind the handle to an authorized
 /// invitation and enforce the sender's permission before enabling the feature.
+#[cfg(test)]
 pub(crate) async fn start_sender(
     enabled: bool,
     broker: &BrokerClient,

@@ -28,6 +28,29 @@ owner-configured TURN, resume by verified chunk offset, and verify each asset
 SHA-256 before local import. If relay quota or provider configuration is
 missing, the recipient receives a clear failure and no partial library entry.
 
+## Experimental initial peer authentication
+
+After claiming its role, the recipient sends sequence 1 `ready`, with message
+`{"challenge":"..."}` containing a fresh 32-byte canonical unpadded base64url
+challenge. The producer sends sequence 1 `offer` containing a JSON signed
+envelope over its complete gathered description and the trusted gift, room,
+expiry, archive digest and size, generation, zero offset, empty-prefix SHA-256,
+and challenge. The recipient verifies the envelope against the link signing key
+and its authenticated preview before applying the offer.
+
+The recipient sends sequence 2 `answer` containing
+`{"descriptionJson":"...","proof":"..."}`. `descriptionJson` is the exact
+`JSON.stringify(connection.localDescription)` string; `proof` is the canonical
+unpadded base64url HMAC from the peer proof protocol, binding that exact string,
+the exact signed offer description, archive fields, generation, and challenge.
+The sender verifies the proof before parsing or applying the answer and before
+sending archive bytes. Initial transfers use offset zero; authenticated resume
+is not implemented. Descriptions are limited to 4096 UTF-8 bytes by the proof
+primitive, signal messages to 7168 bytes, and request bodies to 8192 bytes.
+The broker is untrusted and enforces role, ordering, and size limits but does
+not verify the peer cryptography. This remains gated and needs independent
+security and native review before activation.
+
 ## Experimental broker claim rotation
 
 The Worker remains disabled unless explicitly enabled; this is a broker-only
@@ -58,6 +81,55 @@ still checks the generation transactionally. No sender or recipient currently
 performs this exchange, persists
 claims, negotiates a new connection, or resumes from a verified transfer offset.
 This mechanism needs independent security and native review before use.
+
+## Isolated successor mailbox experiment
+
+`src/successor-mailbox.ts` is a test-only state machine, with no Worker route,
+configuration switch, or production activation. Its protocol is separate from
+the legacy claim and resume endpoints above. It is not safe to combine them:
+the legacy claim does not atomically bind a recovery secret, and legacy resume
+accepts the old signed claim and a successor without that secret. Merely adding
+mailbox routes would therefore leave a bypass. Existing links cannot be migrated
+after claim without an authenticated channel to establish a new secret.
+
+For a new, isolated protocol, the recipient generates 32 random bytes using a
+CSPRNG and encodes them as canonical unpadded base64url. Over a confidential
+channel it presents that secret with an owner-signed initial recipient claim.
+After signature verification, `claimMailbox` atomically consumes the mailbox
+membership and stores only SHA-256 of the secret, together with the room,
+recipient nonce, exact expiry, and state. Claim lifetime is at most 900 seconds.
+The initial bearer link can still be stolen and claimed first; it cannot read
+the mailbox after a different recipient has claimed it without that recipient's
+secret. A lost claim response requires the recipient to retain its secret; the
+prototype does not provide a claim-status or recovery endpoint.
+
+The authenticated owner publishes one opaque encrypted envelope after claim;
+the nonce is 16 base64url characters and ciphertext is 22–10,924 base64url
+characters. The primitive checks the original claim's room, recipient role,
+nonce and expiry, and does not authenticate the owner, verify a signature,
+encrypt, decrypt, or validate the successor inside the ciphertext. A future
+caller must enforce those requirements and use authenticated encryption with
+unique nonces and authenticated room, role, expiry and claim binding. Key
+distribution is outside this prototype; the original shared link must not be
+the sole encryption key or the sole authorization to retrieve a successor.
+The recipient presents the original verified claim and recovery secret to
+consume the envelope. The comparison uses a fixed-length digest, and consumption
+is transactional, one time, and removes the stored envelope. A lost successful
+read response cannot be retried; a later design needs an authenticated
+acknowledgement/retry protocol before this is usable for reliable delivery.
+Only one publication is permitted per initial claim, including after reading.
+Revocation and expiry are checked in each transaction. State and tombstones
+have no automatic reclamation. No secrets or envelopes are logged by this
+module; any future transport and infrastructure must also avoid logging bodies,
+credentials, or sensitive URLs and must enforce request-size and rate limits.
+
+Activation additionally requires atomic integration with real claim and
+revocation state, disabling all legacy paths for enrolled rooms, verified and
+scoped successor issuance and rotation, recipient persistence and encrypted
+delivery/key management, retry semantics, cleanup, threat review and client
+support. The caller must use the same transactional room storage and `revoked`
+key for this primitive and revocation. Its independent namespace does not
+consume or protect a legacy `claim:recipient` membership.
 
 ## Experimental room reservation
 

@@ -43,8 +43,8 @@ test("browser WebRTC peers exchange SDP through broker and transfer bytes", { ti
         const result = await window.brokerCall(`send/${room}`, { ...token, sequence, kind, message });
         if (result.status !== 204) throw new Error(`send: ${result.status}`);
       };
-      const poll = async token => {
-        const result = await window.brokerCall(`poll/${room}`, { ...token, after: 0 });
+      const poll = async (token, after = 0) => {
+        const result = await window.brokerCall(`poll/${room}`, { ...token, after });
         if (result.status !== 200 || !result.body.length) throw new Error(`poll: ${result.status}`);
         return result.body[0].message;
       };
@@ -55,14 +55,15 @@ test("browser WebRTC peers exchange SDP through broker and transfer bytes", { ti
         const data = new Promise(resolve => { b.ondatachannel = event => { event.channel.onmessage = message => resolve(message.data); }; });
         const channel = a.createDataChannel("gift");
         const opened = new Promise(resolve => { channel.onopen = resolve; });
+        await send(recipient, 1, "ready", JSON.stringify({ challenge: "A".repeat(43) }));
         await a.setLocalDescription(await a.createOffer()); await gather(a);
         if (!a.localDescription.sdp.includes("a=candidate:")) throw new Error("offer gathered no ICE candidates");
         await send(producer, 1, "offer", JSON.stringify(a.localDescription));
         await b.setRemoteDescription(JSON.parse(await poll(recipient)));
         await b.setLocalDescription(await b.createAnswer()); await gather(b);
         if (!b.localDescription.sdp.includes("a=candidate:")) throw new Error("answer gathered no ICE candidates");
-        await send(recipient, 1, "answer", JSON.stringify(b.localDescription));
-        await a.setRemoteDescription(JSON.parse(await poll(producer)));
+        await send(recipient, 2, "answer", JSON.stringify(b.localDescription));
+        await a.setRemoteDescription(JSON.parse(await poll(producer, 1)));
         await Promise.race([opened, new Promise((_, reject) => setTimeout(() => reject(new Error(`channel timed out: ${a.connectionState}/${b.connectionState}`)), 8000))]); channel.send("OperaLibre broker loopback");
         return await Promise.race([data, new Promise((_, reject) => setTimeout(() => reject(new Error("message timed out")), 8000))]);
       } finally { a.close(); b.close(); }

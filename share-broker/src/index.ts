@@ -146,7 +146,7 @@ export class SecureRoom implements DurableObject {
       });
     }
     if (body.generation !== undefined && (!Number.isSafeInteger(body.generation) || body.generation < 0)) return new Response(null, { status: 400 });
-    if (url.pathname === "/send" && (!Number.isSafeInteger(body.sequence) || body.sequence! < 1 || body.sequence! > 32 || typeof body.message !== "string" || new TextEncoder().encode(body.message).length > 4096 || !["offer", "answer", "ice"].includes(body.kind ?? "") || (body.kind === "offer" && claim.role !== "producer") || (body.kind === "answer" && claim.role !== "recipient"))) return new Response(null, { status: 400 });
+    if (url.pathname === "/send" && (!Number.isSafeInteger(body.sequence) || body.sequence! < 1 || body.sequence! > 32 || typeof body.message !== "string" || new TextEncoder().encode(body.message).length > 7168 || !["ready", "offer", "answer", "ice"].includes(body.kind ?? "") || (body.kind === "offer" && (claim.role !== "producer" || body.sequence !== 1)) || (body.kind === "ready" && (claim.role !== "recipient" || body.sequence !== 1)) || (body.kind === "answer" && (claim.role !== "recipient" || body.sequence !== 2)) || (body.kind === "ice" && body.sequence! < (claim.role === "producer" ? 2 : 3)))) return new Response(null, { status: 400 });
     if (url.pathname === "/poll" && (!Number.isSafeInteger(body.after) || body.after! < 0 || body.after! > 32)) return new Response(null, { status: 400 });
     return this.state.storage.transaction(async txn => {
       if (await txn.get("revoked")) return new Response(null, { status: 403 });
