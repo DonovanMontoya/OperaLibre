@@ -24,6 +24,8 @@ test("decrypts and authenticates selected preview without transferring content",
   assert.equal(verified.assets[0].sha256, "b".repeat(64));
   assert.equal(verified.transfer.sha256, "a".repeat(64));
   assert.equal(verified.transfer.room, record.room);
+  assert.deepEqual(verified.preview.formats, ["EPUB"]);
+  assert.equal(verified.preview.sizeBytes, record.archiveSize, "show actual transfer size including archive overhead");
 });
 
 test("rejects modified ciphertext, invalid signature and expired selection", async () => {

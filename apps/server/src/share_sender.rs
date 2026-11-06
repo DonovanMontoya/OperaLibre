@@ -38,11 +38,168 @@ struct NegotiatedAnswer {
     resume: Option<crate::share_transfer::ResumeRequest>,
 }
 
+#[derive(Clone)]
 pub(crate) struct PeerAuthentication {
     pub(crate) gift_id: String,
     pub(crate) archive_sha256: String,
     pub(crate) signing: ed25519_dalek::SigningKey,
     pub(crate) preview_key: [u8; 32],
+}
+
+// Initial generation plus the broker's 16 allowed recipient rotations. The
+// producer claim itself is retained, not rotated by this supervisor.
+const MAX_PEER_ATTEMPTS: usize = 17;
+const GENERATION_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+const PEER_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Retain the trusted archive and pinned authentication only for this process's
+/// invitation lifetime. Recipient rotation keeps the producer claim valid, but
+/// invalidates its old signaling generation. Never run two archive readers.
+#[allow(clippy::too_many_arguments)] // Mirrors the single-attempt peer adapter.
+pub(crate) async fn run_authenticated_sender(
+    broker: crate::share_broker::BrokerClient,
+    room: String,
+    capability: crate::share_broker::Capability,
+    archive: tokio::fs::File,
+    size: u64,
+    expires_at: u64,
+    auth: PeerAuthentication,
+    stop: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    let monitor_broker = broker.clone();
+    let monitor_room = room.clone();
+    let monitor_capability = capability.clone();
+    supervise_sender(
+        archive,
+        expires_at,
+        stop,
+        move || {
+            let broker = monitor_broker.clone();
+            let room = monitor_room.clone();
+            let capability = monitor_capability.clone();
+            async move { broker.session_generation(&room, &capability).await }
+        },
+        move |generation, file, stop| {
+            run_authenticated_peer(
+                broker.clone(),
+                room.clone(),
+                capability.clone(),
+                generation,
+                file,
+                size,
+                expires_at,
+                auth.clone(),
+                stop,
+            )
+        },
+    )
+    .await
+}
+
+// The injected operations let lifecycle tests exercise cancellation and file
+// ownership without relying on ICE timing. The real adapter above uses the
+// authenticated broker session endpoint and actual peer implementation.
+async fn supervise_sender<G, GF, A, AF>(
+    archive: tokio::fs::File,
+    expires_at: u64,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    mut generation: G,
+    mut attempt: A,
+) -> anyhow::Result<()>
+where
+    G: FnMut() -> GF,
+    GF: std::future::Future<Output = anyhow::Result<u64>>,
+    A: FnMut(u64, tokio::fs::File, tokio::sync::watch::Receiver<bool>) -> AF,
+    AF: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    anyhow::ensure!(now < expires_at, "share expired");
+    anyhow::ensure!(
+        expires_at <= now.saturating_add(900),
+        "invalid share lifetime"
+    );
+    let deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_secs(expires_at.saturating_sub(now));
+    ensure_sender_active(&stop, expires_at)?;
+    let mut current = tokio::select! {
+        biased;
+        _ = stop.changed() => anyhow::bail!("share cancelled"),
+        _ = tokio::time::sleep_until(deadline) => anyhow::bail!("share expired"),
+        result = generation() => result?,
+    };
+    crate::share_broker::validate_generation(current)?;
+    for _ in 0..MAX_PEER_ATTEMPTS {
+        ensure_sender_active(&stop, expires_at)?;
+        // try_clone may share its OS cursor with previous clones. The previous
+        // attempt has fully stopped before this seek or another reader starts.
+        let mut file = archive.try_clone().await?;
+        file.seek(std::io::SeekFrom::Start(0)).await?;
+        ensure_sender_active(&stop, expires_at)?;
+        let (cancel, cancelled) = tokio::sync::watch::channel(false);
+        let peer = attempt(current, file, cancelled);
+        let monitor_stop = stop.clone();
+        let previous = current;
+        let next = async {
+            loop {
+                ensure_sender_active(&monitor_stop, expires_at)?;
+                let observed = generation().await?;
+                crate::share_broker::validate_generation(observed)?;
+                anyhow::ensure!(observed >= previous, "signaling generation moved backwards");
+                if observed > previous {
+                    return Ok::<_, anyhow::Error>(observed);
+                }
+                tokio::time::sleep(GENERATION_POLL).await;
+            }
+        };
+        tokio::pin!(peer, next);
+        // An error in one attempt is not permission to replay a consumed ready
+        // message. Only a strictly newer authenticated generation can retry it.
+        let mut completed = false;
+        let outcome = loop {
+            tokio::select! {
+                biased;
+                _ = stop.changed() => break Err(anyhow::anyhow!("share cancelled")),
+                _ = tokio::time::sleep_until(deadline) => break Err(anyhow::anyhow!("share expired")),
+                result = &mut next => break result,
+                result = &mut peer, if !completed => {
+                    completed = true;
+                    if result.is_ok() {
+                        return Ok(());
+                    }
+                }
+            }
+        };
+        if !completed {
+            let _ = cancel.send(true);
+            // If cleanup cannot finish, terminate; never reuse a cursor while
+            // an old attempt (including blocking prefix hashing) may read it.
+            tokio::time::timeout(PEER_CLEANUP_TIMEOUT, &mut peer)
+                .await
+                .map_err(|_| anyhow::anyhow!("share peer cleanup timed out"))?
+                .ok();
+        }
+        current = outcome?;
+    }
+    anyhow::bail!("share reconnect attempt limit reached")
+}
+
+#[cfg(test)]
+#[path = "share_sender_reconnect_tests.rs"]
+mod reconnect_tests;
+
+fn ensure_sender_active(
+    stop: &tokio::sync::watch::Receiver<bool>,
+    expires_at: u64,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !*stop.borrow() && stop.has_changed().is_ok(),
+        "share cancelled"
+    );
+    anyhow::ensure!(
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() < expires_at,
+        "share expired"
+    );
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]
@@ -77,7 +234,9 @@ async fn wait_for_verified_receipt(
 ) -> anyhow::Result<()> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     anyhow::ensure!(now < expires_at, "share expired");
-    let timeout = std::time::Duration::from_secs(expires_at.saturating_sub(now).min(30));
+    // Native verification hashes the complete staged archive and can take much
+    // longer than 30 seconds on a phone. Do not extend the invitation itself.
+    let timeout = std::time::Duration::from_secs(expires_at.saturating_sub(now).min(900));
     cancellable_send(
         async {
             tokio::time::timeout(timeout, async {
@@ -102,13 +261,15 @@ async fn wait_for_verified_receipt(
                             );
                             let confirmation = serde_json::json!({"type": "receipt-confirmed", "size": size, "sha256": sha256}).to_string();
                             channel.send_text(&confirmation).await?;
-                            loop {
-                                match channel.poll().await {
-                                    Some(webrtc::data_channel::DataChannelEvent::OnClose) | None => return Ok(()),
-                                    Some(webrtc::data_channel::DataChannelEvent::OnMessage(_)) => anyhow::bail!("unexpected message after verification"),
-                                    _ => {}
+                            return tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                                loop {
+                                    match channel.poll().await {
+                                        Some(webrtc::data_channel::DataChannelEvent::OnClose) | None => return Ok(()),
+                                        Some(webrtc::data_channel::DataChannelEvent::OnMessage(_)) => anyhow::bail!("unexpected message after verification"),
+                                        _ => {}
+                                    }
                                 }
-                            }
+                            }).await.map_err(|_| anyhow::anyhow!("verified channel close timed out"))?;
                         }
                         Some(webrtc::data_channel::DataChannelEvent::OnClose) | None => {
                             anyhow::bail!("data channel closed before verification")
@@ -232,6 +393,7 @@ impl AuthSignaling {
 }
 
 /// Authenticated exchange over an already authorized signaling generation.
+#[allow(clippy::too_many_arguments)] // Explicit pinned protocol/session inputs at this peer boundary.
 pub(crate) async fn run_authenticated_peer(
     broker: crate::share_broker::BrokerClient,
     room: String,
@@ -251,7 +413,7 @@ pub(crate) async fn run_authenticated_peer(
     };
     let ready: Ready = serde_json::from_str(&ready_message)?;
     decode_32(&ready.challenge)?;
-    let (file, offset, prefix) = if let Some(request) = ready.resume {
+    let (mut file, offset, prefix) = if let Some(request) = ready.resume {
         anyhow::ensure!(generation > 0, "resume requires a rotated generation");
         let file = file.into_std().await;
         let stopped = stop.clone();
@@ -303,113 +465,125 @@ pub(crate) async fn run_authenticated_peer(
         .with_data_channel_send_buffer_limit(MAX_OUTSTANDING)
         .build()
         .await?;
-    let outcome = async {
-        let channel = peer.create_data_channel("operalibre-share", None).await?;
-        peer.set_local_description(peer.create_offer(None).await?)
-            .await?;
-        gather_rx
-            .recv()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("ICE gathering closed"))?;
-        let offer = serde_json::to_string(
-            &peer
-                .local_description()
+    let result = {
+        let outcome = async {
+            let channel = peer.create_data_channel("operalibre-share", None).await?;
+            peer.set_local_description(peer.create_offer(None).await?)
+                .await?;
+            gather_rx
+                .recv()
                 .await
-                .ok_or_else(|| anyhow::anyhow!("missing offer"))?,
-        )?;
-        // The proof primitive accepts descriptions of at most 4096 bytes.
-        anyhow::ensure!(offer.len() <= 4096, "offer exceeds proof limit");
-        let binding = crate::share_peer_proof::PeerProofBinding {
-            room: room.clone(),
-            gift_id: auth.gift_id.clone(),
-            expires_at,
-            generation,
-            archive_size: size,
-            archive_sha256: auth.archive_sha256.clone(),
-            offset,
-            prefix_sha256: prefix.clone(),
-            challenge: ready.challenge.clone(),
-        };
-        let signed = crate::share_preview_crypto::sign_peer_offer(
-            &crate::share_preview_crypto::PeerOffer {
-                version: 1,
-                gift_id: &auth.gift_id,
-                room: &room,
+                .ok_or_else(|| anyhow::anyhow!("ICE gathering closed"))?;
+            let offer = serde_json::to_string(
+                &peer
+                    .local_description()
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("missing offer"))?,
+            )?;
+            // The proof primitive accepts descriptions of at most 4096 bytes.
+            anyhow::ensure!(offer.len() <= 4096, "offer exceeds proof limit");
+            let binding = crate::share_peer_proof::PeerProofBinding {
+                room: room.clone(),
+                gift_id: auth.gift_id.clone(),
                 expires_at,
-                archive_size: size,
-                archive_sha256: &auth.archive_sha256,
                 generation,
+                archive_size: size,
+                archive_sha256: auth.archive_sha256.clone(),
                 offset,
-                prefix_sha256: &prefix,
-                challenge: &ready.challenge,
-                offer: &offer,
-            },
-            &auth.signing,
-        )?;
-        let message = serde_json::to_string(&signed)?;
-        anyhow::ensure!(message.len() <= 7168, "signed offer too large");
-        signaling
-            .post(
-                "send",
-                serde_json::json!({"sequence": 1, "kind": "offer", "message": message}),
-            )
-            .await?;
-        let answer: AuthenticatedAnswer =
-            serde_json::from_str(&signaling.wait_for(1, 2, "answer").await?)?;
-        let proof = decode_32(&answer.proof)?;
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        crate::share_peer_proof::verify_peer_proof(
-            &auth.preview_key,
-            &binding,
-            &offer,
-            &answer.description_json,
-            now,
-            &proof,
-        )?;
-        peer.set_remote_description(serde_json::from_str(&answer.description_json)?)
-            .await?;
-        loop {
-            match channel.poll().await {
-                Some(webrtc::data_channel::DataChannelEvent::OnOpen) => break,
-                Some(webrtc::data_channel::DataChannelEvent::OnClose) | None => {
-                    anyhow::bail!("data channel closed")
-                }
-                _ => {}
-            }
-        }
-        signaling.poll(2).await?;
-        let (cancel, cancelled) = tokio::sync::watch::channel(false);
-        let monitor = async {
+                prefix_sha256: prefix.clone(),
+                challenge: ready.challenge.clone(),
+            };
+            let signed = crate::share_preview_crypto::sign_peer_offer(
+                &crate::share_preview_crypto::PeerOffer {
+                    version: 1,
+                    gift_id: &auth.gift_id,
+                    room: &room,
+                    expires_at,
+                    archive_size: size,
+                    archive_sha256: &auth.archive_sha256,
+                    generation,
+                    offset,
+                    prefix_sha256: &prefix,
+                    challenge: &ready.challenge,
+                    offer: &offer,
+                },
+                &auth.signing,
+            )?;
+            let message = serde_json::to_string(&signed)?;
+            anyhow::ensure!(message.len() <= 7168, "signed offer too large");
+            signaling
+                .post(
+                    "send",
+                    serde_json::json!({"sequence": 1, "kind": "offer", "message": message}),
+                )
+                .await?;
+            let answer: AuthenticatedAnswer =
+                serde_json::from_str(&signaling.wait_for(1, 2, "answer").await?)?;
+            let proof = decode_32(&answer.proof)?;
+            let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+            crate::share_peer_proof::verify_peer_proof(
+                &auth.preview_key,
+                &binding,
+                &offer,
+                &answer.description_json,
+                now,
+                &proof,
+            )?;
+            peer.set_remote_description(serde_json::from_str(&answer.description_json)?)
+                .await?;
             loop {
-                if signaling.poll(2).await.is_err() {
-                    let _ = cancel.send(true);
-                    return;
+                match channel.poll().await {
+                    Some(webrtc::data_channel::DataChannelEvent::OnOpen) => break,
+                    Some(webrtc::data_channel::DataChannelEvent::OnClose) | None => {
+                        anyhow::bail!("data channel closed")
+                    }
+                    _ => {}
                 }
-                tokio::select! { _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}, _ = cancel.closed() => return }
             }
-        };
-        let sender = async {
-            send_archive(
-                &*channel,
-                file,
-                "archive",
-                size,
-                offset,
-                expires_at,
-                cancelled.clone(),
-            )
-            .await?;
-            wait_for_verified_receipt(&*channel, size, &auth.archive_sha256, expires_at, cancelled)
+            signaling.poll(2).await?;
+            let (cancel, cancelled) = tokio::sync::watch::channel(false);
+            let monitor = async {
+                loop {
+                    if signaling.poll(2).await.is_err() {
+                        let _ = cancel.send(true);
+                        return;
+                    }
+                    tokio::select! { _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}, _ = cancel.closed() => return }
+                }
+            };
+            let sender = async {
+                send_acknowledged_archive(
+                    &*channel,
+                    &mut file,
+                    "archive",
+                    size,
+                    offset,
+                    expires_at,
+                    cancelled.clone(),
+                )
+                .await?;
+                wait_for_verified_receipt(
+                    &*channel,
+                    size,
+                    &auth.archive_sha256,
+                    expires_at,
+                    cancelled,
+                )
                 .await
+            };
+            tokio::pin!(monitor, sender);
+            tokio::select! { result = &mut sender => result, _ = &mut monitor => sender.await }
         };
-        tokio::pin!(monitor, sender);
-        tokio::select! { result = &mut sender => result, _ = &mut monitor => sender.await }
+        tokio::pin!(outcome);
+        tokio::select! {
+            result = &mut outcome => result,
+            _ = stop.changed() => Err(anyhow::anyhow!("share cancelled"))
+        }
     };
-    tokio::pin!(outcome);
-    let result = tokio::select! {
-        result = &mut outcome => result,
-        _ = stop.changed() => Err(anyhow::anyhow!("share cancelled"))
-    };
+    // Dropping a Tokio read future does not cancel its blocking I/O. Keep the
+    // handle outside the cancelled outcome and drain before the supervisor can
+    // clone/seek the shared OS cursor for another generation.
+    drop(file.into_std().await);
     peer.close().await?;
     result
 }
@@ -426,6 +600,7 @@ impl PeerConnectionEventHandler for GatherHandler {
 /// Experimental non-trickle host-ICE sender. The broker capability has
 /// already been issued and claimed by the service. TURN is not configured.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)] // Test-only adapter for an already authorized archive session.
 pub(crate) async fn run_peer(
     broker: crate::share_broker::BrokerClient,
     room: String,
@@ -444,6 +619,7 @@ pub(crate) async fn run_peer(
 
 /// Run one peer using an already active capability and signaling generation.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)] // Test-only signaling generation and bounded archive inputs.
 pub(crate) async fn run_peer_generation(
     broker: crate::share_broker::BrokerClient,
     room: String,
@@ -572,6 +748,7 @@ pub(crate) async fn run_peer_generation(
 
 /// Monitor broker authorization while transferring. Poll failures fail closed.
 /// This is not started by production routes.
+#[allow(clippy::too_many_arguments)] // Explicit channel/archive/revocation inputs at this protocol boundary.
 pub(crate) async fn send_with_broker_watch(
     broker: &crate::share_broker::BrokerClient,
     room: &str,
@@ -590,6 +767,7 @@ pub(crate) async fn send_with_broker_watch(
     .await
 }
 
+#[allow(clippy::too_many_arguments)] // Authorized signaling generation and bounded file transfer inputs.
 pub(crate) async fn send_with_broker_watch_generation(
     broker: &crate::share_broker::BrokerClient,
     room: &str,
@@ -626,6 +804,21 @@ pub(crate) async fn send_with_broker_watch_generation(
 pub(crate) async fn send_archive(
     channel: &dyn DataChannel,
     mut file: tokio::fs::File,
+    asset_id: &str,
+    size: u64,
+    offset: u64,
+    expires_at: u64,
+    cancelled: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    send_archive_reader(
+        channel, &mut file, asset_id, size, offset, expires_at, cancelled,
+    )
+    .await
+}
+
+async fn send_archive_reader(
+    channel: &dyn DataChannel,
+    file: &mut tokio::fs::File,
     asset_id: &str,
     size: u64,
     offset: u64,
@@ -686,6 +879,145 @@ pub(crate) async fn send_archive(
     .await?;
     Ok(())
 }
+
+const PERSISTED_WINDOW: usize = 8;
+
+#[async_trait::async_trait]
+trait PersistedChannel: Send + Sync {
+    async fn send_frame(&self, frame: Vec<u8>) -> anyhow::Result<()>;
+    async fn next_ack(&self) -> anyhow::Result<(bool, Vec<u8>)>;
+}
+
+struct PeerPersistedChannel<'a>(&'a dyn DataChannel);
+
+#[async_trait::async_trait]
+impl PersistedChannel for PeerPersistedChannel<'_> {
+    async fn send_frame(&self, frame: Vec<u8>) -> anyhow::Result<()> {
+        self.0.send(bytes::BytesMut::from(frame.as_slice())).await?;
+        Ok(())
+    }
+    async fn next_ack(&self) -> anyhow::Result<(bool, Vec<u8>)> {
+        use webrtc::data_channel::DataChannelEvent;
+        loop {
+            match self.0.poll().await {
+                Some(DataChannelEvent::OnMessage(message)) => {
+                    anyhow::ensure!(message.data.len() <= 128, "persisted ACK exceeds limit");
+                    return Ok((message.is_string, message.data.to_vec()));
+                }
+                Some(
+                    DataChannelEvent::OnClose
+                    | DataChannelEvent::OnClosing
+                    | DataChannelEvent::OnError,
+                )
+                | None => anyhow::bail!("data channel closed before persistence"),
+                _ => {}
+            }
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedAck {
+    #[serde(rename = "type")]
+    kind: String,
+    offset: u64,
+}
+
+fn accept_persisted_ack(
+    message: (bool, Vec<u8>),
+    pending: &mut std::collections::VecDeque<u64>,
+    sent: u64,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(message.0 && message.1.len() <= 128, "invalid persisted ACK");
+    let ack: PersistedAck = serde_json::from_slice(&message.1)?;
+    let expected = pending
+        .pop_front()
+        .ok_or_else(|| anyhow::anyhow!("unsolicited persisted ACK"))?;
+    anyhow::ensure!(
+        ack.kind == "persisted" && ack.offset == expected && ack.offset <= sent,
+        "invalid persisted ACK offset or type"
+    );
+    Ok(())
+}
+
+/// Application-level flow control bounds native queued writes independently of
+/// SCTP's network buffer. Only authenticated peers use this protocol. The one
+/// poll consumer drains all persisted ACKs before handing off to receipt polling.
+async fn send_acknowledged_archive(
+    channel: &dyn DataChannel,
+    file: &mut tokio::fs::File,
+    asset_id: &str,
+    size: u64,
+    offset: u64,
+    expires_at: u64,
+    cancelled: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    send_persisted_archive(
+        &PeerPersistedChannel(channel),
+        file,
+        asset_id,
+        size,
+        offset,
+        expires_at,
+        cancelled,
+    )
+    .await
+}
+
+async fn send_persisted_archive<C: PersistedChannel>(
+    channel: &C,
+    file: &mut tokio::fs::File,
+    asset_id: &str,
+    size: u64,
+    offset: u64,
+    expires_at: u64,
+    mut cancelled: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    anyhow::ensure!(now < expires_at, "share expired");
+    let remaining = std::time::Duration::from_secs(expires_at.saturating_sub(now).min(900));
+    cancellable_send(async {
+        tokio::time::timeout(remaining, async {
+            anyhow::ensure!(offset <= size && file.metadata().await?.len()==size,"archive size changed");
+            file.seek(std::io::SeekFrom::Start(offset)).await?;
+            let mut position=offset;
+            let mut pending=std::collections::VecDeque::with_capacity(PERSISTED_WINDOW);
+            let mut buffer=vec![0;CHUNK];
+            // Refuse messages already queued before any archive data was sent.
+            tokio::select! {
+                biased;
+                message=channel.next_ack()=>accept_persisted_ack(message?,&mut pending,position)?,
+                _=std::future::ready(())=>{}
+            }
+            while position < size || !pending.is_empty() {
+                anyhow::ensure!(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()<expires_at,"share expired");
+                while position < size && pending.len() < PERSISTED_WINDOW {
+                    let wanted=(size-position).min(CHUNK as u64) as usize;
+                    file.read_exact(&mut buffer[..wanted]).await?;
+                    channel.send_frame(encode_chunk(asset_id,position,false,&buffer[..wanted])?).await?;
+                    position+=wanted as u64;
+                    pending.push_back(position);
+                }
+                accept_persisted_ack(channel.next_ack().await?,&mut pending,position)?;
+            }
+            // A duplicate/premature receipt queued after the last ACK must not
+            // become a valid receipt just because this loop has finished.
+            tokio::select! {
+                biased;
+                message=channel.next_ack()=>accept_persisted_ack(message?,&mut pending,position)?,
+                _=std::future::ready(())=>{}
+            }
+            anyhow::ensure!(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()<expires_at,"share expired");
+            channel.send_frame(encode_chunk(asset_id,position,true,&[])?).await?;
+            Ok(())
+        }).await.map_err(|_|anyhow::anyhow!("archive persistence expired"))?
+    }, &mut cancelled).await
+}
+
+#[cfg(test)]
+#[path = "share_sender_ack_tests.rs"]
+mod ack_tests;
 
 #[cfg(test)]
 mod tests {

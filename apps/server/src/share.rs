@@ -531,33 +531,33 @@ fn trusted_candidates_for_book(
             });
         }
     }
-    if let Some(reading) = &book.reading_file {
-        if let Some(path) = state.reading_paths.get(&reading.id) {
-            let size = std::fs::metadata(path)
-                .map_err(|_| ApiError::not_found("Book asset is unavailable."))?
-                .len();
-            candidates.push(TrustedShareFile {
-                id: reading.id.clone(),
-                kind: ShareAssetKind::Ebook,
-                file_name: reading.file_name.clone(),
-                path: path.clone(),
-                size_bytes: size,
-            });
-        }
+    if let Some(reading) = &book.reading_file
+        && let Some(path) = state.reading_paths.get(&reading.id)
+    {
+        let size = std::fs::metadata(path)
+            .map_err(|_| ApiError::not_found("Book asset is unavailable."))?
+            .len();
+        candidates.push(TrustedShareFile {
+            id: reading.id.clone(),
+            kind: ShareAssetKind::Ebook,
+            file_name: reading.file_name.clone(),
+            path: path.clone(),
+            size_bytes: size,
+        });
     }
-    if book.sync_file.is_some() {
-        if let Some(path) = state.sync_paths.get(book_id) {
-            let size = std::fs::metadata(path)
-                .map_err(|_| ApiError::not_found("Book asset is unavailable."))?
-                .len();
-            candidates.push(TrustedShareFile {
-                id: format!("sync:{book_id}"),
-                kind: ShareAssetKind::Alignment,
-                file_name: "alignment.sync.json".into(),
-                path: path.clone(),
-                size_bytes: size,
-            });
-        }
+    if book.sync_file.is_some()
+        && let Some(path) = state.sync_paths.get(book_id)
+    {
+        let size = std::fs::metadata(path)
+            .map_err(|_| ApiError::not_found("Book asset is unavailable."))?
+            .len();
+        candidates.push(TrustedShareFile {
+            id: format!("sync:{book_id}"),
+            kind: ShareAssetKind::Alignment,
+            file_name: "alignment.sync.json".into(),
+            path: path.clone(),
+            size_bytes: size,
+        });
     }
     if let Some(cover) = state.cover_art.get(book_id) {
         candidates.push(TrustedShareFile {
@@ -764,14 +764,12 @@ pub(crate) async fn create_share(
         .assets
         .iter()
         .find(|asset| matches!(asset.kind, ShareAssetKind::Metadata))
+        && (metadata.id != format!("metadata:{}", input.manifest.book_id)
+            || metadata.size_bytes != canonical_metadata.len() as u64)
     {
-        if metadata.id != format!("metadata:{}", input.manifest.book_id)
-            || metadata.size_bytes != canonical_metadata.len() as u64
-        {
-            return Err(ApiError::bad_request(
-                "Share metadata does not match the server record.",
-            ));
-        }
+        return Err(ApiError::bad_request(
+            "Share metadata does not match the server record.",
+        ));
     }
     input
         .manifest
@@ -1320,11 +1318,10 @@ pub(crate) async fn start_invitation_sender(
         expires_at,
         move |capability, stop| async move {
             let _guards = (temp, permit);
-            crate::share_sender::run_authenticated_peer(
+            crate::share_sender::run_authenticated_sender(
                 peer_broker,
                 peer_room,
                 capability,
-                0,
                 archive,
                 size,
                 expires_at,

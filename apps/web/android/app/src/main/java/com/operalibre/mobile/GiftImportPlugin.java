@@ -27,6 +27,27 @@ public final class GiftImportPlugin extends Plugin {
     private static final boolean ENABLED = false;
     private final ExecutorService queue = Executors.newSingleThreadExecutor();
 
+    @PluginMethod public void loadRecoveryState(PluginCall call) {
+        if (!ENABLED) { call.reject("Gift import is not enabled."); return; }
+        queue.execute(() -> {
+            try {
+                String state = GiftRecoveryStore.load(getContext().getFilesDir(), call.getString("giftId"));
+                JSObject result = new JSObject(); result.put("state", state == null ? JSONObject.NULL : state); call.resolve(result);
+            } catch (Exception error) { call.reject("Gift recovery storage unavailable."); }
+        });
+    }
+
+    @PluginMethod public void compareAndSwapRecoveryState(PluginCall call) {
+        if (!ENABLED) { call.reject("Gift import is not enabled."); return; }
+        queue.execute(() -> {
+            try {
+                if (!call.getData().has("previous") || (!call.getData().isNull("previous") && call.getString("previous") == null)) throw new IllegalArgumentException();
+                boolean swapped = GiftRecoveryStore.compareAndSwap(getContext().getFilesDir(), call.getString("giftId"), call.getString("previous"), call.getString("next"));
+                JSObject result = new JSObject(); result.put("swapped", swapped); call.resolve(result);
+            } catch (Exception error) { call.reject("Gift recovery storage unavailable."); }
+        });
+    }
+
     @PluginMethod public void extract(PluginCall call) {
         if (!ENABLED) { call.reject("Gift import is not enabled."); return; }
         queue.execute(() -> {

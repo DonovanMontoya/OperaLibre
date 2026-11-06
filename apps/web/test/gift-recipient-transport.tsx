@@ -3,8 +3,9 @@ import broker, { SecureRoom } from "../../../share-broker/src/index";
 import { ExperimentalGiftRoute, type GiftLink } from "../src/ExperimentalGiftRoute";
 import { createExperimentalRecipientTransport, type VerifiedRecipientDetails } from "../src/giftRecipientTransport";
 
-declare global { interface Window { stagedBytes: number; verifiedArchive: boolean; importCount: number; remoteDescriptionCalls: number } }
+declare global { interface Window { stagedBytes: number; verifiedArchive: boolean; importCount: number; remoteDescriptionCalls: number; claimCalls: number } }
 window.stagedBytes = 0; window.verifiedArchive = false; window.importCount = 0; window.remoteDescriptionCalls = 0;
+window.claimCalls = 0;
 const room = "recipient_______", giftId = "gift____________", ownerSecret = "owner-secret";
 const bytes = new TextEncoder().encode("verified archive bytes");
 const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("");
@@ -32,6 +33,7 @@ const signing = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sig
 const encode = (data: Uint8Array) => btoa(String.fromCharCode(...data)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 const link: GiftLink = { broker: "https://broker.test", token, signingKey: encode(new Uint8Array(await crypto.subtle.exportKey("raw", signing.publicKey))), previewKey: encode(new Uint8Array(32).fill(7)) };
 const details: VerifiedRecipientDetails = { giftId, assets: [{ name: "book.epub", size: 10, sha256: "a".repeat(64), kind: "ebook" }], metadata: { title: "Gift" }, preview: { sender: "Alex", title: "Gift", author: null, summary: null, message: null, coverUrl: null, formats: ["EPUB"], sizeBytes: 10 }, transfer: { room, size: bytes.length, sha256: hash, expiresAt: expiry } };
+if (new URLSearchParams(location.search).has("unsupported")) details.assets[0].name = "book.pdf";
 if (new URLSearchParams(location.search).has("expired")) details.transfer.expiresAt = Math.floor(Date.now() / 1000) - 1;
 if (new URLSearchParams(location.search).has("revoked")) await post(`revoke/${room}`, {}, true);
 function frame(offset: number, final: boolean, data: Uint8Array) {
@@ -39,7 +41,7 @@ function frame(offset: number, final: boolean, data: Uint8Array) {
   const output = new Uint8Array(header + 13 + data.length), view = new DataView(output.buffer);
   output[0] = id.length; output.set(id, 1); view.setBigUint64(header, BigInt(offset)); output[header + 8] = final ? 1 : 0; view.setUint32(header + 9, data.length); output.set(data, header + 13); return output;
 }
-class FakeChannel extends EventTarget { binaryType = ""; close() {} send(value: string) { const ack = JSON.parse(value); if (!window.verifiedArchive || ack.type !== "verified" || ack.size !== bytes.length || ack.sha256 !== hash) throw new Error("invalid acknowledgement"); queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "receipt-confirmed", size: bytes.length, sha256: hash }) }))); } }
+class FakeChannel extends EventTarget { binaryType = ""; close() {} send(value: string) { const ack = JSON.parse(value); if (ack.type === "persisted") { if (ack.offset !== window.stagedBytes) throw new Error("unpersisted acknowledgement"); return; } if (!window.verifiedArchive || ack.type !== "verified" || ack.size !== bytes.length || ack.sha256 !== hash) throw new Error("invalid acknowledgement"); queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "receipt-confirmed", size: bytes.length, sha256: hash }) }))); } }
 class FakePeer extends EventTarget {
   iceGatheringState = "complete"; localDescription: unknown = null; channel = new FakeChannel();
   async setRemoteDescription() { window.remoteDescriptionCalls++; }
@@ -60,6 +62,7 @@ const originalFetch = window.fetch;
 window.fetch = async (input, init) => {
   const request = new Request(input, init);
   if (new URL(request.url).hostname !== "broker.test") return originalFetch(input, init);
+  if (new URL(request.url).pathname.startsWith("/claim/")) window.claimCalls++;
   const response = await broker.fetch(request, env);
   if (new URL(request.url).pathname.startsWith("/send/") && response.ok) {
     const payload = JSON.parse(String(init?.body));

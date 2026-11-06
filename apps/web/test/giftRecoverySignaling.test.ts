@@ -89,3 +89,36 @@ test("recovery rejects a forged sender offer and cannot answer afterward", async
   await assert.rejects(protocol.receiveOffer());
   await assert.rejects(protocol.answer(JSON.stringify({ type: "answer", sdp: "fixture" })));
 });
+
+test("cancellation interrupts a stalled load without a broker mutation", async () => {
+  const f = await fixture(), controller = new AbortController();
+  let entered!: () => void;
+  const loading = new Promise<void>(resolve => { entered = resolve; });
+  const opening = openRecipientRecoverySignaling(f.link, f.binding, controller.signal, {
+    ...f.options, load: () => { entered(); return new Promise(() => {}); }
+  });
+  await loading; controller.abort();
+  await assert.rejects(opening, /unavailable/i);
+  assert.deepEqual(f.calls, []);
+});
+
+test("cancelled CAS may commit late and the next attempt reloads its pending pair", async () => {
+  const f = await fixture(), controller = new AbortController();
+  let entered!: () => void, commit!: () => Promise<void>;
+  const writing = new Promise<void>(resolve => { entered = resolve; });
+  const opening = openRecipientRecoverySignaling(f.link, f.binding, controller.signal, {
+    ...f.options, compareAndSwap: (id, previous, next) => new Promise<boolean>((resolve, reject) => {
+      commit = async () => { try { resolve(await f.options.compareAndSwap(id, previous, next)); } catch (error) { reject(error); } };
+      entered();
+    })
+  });
+  await writing; controller.abort();
+  await assert.rejects(opening, /unavailable/i);
+  assert.equal(f.calls.includes("resume"), false);
+  await commit();
+  assert.ok(f.state().pending, "late native persistence is not assumed to have failed");
+  const resumed = await openRecipientRecoverySignaling(f.link, f.binding, new AbortController().signal, f.options);
+  assert.equal(resumed.generation, 1);
+  assert.equal(f.state().pending, undefined);
+  assert.equal(f.calls.filter(call => call === "resume").length, 1);
+});

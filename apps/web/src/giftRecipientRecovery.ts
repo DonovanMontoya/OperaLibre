@@ -82,6 +82,23 @@ export async function openRecipientRecoverySignaling(
   const live = () => { if (signal.aborted || Date.now() >= deadline) throw unavailable(); };
   live();
 
+  // A stalled bridge callback must not keep the JS staging lock forever after
+  // cancellation. A pending CAS can still commit: never retry it here or infer
+  // failure. The next attempt reloads/reconciles the native atomic authority.
+  async function callback<T>(operation: () => Promise<T>): Promise<T> {
+    live();
+    return new Promise<T>((resolve, reject) => {
+      const abort = () => { cleanup(); reject(unavailable()); };
+      const timer = setTimeout(abort, Math.max(1, deadline - Date.now()));
+      const cleanup = () => { clearTimeout(timer); signal.removeEventListener("abort", abort); };
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) { abort(); return; }
+      try {
+        void operation().then(value => { cleanup(); resolve(value); }, () => { cleanup(); reject(unavailable()); });
+      } catch { cleanup(); reject(unavailable()); }
+    });
+  }
+
   async function post(route: string, capability: RecoveryCapability, extra: object = {}): Promise<{ status: number; value: unknown }> {
     live();
     const body = JSON.stringify({ ...capability, ...extra });
@@ -119,7 +136,7 @@ export async function openRecipientRecoverySignaling(
     if (result.status !== 200 || !value || !validGeneration(value.generation)) throw unavailable();
     return value.generation;
   }
-  let state = structuredClone(await options.load(binding.giftId));
+  let state = structuredClone(await callback(() => options.load(binding.giftId)));
   live();
   if (!state || state.version !== 1 || state.broker !== broker || state.token !== link.token || state.signingKey !== link.signingKey || !state.archive || (["giftId", "room", "size", "sha256", "expiresAt"] as const).some(key => state.archive[key] !== binding[key])) throw unavailable();
   const currentClaim = recoveryClaim(state.current, binding);
@@ -129,7 +146,7 @@ export async function openRecipientRecoverySignaling(
   }
   async function persist(next: RecipientRecoveryState) {
     live();
-    if (!await options.compareAndSwap(binding.giftId, structuredClone(state), structuredClone(next))) throw unavailable();
+    if (!await callback(() => options.compareAndSwap(binding.giftId, structuredClone(state), structuredClone(next)))) throw unavailable();
     state = next;
     live();
   }
@@ -140,7 +157,7 @@ export async function openRecipientRecoverySignaling(
     if (base === null) throw unavailable();
     let successor = state.pending?.successor;
     if (!successor) {
-      successor = structuredClone(await options.successor(Object.freeze({ ...state.current }), signal));
+      successor = structuredClone(await callback(() => options.successor(Object.freeze({ ...state.current }), signal)));
       live();
       const claim = recoveryClaim(successor, binding);
       if (claim.previousNonce !== currentClaim.nonce || claim.nonce === currentClaim.nonce) throw unavailable();
@@ -210,11 +227,17 @@ export async function openRecipientRecoverySignaling(
  * resolve ambiguous broker rotation, authenticate the sender against the link's
  * pinned key, and authenticate the sender's agreement to the entire binding.
  * Frames must come from that authenticated connection. It must observe abort
- * and close pending reads. No such adapter is provided by the application. */
+ * and close pending reads. The experimental peer adapter requires explicitly
+ * configured private successor delivery and durable storage. */
 export type RecipientRecoveryProtocol = {
   open(link: GiftLink, binding: Readonly<RecoveryBinding>, signal: AbortSignal): Promise<{
     binding: RecoveryBinding;
     next(signal: AbortSignal): Promise<Uint8Array | null>;
+    /** Acknowledge only a chunk already persisted by the native sink. */
+    persisted(offset: number, signal: AbortSignal): Promise<void>;
+    /** Called only after native verification of the complete archive. Wait for
+     * the sender's matching receipt confirmation before allowing import. */
+    complete(signal: AbortSignal): Promise<void>;
     close(): void | Promise<void>;
   }>;
 };
@@ -244,7 +267,10 @@ export async function receiveRecoveredGift(
       const final = frame.length > frame[0] + 9 && frame[frame[0] + 9] === 1;
       await receiver.receive(frame);
       if (signal.aborted) throw new Error("Recovery interrupted.");
-      if (final) return;
+      if (final) { await session.complete(signal); if (signal.aborted) throw new Error("Recovery interrupted."); return; }
+      // receive() validated this archive frame and awaited its native append.
+      const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+      await session.persisted(Number(view.getBigUint64(frame[0] + 1)) + view.getUint32(frame[0] + 10), signal);
     }
     throw new Error("Recovery interrupted.");
   } finally {

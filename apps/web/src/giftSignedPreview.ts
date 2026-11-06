@@ -87,7 +87,11 @@ export async function verifyEncryptedGiftPreview(envelope: EncryptedGiftPreview,
     return { name, kind: kind as NativeGiftAsset["kind"], size: size as number, sha256 };
   });
   if (assets.some(asset => asset.kind === "alignment") && (!assets.some(asset => asset.kind === "ebook") || !assets.some(asset => asset.kind === "audio"))) throw new Error("Invalid read-along selection.");
-  const formats = [...new Set(assets.filter(asset => asset.kind === "ebook" || asset.kind === "audio" || asset.kind === "alignment").map(asset => asset.kind === "ebook" ? "Ebook" : asset.kind === "audio" ? "Audiobook" : "Read-along"))];
+  const formats = [...new Set(assets.filter(asset => asset.kind === "ebook" || asset.kind === "audio" || asset.kind === "alignment").map(asset => {
+    if (asset.kind === "alignment") return "Read-along";
+    const extension = asset.name.split(".").pop() ?? "";
+    return /^[a-z0-9]{1,8}$/i.test(extension) ? extension.toUpperCase() : asset.kind === "ebook" ? "Ebook" : "Audiobook";
+  }))];
   if (!formats.length) throw new Error("Gift has no book files.");
-  return { giftId, assets, metadata: { title, author, description: summary }, preview: { sender, title, author, summary, message, coverUrl: null, formats, sizeBytes: total }, transfer: { room, size: archiveSize as number, sha256: archiveSha256, expiresAt: expiresAt as number } };
+  return { giftId, assets, metadata: { title, author, description: summary }, preview: { sender, title, author, summary, message, coverUrl: null, formats, sizeBytes: archiveSize as number }, transfer: { room, size: archiveSize as number, sha256: archiveSha256, expiresAt: expiresAt as number } };
 }

@@ -1541,6 +1541,9 @@ async fn owner_can_cleanup_unrevoked_orphan_after_runtime_restart() {
     let app = Router::new().route(
         "/{*path}",
         post(|Path(path): Path<String>| async move {
+            if path.starts_with("session/") {
+                return (StatusCode::OK, Json(serde_json::json!({"generation": 0})));
+            }
             if path == "issue" {
                 return (
                     StatusCode::OK,

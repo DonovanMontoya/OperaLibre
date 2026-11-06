@@ -3,19 +3,36 @@
 This directory documents the owner-deployed signaling boundary. It is not a
 deployed service and contains no credentials.
 
-The sender's OperaLibre server remains the content authority. A broker stores
-only a short-lived room identifier, an authenticated offer/answer exchange,
-and bounded ICE candidates; it never receives book bytes. The server signs a
-room capability containing the invitation digest, expiry, recipient nonce,
-maximum bytes, and selected asset IDs. The app rejects messages whose room,
-nonce, expiry, or byte counter does not match that capability.
+The sender's OperaLibre server remains the content authority. The experimental
+broker stores room membership, bounded signaling and an encrypted preview; it
+never receives book bytes. The owner-authenticated broker issues room/role/nonce/
+expiry capabilities. Separately, the server signs the selected archive size,
+digest, asset inventory and gift metadata in the encrypted preview. The recipient
+pins that signing key from the private gift-link fragment and authenticates the
+peer exchange against the preview. These are separate trust boundaries, not a
+single capability that the broker can rewrite to authorize arbitrary assets.
 
 Cloudflare Realtime TURN is a relay fallback, not a free hard-cap: current
 official documentation lists $0.05/GB of outbound TURN egress after a shared
 1,000 GB monthly allowance, with per-allocation rate and bandwidth limits.
-Workers/Durable Objects can provide signaling state, but a paid Workers plan
-may be required for Durable Objects. Owners must create and control their own
-Cloudflare account, domain, credentials, and billing controls.
+[SQLite-backed Durable Objects](https://developers.cloudflare.com/durable-objects/platform/pricing/)
+are available on Workers Free, currently with 100,000 requests and 13,000 GB-s
+duration per day; exceeding free limits causes errors. The checked-in migration
+uses SQLite. [TURN pricing](https://developers.cloudflare.com/realtime/sfu/platform/pricing/)
+is separate: a Workers Free broker does not impose a TURN spending limit. The
+prototype has no enforceable relay billing cap or configured TURN credentials.
+Owners must control their own account, domain, credentials and billing choices.
+Recheck provider terms and limits before setup; none of these allowances is an
+OperaLibre guarantee of free operation.
+
+[Cloudflare's TURN documentation](https://developers.cloudflare.com/realtime/turn/)
+describes per-allocation data-rate limits around 50–100 Mbps, with packet drops
+above limits, not a guaranteed throughput. Its [FAQ](https://developers.cloudflare.com/realtime/turn/faq/)
+includes data-channel use and recommends handling allocation disruption. This
+does not establish a contractual large-file SLA or a verified OperaLibre relay.
+The current broker caps a session at 15 minutes: the 25 GiB archive safety ceiling
+is not a promise that an archive that large can finish before expiry. Credential
+renewal, longer-transfer expiry policy and live relay testing remain unresolved.
 
 Arbitrary owner domains cannot be assumed to open an installed native app.
 Universal/App Links require app-owned association files and domain control.
@@ -44,12 +61,24 @@ The recipient sends sequence 2 `answer` containing
 unpadded base64url HMAC from the peer proof protocol, binding that exact string,
 the exact signed offer description, archive fields, generation, and challenge.
 The sender verifies the proof before parsing or applying the answer and before
-sending archive bytes. Initial transfers use offset zero; authenticated resume
-is not implemented. Descriptions are limited to 4096 UTF-8 bytes by the proof
+sending archive bytes. Initial transfers use offset zero. A resumed generation
+includes the locked native staging offset and its SHA-256 prefix in `ready`;
+the sender checks the prefix against the original archive before signing the
+same binding into its offer. Descriptions are limited to 4096 UTF-8 bytes by the proof
 primitive, signal messages to 7168 bytes, and request bodies to 8192 bytes.
 The broker is untrusted and enforces role, ordering, and size limits but does
 not verify the peer cryptography. This remains gated and needs independent
 security and native review before activation.
+
+Authenticated archive frames use an application persistence window in addition
+to SCTP backpressure: at most eight 16 KiB chunks await acknowledgement. After
+each native append completes, the recipient sends `{"type":"persisted",
+"offset":16384}` with the exact next archive offset. The sender requires these
+offsets in order, drains the window before its final marker, and fails closed
+on invalid messages, cancellation or expiry. After complete archive SHA-256
+verification, the recipient sends the separate `verified` receipt and waits for
+the sender's matching `receipt-confirmed` before permitting import. These
+acknowledgements are not evidence of offline-reader or device testing.
 
 ## Experimental broker claim rotation
 
@@ -70,17 +99,32 @@ most one winner. Invalid, expired, replayed, cross-room or cross-role claims,
 and revoked rooms receive 403. The original expiry cannot be extended. Room
 revocation and rotation share the storage transaction boundary. Rotation clears
 both signaling queues; peers must coordinate the new generation and restart
-their sequences. There is no implemented generation-discovery protocol. Each role is
+their sequences. Each role is
 limited to 16 rotations per room; nonce records require eventual room cleanup.
 
 The response contains no replacement secret. If a success response is lost,
 the caller must retain both capabilities: `POST /session/{room}` with a claimed,
 unexpired capability returns the current generation, while a prior or revoked
 claim receives 403. This is a point-in-time observation; every subsequent signal
-still checks the generation transactionally. No sender or recipient currently
-performs this exchange, persists
-claims, negotiates a new connection, or resumes from a verified transfer offset.
-This mechanism needs independent security and native review before use.
+still checks the generation transactionally. The experimental recipient helper
+persists both claims before rotation and probes the pending successor after an
+ambiguous response. An opt-in recovery peer adapter authenticates gathered SDP,
+receives bounded resumed frames, and acknowledges only after native full-archive
+verification; it waits for a matching sender confirmation before import.
+
+This is not an application-enabled reconnect flow. The caller must supply
+confidential successor delivery, durable native compare-and-swap storage and
+the original verified archive descriptor, and must hold the staging lock through
+negotiation and transfer. Test transports are identified explicitly as simulated;
+they do not establish real mobile ICE, TURN or background behavior. Independent
+security and native review are still required before use.
+
+The disabled native plugin now has bounded recovery-state load/CAS methods for
+iOS and Android, plus a validating TypeScript bridge. Record updates use native
+locks and atomic rename; they are not a native lease over archive appends.
+Seeding, cleanup and application configuration are not wired. The native sources
+have not been compiled or exercised on devices here, and neither these records
+nor the sender's in-memory archive make transfers survive a server restart.
 
 ## Isolated successor mailbox experiment
 

@@ -5,6 +5,7 @@ import { createNativeGiftStaging, recoverNativeGiftStaging } from "./giftNativeS
 import { receiveRecoveredGift, type RecipientRecoveryProtocol } from "./giftRecipientRecovery";
 import { verifySignedPeerOffer, type SignedPeerOffer } from "./giftSignedPreview";
 import { createGiftPeerProof } from "./giftPeerProof";
+import { buildGiftDeviceBook } from "./giftDeviceImport";
 
 export type VerifiedRecipientDetails = GiftDetails & { transfer: { room: string; size: number; sha256: string; expiresAt: number } };
 type Capability = { payload: string; signature: string };
@@ -76,6 +77,10 @@ export function createExperimentalRecipientTransport(
   return {
     async preview(link, signal) { return verifiedPreview(link, signal); },
     async receive(link, details, outerSignal) {
+      // Check the actual offline importer before consuming a one-time claim or
+      // downloading assets. In particular, native read-along is not wired yet.
+      try { buildGiftDeviceBook(details.giftId, details.assets, details.metadata); }
+      catch { throw new GiftScreenError("unsupported"); }
       const transfer = (details as Partial<VerifiedRecipientDetails>).transfer;
       if (!transfer || !/^[A-Za-z0-9_-]{16,128}$/.test(transfer.room) || !Number.isSafeInteger(transfer.size) || transfer.size <= 0 || transfer.size > 25 * 1024 ** 3 || !/^[a-f0-9]{64}$/.test(transfer.sha256) || !Number.isSafeInteger(transfer.expiresAt)) throw new GiftScreenError("unavailable");
       if (transfer.expiresAt <= Math.floor(Date.now() / 1000)) throw new GiftScreenError("expired");
@@ -121,11 +126,16 @@ export function createExperimentalRecipientTransport(
               const frame = new Uint8Array(message.data);
               const final = frame.length > frame[0] + 9 && frame[frame[0] + 9] === 1;
               void activeReceiver.receive(frame).then(() => {
+                if (controller.signal.aborted) throw new GiftScreenError("unavailable");
                 if (final) {
                   // Native finish has verified the complete archive digest.
                   // This acknowledges receipt, not publication to the library.
                   awaitingConfirmation = true;
                   channel.send(JSON.stringify({ type: "verified", size: transfer.size, sha256: transfer.sha256 }));
+                } else {
+                  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+                  const offset = Number(view.getBigUint64(frame[0] + 1)) + view.getUint32(frame[0] + 10);
+                  channel.send(JSON.stringify({ type: "persisted", offset }));
                 }
               }).catch(() => { channel.close(); fail(); });
             });

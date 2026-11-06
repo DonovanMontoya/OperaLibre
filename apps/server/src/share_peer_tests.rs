@@ -30,14 +30,13 @@ impl PeerConnectionEventHandler for ReceiptHandler {
         let sender = self.received.clone();
         self.runtime.spawn(Box::pin(async move {
             while let Some(event) = channel.poll().await {
-                if let DataChannelEvent::OnMessage(message) = event {
-                    if sender
+                if let DataChannelEvent::OnMessage(message) = event
+                    && sender
                         .send((channel.clone(), message.is_string, message.data.to_vec()))
                         .await
                         .is_err()
-                    {
-                        break;
-                    }
+                {
+                    break;
                 }
             }
         }));
@@ -395,6 +394,12 @@ async fn authenticated_loopback(mode: LoopbackMode) -> anyhow::Result<()> {
                 break;
             }
             receiver.append(offset, data)?;
+            channel
+                .send_text(
+                    &serde_json::json!({"type":"persisted","offset":offset+data.len() as u64})
+                        .to_string(),
+                )
+                .await?;
         }
         let result = sender.await?;
         match mode {
@@ -659,10 +664,10 @@ impl PeerConnectionEventHandler for Handler {
         if let Some(sender) = self.received.clone() {
             self.runtime.spawn(Box::pin(async move {
                 while let Some(event) = channel.poll().await {
-                    if let DataChannelEvent::OnMessage(message) = event {
-                        if sender.send(message.data.to_vec()).await.is_err() {
-                            break;
-                        }
+                    if let DataChannelEvent::OnMessage(message) = event
+                        && sender.send(message.data.to_vec()).await.is_err()
+                    {
+                        break;
                     }
                 }
             }));

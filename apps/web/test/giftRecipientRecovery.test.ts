@@ -32,7 +32,7 @@ test("authenticated recovery binds the locked prefix and verifies the complete a
     assert.deepEqual(binding, { ...descriptor, offset: 2, prefixSha256: digest(new Uint8Array([1, 2])) });
     await assert.rejects(f.manager.recover(giftId, 4), /active/);
     const frames = [frame(2, new Uint8Array([3, 4])), frame(4, new Uint8Array(), true)];
-    return { binding: { ...binding }, async next() { return frames.shift() ?? null; }, async close() { closed = true; } };
+    return { binding: { ...binding }, async next() { return frames.shift() ?? null; }, async persisted(offset) { assert.equal(offset, 4); assert.deepEqual(f.bytes(), new Uint8Array([1, 2, 3, 4])); }, async complete() { assert.equal(f.verified(), true); }, async close() { closed = true; } };
   } };
   await receiveRecoveredGift(link, descriptor, new AbortController().signal, f.manager.recover, protocol);
   assert.deepEqual(f.bytes(), new Uint8Array([1, 2, 3, 4]));
@@ -45,7 +45,7 @@ test("mismatched sender binding and authentication failures never write and rele
     const f = fixture(); let read = false, closed = false;
     const protocol: RecipientRecoveryProtocol = { async open(_link, binding) {
       if (variant === "auth") throw new Error("authentication failed");
-      return { binding: { ...binding, [variant]: typeof binding[variant] === "number" ? 0 : "wrong" }, async next() { read = true; return null; }, async close() { closed = true; } };
+      return { binding: { ...binding, [variant]: typeof binding[variant] === "number" ? 0 : "wrong" }, async next() { read = true; return null; }, async persisted() { assert.fail("unpersisted chunk"); }, async complete() { assert.fail("unverified receipt"); }, async close() { closed = true; } };
     } };
     await assert.rejects(receiveRecoveredGift(link, descriptor, new AbortController().signal, f.manager.recover, protocol));
     assert.equal(read, false); assert.equal(f.verified(), false);
@@ -59,7 +59,7 @@ test("recovery rejects out-of-order data, incorrect final digest, and cancellati
     const f = fixture(), controller = new AbortController(); let closed = false;
     const protocol: RecipientRecoveryProtocol = { async open(_link, binding) {
       const frames = [frame(variant === "offset" ? 0 : 2, new Uint8Array([3, variant === "digest" ? 9 : 4])), frame(4, new Uint8Array(), true)];
-      return { binding: { ...binding }, async next() { if (variant === "abort") controller.abort(); return frames.shift() ?? null; }, async close() { closed = true; } };
+      return { binding: { ...binding }, async next() { if (variant === "abort") controller.abort(); return frames.shift() ?? null; }, async persisted() {}, async complete() { assert.fail("unverified receipt"); }, async close() { closed = true; } };
     } };
     await assert.rejects(receiveRecoveredGift(link, descriptor, controller.signal, f.manager.recover, protocol));
     assert.equal(f.verified(), false); assert.equal(closed, true);

@@ -78,6 +78,8 @@ where
 /// This remains unregistered; callers must bind the handle to an authorized
 /// invitation and enforce the sender's permission before enabling the feature.
 #[cfg(test)]
+// Keep this test adapter's ownership arguments explicit at the service boundary.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_sender(
     enabled: bool,
     broker: &BrokerClient,

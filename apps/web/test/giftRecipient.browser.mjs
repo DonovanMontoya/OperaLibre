@@ -17,6 +17,14 @@ test("recipient claims and signals through Worker before verifying received chun
     assert.equal(await page.evaluate(() => window.verifiedArchive), true);
     assert.equal(await page.evaluate(() => window.stagedBytes), 22);
     assert.equal(await page.evaluate(() => window.importCount), 1);
+    await page.goto("http://127.0.0.1:5199/test/gift-recipient-transport.html?unsupported");
+    await page.getByRole("button", { name: "Skip animation" }).click();
+    await page.getByRole("button", { name: "Accept book" }).click();
+    await page.getByRole("alert").getByText(/cannot import yet/).waitFor();
+    assert.equal(await page.evaluate(() => window.claimCalls), 0);
+    assert.equal(await page.evaluate(() => window.stagedBytes), 0);
+    assert.equal(await page.evaluate(() => window.remoteDescriptionCalls), 0);
+    assert.equal(await page.evaluate(() => window.importCount), 0);
     await page.goto("http://127.0.0.1:5199/test/gift-recipient-transport.html?tampered-offer");
     await page.getByRole("button", { name: "Skip animation" }).click();
     await page.getByRole("button", { name: "Accept book" }).click();

@@ -12,7 +12,7 @@ export type GiftPreview = {
   formats: string[];
   sizeBytes: number | null;
 };
-export type GiftFailure = "expired" | "revoked" | "offline" | "unavailable";
+export type GiftFailure = "expired" | "revoked" | "offline" | "unsupported" | "unavailable";
 export class GiftScreenError extends Error {
   constructor(public readonly reason: GiftFailure) { super(reason); }
 }
@@ -23,6 +23,7 @@ function failureMessage(reason: GiftFailure) {
     case "expired": return "This gift link has expired. Ask the sender for a new one.";
     case "revoked": return "The sender has withdrawn this gift.";
     case "offline": return "You appear to be offline. Reconnect and try again.";
+    case "unsupported": return "This gift includes contents this app cannot import yet. Ask the sender for an EPUB or supported audiobook without read-along data.";
     default: return "This gift is unavailable right now. Please try again.";
   }
 }
