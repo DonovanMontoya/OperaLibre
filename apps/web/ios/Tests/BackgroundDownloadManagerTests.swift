@@ -118,24 +118,24 @@ func seedServer(attempt: String) {
         jobs["server"] = StoredBackgroundJob(title: "server fixture", attemptId: attempt, state: "running", total: 1, requiredTotal: 1, completed: 0, completedRequired: 0, handledTaskIds: [], errors: [], files: [serverInfo(attempt: attempt)])
     }
 }
-func finishServer(_ info: StoredBackgroundTask) throws -> (published: Bool, incoming: URL) {
+func finishServer(_ info: StoredBackgroundTask) -> (published: Bool, incoming: URL) {
     let incoming = root.appendingPathComponent("incoming-" + UUID().uuidString)
-    try Data([1, 2]).write(to: incoming)
+    try! Data([1, 2]).write(to: incoming)
     do { try manager.publishServerFile(info, location: incoming); return (true, incoming) } catch { return (false, incoming) }
 }
 seedServer(attempt: "live")
-precondition(try finishServer(serverInfo(attempt: "live")).published)
+precondition(finishServer(serverInfo(attempt: "live")).published)
 precondition(FileManager.default.fileExists(atPath: track.path))
 let cancelled = DispatchSemaphore(value: 0)
 manager.cancel(jobId: "server") { cancelled.signal() }
 precondition(cancelled.wait(timeout: .now() + 5) == .success)
 precondition(!FileManager.default.fileExists(atPath: track.path))
-let late = try finishServer(serverInfo(attempt: "live"))
+let late = finishServer(serverInfo(attempt: "live"))
 precondition(!late.published && !FileManager.default.fileExists(atPath: track.path))
 precondition(!FileManager.default.fileExists(atPath: late.incoming.path))
 seedServer(attempt: "retry")
-let stale = try finishServer(serverInfo(attempt: "live"))
+let stale = finishServer(serverInfo(attempt: "live"))
 precondition(!stale.published && !FileManager.default.fileExists(atPath: track.path))
 precondition(!FileManager.default.fileExists(atPath: stale.incoming.path))
-precondition(try finishServer(serverInfo(attempt: "retry")).published)
+precondition(finishServer(serverInfo(attempt: "retry")).published)
 print("PASS server file finishing after cancel or replacement is discarded")
