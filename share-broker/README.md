@@ -40,6 +40,16 @@ The web landing page must preserve the invitation URL and offer an explicit
 “Open in OperaLibre” action; deferred restoration after an app-store install
 is not promised.
 
+The experimental explicit action uses `operalibre://gift#…`, not verified HTTPS
+Universal/App Links. Custom schemes do not establish exclusive app ownership:
+another installed application can register the same scheme and receive the
+gift capability and fragment keys. The landing page warns recipients to use a
+trusted installation and cancel an unexpected app/chooser. Do not treat this
+action as a domain-verified or interception-resistant delivery mechanism. The
+production gift gate remains closed pending platform and security review.
+See Apple's [custom-scheme ownership warning](https://developer.apple.com/documentation/xcode/defining-a-custom-url-scheme-for-your-app)
+and Android's [deep-link hijacking guidance](https://developer.android.com/privacy-and-security/risks/unsafe-use-of-deeplinks).
+
 The transfer protocol must prefer direct WebRTC data channels, fall back to
 owner-configured TURN, resume by verified chunk offset, and verify each asset
 SHA-256 before local import. If relay quota or provider configuration is
@@ -82,8 +92,8 @@ acknowledgements are not evidence of offline-reader or device testing.
 
 ## Experimental broker claim rotation
 
-The Worker remains disabled unless explicitly enabled; this is a broker-only
-prototype, not a completed transfer resume implementation. After a successful
+The Worker remains disabled unless explicitly enabled. Legacy test peers use
+owner-delivered capabilities: after a successful
 `POST /claim/{room}`, the owner may issue a successor using the existing
 authenticated `POST /issue` endpoint. It must have the same room, role, and
 expiry as the current claim, a fresh, unpredictable nonce, and `previousNonce`
@@ -112,29 +122,82 @@ ambiguous response. An opt-in recovery peer adapter authenticates gathered SDP,
 receives bounded resumed frames, and acknowledges only after native full-archive
 verification; it waits for a matching sender confirmation before import.
 
-This is not an application-enabled reconnect flow. The caller must supply
-confidential successor delivery, durable native compare-and-swap storage and
-the original verified archive descriptor, and must hold the staging lock through
-negotiation and transfer. Test transports are identified explicitly as simulated;
-they do not establish real mobile ICE, TURN or background behavior. Independent
-security and native review are still required before use.
+## Recipient-bound recovery
 
-The disabled native plugin now has bounded recovery-state load/CAS methods for
-iOS and Android, plus a validating TypeScript bridge. Record updates use native
-locks and atomic rename; they are not a native lease over archive appends.
-Seeding, cleanup and application configuration are not wired. The native sources
-have not been compiled or exercised on devices here, and neither these records
-nor the sender's in-memory archive make transfers survive a server restart.
+The opt-in persistent recipient adapter generates a separate 32-byte recovery
+secret, durably stores it beside its original verified archive identity, then
+calls `POST /recovery-claim/{room}` with the initial signed capability and
+`recoverySecret`. One transaction enrolls membership and a digest of that secret.
+An exact retry is idempotent; a different secret or a legacy-claimed recipient
+cannot enroll. The original link can still be stolen and claimed first: it is
+a bearer invitation, not a verified recipient identity.
+
+After enrollment, recipient signaling, session lookup and preview reads require
+both a signed capability and the independent secret, even before the first
+rotation. The original gift URL contains no recovery secret. Over HTTPS,
+`POST /recovery-successor/{room}` accepts the current member and secret and
+returns one cached, broker-signed successor scoped to the same room, recipient
+role and exact expiry. Retries return the same successor until rotation; they
+cannot create new invitations or extend authority. `POST /resume/{room}` also
+requires the secret and cached successor for enrolled recipients, so legacy
+resume cannot bypass enrollment. Revoke and reservation cleanup clear this
+recovery record. No owner credential is delivered to the recipient app.
+
+The client persists the pending claim pair before rotation and reconciles lost
+responses through authenticated session probes. Its first accepted transfer
+uses this same path at generation one, consuming one of the sixteen rotation
+slots. An optional opaque gift ID in the link lets a reopened app find its
+private recovery state and retrieve the encrypted preview with the current or
+pending member. That ID is a locator, not authorization. Opening the app without
+the original link does not yet show a pending-gifts inbox.
+
+Native staging acquire/append/verify/release methods hold an OS lock and use
+plugin-owned random lease tokens and exact offsets; the application no longer
+appends through the generic Filesystem plugin. Extraction holds the same staging
+lock. After verified commit, incoming ZIP/recovery sidecars can be cleaned while
+the published book remains recoverable from its committed directory. Stable lock
+files are retained to avoid inode-replacement races. Native CAS uses separate
+record locks and atomic rename. Platform builds and device behavior remain
+unverified. Recipient records can survive an app restart, but the sender's archive
+and keys cannot yet survive a server restart, which ends that live transfer.
+All application, import and broker production gates remain
+disabled pending independent security and platform review.
+
+## Development verification
+
+From the repository root, `npm run test:broker` compiles and exercises the
+actual Worker entrypoint with simulated transactional Durable Object storage.
+`npm run test:book-gifts` starts its own disposable loopback Vite server and
+tests preview, acceptance, private successor retrieval, interruption/recovery
+and the pre-onboarding native launch boundary. These fixtures use real
+WebCrypto but simulated peers and native storage. Their screenshots are written
+under ignored `output/book-gifts/`; they contain fixture books only. Set
+`OPERALIBRE_TEST_CHROMIUM` to an already installed supported Chromium executable
+if Playwright's managed browser is unavailable.
+
+Those commands intentionally do not claim real ICE coverage. The separate
+`share-broker/test/webrtc.test.mjs` exercises browser peer connectivity; a browser
+that gathers no ICE candidates fails that test. Local Rust peer tests provide
+separate host-ICE evidence, not evidence for browser/mobile NAT traversal or TURN.
+
+The macOS CI job also compiles the iOS simulator app with the explicit
+`OPERALIBRE_EXPERIMENTAL_GIFTS` Swift define and code signing disabled. This checks
+otherwise excluded Swift bridge sources, not device transfer, extraction,
+background execution or OS link delivery. The app/web, broker and server gates
+remain closed. Android's existing build compiles its gated native sources;
+instrumentation still requires a suitable Android runtime. Neither check
+publishes an application or verifies a working gift installation.
 
 ## Isolated successor mailbox experiment
 
-`src/successor-mailbox.ts` is a test-only state machine, with no Worker route,
+`src/successor-mailbox.ts` is an older test-only state machine, with no Worker route,
 configuration switch, or production activation. Its protocol is separate from
 the legacy claim and resume endpoints above. It is not safe to combine them:
 the legacy claim does not atomically bind a recovery secret, and legacy resume
 accepts the old signed claim and a successor without that secret. Merely adding
 mailbox routes would therefore leave a bypass. Existing links cannot be migrated
-after claim without an authenticated channel to establish a new secret.
+after claim without an authenticated channel to establish a new secret. The
+recipient-bound routes above do not invoke this mailbox or its envelope scheme.
 
 For a new, isolated protocol, the recipient generates 32 random bytes using a
 CSPRNG and encodes them as canonical unpadded base64url. Over a confidential

@@ -9,9 +9,10 @@ type Staging = GiftChunkSink & { close(): void | Promise<void> };
 export type RecoveryBinding = GiftStagedPrefix & { giftId: string; room: string; size: number; sha256: string; expiresAt: number };
 
 export type RecoveryCapability = { payload: string; signature: string };
-/** Bearer secrets: keep this record in app-private durable storage. An initial
- * record is seeded only after claim succeeds, with current decoded from token.
- * The pending pair must survive crashes and lost /resume responses. */
+/** Bearer secrets: keep this record in app-private durable storage. A recovery
+ * enrollment record is seeded before its idempotent secret-bound claim; it is
+ * not evidence that the broker accepted that claim. The pending pair must
+ * survive crashes and lost /resume responses. */
 export type RecipientRecoveryState = {
   version: 1;
   broker: string;
@@ -19,6 +20,8 @@ export type RecipientRecoveryState = {
   signingKey: string;
   archive: Omit<RecoveryBinding, keyof GiftStagedPrefix>;
   current: RecoveryCapability;
+  /** Independent recipient secret, never included in the shared gift URL. */
+  recoverySecret?: string;
   pending?: { successor: RecoveryCapability; generation: number };
 };
 
@@ -31,7 +34,7 @@ export type RecipientRecoverySignalingOptions = {
   /** Obtain an owner-signed successor through an authenticated confidential
    * channel scoped to this recipient. No issuance or mailbox shortcut exists
    * here; possession of the original shared link alone is insufficient. */
-  successor(current: Readonly<RecoveryCapability>, signal: AbortSignal): Promise<RecoveryCapability>;
+  successor?(current: Readonly<RecoveryCapability>, signal: AbortSignal): Promise<RecoveryCapability>;
   fetch?: typeof fetch;
 };
 
@@ -81,6 +84,7 @@ export async function openRecipientRecoverySignaling(
   let deadline = Math.min(binding.expiresAt * 1000, Date.now() + 30_000);
   const live = () => { if (signal.aborted || Date.now() >= deadline) throw unavailable(); };
   live();
+  let recoverySecret: string | undefined;
 
   // A stalled bridge callback must not keep the JS staging lock forever after
   // cancellation. A pending CAS can still commit: never retry it here or infer
@@ -101,7 +105,7 @@ export async function openRecipientRecoverySignaling(
 
   async function post(route: string, capability: RecoveryCapability, extra: object = {}): Promise<{ status: number; value: unknown }> {
     live();
-    const body = JSON.stringify({ ...capability, ...extra });
+    const body = JSON.stringify({ ...capability, ...(recoverySecret ? { recoverySecret } : {}), ...extra });
     if (encoder.encode(body).length > 8192) throw unavailable();
     const controller = new AbortController(), abort = () => controller.abort();
     signal.addEventListener("abort", abort, { once: true });
@@ -138,7 +142,8 @@ export async function openRecipientRecoverySignaling(
   }
   let state = structuredClone(await callback(() => options.load(binding.giftId)));
   live();
-  if (!state || state.version !== 1 || state.broker !== broker || state.token !== link.token || state.signingKey !== link.signingKey || !state.archive || (["giftId", "room", "size", "sha256", "expiresAt"] as const).some(key => state.archive[key] !== binding[key])) throw unavailable();
+  if (!state || state.version !== 1 || state.broker !== broker || state.token !== link.token || state.signingKey !== link.signingKey || (state.recoverySecret !== undefined && !validKey(state.recoverySecret)) || !state.archive || (["giftId", "room", "size", "sha256", "expiresAt"] as const).some(key => state.archive[key] !== binding[key])) throw unavailable();
+  recoverySecret = state.recoverySecret;
   const currentClaim = recoveryClaim(state.current, binding);
   if (state.pending) {
     const nextClaim = recoveryClaim(state.pending.successor, binding);
@@ -157,7 +162,14 @@ export async function openRecipientRecoverySignaling(
     if (base === null) throw unavailable();
     let successor = state.pending?.successor;
     if (!successor) {
-      successor = structuredClone(await callback(() => options.successor(Object.freeze({ ...state.current }), signal)));
+      if (state.recoverySecret) {
+        const result = await post("recovery-successor", state.current, { recoverySecret: state.recoverySecret });
+        if (result.status !== 200) throw unavailable();
+        successor = structuredClone(result.value as RecoveryCapability);
+      } else {
+        if (!options.successor) throw unavailable();
+        successor = structuredClone(await callback(() => options.successor!(Object.freeze({ ...state.current }), signal)));
+      }
       live();
       const claim = recoveryClaim(successor, binding);
       if (claim.previousNonce !== currentClaim.nonce || claim.nonce === currentClaim.nonce) throw unavailable();
@@ -166,7 +178,7 @@ export async function openRecipientRecoverySignaling(
     // pending successor is safe only after /session has rejected it and accepted
     // current. A generation race fails closed and can be retried on a later open.
     await persist({ ...state, pending: { successor, generation: base } });
-    try { await post("resume", state.current, { nextPayload: successor.payload, nextSignature: successor.signature, generation: base }); }
+    try { await post("resume", state.current, { nextPayload: successor.payload, nextSignature: successor.signature, generation: base, ...(state.recoverySecret ? { recoverySecret: state.recoverySecret } : {}) }); }
     catch { live(); /* A lost response does not establish failure. Probe next. */ }
     generation = await session(successor);
     if (generation === null || generation <= base) throw unavailable();

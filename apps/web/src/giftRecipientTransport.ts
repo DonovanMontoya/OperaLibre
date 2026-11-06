@@ -14,7 +14,8 @@ type Staging = GiftChunkSink & { close(): void | Promise<void> };
 
 /** No verifier is supplied by default: a caller must authenticate the preview
  * and bind its archive digest, size, room and selection before returning it. */
-export type VerifiedPreviewSource = (link: GiftLink, signal: AbortSignal) => Promise<VerifiedRecipientDetails>;
+export type GiftPreviewAuthorization = { capability: { payload: string; signature: string }; recoverySecret: string };
+export type VerifiedPreviewSource = (link: GiftLink, signal: AbortSignal, authorization?: GiftPreviewAuthorization) => Promise<VerifiedRecipientDetails>;
 
 function capability(token: string, expected: VerifiedRecipientDetails["transfer"]): Capability {
   try {

@@ -1298,6 +1298,7 @@ pub(crate) async fn start_invitation_sender(
     gift_url
         .query_pairs_mut()
         .append_pair("gift", &token)
+        .append_pair("id", &gift_id)
         .append_pair("broker", &broker.origin().origin().ascii_serialization())
         .append_pair("key", &URL_SAFE_NO_PAD.encode(preview_key))
         .append_pair(

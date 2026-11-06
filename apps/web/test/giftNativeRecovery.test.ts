@@ -156,3 +156,33 @@ test("ambiguous native write is reconciled by loading, not silently retried", as
   assert.deepEqual(await storage.load(giftId), pending());
   assert.deepEqual(f.calls, ["cas", "load"]);
 });
+
+test("optional load distinguishes absent state from corruption and native failure", async () => {
+  const f = fixture();
+  assert.equal(await f.storage.loadOptional(giftId), null);
+  f.replace("{"); await assert.rejects(f.storage.loadOptional(giftId), /unavailable/);
+  const broken = createNativeGiftRecoveryStorage({
+    async loadRecoveryState() { throw new Error("disk unavailable"); },
+    compareAndSwapRecoveryState: f.backend.compareAndSwapRecoveryState
+  }, () => true);
+  await assert.rejects(broken.loadOptional(giftId), /unavailable/);
+});
+
+test("recipient secret is preserved, canonical, and immutable while old records remain usable", async () => {
+  const f = fixture();
+  const initial = { ...state(), recoverySecret: Buffer.alloc(32, 7).toString("base64url") };
+  assert.equal(await f.storage.compareAndSwap(giftId, null, initial), true);
+  assert.deepEqual(await f.storage.loadOptional(giftId), initial);
+  const next = { ...pending(), recoverySecret: initial.recoverySecret };
+  assert.equal(await f.storage.compareAndSwap(giftId, initial, next), true);
+  for (const changed of [{ ...next, recoverySecret: "A".repeat(43) }, pending()]) {
+    await assert.rejects(f.storage.compareAndSwap(giftId, next, changed), /unavailable/);
+  }
+  for (const invalid of [null, "A".repeat(42), "A".repeat(42) + "B", "A".repeat(43) + "\n", "A".repeat(43) + "="]) {
+    await assert.rejects(f.storage.compareAndSwap(giftId, null, { ...state(), recoverySecret: invalid } as RecipientRecoveryState), /unavailable/);
+  }
+  f.replace(null);
+  assert.equal(await f.storage.compareAndSwap(giftId, null, state()), true);
+  assert.equal(await f.storage.compareAndSwap(giftId, state(), pending()), true);
+  await assert.rejects(f.storage.compareAndSwap(giftId, pending(), next), /unavailable/);
+});

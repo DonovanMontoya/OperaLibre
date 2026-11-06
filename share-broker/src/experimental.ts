@@ -15,6 +15,13 @@ async function mac(payload: string, secret: string): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(payload))), b => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** Used only after room membership authorizes a same-scope successor. */
+export async function signClaim(claim: Claim, secret: string): Promise<{ payload: string; signature: string }> {
+  if (!secret || secret.length < 32) throw new Error("Signing unavailable.");
+  const payload = JSON.stringify(claim);
+  return { payload, signature: await mac(payload, secret) };
+}
+
 export async function ownerAuthorized(request: Request, env: Environment): Promise<boolean> {
   const expected = hexBytes(env.OWNER_SECRET_DIGEST_HEX ?? "");
   const auth = request.headers.get("authorization") ?? "";

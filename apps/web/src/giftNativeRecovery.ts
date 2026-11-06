@@ -34,7 +34,7 @@ function capability(value: unknown, archive: RecipientRecoveryState["archive"]):
 /** Validate and copy only this version's bounded record. Signed payload strings
  * are preserved byte for byte; object property order does not affect CAS. */
 function snapshot(giftId: string, value: unknown): RecipientRecoveryState {
-  const record = object(value, ["version", "broker", "token", "signingKey", "archive", "current"], ["pending"]);
+  const record = object(value, ["version", "broker", "token", "signingKey", "archive", "current"], ["pending", "recoverySecret"]);
   const rawArchive = object(record.archive, ["giftId", "room", "size", "sha256", "expiresAt"]);
   if (record.version !== 1 || typeof record.broker !== "string" || record.broker.length > 512 || giftBrokerOrigin(record.broker) !== record.broker
     || !matches(record.token, /^[A-Za-z0-9_-]{32,4096}$/)
@@ -44,6 +44,10 @@ function snapshot(giftId: string, value: unknown): RecipientRecoveryState {
   const archive = { giftId, room: rawArchive.room, size: rawArchive.size as number, sha256: rawArchive.sha256, expiresAt: rawArchive.expiresAt as number };
   const current = capability(record.current, archive);
   const result: RecipientRecoveryState = { version: 1, broker: record.broker, token: record.token, signingKey: record.signingKey, archive, current: current.value };
+  if (Object.prototype.hasOwnProperty.call(record, "recoverySecret")) {
+    if (!matches(record.recoverySecret, /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/)) throw unavailable();
+    result.recoverySecret = record.recoverySecret;
+  }
   if (Object.prototype.hasOwnProperty.call(record, "pending")) {
     const pending = object(record.pending, ["successor", "generation"]);
     const successor = capability(pending.successor, archive);
@@ -56,28 +60,33 @@ function snapshot(giftId: string, value: unknown): RecipientRecoveryState {
 }
 
 function scope(state: RecipientRecoveryState): string {
-  return JSON.stringify([state.version, state.broker, state.token, state.signingKey, state.archive]);
+  return JSON.stringify([state.version, state.broker, state.token, state.signingKey, state.archive, state.recoverySecret]);
 }
 
 /** The backend must compare and persist under a native lock, across WebViews.
  * No JS mutex or localStorage fallback can provide that guarantee. Seeding with
- * previous=null is only for a caller whose initial broker claim succeeded and
- * whose gift archive has already been staged. This module never claims a gift
- * or enables the experimental native plugin. Its native record lock does not
- * cover Filesystem.appendFile: transfer exclusion across WebViews/processes
- * still requires a native staging lease and serialized append before rollout. */
+ * previous=null must durably seed the recipient secret before the first
+ * idempotent recovery-claim, with the native staging lease already held.
+ * This module never claims a gift or enables the experimental native plugin. */
 export function createNativeGiftRecoveryStorage(backend: NativeGiftRecoveryBackend, available: () => boolean = () => Capacitor.isNativePlatform()) {
   function check(giftId: string) {
     if (!available() || !validId(giftId)) throw unavailable();
   }
-  return {
-    async load(giftId: string): Promise<RecipientRecoveryState> {
+  async function loadOptional(giftId: string): Promise<RecipientRecoveryState | null> {
       try {
         check(giftId);
         const result = await backend.loadRecoveryState({ giftId });
+        if (result.state === null) return null;
         if (typeof result.state !== "string" || encoder.encode(result.state).length > MAX_STATE_BYTES) throw unavailable();
         return snapshot(giftId, JSON.parse(result.state));
       } catch { throw unavailable(); }
+  }
+  return {
+    loadOptional,
+    async load(giftId: string): Promise<RecipientRecoveryState> {
+      const state = await loadOptional(giftId);
+      if (state === null) throw unavailable();
+      return state;
     },
     async compareAndSwap(giftId: string, previous: RecipientRecoveryState | null, next: RecipientRecoveryState): Promise<boolean> {
       try {
@@ -96,4 +105,5 @@ export function createNativeGiftRecoveryStorage(backend: NativeGiftRecoveryBacke
 
 const storage = createNativeGiftRecoveryStorage(native);
 export const loadNativeGiftRecoveryState = storage.load;
+export const loadOptionalNativeGiftRecoveryState = storage.loadOptional;
 export const compareAndSwapNativeGiftRecoveryState = storage.compareAndSwap;

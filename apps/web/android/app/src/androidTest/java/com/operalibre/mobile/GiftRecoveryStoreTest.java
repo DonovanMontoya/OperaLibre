@@ -141,4 +141,18 @@ public final class GiftRecoveryStoreTest {
         assertTrue(new File(incoming, ".recovery-" + ID + ".tmp").delete());
         assertEquals(original, GiftRecoveryStore.load(root, ID));
     }
+
+    @Test public void absentStateNeedsNoArchiveAndIndependentSecretIsImmutable() throws Exception {
+        File archive = new File(incoming, ID + ".zip"); assertTrue(archive.delete());
+        assertNull(GiftRecoveryStore.load(root, ID));
+        put(archive, "prefix");
+        String original = state().put("recoverySecret", repeat('A', 43)).toString();
+        assertTrue(GiftRecoveryStore.compareAndSwap(root, ID, null, original));
+        assertEquals(original, GiftRecoveryStore.load(root, ID));
+        for (String value : new String[]{repeat('B', 42) + "A", repeat('A', 42) + "B"}) {
+            try { GiftRecoveryStore.compareAndSwap(root, ID, original, state().put("recoverySecret", value).toString()); fail("secret changed or noncanonical secret accepted"); } catch (Exception expected) { }
+        }
+        try { GiftRecoveryStore.compareAndSwap(root, ID, original, state().toString()); fail("secret removed"); } catch (Exception expected) { }
+        assertEquals(original, GiftRecoveryStore.load(root, ID));
+    }
 }

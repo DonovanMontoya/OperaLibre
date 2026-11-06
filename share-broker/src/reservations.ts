@@ -41,6 +41,7 @@ export async function cleanupRoom(storage: TransactionalStorage, input: Input, _
     await txn.put("queue:producer", []);
     await txn.put("queue:recipient", []);
     await txn.put("preview", null);
+    await txn.put("recovery:recipient", null);
     return true;
   });
 }

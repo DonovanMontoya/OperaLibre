@@ -43,6 +43,8 @@ public final class GiftArchiveExtractorTest {
         first.start(); second.start(); ready.countDown(); first.join(); second.join();
         check(successes.get() == 2, "concurrent duplicate recovery");
         check(new File(root, "gift-gift___________6/book.epub").isFile(), "single committed directory");
+        check(archive.delete(), "remove committed source fixture");
+        check(new File(root, "gift-gift___________6").equals(GiftArchiveExtractor.extract(archive, root, "gift___________6", manifest)), "committed recovery without source archive");
         Files.write(new File(imported, "book.epub").toPath(), "altered file!".getBytes("UTF-8"));
         try { GiftArchiveExtractor.extract(archive, root, "gift____________", manifest); throw new AssertionError("modified committed file accepted"); } catch (IOException expected) { }
         if (args.length == 1) {

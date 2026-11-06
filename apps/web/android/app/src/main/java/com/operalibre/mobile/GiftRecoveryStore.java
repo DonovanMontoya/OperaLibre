@@ -18,25 +18,36 @@ import java.nio.channels.FileLock;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Set;
 
 /** Bearer state stays beside private staging (app backup is disabled in the
  * manifest). Never log contents or propagate exception details to the bridge.
- * This record lock does not cover Filesystem.appendFile or transfer leases. */
+ * Staging leases use a separate persistent lock; cleanup takes both locks. */
 final class GiftRecoveryStore {
     private static final int MAX_STATE = 16 * 1024;
     private static final long MAX_ARCHIVE = 25L * 1024 * 1024 * 1024;
     private static final long MAX_INTEGER = 9007199254740991L;
     private interface Operation<T> { T run(File parent) throws Exception; }
 
+    // Linux UAPI O_CLOEXEC (02000000), supported by Android's kernel on all
+    // supported ABIs. The Java OsConstants field was only exposed in API 27.
+    private static final int CLOSE_ON_EXEC = 0x80000;
+    static FileDescriptor open(String path, int flags, int mode) throws Exception {
+        // Nonblocking opens fail closed on a substituted FIFO before fstat.
+        return Os.open(path, flags | OsConstants.O_NOFOLLOW | OsConstants.O_NONBLOCK | CLOSE_ON_EXEC, mode);
+    }
+
     // The monitor spans plugin instances; the persistent file lock spans
     // processes. Both load and CAS participate, including first-time seeding.
     private static synchronized <T> T locked(File data, String id, Operation<T> operation) throws Exception {
         if (id == null || !id.matches("[A-Za-z0-9_-]{16,128}")) throw new IOException();
         File parent = new File(data.getCanonicalFile(), "gift-incoming");
+        if (!parent.getCanonicalFile().equals(parent.getAbsoluteFile())) throw new IOException();
+        if (!parent.isDirectory() && !parent.mkdirs() && !parent.isDirectory()) throw new IOException();
         if (!parent.isDirectory() || !parent.getCanonicalFile().equals(parent.getAbsoluteFile())) throw new IOException();
-        FileDescriptor fd = Os.open(new File(parent, ".recovery-" + id + ".lock").getPath(),
-            OsConstants.O_RDWR | OsConstants.O_CREAT | OsConstants.O_NOFOLLOW | OsConstants.O_CLOEXEC, 0600);
+        FileDescriptor fd = open(new File(parent, ".recovery-" + id + ".lock").getPath(),
+            OsConstants.O_RDWR | OsConstants.O_CREAT | OsConstants.O_NOFOLLOW, 0600);
         try (FileOutputStream stream = new FileOutputStream(fd)) {
             regular(fd, MAX_STATE);
             Os.fchmod(fd, 0600);
@@ -48,8 +59,37 @@ final class GiftRecoveryStore {
         return locked(data, id, parent -> {
             String state = read(parent, id);
             JSONObject record = state == null ? null : validate(id, state);
-            checkArchive(parent, id, record == null ? MAX_ARCHIVE : integer(record.getJSONObject("archive"), "size", 1, MAX_ARCHIVE));
+            if (record != null) checkArchive(parent, id, integer(record.getJSONObject("archive"), "size", 1, MAX_ARCHIVE));
             return state;
+        });
+    }
+
+    static boolean freshAllowed(File data, String id) throws Exception {
+        return locked(data, id, parent -> {
+            for (String suffix : new String[]{".json", ".tmp"}) {
+                try { Os.lstat(new File(parent, ".recovery-" + id + suffix).getPath()); return false; }
+                catch (ErrnoException error) { if (error.errno != OsConstants.ENOENT) throw error; }
+            }
+            return true;
+        });
+    }
+
+    /** Caller must hold the exclusive native staging guard. Keep lock files:
+     * unlinking one would allow two processes to lock different inodes. */
+    static void cleanup(File data, String id) throws Exception {
+        locked(data, id, parent -> {
+            List<File> files = new java.util.ArrayList<>();
+            for (String name : new String[]{id + ".zip", ".recovery-" + id + ".json", ".recovery-" + id + ".tmp"}) {
+                File file = new File(parent, name);
+                try {
+                    StructStat stat = Os.lstat(file.getPath());
+                    if (!OsConstants.S_ISREG(stat.st_mode) || stat.st_nlink != 1) throw new IOException();
+                    files.add(file);
+                } catch (ErrnoException error) { if (error.errno != OsConstants.ENOENT) throw error; }
+            }
+            for (File file : files) Os.unlink(file.getPath());
+            syncDirectory(parent);
+            return null;
         });
     }
 
@@ -75,13 +115,13 @@ final class GiftRecoveryStore {
     }
 
     private static void checkArchive(File parent, String id, long limit) throws Exception {
-        FileDescriptor fd = Os.open(new File(parent, id + ".zip").getPath(), OsConstants.O_RDONLY | OsConstants.O_NOFOLLOW | OsConstants.O_CLOEXEC, 0);
+        FileDescriptor fd = open(new File(parent, id + ".zip").getPath(), OsConstants.O_RDONLY | OsConstants.O_NOFOLLOW, 0);
         try (FileInputStream ignored = new FileInputStream(fd)) { regular(fd, limit); }
     }
 
     private static String read(File parent, String id) throws Exception {
         FileDescriptor fd;
-        try { fd = Os.open(new File(parent, ".recovery-" + id + ".json").getPath(), OsConstants.O_RDONLY | OsConstants.O_NOFOLLOW | OsConstants.O_CLOEXEC, 0); }
+        try { fd = open(new File(parent, ".recovery-" + id + ".json").getPath(), OsConstants.O_RDONLY | OsConstants.O_NOFOLLOW, 0); }
         catch (ErrnoException error) { if (error.errno == OsConstants.ENOENT) return null; throw error; }
         try (FileInputStream input = new FileInputStream(fd)) {
             int size = (int) regular(fd, MAX_STATE).st_size;
@@ -98,16 +138,28 @@ final class GiftRecoveryStore {
         File destination = new File(parent, ".recovery-" + id + ".json");
         // A crash may leave the fixed temporary file. Validate before truncating
         // it; never follow a symlink or truncate a hard-linked file.
-        FileDescriptor fd = Os.open(temporary.getPath(), OsConstants.O_WRONLY | OsConstants.O_CREAT | OsConstants.O_NOFOLLOW | OsConstants.O_CLOEXEC, 0600);
+        FileDescriptor fd = open(temporary.getPath(), OsConstants.O_WRONLY | OsConstants.O_CREAT | OsConstants.O_NOFOLLOW, 0600);
         try (FileOutputStream output = new FileOutputStream(fd)) {
             regular(fd, MAX_STATE); Os.fchmod(fd, 0600); Os.ftruncate(fd, 0);
             output.write(bytes); output.flush(); Os.fsync(fd);
         }
         Os.rename(temporary.getPath(), destination.getPath());
-        FileDescriptor directory = Os.open(parent.getPath(), OsConstants.O_RDONLY | OsConstants.O_DIRECTORY | OsConstants.O_NOFOLLOW | OsConstants.O_CLOEXEC, 0);
-        try { Os.fsync(directory); } finally { Os.close(directory); }
+        syncDirectory(parent);
         // An error after rename has an uncertain outcome. Reject; the next
         // attempt must load and reconcile, never assume the write failed.
+    }
+
+    /** O_DIRECTORY is not in Android's public OsConstants API. Check the
+     * no-follow descriptor's directory type and identity before syncing it. */
+    static void syncDirectory(File directory) throws Exception {
+        StructStat expected = Os.lstat(directory.getPath());
+        if (!OsConstants.S_ISDIR(expected.st_mode)) throw new IOException();
+        FileDescriptor fd = open(directory.getPath(), OsConstants.O_RDONLY | OsConstants.O_NOFOLLOW, 0);
+        try {
+            StructStat actual = Os.fstat(fd);
+            if (!OsConstants.S_ISDIR(actual.st_mode) || actual.st_dev != expected.st_dev || actual.st_ino != expected.st_ino) throw new IOException();
+            Os.fsync(fd);
+        } finally { Os.close(fd); }
     }
 
     private static void keys(JSONObject value, String[] required, String... optional) throws Exception {
@@ -148,7 +200,7 @@ final class GiftRecoveryStore {
     private static JSONObject validate(String id, String state) throws Exception {
         if (state == null || state.length() > MAX_STATE || state.getBytes(StandardCharsets.UTF_8).length > MAX_STATE) throw new IOException();
         JSONObject record = new JSONObject(state);
-        keys(record, new String[]{"version", "broker", "token", "signingKey", "archive", "current"}, "pending");
+        keys(record, new String[]{"version", "broker", "token", "signingKey", "archive", "current"}, "pending", "recoverySecret");
         integer(record, "version", 1, 1);
         URI broker = new URI(string(record, "broker", null, 512));
         if (!"https".equals(broker.getScheme()) || broker.getHost() == null || broker.getRawUserInfo() != null
@@ -156,6 +208,7 @@ final class GiftRecoveryStore {
             || broker.getPort() < -1 || broker.getPort() > 65535) throw new IOException();
         string(record, "token", "[A-Za-z0-9_-]{32,4096}", 4096);
         string(record, "signingKey", "[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]", 43);
+        if (record.has("recoverySecret")) string(record, "recoverySecret", "[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]", 43);
         JSONObject archive = record.getJSONObject("archive");
         keys(archive, new String[]{"giftId", "room", "size", "sha256", "expiresAt"});
         if (!id.equals(archive.get("giftId"))) throw new IOException();
@@ -173,6 +226,7 @@ final class GiftRecoveryStore {
     }
 
     private static boolean sameScope(JSONObject left, JSONObject right) throws Exception {
+        if (left.has("recoverySecret") != right.has("recoverySecret") || (left.has("recoverySecret") && !equal(left.get("recoverySecret"), right.get("recoverySecret")))) return false;
         for (String key : new String[]{"version", "broker", "token", "signingKey", "archive"}) if (!equal(left.get(key), right.get(key))) return false;
         return true;
     }

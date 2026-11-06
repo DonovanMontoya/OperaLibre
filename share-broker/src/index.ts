@@ -2,9 +2,10 @@ const MAX_MESSAGE_BYTES = 64 * 1024;
 const MAX_MESSAGES = 32;
 const MAX_TTL_SECONDS = 15 * 60;
 const MAX_PREVIEW_MESSAGE_BYTES = 180 * 1024;
-import { issue, consume, ownerAuthorized, readBounded, verifyClaim } from "./experimental.js";
-import { rotateRole, type Transaction, type TransactionalStorage } from "./claims.js";
+import { issue, consume, ownerAuthorized, readBounded, verifyClaim, signClaim } from "./experimental.js";
+import { rotateRole, claimRecipientRecovery, recipientRecoverySuccessor, recipientRecoveryAuthorized, type Transaction, type TransactionalStorage } from "./claims.js";
 import { cleanupRoom, reserveRoom, validReservation } from "./reservations.js";
+import { giftLandingResponse } from "./gift-landing.js";
 
 type DurableObject = { fetch(request: Request): Promise<Response> };
 type DurableObjectState = { storage: { get<T>(key: string): Promise<T | undefined>; put(key: string, value: unknown): Promise<void>; transaction<T>(fn: (txn: Transaction) => Promise<T>): Promise<T> } };
@@ -92,6 +93,7 @@ export class SecureRoom implements DurableObject {
         await txn.put("queue:producer", []);
         await txn.put("queue:recipient", []);
         await txn.put("preview", null);
+        await txn.put("recovery:recipient", null);
       });
       return new Response(null, { status: 204 });
     }
@@ -105,10 +107,10 @@ export class SecureRoom implements DurableObject {
       const ok = url.pathname === "/reserve" ? await reserveRoom(this.state.storage, body, clock) : await cleanupRoom(this.state.storage, body, clock);
       return new Response(null, { status: ok ? 204 : url.pathname === "/reserve" ? 409 : 403, headers: { "cache-control": "no-store" } });
     }
-    if (!["/claim", "/resume", "/session", "/send", "/poll", "/preview-put", "/preview-read"].includes(url.pathname)) return new Response(null, { status: 404 });
+    if (!["/claim", "/recovery-claim", "/recovery-successor", "/resume", "/session", "/send", "/poll", "/preview-put", "/preview-read"].includes(url.pathname)) return new Response(null, { status: 404 });
     const text = await readBounded(request, url.pathname === "/preview-put" ? MAX_PREVIEW_MESSAGE_BYTES : 8192);
     if (text === null) return new Response(null, { status: 413 });
-    let body: { room: string; payload: string; signature: string; nextPayload?: string; nextSignature?: string; generation?: number; sequence?: number; kind?: string; message?: string; after?: number; nonce?: string; ciphertext?: string; expiresAt?: number };
+    let body: { room: string; payload: string; signature: string; recoverySecret?: string; nextPayload?: string; nextSignature?: string; generation?: number; sequence?: number; kind?: string; message?: string; after?: number; nonce?: string; ciphertext?: string; expiresAt?: number };
     try { body = JSON.parse(text); } catch { return new Response(null, { status: 400 }); }
     if (!body || typeof body.room !== "string") return new Response(null, { status: 400 });
     const now = Math.floor(Date.now() / 1000);
@@ -127,17 +129,27 @@ export class SecureRoom implements DurableObject {
     }
     const claim = await verifyClaim(body.room, body.payload, body.signature, this.env.SIGNING_SECRET, now);
     if (!claim) return new Response(null, { status: 403 });
+    if (url.pathname === "/recovery-claim" || url.pathname === "/recovery-successor") {
+      const clock = () => Math.floor(Date.now() / 1000);
+      if (url.pathname === "/recovery-claim") {
+        const ok = await claimRecipientRecovery(this.state.storage, body.room, claim, body.recoverySecret!, clock);
+        return new Response(null, { status: ok ? 204 : 403, headers: { "cache-control": "no-store" } });
+      }
+      const next = await recipientRecoverySuccessor(this.state.storage, body.room, claim, body.recoverySecret!, next => signClaim(next, this.env.SIGNING_SECRET), clock);
+      return next ? json(next) : new Response(null, { status: 403 });
+    }
     if (url.pathname === "/resume") {
       if (typeof body.nextPayload !== "string" || typeof body.nextSignature !== "string" || !Number.isSafeInteger(body.generation) || body.generation! < 0 || body.generation! >= Number.MAX_SAFE_INTEGER) return new Response(null, { status: 400 });
       const next = await verifyClaim(body.room, body.nextPayload, body.nextSignature, this.env.SIGNING_SECRET, now);
       if (!next) return new Response(null, { status: 403 });
-      const ok = await rotateRole(this.state.storage, body.room, claim, next, body.generation!, () => Math.floor(Date.now() / 1000));
+      const ok = await rotateRole(this.state.storage, body.room, claim, next, body.generation!, () => Math.floor(Date.now() / 1000), body.recoverySecret);
       return new Response(null, { status: ok ? 204 : 403, headers: { "cache-control": "no-store", ...(ok ? { "x-signaling-generation": String(body.generation! + 1) } : {}) } });
     }
     if (url.pathname === "/preview-read") {
       if (claim.role !== "recipient") return new Response(null, { status: 403 });
       return this.state.storage.transaction(async txn => {
         if (await txn.get("revoked")) return new Response(null, { status: 403 });
+        if (!await recipientRecoveryAuthorized(txn, claim, body.recoverySecret, () => Math.floor(Date.now() / 1000))) return new Response(null, { status: 403 });
         const preview = await txn.get<{ nonce: string; ciphertext: string; expiresAt: number }>("preview");
         if (!preview || preview.expiresAt !== claim.expiresAt || preview.expiresAt <= now) return new Response(null, { status: 404 });
         const member = await txn.get<{ nonce: string }>("claim:recipient");
@@ -150,6 +162,7 @@ export class SecureRoom implements DurableObject {
     if (url.pathname === "/poll" && (!Number.isSafeInteger(body.after) || body.after! < 0 || body.after! > 32)) return new Response(null, { status: 400 });
     return this.state.storage.transaction(async txn => {
       if (await txn.get("revoked")) return new Response(null, { status: 403 });
+      if (!await recipientRecoveryAuthorized(txn, claim, body.recoverySecret, () => Math.floor(Date.now() / 1000))) return new Response(null, { status: 403 });
       const member = await txn.get<{ nonce: string; expiresAt: number }>(`claim:${claim.role}`);
       if (!member || member.nonce !== claim.nonce || member.expiresAt !== claim.expiresAt || member.expiresAt <= Math.floor(Date.now() / 1000)) return new Response(null, { status: 403 });
       if (url.pathname === "/session") {
@@ -195,7 +208,7 @@ async function experimentalRoute(request: Request, env: Env): Promise<Response> 
       if (text === null) return new Response(null, { status: 413 });
       return env.ROOMS.get(env.ROOMS.idFromName(match[2])).fetch(new Request(`https://internal/${match[1]}`, { method: "POST", body: text }));
     }
-    if (/^\/(claim|resume|session|send|poll|preview-put|preview-read)\//.test(url.pathname)) {
+    if (/^\/(claim|recovery-claim|recovery-successor|resume|session|send|poll|preview-put|preview-read)\//.test(url.pathname)) {
       const [, action, room] = url.pathname.split("/");
       if (!/^[A-Za-z0-9_-]{16,128}$/.test(room)) return new Response(null, { status: 400 });
       if (action === "preview-put" && !await ownerAuthorized(request, env)) return new Response(null, { status: 401 });
@@ -213,6 +226,7 @@ export default {
   async fetch(request: Request, env: Env) {
     // This gate stays closed until independent security and native review.
     if (env.EXPERIMENTAL_ENABLED !== "true") return json({ error: "Book sharing broker is not enabled." }, 503);
+    if (request.method === "GET" && new URL(request.url).pathname === "/gift") return giftLandingResponse();
     const origin = request.headers.get("origin");
     if (origin && !APP_ORIGINS.has(origin)) return new Response(null, { status: 403 });
     if (request.method === "OPTIONS") {

@@ -4,8 +4,8 @@ import { receiveRecoveredGift, type RecipientRecoveryState, type RecoveryCapabil
 import { createGiftStagingManager } from "../src/giftNativeStaging";
 import type { GiftLink } from "../src/ExperimentalGiftRoute";
 
-// The Worker and cryptography are real. Peer events, native storage, durable CAS
-// and confidential successor delivery are disposable in-process test doubles.
+// Worker successor issuance, enrollment and cryptography are real. Peer events,
+// native storage and durable CAS are disposable in-process test doubles.
 type Result = {
   status: "running" | "success" | "failed" | "fixture-error";
   remoteDescriptions: number; deliveredFrames: number; appendedBytes: number;
@@ -14,7 +14,7 @@ type Result = {
   generation: number | null; readyOffset: number | null; readyPrefix: string | null;
   prefix: string; archiveSize: number; prefixSize: number; gateClosed: boolean;
   oldClaimStatus: number | null; replayStatus: number | null; events: string[];
-  error?: string;
+  error?: string; requests?: string[];
 };
 declare global { interface Window { recoveryResult: Result } }
 const result: Result = window.recoveryResult = {
@@ -71,9 +71,9 @@ async function run() {
     requireFixture(response.status === 200, "test issuance failed"); return response.json();
   }
   const producer = await issue("producer", "producer_nonce_1"), recipient = await issue("recipient", "recipient_nonce1");
+  const recoverySecret = encode(crypto.getRandomValues(new Uint8Array(32)));
   requireFixture((await post(`claim/${room}`, producer)).status === 204, "producer claim failed");
-  requireFixture((await post(`claim/${room}`, recipient)).status === 204, "recipient claim failed");
-  const successor = await issue("recipient", "recipient_nonce2", "recipient_nonce1");
+  requireFixture((await post(`recovery-claim/${room}`, { ...recipient, recoverySecret })).status === 204, "recipient enrollment failed");
   const archive = encoder.encode("retained original recovery archive bytes"), archiveSha256 = await sha256(archive);
   let staged = archive.slice(0, result.prefixSize);
   result.archiveSize = archive.length; result.prefix = await sha256(staged);
@@ -84,7 +84,7 @@ async function run() {
     signingKey: encode(new Uint8Array(await crypto.subtle.exportKey("raw", signing.publicKey))), previewKey: encode(previewKey),
   };
   const descriptor = { giftId, room, size: archive.length, sha256: archiveSha256, expiresAt };
-  let durable: RecipientRecoveryState = { version: 1, broker: link.broker, token: link.token, signingKey: link.signingKey!, archive: descriptor, current: recipient };
+  let durable: RecipientRecoveryState = { version: 1, broker: link.broker, token: link.token, signingKey: link.signingKey!, archive: descriptor, current: recipient, recoverySecret };
   const manager = createGiftStagingManager({
     async prepareArchive() { throw new Error("recovery must not truncate staging"); },
     async inspectArchive() { return { offset: staged.length, prefixSha256: await sha256(staged) }; },
@@ -158,8 +158,9 @@ async function run() {
     const request = new Request(input, init), route = new URL(request.url);
     requireFixture(route.origin === link.broker, "unexpected outbound fixture request");
     const body = await request.clone().json();
-    if (route.pathname === `/resume/${room}`) requireFixture(durable.pending?.successor.payload === successor.payload, "resume preceded pending persistence");
+    if (route.pathname === `/resume/${room}`) requireFixture(durable.pending?.successor.payload === body.nextPayload && durable.pending?.successor.signature === body.nextSignature, "resume preceded pending persistence");
     const response = await broker.fetch(request, env);
+    (result.requests ??= []).push(`${route.pathname.split("/")[1]}:${response.status}`);
     if (route.pathname === `/send/${room}` && response.status === 204) {
       requireFixture(body.generation === 1, "wrong signaling generation"); result.generation = body.generation;
       const queued = await post(`poll/${room}`, { ...producer, generation: 1, after: body.kind === "ready" ? 0 : 1 });
@@ -193,12 +194,6 @@ async function run() {
       if (JSON.stringify(previous) !== JSON.stringify(durable)) return false;
       durable = structuredClone(next); return true;
     },
-    async successor(current) {
-      requireFixture(current.payload === recipient.payload, "successor requested for another recipient");
-      // This closure represents confidential delivery to the enrolled recipient;
-      // it is not a public Worker mailbox or a network issuance implementation.
-      return structuredClone(successor);
-    },
   });
   try {
     await receiveRecoveredGift(link, descriptor, new AbortController().signal, manager.recover, protocol);
@@ -206,6 +201,7 @@ async function run() {
   } catch { result.status = "failed"; }
   const reopened = await manager.recover(giftId, archive.length); await reopened.staging.close(); result.lockReleased = true;
   result.oldClaimStatus = (await post(`session/${room}`, recipient)).status;
+  const successor = durable.current;
   result.replayStatus = (await post(`resume/${room}`, { ...recipient, nextPayload: successor.payload, nextSignature: successor.signature, generation: 0 })).status;
 }
 

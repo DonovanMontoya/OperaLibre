@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 
+const origin = process.env.OPERALIBRE_GIFT_TEST_ORIGIN ?? "http://127.0.0.1:5199";
+
 test("recovery uses Worker claim rotation, authenticated peer proof and verified receipt", { timeout: 20000 }, async t => {
   const browser = await chromium.launch({ executablePath: process.env.OPERALIBRE_TEST_CHROMIUM || undefined, headless: true });
   try {
@@ -10,7 +12,7 @@ test("recovery uses Worker claim rotation, authenticated peer proof and verified
         const page = await browser.newPage(), errors = [];
         page.on("pageerror", error => errors.push(error.message));
         try {
-          await page.goto(`http://127.0.0.1:5199/test/gift-recovery-peer.html?case=${mode}`);
+          await page.goto(`${origin}/test/gift-recovery-peer.html?case=${mode}`);
           await page.waitForFunction(() => document.documentElement.dataset.complete === "true", undefined, { timeout: 8000 });
           const result = await page.evaluate(() => window.recoveryResult);
           assert.deepEqual(errors, []);

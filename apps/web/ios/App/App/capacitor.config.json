@@ -4,6 +4,11 @@
 	"webDir": "dist",
 	"backgroundColor": "#f1e7d0",
 	"loggingBehavior": "none",
+	"plugins": {
+		"App": {
+			"disableBackButtonHandler": true
+		}
+	},
 	"android": {
 		"allowMixedContent": true,
 		"backgroundColor": "#f1e7d0"
@@ -15,6 +20,7 @@
 		"allowsLinkPreview": false
 	},
 	"packageClassList": [
+		"AppPlugin",
 		"DialogPlugin",
 		"FilesystemPlugin",
 		"HapticsPlugin",
