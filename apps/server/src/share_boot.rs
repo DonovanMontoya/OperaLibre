@@ -9,6 +9,24 @@ pub(crate) fn start_boot_recovery(
     state: AppState,
     enabled: bool,
 ) -> Option<tokio::task::JoinHandle<()>> {
+    start(state, enabled, None)
+}
+
+/// Observe completion without polling the private file-backed index and
+/// competing with its OS write lock. This never activates a released binary.
+#[cfg(test)]
+pub(crate) fn observe_boot_recovery(
+    state: AppState,
+    first_pass: tokio::sync::oneshot::Sender<bool>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    start(state, true, Some(first_pass))
+}
+
+fn start(
+    state: AppState,
+    enabled: bool,
+    mut first_pass: Option<tokio::sync::oneshot::Sender<bool>>,
+) -> Option<tokio::task::JoinHandle<()>> {
     if !enabled {
         return None;
     }
@@ -56,6 +74,9 @@ pub(crate) fn start_boot_recovery(
                 _ = tokio::time::sleep_until(deadline) => return,
                 result = recovery_pass(&state) => result,
             };
+            if let Some(observer) = first_pass.take() {
+                let _ = observer.send(matches!(result, Ok(true)));
+            }
             match result {
                 Ok(false) => return,
                 Ok(true) => {}

@@ -15,6 +15,7 @@ async fn gift_boot_process_child() -> anyhow::Result<()> {
         ["create", "recover"].contains(&mode.as_str()),
         "invalid child mode"
     );
+    println!("GIFT_BOOT_PHASE configuring");
     let config = ServerConfig::load()?;
     create_private_directory(&config.data_dir)?;
     create_private_directory(&config.download_temp_dir)?;
@@ -23,6 +24,7 @@ async fn gift_boot_process_child() -> anyhow::Result<()> {
     let layout = JsonLayout::for_config(&config);
     migrate_if_needed(&database_path, &config.data_dir, &layout)?;
     let database = Database::open(&database_path)?;
+    println!("GIFT_BOOT_PHASE database-open");
     let mut snapshot = load_cached_snapshot(&database).await?;
     apply_startup_data_migrations(&database, &mut snapshot).await?;
     let accounts = prepare_libation_accounts_root(&config, &snapshot.libation_accounts).await?;
@@ -36,6 +38,7 @@ async fn gift_boot_process_child() -> anyhow::Result<()> {
         accounts,
         identity,
     )?;
+    println!("GIFT_BOOT_PHASE state-ready");
     let app = build_router(state.clone(), None, &[])?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     record_server_pid(&config.data_dir)?;
@@ -45,6 +48,7 @@ async fn gift_boot_process_child() -> anyhow::Result<()> {
             crate::libation_recovery::wait_for_library(&state, state.shutdown.subscribe()).await,
             "child library unavailable"
         );
+        println!("GIFT_BOOT_PHASE library-ready");
         let auth = AuthUser::from(
             state
                 .users
@@ -81,6 +85,7 @@ async fn gift_boot_process_child() -> anyhow::Result<()> {
         )
         .await
         .map_err(|_| anyhow::anyhow!("child invitation creation failed"))?;
+        println!("GIFT_BOOT_PHASE invitation-created");
         let origin = std::env::var("OPERALIBRE_GIFT_BOOT_TEST_BROKER")?;
         let broker = crate::share_broker::BrokerClient::local(&origin)?;
         let prepared = crate::share::start_invitation_sender_with_recovery(
@@ -95,6 +100,7 @@ async fn gift_boot_process_child() -> anyhow::Result<()> {
         )
         .await
         .map_err(|_| anyhow::anyhow!("child sender creation failed"))?;
+        println!("GIFT_BOOT_PHASE sender-prepared");
         write_json_atomic(
             &config.data_dir.join("gift-process-result.json"),
             &serde_json::json!({"giftUrl":prepared.gift_url,"token":invitation.token}),
@@ -105,7 +111,10 @@ async fn gift_boot_process_child() -> anyhow::Result<()> {
             let _ = prepared.wait().await;
         });
     }
-    let _boot = crate::share_setup::start_boot_recovery(state.clone(), true).unwrap();
+    let (observed, completed) = tokio::sync::oneshot::channel();
+    let _boot = crate::share_setup::observe_boot_recovery(state.clone(), observed).unwrap();
+    println!("GIFT_BOOT_PHASE awaiting-first-pass");
+    anyhow::ensure!(completed.await?, "initial boot recovery pass failed");
     // Never print the gift URL, capabilities, private state or owner secret.
     println!("GIFT_BOOT_READY {}", listener.local_addr()?);
     axum::serve(
@@ -131,6 +140,7 @@ async fn child(
         .kill_on_drop(true)
         .spawn()?;
     let mut stdout = tokio::io::BufReader::new(child.stdout.take().unwrap());
+    let mut phase = String::from("spawned");
     let origin = tokio::time::timeout(Duration::from_secs(15), async {
         let mut line = String::new();
         loop {
@@ -139,6 +149,16 @@ async fn child(
                 stdout.read_line(&mut line).await? > 0,
                 "child exited before readiness"
             );
+            if let Some((_, status)) = line.split_once("GIFT_BOOT_PHASE ") {
+                let status = status.trim();
+                if status.len() <= 32
+                    && status
+                        .bytes()
+                        .all(|byte| byte.is_ascii_lowercase() || byte == b'-')
+                {
+                    phase = status.to_owned();
+                }
+            }
             if let Some((_, address)) = line.split_once("GIFT_BOOT_READY ") {
                 let address: SocketAddr = address.trim().parse()?;
                 anyhow::ensure!(address.ip().is_loopback(), "nonlocal test child");
@@ -146,7 +166,8 @@ async fn child(
             }
         }
     })
-    .await??;
+    .await
+    .map_err(|_| anyhow::anyhow!("child {mode} readiness stalled at {phase}"))??;
     // Draining avoids a pipe lifetime affecting the sender; no output escapes
     // this fixture. The test owns and kills only this exact captured child.
     tokio::spawn(async move {
@@ -173,7 +194,8 @@ async fn recovered_generation(
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await?
+    .await
+    .map_err(|_| anyhow::anyhow!("boot did not publish a rotated producer generation"))?
 }
 
 #[tokio::test]

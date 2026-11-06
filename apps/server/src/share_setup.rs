@@ -291,6 +291,8 @@ fn configured_broker(origin: &str) -> anyhow::Result<crate::share_broker::Broker
 
 #[path = "share_boot.rs"]
 mod boot;
+#[cfg(test)]
+pub(crate) use boot::observe_boot_recovery;
 pub(crate) use boot::start_boot_recovery;
 
 #[derive(Deserialize)]
