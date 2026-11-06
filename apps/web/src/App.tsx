@@ -183,6 +183,9 @@ import { useNowPlaying } from "./useNowPlaying";
 import { useAudioElement } from "./useAudioElement";
 import { usePlaybackRestore } from "./usePlaybackRestore";
 import { useAudioSource } from "./useAudioSource";
+import { ExperimentalGiftRoute, parseExperimentalGiftFragment } from "./ExperimentalGiftRoute";
+import { createExperimentalRecipientTransport } from "./giftRecipientTransport";
+import { fetchVerifiedGiftPreview } from "./giftPreviewSource";
 // How long a Play still waiting on the stream shows as loading.
 const PLAY_PENDING_LIMIT_MS = 45_000;
 const SHELF_EXPANDED_STORAGE_KEY = "operalibre.shelfExpanded";
@@ -230,7 +233,21 @@ function initialAuthState(): AuthState {
     : { phase: "loading" };
 }
 
+// Keep the route inaccessible until the transport, native imports, and platform
+// association are reviewed and verified. This is not an admin setting yet.
+const EXPERIMENTAL_GIFT_LINKS_ENABLED = false;
+const experimentalGiftTransport = createExperimentalRecipientTransport(fetchVerifiedGiftPreview);
+
 export default function App() {
+  const [gift, setGift] = useState(() => EXPERIMENTAL_GIFT_LINKS_ENABLED ? parseExperimentalGiftFragment(window.location.hash) : null);
+  if (gift) return <ExperimentalGiftRoute link={gift} transport={experimentalGiftTransport} onClose={() => {
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    setGift(null);
+  }} />;
+  return <AuthenticatedApp />;
+}
+
+function AuthenticatedApp() {
   const [authState, setAuthState] = useState<AuthState>(initialAuthState);
 
   const checkAuth = useCallback(async () => {

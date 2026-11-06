@@ -1,0 +1,19 @@
+.gift-screen { min-height: 100%; display: grid; place-items: center; padding: 2rem 1rem; text-align: center; }
+.gift-screen section { max-width: 34rem; width: 100%; }
+.gift-screen h1 { line-height: 1.15; }
+.gift-wrapped { display: grid; justify-items: center; gap: .75rem; }
+.gift-bag { position: relative; display: grid; place-items: center; width: 11rem; height: 11rem; border-radius: 2rem; border: 1px solid currentColor; cursor: pointer; animation: gift-sway 2.4s ease-in-out 1; }
+.gift-bag svg + svg { position: absolute; bottom: 2rem; }
+.gift-bag:focus-visible, .gift-screen button:focus-visible { outline: 3px solid currentColor; outline-offset: 4px; }
+.gift-skip { background: none; border: 0; text-decoration: underline; cursor: pointer; }
+.gift-reveal { animation: gift-reveal .35s ease-out both; }
+.gift-eyebrow { text-transform: uppercase; letter-spacing: .08em; font-size: .8rem; }
+.gift-cover { display: block; width: min(12rem, 60vw); aspect-ratio: 2 / 3; object-fit: cover; margin: 1rem auto; border-radius: .5rem; }
+.gift-cover-placeholder { display: grid; place-items: center; background: rgba(128, 128, 128, .18); }
+.gift-message { text-align: left; padding: 1rem 1.2rem; margin: 1.5rem 0; border: 1px solid currentColor; border-radius: .75rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.gift-message footer { text-align: right; }
+.gift-summary { text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
+.gift-actions { display: flex; justify-content: center; gap: .75rem; flex-wrap: wrap; margin: 1.25rem 0; }
+@keyframes gift-sway { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(-3deg); } 75% { transform: rotate(3deg); } }
+@keyframes gift-reveal { from { opacity: 0; transform: translateY(.5rem); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .gift-bag, .gift-reveal { animation: none; } }

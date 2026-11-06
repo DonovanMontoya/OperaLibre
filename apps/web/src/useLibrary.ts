@@ -27,6 +27,7 @@ import { getBooks, getLibationBooks, getServerStorageKey, isServerNotReadyError,
 import { cacheLibrary, getCachedLibrary, getCachedProgress } from "./offline";
 import type { LibraryProgressReplay } from "./playbackTypes";
 import type { NativeTab } from "./nativeTabs";
+import { recoverNativeGiftImport } from "./giftDeviceImport";
 import { acknowledgeProgressSeekIntent, progressSeekStorage, progressSeekOptions, readProgressSeekIntent } from "./progressSeekIntent";
 
 /**
@@ -102,6 +103,7 @@ export function useLibrary({
     setIsLoading(true);
     setError(null);
     if (native) {
+      await recoverNativeGiftImport().catch(() => undefined);
       await migrateDeviceLibraryFileExtensions();
       await backfillDeviceLibraryMetadata();
     }

@@ -75,6 +75,9 @@ class ViewController: CAPBridgeViewController {
     }
 
     override open func capacitorDidLoad() {
+        #if OPERALIBRE_EXPERIMENTAL_GIFTS
+        bridge?.registerPluginInstance(GiftImportPlugin())
+        #endif
         bridge?.registerPluginInstance(BackgroundDownloadsPlugin())
         bridge?.registerPluginInstance(LibroDevicePlugin())
         bridge?.registerPluginInstance(NativeAudioPlugin())

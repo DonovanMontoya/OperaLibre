@@ -91,6 +91,19 @@ mod opds;
 mod progress;
 mod reading;
 mod reading_log;
+mod share;
+#[allow(dead_code)]
+mod share_broker;
+#[cfg(test)]
+mod share_peer_tests;
+#[allow(dead_code)]
+mod share_preview_crypto;
+#[allow(dead_code)]
+mod share_sender;
+#[allow(dead_code)]
+mod share_service;
+#[allow(dead_code)]
+mod share_transfer;
 mod storage;
 mod sync;
 mod sync_report;
@@ -128,6 +141,8 @@ use opds::*;
 use progress::*;
 use reading::*;
 use reading_log::*;
+#[cfg(test)]
+use share::*;
 use storage::*;
 use sync::*;
 use upload::*;

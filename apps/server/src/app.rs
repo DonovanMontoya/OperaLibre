@@ -129,6 +129,13 @@ pub(crate) fn build_router(
         ))
         .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES));
 
+    #[cfg(test)]
+    let public_share_routes = Router::new()
+        .route("/api/shares/{token}/preview", get(share_preview))
+        .route("/api/shares/{token}/download", get(share_download));
+    #[cfg(not(test))]
+    let public_share_routes = Router::new();
+
     let protected_routes = Router::new()
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
@@ -460,7 +467,24 @@ pub(crate) fn build_router(
     );
     let cors = CorsLayer::new().allow_origin(AllowOrigin::list(origins));
 
+    #[cfg(test)]
+    let protected_share_routes = Router::new()
+        .route("/api/shares", post(create_share))
+        .route("/api/shares/{token}", delete(revoke_share))
+        .route(
+            "/api/admin/shares/revocations/retry",
+            post(retry_owner_broker_revocations),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+    #[cfg(not(test))]
+    let protected_share_routes = Router::new();
+
     let mut app = public_routes
+        .merge(public_share_routes)
+        .merge(protected_share_routes)
         .merge(protected_routes)
         .merge(long_running_routes)
         .merge(agent_routes);
