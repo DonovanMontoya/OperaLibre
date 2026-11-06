@@ -12,6 +12,12 @@ private let bundleStampName = ".bundle-stamp"
 /// How long a staging directory must sit untouched before it counts as abandoned rather
 /// than in use by a concurrently launching instance.
 private let staleStagingAge: TimeInterval = 60 * 60
+/// The web root an install replaced, kept so a release that cannot start can be undone.
+private let previousRootName = "Web.previous"
+/// Holds the version of an installed root that has not finished loading yet.
+private let unconfirmedName = ".unconfirmed-frontend"
+/// Versions that failed to start here, one per line, so the update check stops offering them.
+private let rejectedName = ".rejected-frontend-versions"
 
 enum FrontendUpdateError: LocalizedError {
     case noMatchingAsset
@@ -48,6 +54,8 @@ struct FrontendUpdateStatus {
     let currentVersion: String
     let latestVersion: String
     let updateAvailable: Bool
+    /// The latest release already failed to start here and was rolled back.
+    let heldBack: Bool
     /// From the verified manifest, which signs its address, size and SHA-256.
     let package: UpdatePackage?
     let notice: UpdateNotice?
@@ -86,6 +94,11 @@ final class FrontendUpdater {
         self.bundledWebRoot = bundledWebRoot
         self.managedWebRoot = managedWebRoot
     }
+
+    private var container: URL { managedWebRoot.deletingLastPathComponent() }
+    var previousWebRoot: URL { container.appendingPathComponent(previousRootName, isDirectory: true) }
+    private var unconfirmedURL: URL { container.appendingPathComponent(unconfirmedName) }
+    private var rejectedURL: URL { container.appendingPathComponent(rejectedName) }
 
     private func readVersion(at webRoot: URL) -> String {
         let marker = webRoot.appendingPathComponent("VERSION.txt")
@@ -155,6 +168,10 @@ final class FrontendUpdater {
                 try? fileManager.removeItem(at: managedWebRoot)
                 try fileManager.moveItem(at: stagedWeb, to: managedWebRoot)
                 try? fileManager.removeItem(at: stagingRoot)
+                // The bundle is authoritative now, so an older release must not come back
+                // as a fallback for it.
+                try? fileManager.removeItem(at: previousWebRoot)
+                try? fileManager.removeItem(at: unconfirmedURL)
                 // Recorded only after the swap actually landed, so an interrupted reset is
                 // retried on the next launch rather than being mistaken for up to date.
                 if let fingerprint {
@@ -216,18 +233,20 @@ final class FrontendUpdater {
         let package = manifest.package("frontend")
         let latestVersion = package?.version ?? manifest.version
 
-        let updateAvailable: Bool
+        let newer: Bool
         if let currentParsed = parseSemver(current), let latestParsed = parseSemver(latestVersion) {
-            updateAvailable = isSemver(latestParsed, newerThan: currentParsed) && package != nil
+            newer = isSemver(latestParsed, newerThan: currentParsed) && package != nil
         } else {
             // A "dev" build has no comparable version; any published release counts as available.
-            updateAvailable = package != nil
+            newer = package != nil
         }
+        let heldBack = newer && isRejected(latestVersion)
 
         return FrontendUpdateStatus(
             currentVersion: current,
             latestVersion: latestVersion,
-            updateAvailable: updateAvailable,
+            updateAvailable: newer && !heldBack,
+            heldBack: heldBack,
             package: package,
             notice: manifest.notice
         )
@@ -332,24 +351,87 @@ final class FrontendUpdater {
             throw FrontendUpdateError.invalidPackage("version marker does not match the release")
         }
 
-        try fileManager.createDirectory(
-            at: managedWebRoot.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        let backupDir = workDir.appendingPathComponent("previous", isDirectory: true)
+        try promote(stagedWeb, version: package.version)
+    }
+
+    /// Swaps a verified web tree into `managedWebRoot`, keeping the tree it replaces as the
+    /// one fallback. The new root stays unconfirmed until `confirmServingRoot()`, so a
+    /// release that cannot start can be undone by `rollBackUnconfirmedRoot()`.
+    func promote(_ stagedWeb: URL, version: String) throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: container, withIntermediateDirectories: true)
         let hadExisting = fileManager.fileExists(atPath: managedWebRoot.path)
         if hadExisting {
-            try fileManager.moveItem(at: managedWebRoot, to: backupDir)
+            try? fileManager.removeItem(at: previousWebRoot)
+            try fileManager.moveItem(at: managedWebRoot, to: previousWebRoot)
         }
+        // Written before the swap, so a launch that dies right after it still treats the
+        // new root as unproven.
+        try? version.write(to: unconfirmedURL, atomically: true, encoding: .utf8)
         do {
             try fileManager.moveItem(at: stagedWeb, to: managedWebRoot)
         } catch {
+            try? fileManager.removeItem(at: unconfirmedURL)
             if hadExisting {
-                try? fileManager.moveItem(at: backupDir, to: managedWebRoot)
+                try? fileManager.moveItem(at: previousWebRoot, to: managedWebRoot)
             }
             throw error
         }
-        installedVersion = package.version
+        installedVersion = version
+    }
+
+    /// Called once the page has finished loading: the root that served it can start.
+    func confirmServingRoot() {
+        guard isServingManagedRoot else { return }
+        try? FileManager.default.removeItem(at: unconfirmedURL)
+    }
+
+    /// Called when the page failed before it finished loading. If the managed root is an
+    /// install that has never loaded, records its version as rejected and returns the root
+    /// to serve instead: the previous root when one was kept, otherwise the bundle. Returns
+    /// nil for a root that has loaded before, so a passing error does not undo a release
+    /// that was working.
+    func rollBackUnconfirmedRoot() -> URL? {
+        let fileManager = FileManager.default
+        guard isServingManagedRoot,
+              let pending = try? String(contentsOf: unconfirmedURL, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              pending == readVersion(at: managedWebRoot)
+        else { return nil }
+
+        var rejected = rejectedVersions()
+        if !rejected.contains(pending) {
+            rejected.append(pending)
+            try? (rejected.joined(separator: "\n") + "\n")
+                .write(to: rejectedURL, atomically: true, encoding: .utf8)
+        }
+        try? fileManager.removeItem(at: unconfirmedURL)
+        installedVersion = nil
+
+        let previousIndex = previousWebRoot.appendingPathComponent("index.html")
+        if fileManager.fileExists(atPath: previousIndex.path),
+           (try? fileManager.removeItem(at: managedWebRoot)) != nil,
+           (try? fileManager.moveItem(at: previousWebRoot, to: managedWebRoot)) != nil
+        {
+            // The restored root is only as proven as the next load, so it can fall back
+            // to the bundle in turn.
+            try? readVersion(at: managedWebRoot).write(to: unconfirmedURL, atomically: true, encoding: .utf8)
+            servingRoot = managedWebRoot
+            return managedWebRoot
+        }
+        // With the broken tree gone, the next launch copies the bundle in again.
+        try? fileManager.removeItem(at: managedWebRoot)
+        servingRoot = bundledWebRoot
+        return bundledWebRoot
+    }
+
+    private func rejectedVersions() -> [String] {
+        guard let text = try? String(contentsOf: rejectedURL, encoding: .utf8) else { return [] }
+        return text.split(whereSeparator: \.isNewline).map(String.init)
+    }
+
+    func isRejected(_ version: String) -> Bool {
+        rejectedVersions().contains(version)
     }
 
     /// Streams an update into our scoped workspace instead of asking URLSession to create an

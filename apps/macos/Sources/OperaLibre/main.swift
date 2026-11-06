@@ -3,7 +3,8 @@ import Network
 import WebKit
 
 final class BundledWebServer {
-    let root: URL
+    /// Read only on `queue`, where requests are answered.
+    private var root: URL
     private let queue = DispatchQueue(label: "com.operalibre.web-server")
     private var listener: NWListener?
 
@@ -36,6 +37,11 @@ final class BundledWebServer {
         } catch {
             onReady(.failure(error))
         }
+    }
+
+    /// Serves a different web root from the next request on, for a rollback.
+    func setRoot(_ root: URL) {
+        queue.sync { self.root = root.standardizedFileURL }
     }
 
     func stop() {
@@ -104,6 +110,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     /// error means the frontend cannot start; afterwards it is one failed
     /// action in a running app, and closing the app over it loses the session.
     private var frontendLoaded = false
+    /// Set after a rollback until the reload commits, so further errors from the page that
+    /// already failed do not roll back the root that replaced it.
+    private var awaitingFallbackLoad = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -240,7 +249,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                     if interactive {
                         await self.presentInfoAlert(
                             title: "You're up to date",
-                            message: "OperaLibre is on the latest web frontend (\(status.currentVersion))."
+                            message: status.heldBack
+                                ? "OperaLibre \(status.latestVersion) could not start on this Mac and was rolled back, so the app stays on \(status.currentVersion) until a newer release."
+                                : "OperaLibre is on the latest web frontend (\(status.currentVersion))."
                         )
                     }
                     return
@@ -310,7 +321,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         guard message.name == "frontendError" else { return }
         let detail = String(describing: message.body)
         NSLog("Frontend error: %@", detail)
-        guard !frontendLoaded else { return }
+        guard !frontendLoaded, !awaitingFallbackLoad else { return }
+        // An update that has never loaded is undone instead of closing the app over it.
+        let failedVersion = frontendUpdater?.currentVersion
+        if let fallback = frontendUpdater?.rollBackUnconfirmedRoot() {
+            NSLog("Frontend %@ failed to start; serving %@", failedVersion ?? "?", fallback.path)
+            awaitingFallbackLoad = true
+            webServer?.setRoot(fallback)
+            webView?.reload()
+            let restored = frontendUpdater?.currentVersion ?? "the previous version"
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.messageText = "Update rolled back"
+                alert.informativeText = "OperaLibre \(failedVersion ?? "") could not start, so the app went back to \(restored). It will not offer that release again.\n\n\(detail)"
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
+            return
+        }
         showStartupError("The bundled frontend failed to load.\n\n\(detail)")
     }
 
@@ -318,8 +346,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         frontendLoaded = false
     }
 
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        awaitingFallbackLoad = false
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         frontendLoaded = true
+        frontendUpdater?.confirmServingRoot()
     }
 
     private func installMainMenu() {
