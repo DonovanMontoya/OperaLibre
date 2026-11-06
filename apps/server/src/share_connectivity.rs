@@ -86,6 +86,8 @@ fn credential(value: &str, maximum: usize) -> bool {
 /// Accept only the transports implemented by the installed async 0.21.1
 /// gatherers: UDP STUN and UDP TURN. Secure and TCP forms are explicitly skipped
 /// by that dependency, so accepting them here would silently break relay-only.
+/// The URL parser and ICE-TCP support do not imply TURN stream support. See
+/// upstream webrtc-rs/webrtc#848 and #907; the latter still excludes TLS.
 fn is_turn_url(value: &str) -> anyhow::Result<bool> {
     anyhow::ensure!(
         !value.is_empty()
@@ -101,9 +103,16 @@ fn is_turn_url(value: &str) -> anyhow::Result<bool> {
     let turn = match scheme {
         "stun" => false,
         "turn" => true,
+        "stuns" | "turns" => anyhow::bail!(
+            "Secure STUN/TURN is not supported by the installed gift WebRTC transport."
+        ),
         _ => return Err(invalid()),
     };
     let authority = if let Some((authority, query)) = rest.split_once('?') {
+        anyhow::ensure!(
+            !turn || query != "transport=tcp",
+            "TURN over TCP is not supported by the installed gift WebRTC transport."
+        );
         anyhow::ensure!(
             turn && query == "transport=udp",
             "Unsupported gift ICE transport."
@@ -345,3 +354,7 @@ impl ConnectivityConfig {
 #[cfg(test)]
 #[path = "share_connectivity_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "share_connectivity_transport_tests.rs"]
+mod transport_tests;

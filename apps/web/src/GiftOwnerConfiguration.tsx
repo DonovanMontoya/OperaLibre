@@ -1,17 +1,19 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { captureGiftOwnerSetupGuard, cleanupConfiguredGiftBroker, deleteGiftOwnerConfiguration, getGiftOwnerConfiguration, saveGiftOwnerConfiguration } from "./api";
+import { abandonConfiguredGiftSenders, captureGiftOwnerSetupGuard, cleanupConfiguredGiftBroker, deleteGiftOwnerConfiguration, getGiftOwnerConfiguration, recoverConfiguredGiftSenders, saveGiftOwnerConfiguration } from "./api";
 import { giftConnectivityEdit, giftOwnerConfigurationRequest, parseGiftOwnerConfiguration, type GiftOwnerConfiguration as Configuration, type GiftOwnerConfigurationRequest } from "./giftOwnerSetupModel";
 import "./giftOwnerSetup.css";
 
-export type GiftOwnerSetupApi = { captureGuard?: () => () => boolean; load(signal: AbortSignal): Promise<Configuration>; save(input: GiftOwnerConfigurationRequest, signal: AbortSignal): Promise<Configuration>; remove(signal: AbortSignal): Promise<void>; cleanup(signal: AbortSignal): Promise<{ completed: number; pending: number }> };
-const setupApi: GiftOwnerSetupApi = { captureGuard: captureGiftOwnerSetupGuard, load: getGiftOwnerConfiguration, save: saveGiftOwnerConfiguration, remove: deleteGiftOwnerConfiguration, cleanup: cleanupConfiguredGiftBroker };
+export type GiftOwnerSetupApi = { captureGuard?: () => () => boolean; load(signal: AbortSignal): Promise<Configuration>; save(input: GiftOwnerConfigurationRequest, signal: AbortSignal): Promise<Configuration>; remove(signal: AbortSignal): Promise<void>; cleanup(signal: AbortSignal): Promise<{ completed: number; pending: number }>; recover?(signal: AbortSignal): Promise<{ recovered: number; alreadyActive: number; pending: number }>; abandon?(signal: AbortSignal): Promise<{ abandoned: number; completed: number; pending: number }> };
+const setupApi: GiftOwnerSetupApi = { captureGuard: captureGiftOwnerSetupGuard, load: getGiftOwnerConfiguration, save: saveGiftOwnerConfiguration, remove: deleteGiftOwnerConfiguration, cleanup: cleanupConfiguredGiftBroker, recover: recoverConfiguredGiftSenders, abandon: abandonConfiguredGiftSenders };
 
 export function GiftOwnerConfiguration({ secure, api = setupApi }: { secure: boolean; api?: GiftOwnerSetupApi }) {
   const [configuration, setConfiguration] = useState<Configuration | null>(null);
   const [broker, setBroker] = useState("");
   const [allowReaders, setAllowReaders] = useState(false);
+  const [retainSenderState, setRetainSenderState] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [deleteConfirmed, setDeleteConfirmed] = useState(false);
+  const [abandonConfirmed, setAbandonConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [changeIce, setChangeIce] = useState(false);
@@ -29,10 +31,12 @@ export function GiftOwnerConfiguration({ secure, api = setupApi }: { secure: boo
   function apply(value: Configuration) {
     const redacted = parseGiftOwnerConfiguration(value);
     setConfiguration(redacted); setBroker(redacted.brokerOrigin ?? ""); setAllowReaders(redacted.allowReaders); setConfirmed(false); setDeleteConfirmed(false);
+    setRetainSenderState(redacted.retainSenderState === true);
+    setAbandonConfirmed(false);
     setChangeIce(false); setStunUrl(""); setTurnUrl(""); setRelayAllowed(false); setRequireRelay(false);
     if (turnSecret.current) turnSecret.current.value = "";
   }
-  async function run(kind: "load" | "save" | "delete" | "cleanup", input?: GiftOwnerConfigurationRequest) {
+  async function run(kind: "load" | "save" | "delete" | "cleanup" | "recover" | "abandon", input?: GiftOwnerConfigurationRequest) {
     if (!secure || operating.current) return;
     if (kind === "load") sameServer.current = api.captureGuard?.() ?? (() => true);
     else if (!sameServer.current?.()) { setConfiguration(null); setMessage("The connected server or sign-in changed. Reload redacted setup before sending credentials or changing configuration."); return; }
@@ -42,9 +46,11 @@ export function GiftOwnerConfiguration({ secure, api = setupApi }: { secure: boo
       if (kind === "load") { const response = await api.load(controller.signal); if (!controller.signal.aborted) { if (!sameServer.current?.()) { setConfiguration(null); throw new Error("setup context changed"); } apply(response); setMessage("Loaded redacted server configuration. This is not a broker, relay, domain or billing test; sharing remains disabled."); } }
       else if (kind === "save") { const response = await api.save(input!, controller.signal); if (!controller.signal.aborted) { apply(response); setMessage("Configuration saved privately on this server. Sharing remains disabled. No deployment, broker or relay probe was performed."); } }
       else if (kind === "delete") { await api.remove(controller.signal); if (!controller.signal.aborted) { setConfiguration(null); setBroker(""); setAllowReaders(false); setConfirmed(false); setDeleteConfirmed(false); setMessage("Configuration removed from the active server document. Server backups may still contain credentials. This does not revoke external provider credentials or invitations, shut down infrastructure, or cancel provider billing."); } }
+      else if (kind === "recover") { if (!api.recover) throw new Error("Unavailable sender recovery"); const result = await api.recover(controller.signal); if (!controller.signal.aborted) setMessage(`Retained sender recovery: ${result.recovered} started; ${result.alreadyActive} already active; ${result.pending} pending. This does not prove a recipient connected or imported the book. Production sharing remains disabled.`); }
+      else if (kind === "abandon") { if (!api.abandon || !abandonConfirmed) throw new Error("Confirmation required"); const result = await api.abandon(controller.signal); if (!controller.signal.aborted) { setAbandonConfirmed(false); setMessage(`Retained gifts revoked: ${result.abandoned}; broker cleanup completed: ${result.completed}; pending: ${result.pending}. Local retained copies are removed only after confirmed cleanup or expiry. Recipient copies and external backups cannot be recalled.`); } }
       else { const result = await api.cleanup(controller.signal); if (!controller.signal.aborted) setMessage(`Stored-credential cleanup completed: ${result.completed}; still pending: ${result.pending}. Sharing remains disabled.`); }
     } catch {
-      if (!controller.signal.aborted) setMessage("Action could not be confirmed. Experimental routes may be unavailable or owner authorization may have failed. Saving credentials requires a trusted HTTPS reverse proxy on loopback and server proxy deployment mode; LAN/Tailscale HTTP is not accepted. Pending broker rooms can block save/delete (409): retry cleanup first. A timed-out mutation may have completed—reload redacted configuration before retrying.");
+      if (!controller.signal.aborted) setMessage("Action could not be confirmed. Experimental routes may be unavailable or owner authorization may have failed. Saving credentials requires a trusted HTTPS reverse proxy on loopback and server proxy deployment mode; LAN/Tailscale HTTP is not accepted. Pending broker rooms can block save/delete (409): recover valid retained gifts, or explicitly revoke/abandon them and retry cleanup. Cleanup retries do not abandon recoverable gifts. A timed-out mutation may have completed—reload redacted configuration before retrying.");
     } finally { pending.current.delete(controller); operating.current = false; if (!controller.signal.aborted) setBusy(false); }
   }
   function save(event: FormEvent<HTMLFormElement>) {
@@ -57,7 +63,7 @@ export function GiftOwnerConfiguration({ secure, api = setupApi }: { secure: boo
     try {
       const input = giftOwnerConfigurationRequest({ brokerInput: broker, ownerSecret: entered, allowReaders, ownerConfirmed: confirmed, existing: configuration });
       const connectivity = giftConnectivityEdit({ changeIce, stunUrl, turnUrl, turnRestSecret: enteredTurnSecret, relayAllowed, requireRelay });
-      void run("save", { ...input, ...(connectivity !== undefined ? { connectivity } : {}) });
+      void run("save", { ...input, retainSenderState, ...(connectivity !== undefined ? { connectivity } : {}) });
     }
     catch (failure) { setMessage(failure instanceof Error ? failure.message : "Check the gift configuration."); }
   }
@@ -78,6 +84,8 @@ export function GiftOwnerConfiguration({ secure, api = setupApi }: { secure: boo
         <label>New broker owner secret<input ref={secret} type="password" autoComplete="new-password" maxLength={1024} /></label>
         <p>32–1024 printable ASCII characters without spaces. Leave blank only to retain the current secret for this same broker. No masked placeholder is sent. This field is cleared on submit, including invalid submissions.</p>
         <label className="gift-owner-configuration__check"><input type="checkbox" checked={allowReaders} onChange={event => setAllowReaders(event.currentTarget.checked)} /><span>Experimental policy: allow authorized non-owner readers to create gifts (off by default; does not enable production sharing)</span></label>
+        <label className="gift-owner-configuration__check"><input type="checkbox" checked={retainSenderState} onChange={event => setRetainSenderState(event.currentTarget.checked)} /><span>Retain private selected archives and signing/decryption keys for sender restart recovery (off by default)</span></label>
+        <p>Retained gift files and keys are sensitive data in the server data directory. Protect this directory and any system backups; restoring only the server database does not restore these archives. Recovery rechecks invitation expiry, revocation, current book access and broker membership; it cannot extend an invitation. It may contact the configured broker after an explicit recovery action. Storage and provider charges remain your responsibility.</p>
         <label className="gift-owner-configuration__check"><input type="checkbox" checked={changeIce} onChange={event => {
           if (turnSecret.current) turnSecret.current.value = "";
           setChangeIce(event.currentTarget.checked);
@@ -98,8 +106,13 @@ export function GiftOwnerConfiguration({ secure, api = setupApi }: { secure: boo
         <button type="submit" disabled={!confirmed}>Save private server configuration</button>
       </fieldset></form>
       {configuration.configured ? <div className="gift-owner-configuration__actions">
+        <button type="button" disabled={!secure || busy || !configuration.retainSenderState || !api.recover} onClick={() => void run("recover")}>Recover retained gift senders</button>
+        <p>Explicitly contacts the saved broker after a sender restart. Unexpired retained invitations keep the same gift link, archive and pinned signing identity; a new broker generation discards stale signaling. Retention does not automatically start a sender on server boot.</p>
         <button type="button" disabled={!secure || busy} onClick={() => void run("cleanup")}>Retry cleanup using saved credentials</button>
         <p>This explicit action contacts the broker using credentials already stored on this server. It is not performed during load/save.</p>
+        <p>Cleanup retries preserve valid dormant gifts that can still recover. To abandon them instead, confirm the separate action below. It affects every retained gift on this configured broker, including gifts created by allowed readers, and cannot recall an accepted recipient copy.</p>
+        <label className="gift-owner-configuration__check"><input type="checkbox" checked={abandonConfirmed} disabled={!secure || busy} onChange={event => setAbandonConfirmed(event.currentTarget.checked)} /><span>Revoke all retained gifts on this broker and discard their local sender copies after confirmed cleanup</span></label>
+        <button type="button" disabled={!secure || busy || !abandonConfirmed || !api.abandon} onClick={() => void run("abandon")}>Abandon retained gifts</button>
         <label className="gift-owner-configuration__check"><input type="checkbox" checked={deleteConfirmed} disabled={!secure || busy} onChange={event => setDeleteConfirmed(event.currentTarget.checked)} /><span>I understand removal does not erase backups or revoke invitations.</span></label>
         <button type="button" disabled={!secure || busy || !deleteConfirmed} onClick={() => void run("delete")}>Remove saved gift setup</button>
       </div> : null}

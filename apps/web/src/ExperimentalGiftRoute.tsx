@@ -1,11 +1,11 @@
 import { useCallback, useRef } from "react";
 import { GiftScreen, GiftScreenError, type GiftPreview } from "./GiftScreen";
-import { importNativeGift, type NativeGiftAsset } from "./giftDeviceImport";
+import { importNativeGift, type NativeGiftAsset, type GiftMetadata } from "./giftDeviceImport";
 import "./giftScreen.css";
 import type { GiftLink } from "./giftAppLinks";
 export { createExperimentalGiftLink, parseExperimentalGiftFragment, type GiftLink } from "./giftAppLinks";
 
-export type GiftDetails = { preview: GiftPreview; giftId: string; assets: NativeGiftAsset[]; metadata: { title: string; author?: string | null; description?: string | null } };
+export type GiftDetails = { preview: GiftPreview; giftId: string; assets: NativeGiftAsset[]; metadata: GiftMetadata };
 export type GiftTransport = {
   /** Retrieve only bounded preview data; do not receive book assets. */
   preview(link: GiftLink, signal: AbortSignal): Promise<GiftDetails>;

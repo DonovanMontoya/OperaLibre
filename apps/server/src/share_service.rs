@@ -90,8 +90,32 @@ where
     );
     let capability = broker.issue(owner_secret, room, nonce, expires_at).await?;
     broker.claim(room, &capability).await?;
+    run_authorized(enabled, expires_at, move |receiver| {
+        start_peer(capability, receiver)
+    })
+    .await
+}
+
+/// Rejoin a broker-authenticated saved producer without replaying its one-time
+/// claim. The caller must check /session and current invitation authorization
+/// immediately before invoking this lifecycle primitive.
+pub(crate) async fn run_authorized<F, Fut>(
+    enabled: bool,
+    expires_at: u64,
+    start_peer: F,
+) -> anyhow::Result<ShareSession>
+where
+    F: FnOnce(tokio::sync::watch::Receiver<bool>) -> Fut,
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    anyhow::ensure!(enabled, "sharing is disabled");
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    anyhow::ensure!(
+        expires_at > now && expires_at <= now.saturating_add(900),
+        "invalid share lifetime"
+    );
     let (stop, receiver) = tokio::sync::watch::channel(false);
-    let peer = start_peer(capability, receiver);
+    let peer = start_peer(receiver);
     let expire_signal = stop.clone();
     let timeout = Duration::from_secs(
         expires_at.saturating_sub(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()),
@@ -159,6 +183,37 @@ pub(crate) async fn start_sender(
 #[cfg(test)]
 mod ownership_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn authorized_restart_lifecycle_is_gated_and_cancellable() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for (enabled, expires_at) in [(false, now + 60), (true, now)] {
+            let result = run_authorized(
+                enabled,
+                expires_at,
+                |_| -> std::future::Ready<anyhow::Result<()>> {
+                    panic!("unauthorized restart callback must not run")
+                },
+            )
+            .await;
+            assert!(result.is_err());
+        }
+        let (closed, outcome) = tokio::sync::oneshot::channel();
+        let session = run_authorized(true, now + 60, move |mut stop| async move {
+            if !*stop.borrow() {
+                let _ = stop.changed().await;
+            }
+            let _ = closed.send(());
+            Ok(())
+        })
+        .await
+        .unwrap();
+        session.stop().await.unwrap();
+        outcome.await.unwrap();
+    }
 
     fn session() -> (ShareSession, tokio::sync::oneshot::Receiver<()>) {
         let (stop, mut receiver) = tokio::sync::watch::channel(false);

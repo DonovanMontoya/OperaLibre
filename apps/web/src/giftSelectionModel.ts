@@ -24,9 +24,34 @@ export function parseGiftInventory(value: unknown, expectedBookId: string): Gift
   return structuredClone(v);
 }
 
-export function giftAssetDisabledReason(asset: GiftInventoryAsset): string | null {
-  if (asset.kind === "alignment") return "Read-along alignment is not supported in gifts yet. It must use matching text and audio when supported.";
+export type GiftSelectionCapabilities = { alignmentReady?: boolean };
+
+export function giftAssetDisabledReason(asset: GiftInventoryAsset, alignmentReady = false): string | null {
+  if (asset.kind === "alignment" && !alignmentReady) return "Read-along alignment is not supported in this build yet. It needs matching text and audio, including the complete audio set, plus verified native/local map loading.";
   return asset.disabledReason ?? (asset.available ? null : "This asset is not available for sharing.");
+}
+
+/** An explicit map opt-in expands only server-declared matching dependencies.
+ * It never infers an EPUB edition or audio identity from client Book metadata.
+ * Readiness must be explicitly supplied by an integrated/reviewed build; it
+ * cannot override an unavailable server asset or incomplete dependency set. */
+export function alignmentGiftSelection(inventory: GiftInventory, alignmentId: string, current = defaultGiftSelection(inventory), capabilities: GiftSelectionCapabilities = {}) {
+  const map = inventory.assets.find(asset => asset.id === alignmentId && asset.kind === "alignment");
+  if (!map) throw new Error("The server did not provide this alignment asset.");
+  const dependencies = new Set(map.requiresAssetIds ?? []);
+  const audio = inventory.assets.filter(asset => asset.kind === "audio");
+  const text = inventory.assets.filter(asset => asset.kind === "ebook" && dependencies.has(asset.id));
+  if (!audio.length || audio.some(asset => !dependencies.has(asset.id)) || text.length !== 1 || !text[0].fileName.toLowerCase().endsWith(".epub")) throw new Error("The map must bind the matching EPUB and complete audio set; subset maps are not supported.");
+  const selected = new Set(inventory.assets.filter(asset => asset.kind === "metadata" || (asset.kind === "cover" && current.includes(asset.id))).map(asset => asset.id));
+  for (const id of dependencies) {
+    const asset = inventory.assets.find(item => item.id === id);
+    if (!asset || (asset.kind !== "metadata" && asset.kind !== "audio" && asset.id !== text[0].id)) throw new Error("The server returned an unsupported alignment dependency.");
+    const reason = giftAssetDisabledReason(asset, capabilities.alignmentReady === true);
+    if (reason) throw new Error(`${asset.fileName}: ${reason}`);
+    selected.add(id);
+  }
+  selected.add(map.id);
+  return { selectedAssetIds: inventory.assets.filter(asset => selected.has(asset.id)).map(asset => asset.id), disabledReason: giftAssetDisabledReason(map, capabilities.alignmentReady === true) };
 }
 
 export function defaultGiftSelection(inventory: GiftInventory): string[] {
@@ -44,7 +69,7 @@ export function defaultGiftSelection(inventory: GiftInventory): string[] {
   return inventory.assets.filter(asset => selected.has(asset.id)).map(asset => asset.id);
 }
 
-export function giftSelectionSummary(inventory: GiftInventory, selectedIds: string[]) {
+export function giftSelectionSummary(inventory: GiftInventory, selectedIds: string[], capabilities: GiftSelectionCapabilities = {}) {
   const selected = new Set(selectedIds);
   const assets = inventory.assets.filter(asset => selected.has(asset.id));
   const errors: string[] = [];
@@ -52,9 +77,16 @@ export function giftSelectionSummary(inventory: GiftInventory, selectedIds: stri
   for (const asset of inventory.assets) {
     if (asset.kind === "metadata" && !selected.has(asset.id)) errors.push("Metadata must be included.");
     if (!selected.has(asset.id)) continue;
-    const reason = giftAssetDisabledReason(asset);
+    const reason = giftAssetDisabledReason(asset, capabilities.alignmentReady === true);
     if (reason) errors.push(`${asset.fileName}: ${reason}`);
     for (const id of asset.requiresAssetIds ?? []) if (!selected.has(id)) errors.push(`${asset.fileName} requires ${inventory.assets.find(item => item.id === id)?.fileName ?? "a matching asset"}.`);
+    if (asset.kind === "alignment") {
+      try {
+        const plan = alignmentGiftSelection(inventory, asset.id, selectedIds, capabilities);
+        if (plan.selectedAssetIds.some(id => !selected.has(id))) errors.push("Alignment requires the matching EPUB and complete audio set; subset maps are not supported.");
+        if (assets.filter(item => item.kind === "ebook").length !== 1 || assets.filter(item => item.kind === "alignment").length !== 1) errors.push("Choose exactly the matching EPUB and one alignment map.");
+      } catch (failure) { errors.push(failure instanceof Error ? failure.message : "Alignment dependencies are unavailable."); }
+    }
   }
   if (!assets.some(asset => asset.kind === "ebook" || asset.kind === "audio")) errors.push("Choose an available ebook or audio file.");
   const sizeBytes = assets.reduce((sum, asset) => sum + asset.sizeBytes, 0);
@@ -63,8 +95,8 @@ export function giftSelectionSummary(inventory: GiftInventory, selectedIds: stri
   return { assets, sizeBytes, formats, errors: [...new Set(errors)] };
 }
 
-export function selectedGiftRequest(inventory: GiftInventory, selectedIds: string[], message: string, expiresInSeconds = 900): SelectedGiftRequest {
-  const summary = giftSelectionSummary(inventory, selectedIds);
+export function selectedGiftRequest(inventory: GiftInventory, selectedIds: string[], message: string, expiresInSeconds = 900, capabilities: GiftSelectionCapabilities = {}): SelectedGiftRequest {
+  const summary = giftSelectionSummary(inventory, selectedIds, capabilities);
   if (summary.errors.length) throw new Error(summary.errors[0]);
   if (Array.from(message).length > 1000) throw new Error("The personal message must be at most 1000 characters.");
   if (message.includes("\0")) throw new Error("The personal message contains an unsupported character.");

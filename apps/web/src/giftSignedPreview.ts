@@ -2,6 +2,7 @@ import type { GiftDetails } from "./ExperimentalGiftRoute";
 import type { NativeGiftAsset } from "./giftDeviceImport";
 import { parseGiftIceConfiguration } from "./giftIceConfiguration.ts";
 import { giftCoverPreviewDataUrl } from "./giftCoverPreview.ts";
+import { GIFT_ALIGNMENT_IMPORT_ENABLED, MAX_GIFT_METADATA_BYTES, parseGiftPreviewMetadata } from "./giftMetadata.ts";
 
 export type EncryptedGiftPreview = { nonce: string; ciphertext: string };
 export type VerifiedPreview = GiftDetails & { connectivity?: RTCConfiguration; transfer: { room: string; size: number; sha256: string; expiresAt: number } };
@@ -89,6 +90,10 @@ export async function verifyEncryptedGiftPreview(envelope: EncryptedGiftPreview,
     return { name, kind: kind as NativeGiftAsset["kind"], size: size as number, sha256 };
   });
   if (assets.some(asset => asset.kind === "alignment") && (!assets.some(asset => asset.kind === "ebook") || !assets.some(asset => asset.kind === "audio"))) throw new Error("Invalid read-along selection.");
+  if (!GIFT_ALIGNMENT_IMPORT_ENABLED && assets.some(asset => asset.kind === "alignment")) throw new Error("Read-along gift import is not available yet.");
+  if (assets.some(asset => asset.kind === "alignment") && (assets.filter(asset => asset.kind === "metadata").length !== 1 || assets.filter(asset => asset.kind === "ebook").length !== 1 || assets.filter(asset => asset.kind === "alignment").length !== 1 || assets.some(asset => asset.kind === "alignment" && (asset.size < 1 || asset.size > 16 * 1024 * 1024)))) throw new Error("Invalid gift alignment dependencies.");
+  if (assets.filter(asset => asset.kind === "metadata").length > 1 || assets.some(asset => asset.kind === "metadata" && (asset.size < 1 || asset.size > MAX_GIFT_METADATA_BYTES))) throw new Error("Invalid gift indexing metadata receipt.");
+  const metadata = parseGiftPreviewMetadata(record.metadata, { title, author, description: summary });
   const formats = [...new Set(assets.filter(asset => asset.kind === "ebook" || asset.kind === "audio" || asset.kind === "alignment").map(asset => {
     if (asset.kind === "alignment") return "Read-along";
     const extension = asset.name.split(".").pop() ?? "";
@@ -98,5 +103,5 @@ export async function verifyEncryptedGiftPreview(envelope: EncryptedGiftPreview,
   const connectivity = parseGiftIceConfiguration(record.connectivity, giftId, expiresAt as number);
   if (record.cover !== undefined && record.cover !== null && !assets.some(asset => asset.kind === "cover")) throw new Error("Preview includes an unselected cover.");
   const coverUrl = giftCoverPreviewDataUrl(record.cover);
-  return { giftId, assets, metadata: { title, author, description: summary }, preview: { sender, title, author, summary, message, coverUrl, formats, sizeBytes: archiveSize as number }, transfer: { room, size: archiveSize as number, sha256: archiveSha256, expiresAt: expiresAt as number }, ...(connectivity ? { connectivity } : {}) };
+  return { giftId, assets, metadata, preview: { sender, title, author, summary, message, coverUrl, formats, sizeBytes: archiveSize as number }, transfer: { room, size: archiveSize as number, sha256: archiveSha256, expiresAt: expiresAt as number }, ...(connectivity ? { connectivity } : {}) };
 }

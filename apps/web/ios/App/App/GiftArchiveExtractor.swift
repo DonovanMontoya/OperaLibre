@@ -89,6 +89,43 @@ enum GiftArchiveExtractor {
         }
     }
 
+    /// Read only the selected descriptor under the caller's staging guard.
+    /// openat anchors the child to the no-follow directory descriptor.
+    static func readMetadata(_ directory: URL, asset: Asset) throws -> String {
+        let maximum: UInt64 = 256 * 1024
+        guard asset.size > 0, asset.size <= maximum, !asset.name.isEmpty,
+              asset.name != ".", asset.name != "..", asset.name.utf8.count <= 255,
+              !asset.name.contains("/"), !asset.name.contains("\\"),
+              asset.name.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }),
+              directory.resolvingSymlinksInPath().standardizedFileURL == directory.standardizedFileURL else { throw Failure.invalid }
+        var parent = stat(), openedParent = stat()
+        guard lstat(directory.path, &parent) == 0, (parent.st_mode & S_IFMT) == S_IFDIR else { throw Failure.invalid }
+        let directoryFD = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directoryFD >= 0 else { throw Failure.unavailable }; defer { close(directoryFD) }
+        guard fstat(directoryFD, &openedParent) == 0, openedParent.st_dev == parent.st_dev,
+              openedParent.st_ino == parent.st_ino else { throw Failure.invalid }
+        let fd = openat(directoryFD, asset.name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard fd >= 0 else { throw Failure.unavailable }; defer { close(fd) }
+        var before = stat()
+        guard fstat(fd, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG,
+              before.st_nlink == 1, before.st_size == Int64(asset.size) else { throw Failure.integrity }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+        var bytes = Data()
+        while let chunk = try handle.read(upToCount: min(16 * 1024, Int(asset.size) - bytes.count + 1)), !chunk.isEmpty {
+            guard chunk.count <= Int(asset.size) - bytes.count else { throw Failure.integrity }
+            bytes.append(chunk)
+        }
+        var after = stat(), current = stat()
+        let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        guard bytes.count == Int(asset.size), digest == asset.sha256,
+              fstat(fd, &after) == 0, after.st_size == before.st_size,
+              lstat(directory.path, &current) == 0, current.st_dev == parent.st_dev,
+              current.st_ino == parent.st_ino, (current.st_mode & S_IFMT) == S_IFDIR,
+              directory.resolvingSymlinksInPath().standardizedFileURL == directory.standardizedFileURL,
+              let json = String(data: bytes, encoding: .utf8) else { throw Failure.integrity }
+        return json
+    }
+
     private static func verifyCommitted(_ directory: URL, expected: [String: Asset]) throws {
         let fm = FileManager.default
         guard directory.resolvingSymlinksInPath().standardizedFileURL == directory.standardizedFileURL else { throw Failure.invalid }
@@ -632,10 +669,16 @@ public final class GiftImportPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let id = call.getString("giftId"), let entries = call.getArray("assets", JSObject.self),
               !entries.isEmpty, entries.count <= 256 else { call.reject("Invalid gift."); return }
         var assets: [GiftArchiveExtractor.Asset] = []
+        var metadata: GiftArchiveExtractor.Asset?
         for entry in entries {
             guard let name = entry["name"] as? String, let number = entry["size"] as? NSNumber, number.int64Value >= 0,
                   let sha256 = entry["sha256"] as? String else { call.reject("Invalid gift manifest."); return }
-            assets.append(GiftArchiveExtractor.Asset(name: name, size: number.uint64Value, sha256: sha256))
+            let asset = GiftArchiveExtractor.Asset(name: name, size: number.uint64Value, sha256: sha256)
+            assets.append(asset)
+            if entry["kind"] as? String == "metadata" {
+                guard metadata == nil, asset.size > 0, asset.size <= 256 * 1024 else { call.reject("Invalid gift metadata."); return }
+                metadata = asset
+            }
         }
         enqueue(call) { _ in
             do {
@@ -648,10 +691,13 @@ public final class GiftImportPlugin: CAPPlugin, CAPBridgedPlugin {
                     guard root.resolvingSymlinksInPath().standardizedFileURL == root.standardizedFileURL else { throw GiftArchiveExtractor.Failure.unavailable }
                     let committed = try GiftArchiveExtractor.extract(archiveURL: source, privateRoot: root, giftID: id, assets: assets)
                     try GiftStagingStore.syncCommitted(committed)
+                    let json = try metadata.map { try GiftArchiveExtractor.readMetadata(committed, asset: $0) }
                     try GiftRecoveryStore.cleanup(giftID: id)
-                    return committed
+                    return (directory: committed, metadataJson: json)
                 }
-                call.resolve(["directory": "device-library/" + result.lastPathComponent])
+                var response: JSObject = ["directory": "device-library/" + result.directory.lastPathComponent]
+                if let json = result.metadataJson { response["metadataJson"] = json }
+                call.resolve(response)
             } catch { call.reject("Gift import could not be completed.") }
         }
     }

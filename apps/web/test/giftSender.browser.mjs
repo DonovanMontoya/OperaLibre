@@ -159,6 +159,33 @@ test("load failure and unavailable creation never fabricate a gift link", { time
   } finally { await browser.close(); }
 });
 
+test("explicitly integrated alignment selection adds matching EPUB and all audio; broken dependencies block creation", { timeout: 20000 }, async () => {
+  const browser = await chromium.launch({ executablePath: process.env.OPERALIBRE_TEST_CHROMIUM || undefined, headless: true });
+  try {
+    const f = await fixture(browser);
+    await f.page.goto(`${origin}/test/gift-sender.html?enabled=1&alignmentReady=1`);
+    await f.page.getByRole("button", { name: "Share gift" }).click();
+    await f.page.getByRole("heading", { name: inventory.title }).waitFor();
+    const map = f.page.getByRole("checkbox", { name: /sync.json/ });
+    const ebook = f.page.getByRole("checkbox", { name: /book.epub/ });
+    const audio = f.page.getByRole("checkbox", { name: /audio.m4b/ });
+    assert.equal(await map.isChecked(), false);
+    assert.equal(await audio.isChecked(), false);
+    await ebook.uncheck();
+    await map.check();
+    assert.equal(await ebook.isChecked(), true);
+    assert.equal(await audio.isChecked(), true);
+    await audio.uncheck();
+    assert.equal(await f.page.getByRole("button", { name: "Create gift link" }).isDisabled(), true);
+    await audio.check();
+    await f.page.getByRole("button", { name: "Create gift link" }).click();
+    await f.page.getByRole("heading", { name: "Your gift link" }).waitFor();
+    assert.deepEqual(f.requests.find(request => request.type === "create").body.selectedAssetIds, ["metadata", "ebook", "cover", "audio", "alignment"]);
+    assert.deepEqual(f.errors, []);
+    await f.context.close();
+  } finally { await browser.close(); }
+});
+
 test("cancelled in-flight creation ignores a late valid response and does not claim revocation", { timeout: 20000 }, async () => {
   const browser = await chromium.launch({ executablePath: process.env.OPERALIBRE_TEST_CHROMIUM || undefined, headless: true });
   try {

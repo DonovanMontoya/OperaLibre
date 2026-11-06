@@ -76,6 +76,24 @@ public final class GiftStagingStoreTest {
         assertTrue(new File(incoming, ".staging-" + ID + ".lock").isFile());
     }
 
+    @Test public void selectedMetadataIsBoundedReceiptVerifiedStrictUtf8AndNoFollow() throws Exception {
+        File directory = new File(root, "device-library/gift-" + ID); assertTrue(directory.mkdirs());
+        File descriptor = new File(directory, "metadata.json");
+        byte[] bytes = "{\"version\":1,\"title\":\"Gift\"}".getBytes(StandardCharsets.UTF_8);
+        put(descriptor, bytes);
+        GiftArchiveExtractor.Asset asset = new GiftArchiveExtractor.Asset("metadata.json", bytes.length, hash(bytes));
+        assertEquals(new String(bytes, StandardCharsets.UTF_8), GiftStagingStore.withInactive(root, ID, parent -> GiftStagingStore.readMetadata(directory, asset)));
+        put(descriptor, new byte[bytes.length]);
+        rejects(() -> GiftStagingStore.withInactive(root, ID, parent -> GiftStagingStore.readMetadata(directory, asset)));
+        byte[] invalidUtf8 = new byte[]{(byte) 0xc3, (byte) 0x28}; put(descriptor, invalidUtf8);
+        rejects(() -> GiftStagingStore.readMetadata(directory, new GiftArchiveExtractor.Asset("metadata.json", invalidUtf8.length, hash(invalidUtf8))));
+        rejects(() -> GiftStagingStore.readMetadata(directory, new GiftArchiveExtractor.Asset("metadata.json", 256 * 1024 + 1, hash(bytes))));
+        assertTrue(descriptor.delete());
+        File outside = new File(root, "private-metadata.json"); put(outside, bytes);
+        Os.symlink(outside.getPath(), descriptor.getPath());
+        rejects(() -> GiftStagingStore.readMetadata(directory, asset));
+    }
+
     @Test public void emptyOrphanCanBeReusedButAmbiguousOrNonemptyStateCannot() throws Exception {
         File archive = new File(incoming, ID + ".zip"); put(archive, new byte[0]);
         GiftStagingStore.Acquired held = GiftStagingStore.acquire(root, first, ID, true, 10);

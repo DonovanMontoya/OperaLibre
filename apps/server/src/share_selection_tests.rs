@@ -2,6 +2,167 @@
 use super::*;
 
 #[tokio::test]
+async fn cancelled_revocation_waiter_still_persists_revocation_and_cancels_live_sender() {
+    let server = SelectionHttp::start().await;
+    let inventory = server.inventory().await;
+    let ids = inventory["defaultSelectedAssetIds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_owned())
+        .collect();
+    let created: serde_json::Value = server.create(ids).await.json().await.unwrap();
+    let token = created["token"].as_str().unwrap().to_owned();
+    let auth = AuthUser::from(&server.fixture.state.users.read().await.users[0]);
+    let key = invitation_key(&server.fixture.state, &share_digest_string(&token));
+    let (cancel, mut cancelled) = tokio::sync::watch::channel(false);
+    INVITATION_GATE.lock().await.insert(
+        key.clone(),
+        vec![ActiveSender {
+            cancel,
+            broker: crate::share_broker::BrokerClient::local("http://127.0.0.1:9/").unwrap(),
+            owner_secret: "local-test-only".into(),
+            room: "cancel_room______".into(),
+            expires_at: share_now().unwrap() as u64 + 60,
+            reservation_id: "r".repeat(43),
+        }],
+    );
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let notified = entered.clone();
+    let (release, held) = std::sync::mpsc::channel();
+    let database = server.fixture.state.database.clone();
+    let blocker = tokio::spawn(async move {
+        database
+            .call(move |_| {
+                notified.notify_one();
+                held.recv().unwrap();
+                Ok(())
+            })
+            .await
+    });
+    entered.notified().await;
+    let state = server.fixture.state.clone();
+    let revoke_token = token.clone();
+    let waiter = tokio::spawn(async move {
+        revoke_share(State(state), Extension(auth), Path(revoke_token)).await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if INVITATION_GATE.try_lock().is_err() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    waiter.abort();
+    let _ = waiter.await;
+    release.send(()).unwrap();
+    blocker.await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), cancelled.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(*cancelled.borrow());
+    let preview = server
+        .client
+        .get(format!("{}/api/shares/{token}/preview", server.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preview.status(), StatusCode::NOT_FOUND);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if !INVITATION_GATE.lock().await.contains_key(&key) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn selected_metadata_indexes_only_selected_audio_and_public_book_fields() {
+    let fixture = TestServer::start(1).await;
+    let mut book = fixture.state.library.read().await.books[0].clone();
+    book.author = Some("Author".into());
+    book.narrator = Some("Narrator".into());
+    book.metadata.publisher = Some("Publisher".into());
+    book.metadata.series = Some("Series".into());
+    book.metadata.language = Some("en".into());
+    book.metadata.raw_fields.push(MetadataField {
+        key: "private-source".into(),
+        value: "/private/owner/library".into(),
+        description: None,
+    });
+    book.tracks[0].title = "UNSELECTED TRACK".into();
+    let id = book.tracks[1].id.clone();
+    book.tracks[1].title = "Selected track".into();
+    let selected = crate::share_metadata::selected(&book, &[id]).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&selected).unwrap();
+    assert_eq!(value["version"], 1);
+    assert_eq!(value["narrator"], "Narrator");
+    assert_eq!(value["metadata"]["publisher"], "Publisher");
+    assert_eq!(value["metadata"]["series"], "Series");
+    assert_eq!(value["tracks"].as_array().unwrap().len(), 1);
+    assert_eq!(value["tracks"][0]["index"], 0);
+    assert_eq!(value["tracks"][0]["title"], "Selected track");
+    let json = String::from_utf8(selected).unwrap();
+    for private in [
+        "UNSELECTED TRACK",
+        "/private/owner/library",
+        "streamUrl",
+        "rawFields",
+        "sharedProgress",
+        "volumeGain",
+        &book.tracks[1].id,
+    ] {
+        assert!(!json.contains(private), "private field leaked: {private}");
+    }
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            &crate::share_metadata::selected(&book, &[]).unwrap()
+        )
+        .unwrap()["tracks"],
+        serde_json::json!([])
+    );
+    if let Some(path) = std::env::var_os("OPERALIBRE_GIFT_METADATA_FIXTURE") {
+        std::fs::write(path, json).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn selected_metadata_is_bounded_and_legacy_invitations_keep_exact_canonical_bytes() {
+    let fixture = TestServer::start(1).await;
+    let mut book = fixture.state.library.read().await.books[0].clone();
+    let mut invitation = capacity_invitation("user", 200);
+    assert_eq!(
+        invitation_metadata(&book, &invitation, None).unwrap(),
+        canonical_share_metadata(&book).unwrap()
+    );
+    invitation.metadata_version = 99;
+    assert!(invitation_metadata(&book, &invitation, None).is_err());
+    book.tags = (0..65)
+        .map(|index| BookTag {
+            name: index.to_string(),
+            position: None,
+        })
+        .collect();
+    assert!(crate::share_metadata::selected(&book, &[]).is_err());
+    book.tags.clear();
+    let track = book.tracks[0].id.clone();
+    book.tracks[0].duration_seconds = Some(f64::NAN);
+    assert!(crate::share_metadata::selected(&book, &[track]).is_err());
+    assert!(
+        crate::share_metadata::selected(&book, &[]).is_ok(),
+        "unselected audio cannot block an ebook-only gift"
+    );
+}
+
+#[tokio::test]
 async fn selected_share_preview_accepts_one_thousand_unicode_code_points() {
     let fixture = TestServer::start(1).await;
     let book = fixture.state.library.read().await.books[0].clone();
@@ -137,6 +298,7 @@ fn capacity_invitation(user: &str, expires_at: i64) -> ShareInvitation {
         selected_asset_ids: Vec::new(),
         include_metadata: true,
         trusted_selection: true,
+        metadata_version: 0,
         broker_rooms: Vec::new(),
         manifest: ShareManifest {
             version: 1,
@@ -653,6 +815,238 @@ async fn selected_share_inventory_defaults_and_real_archive_exclude_audio() {
         metadata_asset["sha256"],
         hex_digest(Sha256::digest(metadata.as_bytes()))
     );
+}
+
+#[tokio::test]
+async fn selected_metadata_http_archive_preserves_selected_track_order_and_omits_other_audio() {
+    let server = SelectionHttp::start().await;
+    let (selected_id, selected_name, excluded_name) = {
+        let mut library = server.fixture.state.library.write().await;
+        let book = library
+            .books
+            .iter_mut()
+            .find(|book| book.id == server.book_id)
+            .unwrap();
+        book.narrator = Some("Shared narrator".into());
+        book.metadata.publisher = Some("Shared publisher".into());
+        book.metadata.raw_fields.push(MetadataField {
+            key: "not-for-sharing".into(),
+            value: "PRIVATE RAW FIELD".into(),
+            description: None,
+        });
+        (
+            book.tracks[1].id.clone(),
+            book.tracks[1].file_name.clone(),
+            book.tracks[0].file_name.clone(),
+        )
+    };
+    let created = server
+        .create(vec![
+            format!("metadata:{}", server.book_id),
+            "ebook-selected".into(),
+            selected_id,
+        ])
+        .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let created: serde_json::Value = created.json().await.unwrap();
+    let token = created["token"].as_str().unwrap();
+    let response = server
+        .client
+        .get(format!("{}/api/shares/{token}/download", server.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.bytes().await.unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    assert_eq!(zip.len(), 3);
+    assert!(zip.by_name(&selected_name).is_ok());
+    assert!(zip.by_name(&excluded_name).is_err());
+    let mut metadata = String::new();
+    zip.by_name("metadata.json")
+        .unwrap()
+        .read_to_string(&mut metadata)
+        .unwrap();
+    let descriptor: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+    assert_eq!(descriptor["version"], 1);
+    assert_eq!(descriptor["narrator"], "Shared narrator");
+    assert_eq!(descriptor["metadata"]["publisher"], "Shared publisher");
+    assert_eq!(descriptor["tracks"].as_array().unwrap().len(), 1);
+    assert_eq!(descriptor["tracks"][0]["fileName"], selected_name);
+    assert_eq!(descriptor["tracks"][0]["index"], 0);
+    assert!(!metadata.contains("PRIVATE RAW FIELD"));
+    assert!(!metadata.contains(&excluded_name));
+    if let Some(path) = std::env::var_os("OPERALIBRE_GIFT_NATIVE_ARCHIVE_FIXTURE") {
+        let assets = created["preview"]["assets"].as_array().unwrap().iter().map(|asset| serde_json::json!({"name":asset["fileName"],"kind":asset["kind"],"size":asset["sizeBytes"],"sha256":asset["sha256"]})).collect::<Vec<_>>();
+        std::fs::write(path, serde_json::to_vec(&serde_json::json!({"archiveBase64":general_purpose::STANDARD.encode(bytes),"assets":assets,"metadata":descriptor})).unwrap()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn selected_alignment_http_requires_matching_complete_audio_and_verifies_actual_archive() {
+    let server = SelectionHttp::start().await;
+    let epub = gift_reader_epub();
+    let reading_path =
+        server.fixture.state.library.read().await.reading_paths["ebook-selected"].clone();
+    std::fs::write(&reading_path, &epub).unwrap();
+    std::fs::create_dir_all(&server.fixture.state.sync_dir).unwrap();
+    let map_path = server.fixture.state.sync_dir.join("served.sync.json");
+    let map = serde_json::json!({"version":2,"mappingRevision":alignment::MAPPING_REVISION,"precision":"sentence","fragments":[
+        {"startSeconds":1.0,"endSeconds":2.0,"href":"text/ch1.xhtml","text":"The meadow was quiet."},
+        {"startSeconds":11.0,"endSeconds":12.0,"href":"text/ch2.xhtml","text":"The river ran fast & cold."}
+    ]});
+    std::fs::write(&map_path, serde_json::to_vec(&map).unwrap()).unwrap();
+    let audio_ids = {
+        let mut library = server.fixture.state.library.write().await;
+        let book = library
+            .books
+            .iter_mut()
+            .find(|book| book.id == server.book_id)
+            .unwrap();
+        let reading = book.reading_file.as_ref().unwrap();
+        book.companions = vec![crate::companions::CompanionFile {
+            id: reading.id.clone(),
+            file_name: reading.file_name.clone(),
+            extension: "epub".into(),
+            content_type: reading.content_type.clone(),
+            url: reading.url.clone(),
+            kind: crate::companions::CompanionKind::Book,
+            size_bytes: epub.len() as u64,
+            page_count: None,
+            image_count: None,
+            text_characters: Some(5000),
+            unreadable: false,
+        }];
+        book.sync_file = Some(SyncFile {
+            outdated: false,
+            file_name: "served.sync.json".into(),
+            source: "generated".into(),
+            url: "/private/server/sync".into(),
+            quality: None,
+            report_current: false,
+        });
+        let ids = book
+            .tracks
+            .iter()
+            .map(|track| track.id.clone())
+            .collect::<Vec<_>>();
+        library
+            .sync_paths
+            .insert(server.book_id.clone(), map_path.clone());
+        ids
+    };
+    let inventory = server.inventory().await;
+    let sync_id = format!("sync:{}", server.book_id);
+    let alignment_asset = inventory["assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|asset| asset["id"] == sync_id)
+        .unwrap();
+    assert_eq!(alignment_asset["available"], true, "{alignment_asset}");
+    let mut selected = vec![
+        format!("metadata:{}", server.book_id),
+        "ebook-selected".into(),
+        sync_id,
+    ];
+    selected.push(audio_ids[0].clone());
+    assert_eq!(
+        server.create(selected.clone()).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    selected.push(audio_ids[1].clone());
+    let created = server.create(selected).await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let created: serde_json::Value = created.json().await.unwrap();
+    let token = created["token"].as_str().unwrap();
+    let response = server
+        .client
+        .get(format!("{}/api/shares/{token}/download", server.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.bytes().await.unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    assert_eq!(zip.len(), 5);
+    assert!(zip.by_name("cover.png").is_err());
+    let mut metadata = String::new();
+    zip.by_name("metadata.json")
+        .unwrap()
+        .read_to_string(&mut metadata)
+        .unwrap();
+    let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+    assert_eq!(metadata["alignment"]["assetName"], "alignment.sync.json");
+    assert_eq!(metadata["tracks"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        metadata["alignment"]["audioAssetNames"][0],
+        metadata["tracks"][0]["fileName"]
+    );
+    if let Some(path) = std::env::var_os("OPERALIBRE_GIFT_ALIGNMENT_ARCHIVE_FIXTURE") {
+        let assets = created["preview"]["assets"].as_array().unwrap().iter().map(|asset| serde_json::json!({"name":asset["fileName"],"kind":asset["kind"],"size":asset["sizeBytes"],"sha256":asset["sha256"]})).collect::<Vec<_>>();
+        let mut entries = Vec::new();
+        for index in 0..zip.len() {
+            let mut file = zip.by_index(index).unwrap();
+            let name = file.name().unwrap().to_string();
+            let mut contents = Vec::new();
+            file.read_to_end(&mut contents).unwrap();
+            entries.push(serde_json::json!({"name":name,"dataBase64":general_purpose::STANDARD.encode(contents)}));
+        }
+        std::fs::write(path,serde_json::to_vec(&serde_json::json!({"archiveBase64":general_purpose::STANDARD.encode(&bytes),"assets":assets,"metadata":metadata,"entries":entries})).unwrap()).unwrap();
+    }
+    // A same-length substitution is still rejected by the persisted receipt.
+    let original = std::fs::read(&map_path).unwrap();
+    let mut changed = original.clone();
+    let index = changed.iter().position(|byte| *byte == b'm').unwrap();
+    changed[index] = b'x';
+    std::fs::write(&map_path, changed).unwrap();
+    assert_eq!(
+        server
+            .client
+            .get(format!("{}/api/shares/{token}/download", server.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+}
+
+/// The parser's intentionally minimal fixtures omit reader-required package
+/// metadata. Use a real EPUB3 package here because this exact server archive
+/// also goes through epub.js and sentence highlighting in the browser suite.
+fn gift_reader_epub() -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let files = [
+        ("mimetype", "application/epub+zip"),
+        (
+            "META-INF/container.xml",
+            r#"<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#,
+        ),
+        (
+            "OEBPS/content.opf",
+            r#"<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="gift-id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="gift-id">urn:uuid:gift-fixture</dc:identifier><dc:title>Gift fixture</dc:title><dc:language>en</dc:language></metadata><manifest><item id="one" href="text/ch1.xhtml" media-type="application/xhtml+xml"/><item id="two" href="text/ch2.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>"#,
+        ),
+        (
+            "OEBPS/text/ch1.xhtml",
+            r#"<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter one</title></head><body><p>The meadow was quiet. Bees drifted between flowers.</p></body></html>"#,
+        ),
+        (
+            "OEBPS/text/ch2.xhtml",
+            r#"<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter two</title></head><body><p>The river ran fast &amp; cold.</p></body></html>"#,
+        ),
+        (
+            "OEBPS/nav.xhtml",
+            r#"<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="text/ch1.xhtml">One</a></li><li><a href="text/ch2.xhtml">Two</a></li></ol></nav></body></html>"#,
+        ),
+    ];
+    for (name, contents) in files {
+        writer.start_file(name, options).unwrap();
+        writer.write_all(contents.as_bytes()).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
 }
 
 #[tokio::test]

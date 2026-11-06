@@ -8,4 +8,4 @@ window.senderUnauthorizedCount = 0;
 setUnauthorizedHandler(() => { window.senderUnauthorizedCount++; });
 window.senderSwitchServer = (origin, token) => { setServerConnection("operalibre", origin, null); setStoredToken(token); };
 
-createRoot(document.getElementById("root")!).render(<main><h1>Book details fixture</h1><GiftShareAction bookId="server-book" enabled={new URLSearchParams(location.search).get("enabled") === "1"} /></main>);
+createRoot(document.getElementById("root")!).render(<main><h1>Book details fixture</h1><GiftShareAction bookId="server-book" enabled={new URLSearchParams(location.search).get("enabled") === "1"} alignmentReady={new URLSearchParams(location.search).get("alignmentReady") === "1"} /></main>);

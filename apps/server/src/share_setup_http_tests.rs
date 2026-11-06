@@ -3,6 +3,100 @@ use super::*;
 const ROUTE: &str = "/api/admin/shares/config";
 
 #[tokio::test]
+async fn sender_retention_is_owner_opt_in_and_recovery_is_an_explicit_gated_action() {
+    let mut server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "recovery-reader").await;
+    server.state.deployment_mode = DeploymentMode::Proxy;
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    let recover = "/api/admin/shares/config/recover";
+    let abandon = "/api/admin/shares/config/abandon";
+    assert_eq!(
+        server
+            .send_json("POST", recover, &reader, serde_json::json!({}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        server
+            .send_json(
+                "POST",
+                abandon,
+                &reader,
+                serde_json::json!({"confirmAbandon":true})
+            )
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        server
+            .send_json(
+                "POST",
+                abandon,
+                &owner,
+                serde_json::json!({"confirmAbandon":false})
+            )
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let input = serde_json::json!({"brokerOrigin":"https://broker.example","ownerSecret":"owner-supplied-retention-secret-0123456789","ownerControlsBroker":true});
+    let saved = put(&server, &owner, input, true).await;
+    assert_eq!(saved.status, StatusCode::OK);
+    assert_eq!(saved.json()["retainSenderState"], false);
+    assert_eq!(
+        server
+            .send_json("POST", recover, &owner, serde_json::json!({}))
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
+    let enabled = put(&server, &owner, serde_json::json!({"brokerOrigin":"https://broker.example","retainSenderState":true,"ownerControlsBroker":true}), true).await;
+    assert_eq!(enabled.status, StatusCode::OK);
+    assert_eq!(enabled.json()["retainSenderState"], true);
+    assert_eq!(enabled.json()["productionEnabled"], false);
+    assert!(!enabled.text().contains("owner-supplied-retention-secret"));
+    // Empty retained state is inspected locally without a provider request.
+    let report = server
+        .send_json("POST", recover, &owner, serde_json::json!({}))
+        .await;
+    assert_eq!(report.status, StatusCode::OK, "{}", report.text());
+    assert_eq!(
+        report.json(),
+        serde_json::json!({"recovered":0,"alreadyActive":0,"pending":0})
+    );
+    let cleared = server
+        .send_json(
+            "POST",
+            abandon,
+            &owner,
+            serde_json::json!({"confirmAbandon":true}),
+        )
+        .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text());
+    assert_eq!(
+        cleared.json(),
+        serde_json::json!({"abandoned":0,"completed":0,"pending":0})
+    );
+    let retained = put(
+        &server,
+        &owner,
+        serde_json::json!({"brokerOrigin":"https://broker.example","ownerControlsBroker":true}),
+        true,
+    )
+    .await;
+    assert_eq!(
+        retained.json()["retainSenderState"],
+        true,
+        "old clients must not clear retention by omission"
+    );
+    let disabled = put(&server, &owner, serde_json::json!({"brokerOrigin":"https://broker.example","retainSenderState":false,"ownerControlsBroker":true}), true).await;
+    assert_eq!(disabled.json()["retainSenderState"], false);
+}
+
+#[tokio::test]
 async fn unobserved_creation_result_revokes_the_persisted_invitation() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;

@@ -12,7 +12,7 @@ pins that signing key from the private gift-link fragment and authenticates the
 peer exchange against the preview. These are separate trust boundaries, not a
 single capability that the broker can rewrite to authorize arbitrary assets.
 
-Cloudflare Realtime TURN is a relay fallback, not a free hard-cap: current
+Cloudflare Realtime TURN was evaluated as a possible relay fallback, not a free hard-cap: current
 official documentation lists $0.05/GB of outbound TURN egress after a shared
 1,000 GB monthly allowance, with per-allocation rate and bandwidth limits.
 [SQLite-backed Durable Objects](https://developers.cloudflare.com/durable-objects/platform/pricing/)
@@ -159,8 +159,31 @@ the published book remains recoverable from its committed directory. Stable lock
 files are retained to avoid inode-replacement races. Native CAS uses separate
 record locks and atomic rename. CI compiles the gated iOS simulator sources and
 Android app; native device behavior remains unverified. Recipient records can
-survive an app restart, but the sender's archive
-and keys cannot yet survive a server restart, which ends that live transfer.
+survive an app restart. Optional owner-authorized sender retention now keeps
+the exact selected archive, signing seed, preview key and producer claim in a
+private `gift-sender-recovery` directory beside the database. Protect that
+directory and any system backups: restoring only the database cannot restore
+those archives. Retention is off by default and has an aggregate archive budget,
+disk reserve, per-user/global record limits, and private no-follow files.
+Index writes and producer rotations use OS locks, including a fixed set of
+rotation stripes, rather than accumulating per-gift lock files.
+
+After a sender runtime restart, the explicit owner recovery action checks the
+current invitation, expiry/revocation, user/book access, reserved room, retained
+SHA-256 and broker membership before starting a peer. It retains/retries the
+same pending successor across ambiguous or cancelled rotation responses; a
+current claim being valid is not proof that an older rotation cannot still
+commit. Recovery keeps the original gift URL and pinned identity, clears stale
+signaling in a new generation, and never extends expiry. No automatic server
+boot recovery is registered. Tests cover persisted reopen and simulated runtime
+restart, not killing and relaunching a complete server binary.
+
+Cleanup retries preserve valid dormant recoverable gifts. A separate explicitly
+confirmed owner abandonment action revokes every retained gift for that broker,
+cancels live senders and retries cleanup. Retained archives/keys are removed
+after verified transfer completion, confirmed room cleanup or expiry. It cannot recall recipient copies,
+erase external backups or cancel provider billing. Failed cleanup remains
+durable and prevents configuration replacement.
 All application, import and broker production gates remain
 disabled pending independent security and platform review.
 
@@ -186,8 +209,27 @@ The sender selects server asset IDs, not paths, hashes, metadata or access
 grants. Metadata is required; the lightweight default selects an available EPUB
 and cover, never audio automatically. The inventory explains unavailable files
 and dependencies and reports selected byte sizes; ZIP overhead changes the
-actual transfer size shown to the recipient. Read-along alignment remains
-disabled until native import, track timing and local sentence-follow agree.
+actual transfer size shown to the recipient. Versioned metadata preserves safe
+bibliographic fields, selected track order/durations and track-local chapters;
+arbitrary raw tags, server IDs/URLs, paths and private progress are excluded.
+Full metadata is size/hash-checked after native commit and before atomic shelf
+publication, not loaded before acceptance or duplicated into the preview.
+
+Experimental read-along selection requires a readable matching primary EPUB,
+the served sentence map and complete ordered audio with known durations.
+Subset maps and unsupported/unknown precision are rejected. The bounded archive
+validator checks exact receipts, EPUB text/hrefs, map timing/word bounds and
+metadata dependencies before preview publication. Legacy maps do not contain
+historical audio-input digests; structural/text compatibility does not certify
+narration accuracy. No mapping revision was changed.
+
+Recipient import verifies the map before indexing only a small local receipt
+proof. A restarted standalone shelf reloads the exact local map without an API
+server or map-generation capability. Follow mode requires a loaded verified
+sentence map; missing/tampered files fall back without advertising sentence
+follow. Closing or switching the reader cancels its local map read. Platform
+extraction, audio playback, large ZIP64 and background behavior still require
+real-device verification; the overall import and entry gates remain off.
 Only share material you have permission to distribute; nothing removes DRM.
 Retained invitations and heavy preparation are bounded, including cancellation
 of the HTTP waiter. A private management token is returned only to the signed-in
@@ -255,11 +297,22 @@ From the repository root, `npm run test:broker` compiles and exercises the
 actual Worker entrypoint with simulated transactional Durable Object storage.
 `npm run test:book-gifts` starts its own disposable loopback Vite server and
 tests preview, acceptance, private successor retrieval, interruption/recovery
-and the pre-onboarding native launch boundary. These fixtures use real
+and the pre-onboarding native launch boundary, plus the actual standalone
+reader hook/EPUB renderer with receipt-bound local maps. These fixtures use real
 WebCrypto but simulated peers and native storage. Their screenshots are written
 under ignored `output/book-gifts/`; they contain fixture books only. Set
 `OPERALIBRE_TEST_CHROMIUM` to an already installed supported Chromium executable
 if Playwright's managed browser is unavailable.
+
+The server CI job exports real Rust HTTP/archive/crypto fixtures, feeds them to
+the TypeScript import/reader contracts and the Android host-JVM extractor, and
+explicitly runs `retained_invitation_recovers_with_actual_worker_and_real_recipient_peer`.
+That ignored-by-default Rust test uses the actual Worker entrypoint through
+`test/node-fixture-server.mjs`, simulated transactional Durable Object storage,
+and real Rust sender/recipient peers. Compile the Worker first and set
+`OPERALIBRE_WORKER_FIXTURE_SCRIPT` to that script to run it locally. This is not
+a Cloudflare deployment or a mobile peer test. Cross-runtime reader screenshots
+contain fixture books only; no owner infrastructure or credentials are used.
 
 Those commands intentionally do not claim real ICE coverage. The separate
 `share-broker/test/webrtc.test.mjs` exercises browser peer connectivity; a browser

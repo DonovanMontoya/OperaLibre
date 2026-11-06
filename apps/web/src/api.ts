@@ -661,7 +661,7 @@ export async function getGiftOwnerConfiguration(signal?: AbortSignal) {
 export async function saveGiftOwnerConfiguration(input: GiftOwnerConfigurationRequest, signal?: AbortSignal) {
   requireGiftSetupTransport();
   if (input.ownerControlsBroker !== true) throw new ApiError("Confirm that you control this broker before saving credentials.", 400);
-  const body: GiftOwnerConfigurationRequest = { brokerOrigin: input.brokerOrigin, allowReaders: input.allowReaders, ownerControlsBroker: input.ownerControlsBroker, ...(input.ownerSecret !== undefined ? { ownerSecret: input.ownerSecret } : {}), ...(input.connectivity !== undefined ? { connectivity: { relayAllowed: input.connectivity.relayAllowed, requireRelay: input.connectivity.requireRelay, iceServers: input.connectivity.iceServers.map(server => ({ urls: [...server.urls], ...(server.turnRestSecret !== undefined ? { turnRestSecret: server.turnRestSecret } : {}) })) } } : {}) };
+  const body: GiftOwnerConfigurationRequest = { brokerOrigin: input.brokerOrigin, allowReaders: input.allowReaders, ownerControlsBroker: input.ownerControlsBroker, ...(input.retainSenderState !== undefined ? { retainSenderState: input.retainSenderState } : {}), ...(input.ownerSecret !== undefined ? { ownerSecret: input.ownerSecret } : {}), ...(input.connectivity !== undefined ? { connectivity: { relayAllowed: input.connectivity.relayAllowed, requireRelay: input.connectivity.requireRelay, iceServers: input.connectivity.iceServers.map(server => ({ urls: [...server.urls], ...(server.turnRestSecret !== undefined ? { turnRestSecret: server.turnRestSecret } : {}) })) } } : {}) };
   return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config", { method: "PUT", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }));
 }
 
@@ -673,6 +673,20 @@ export async function deleteGiftOwnerConfiguration(signal?: AbortSignal) {
 export async function cleanupConfiguredGiftBroker(signal?: AbortSignal) {
   requireGiftSetupTransport();
   return request<{ completed: number; pending: number }>("/api/admin/shares/config/cleanup", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true }, 120_000);
+}
+
+export async function recoverConfiguredGiftSenders(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  const result = await request<{ recovered: number; alreadyActive: number; pending: number }>("/api/admin/shares/config/recover", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true }, 120_000);
+  if (!result || [result.recovered, result.alreadyActive, result.pending].some(value => !Number.isSafeInteger(value) || value < 0 || value > 256)) throw new ApiError("Sender recovery could not be confirmed.", 502);
+  return { recovered: result.recovered, alreadyActive: result.alreadyActive, pending: result.pending };
+}
+
+export async function abandonConfiguredGiftSenders(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  const result = await request<{ abandoned: number; completed: number; pending: number }>("/api/admin/shares/config/abandon", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify({ confirmAbandon: true }) }, 120_000);
+  if (!result || [result.abandoned, result.completed, result.pending].some(value => !Number.isSafeInteger(value) || value < 0 || value > 8192)) throw new ApiError("Gift abandonment could not be confirmed.", 502);
+  return { abandoned: result.abandoned, completed: result.completed, pending: result.pending };
 }
 
 export async function retryGiftBrokerRevocations(brokerOrigin: string, ownerSecret: string) {

@@ -70,6 +70,65 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+        env:
+          OPERALIBRE_GIFT_HTTP_INVENTORY_FIXTURE: ${{ runner.temp }}/gift-inventory.json
+          OPERALIBRE_GIFT_METADATA_FIXTURE: ${{ runner.temp }}/gift-metadata.json
+          OPERALIBRE_GIFT_NATIVE_ARCHIVE_FIXTURE: ${{ runner.temp }}/gift-native.zip.json
+          OPERALIBRE_GIFT_ALIGNMENT_ARCHIVE_FIXTURE: ${{ runner.temp }}/gift-alignment.zip.json
+          OPERALIBRE_PEER_FIXTURE_PATH: ${{ runner.temp }}/gift-peer-offer.json
+          OPERALIBRE_PREVIEW_FIXTURE_PATH: ${{ runner.temp }}/gift-preview.json
+          OPERALIBRE_COVER_PREVIEW_FIXTURE: ${{ runner.temp }}/gift-cover.json
+
+      - name: Setup Node for cross-runtime gift contracts
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Java for server ZIP interoperability
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Test actual Worker, peer recovery and recipient contracts
+        working-directory: ${{ github.workspace }}
+        env:
+          OPERALIBRE_WORKER_FIXTURE_SCRIPT: ${{ github.workspace }}/share-broker/test/node-fixture-server.mjs
+          OPERALIBRE_GIFT_HTTP_INVENTORY_FIXTURE: ${{ runner.temp }}/gift-inventory.json
+          OPERALIBRE_GIFT_METADATA_FIXTURE: ${{ runner.temp }}/gift-metadata.json
+          OPERALIBRE_GIFT_ALIGNMENT_ARCHIVE_FIXTURE: ${{ runner.temp }}/gift-alignment.zip.json
+          OPERALIBRE_PEER_FIXTURE_PATH: ${{ runner.temp }}/gift-peer-offer.json
+          OPERALIBRE_PREVIEW_FIXTURE_PATH: ${{ runner.temp }}/gift-preview.json
+          OPERALIBRE_COVER_PREVIEW_FIXTURE: ${{ runner.temp }}/gift-cover.json
+        run: |
+          npm ci
+          npx tsc -p share-broker/tsconfig.test.json
+          cargo test --locked --manifest-path apps/server/Cargo.toml retained_invitation_recovers_with_actual_worker_and_real_recipient_peer -- --ignored --nocapture
+          node --experimental-strip-types --test apps/web/test/giftInventoryHttpContract.test.ts apps/web/test/giftMetadata.test.ts apps/web/test/giftLocalSync.test.ts apps/web/test/giftSignedPreview.test.ts apps/web/test/giftPeerAuthentication.test.ts
+
+      - name: Test actual selected server ZIPs with native host extractor
+        working-directory: ${{ github.workspace }}
+        run: |
+          OPERALIBRE_GIFT_NATIVE_ARCHIVE_FIXTURE="$RUNNER_TEMP/gift-native.zip.json" node --test script/test_gift_server_archive.mjs
+          OPERALIBRE_GIFT_NATIVE_ARCHIVE_FIXTURE="$RUNNER_TEMP/gift-alignment.zip.json" node --test script/test_gift_server_archive.mjs
+
+      - name: Test actual selected EPUB in standalone reader
+        working-directory: ${{ github.workspace }}
+        env:
+          OPERALIBRE_GIFT_ALIGNMENT_ARCHIVE_FIXTURE: ${{ runner.temp }}/gift-alignment.zip.json
+        run: |
+          npx playwright install --with-deps chromium
+          node script/test_book_gifts.mjs --local-reader-only
+
+      - name: Upload actual gift reader fixture screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: operalibre-gift-cross-runtime
+          path: output/book-gifts/gift-local-readalong-*.png
+          retention-days: 7
+          if-no-files-found: ignore
 
   server-windows:
     needs: changes

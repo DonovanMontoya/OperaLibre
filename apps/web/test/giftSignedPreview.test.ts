@@ -55,6 +55,25 @@ test("rejects unselected paths and alignment without matching audio", async () =
   }
 });
 
+test("full indexing metadata stays post-accept and aligned gifts require its bounded selected receipt", async () => {
+  const audio = { name: "one.wav", kind: "audio", size: 10, sha256: "c".repeat(64) };
+  const alignment = { name: "alignment.sync.json", kind: "alignment", size: 20, sha256: "d".repeat(64) };
+  const metadata = { name: "metadata.json", kind: "metadata", size: 100, sha256: "e".repeat(64) };
+  for (const value of [
+    { ...record, assets: [...record.assets, audio, alignment] },
+    { ...record, assets: [...record.assets, { ...metadata, size: 256 * 1024 + 1 }] },
+    { ...record, metadata: { title: record.title, author: record.author, description: record.summary, version: 1, tracks: [] } },
+    { ...record, metadata: { title: record.title, author: record.author, description: record.summary, progress: { positionSeconds: 0 } } },
+  ]) {
+    const input = await envelope(value);
+    await assert.rejects(verifyEncryptedGiftPreview(input.envelope, input.key, input.publicKey, 100));
+  }
+  const input = await envelope({ ...record, assets: [...record.assets, audio, alignment, metadata] });
+  const verified = await verifyEncryptedGiftPreview(input.envelope, input.key, input.publicKey, 100);
+  assert.deepEqual(verified.metadata, { title: record.title, author: record.author, description: record.summary });
+  assert.ok(verified.preview.formats.includes("Read-along"));
+});
+
 test("only authenticated per-invitation ICE reaches the recipient peer configuration", async () => {
   const connectivity = { giftId: record.giftId, expiresAt: record.expiresAt, iceTransportPolicy: "relay", iceServers: [{ urls: ["turn:relay.example:3478?transport=udp"], username: `${record.expiresAt}:operalibre:${record.giftId}:recipient:nonce`, credential: "A".repeat(27) + "=" }] };
   const input = await envelope({ ...record, connectivity });

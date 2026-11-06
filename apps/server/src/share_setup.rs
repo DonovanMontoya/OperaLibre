@@ -14,6 +14,8 @@ struct StoredConfiguration {
     owner_secret: String,
     allow_readers: bool,
     #[serde(default)]
+    retain_sender_state: bool,
+    #[serde(default)]
     connectivity: crate::share_connectivity::Connectivity,
 }
 
@@ -25,6 +27,7 @@ pub(crate) struct ConfigureGiftSharing {
     owner_secret: Option<String>,
     #[serde(default)]
     allow_readers: bool,
+    retain_sender_state: Option<bool>,
     owner_controls_broker: bool,
     /// Omit to retain owner TURN secrets; GET returns only configured markers.
     connectivity: Option<crate::share_connectivity::Connectivity>,
@@ -37,6 +40,7 @@ pub(crate) struct GiftSharingConfiguration {
     broker_origin: Option<String>,
     owner_secret_configured: bool,
     allow_readers: bool,
+    retain_sender_state: bool,
     production_enabled: bool,
     connectivity: serde_json::Value,
 }
@@ -51,6 +55,7 @@ fn snapshot(config: Option<&StoredConfiguration>) -> Result<GiftSharingConfigura
         broker_origin: config.map(|config| config.broker_origin.clone()),
         owner_secret_configured: config.is_some(),
         allow_readers: config.is_some_and(|config| config.allow_readers),
+        retain_sender_state: config.is_some_and(|config| config.retain_sender_state),
         production_enabled: false,
         connectivity: config
             .map(|config| &config.connectivity)
@@ -127,6 +132,11 @@ pub(crate) async fn put_configuration(
     })?;
     let broker_origin = broker.origin().origin().ascii_serialization();
     let previous = load(&state).await?;
+    let retain_sender_state = input.retain_sender_state.unwrap_or_else(|| {
+        previous
+            .as_ref()
+            .is_some_and(|config| config.retain_sender_state)
+    });
     if input.owner_secret.is_none()
         && previous
             .as_ref()
@@ -167,6 +177,7 @@ pub(crate) async fn put_configuration(
         broker_origin,
         owner_secret,
         allow_readers: input.allow_readers,
+        retain_sender_state,
         connectivity,
     };
     let response = snapshot(Some(&config))?;
@@ -208,8 +219,77 @@ pub(crate) async fn retry_configured_cleanup(
     let broker = crate::share_broker::BrokerClient::new(&config.broker_origin)
         .map_err(|_| ApiError::service_unavailable("Gift broker configuration is invalid."))?;
     // This is an explicit owner action. A saved setup alone makes no request.
+    let report =
+        crate::share::retry_revocations_for_owner(&state, &broker, &config.owner_secret).await?;
+    crate::share::prune_confirmed_recovery(&state).await?;
+    Ok(Json(report))
+}
+
+pub(crate) async fn recover_configured_senders(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<crate::share::SenderRecoveryReport>, ApiError> {
+    require_owner(&auth)?;
+    let _gate = SETUP_GATE.lock().await;
+    let config = load(&state)
+        .await?
+        .ok_or_else(|| ApiError::service_unavailable("No gift broker is configured."))?;
+    if !config.retain_sender_state {
+        return Err(ApiError::conflict(
+            "Private sender retention is not enabled.",
+        ));
+    }
+    let broker = crate::share_broker::BrokerClient::new(&config.broker_origin)
+        .map_err(|_| ApiError::service_unavailable("Gift broker configuration is invalid."))?;
     Ok(Json(
-        crate::share::retry_revocations_for_owner(&state, &broker, &config.owner_secret).await?,
+        crate::share::recover_saved_senders(
+            cfg!(test),
+            &state,
+            &broker,
+            &config.owner_secret,
+            &config.connectivity,
+        )
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AbandonRetainedGifts {
+    confirm_abandon: bool,
+}
+
+pub(crate) async fn abandon_configured_senders(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    input: Result<Json<AbandonRetainedGifts>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_owner(&auth)?;
+    if !cfg!(test) {
+        return Err(ApiError::service_unavailable(
+            "Production gift management remains disabled.",
+        ));
+    }
+    let Json(input) = input.map_err(|_| {
+        ApiError::bad_request("Explicit retained-gift abandonment confirmation is required.")
+    })?;
+    if !input.confirm_abandon {
+        return Err(ApiError::bad_request(
+            "Explicit retained-gift abandonment confirmation is required.",
+        ));
+    }
+    let _gate = SETUP_GATE.lock().await;
+    let config = load(&state)
+        .await?
+        .ok_or_else(|| ApiError::service_unavailable("No gift broker is configured."))?;
+    let broker = crate::share_broker::BrokerClient::new(&config.broker_origin)
+        .map_err(|_| ApiError::service_unavailable("Gift broker configuration is invalid."))?;
+    let abandoned = crate::share::abandon_retained_senders(&state, &broker).await?;
+    let cleanup =
+        crate::share::retry_revocations_for_owner(&state, &broker, &config.owner_secret).await?;
+    crate::share::prune_confirmed_recovery(&state).await?;
+    Ok(Json(
+        serde_json::json!({"abandoned":abandoned,"completed":cleanup.completed,"pending":cleanup.pending}),
     ))
 }
 
@@ -333,6 +413,9 @@ async fn create_owned(
     }
     let broker = crate::share_broker::BrokerClient::new(&config.broker_origin)
         .map_err(|_| ApiError::service_unavailable("Gift broker configuration is invalid."))?;
+    if config.retain_sender_state {
+        crate::share::prune_confirmed_recovery(&state).await?;
+    }
     input.expires_in_seconds = Some(input.expires_in_seconds.unwrap_or(900).clamp(60, 900));
     let Json(invitation) = crate::share::create_selected_share(
         State(state.clone()),
@@ -345,7 +428,7 @@ async fn create_owned(
             crate::share::revoke_share(State(state), Extension(auth), Path(invitation.token)).await;
         return Err(ApiError::conflict("Gift preparation was cancelled."));
     }
-    let session = match crate::share::start_invitation_sender_with_connectivity(
+    let session = match crate::share::start_invitation_sender_with_recovery(
         cfg!(test),
         &state,
         &auth,
@@ -353,6 +436,7 @@ async fn create_owned(
         &broker,
         &config.owner_secret,
         &config.connectivity,
+        config.retain_sender_state,
     )
     .await
     {

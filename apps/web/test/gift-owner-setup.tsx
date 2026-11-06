@@ -12,11 +12,13 @@ const api: GiftOwnerSetupApi = {
   async load() { calls.push({ kind: "load" }); return structuredClone(snapshot); },
   async save(input) {
     calls.push({ kind: "save", input });
-    snapshot = { ...snapshot, brokerOrigin: input.brokerOrigin, allowReaders: input.allowReaders, ...(input.connectivity ? { connectivity: { relayAllowed: input.connectivity.relayAllowed, requireRelay: input.connectivity.requireRelay, iceServers: input.connectivity.iceServers.map(server => ({ urls: [...server.urls], usernameConfigured: false, credentialConfigured: false, turnRestSecretConfigured: !!server.turnRestSecret })) } } : {}) };
+    snapshot = { ...snapshot, brokerOrigin: input.brokerOrigin, allowReaders: input.allowReaders, retainSenderState: input.retainSenderState ?? snapshot.retainSenderState, ...(input.connectivity ? { connectivity: { relayAllowed: input.connectivity.relayAllowed, requireRelay: input.connectivity.requireRelay, iceServers: input.connectivity.iceServers.map(server => ({ urls: [...server.urls], usernameConfigured: false, credentialConfigured: false, turnRestSecretConfigured: !!server.turnRestSecret })) } } : {}) };
     return structuredClone(snapshot);
   },
   async remove() { calls.push({ kind: "delete" }); },
   async cleanup() { calls.push({ kind: "cleanup" }); return { completed: 1, pending: 0 }; },
+  async recover() { calls.push({ kind: "recover" }); return { recovered: 1, alreadyActive: 0, pending: 0 }; },
+  async abandon() { calls.push({ kind: "abandon" }); return { abandoned: 1, completed: 1, pending: 0 }; },
 };
 declare global { interface Window { ownerSetupCalls: typeof calls; testInsecureSetupCalls(): Promise<string[]>; ownerSetupChangeContext(): void } }
 window.ownerSetupCalls = calls;

@@ -127,12 +127,19 @@ public final class GiftImportPlugin extends Plugin {
                 JSArray list = call.getArray("assets");
                 if (id == null || !id.matches("[A-Za-z0-9_-]{16,128}") || list == null || list.length() == 0 || list.length() > 256) throw new IllegalArgumentException();
                 List<GiftArchiveExtractor.Asset> assets = new ArrayList<>();
+                GiftArchiveExtractor.Asset metadata = null;
                 for (int i = 0; i < list.length(); i++) {
                     JSONObject item = list.getJSONObject(i);
-                    assets.add(new GiftArchiveExtractor.Asset(item.getString("name"), item.getLong("size"), item.getString("sha256")));
+                    GiftArchiveExtractor.Asset asset = new GiftArchiveExtractor.Asset(item.getString("name"), item.getLong("size"), item.getString("sha256"));
+                    assets.add(asset);
+                    if ("metadata".equals(item.getString("kind"))) {
+                        if (metadata != null || asset.size < 1 || asset.size > 256 * 1024) throw new IllegalArgumentException();
+                        metadata = asset;
+                    }
                 }
+                final GiftArchiveExtractor.Asset selectedMetadata = metadata;
                 File data = getContext().getFilesDir().getCanonicalFile();
-                File result = GiftStagingStore.withInactive(data, id, incoming -> {
+                JSObject result = GiftStagingStore.withInactive(data, id, incoming -> {
                     File archive = new File(incoming, id + ".zip");
                     if (!archive.getCanonicalFile().equals(archive.getAbsoluteFile())) throw new IllegalArgumentException();
                     File root = new File(data, "device-library");
@@ -140,10 +147,12 @@ public final class GiftImportPlugin extends Plugin {
                     if (!root.getCanonicalFile().equals(root.getAbsoluteFile())) throw new IllegalArgumentException();
                     File committed = GiftArchiveExtractor.extract(archive, root, id, assets);
                     GiftStagingStore.syncCommitted(committed);
+                    JSObject output = new JSObject(); output.put("directory", "device-library/" + committed.getName());
+                    if (selectedMetadata != null) output.put("metadataJson", GiftStagingStore.readMetadata(committed, selectedMetadata));
                     GiftRecoveryStore.cleanup(data, id);
-                    return committed;
+                    return output;
                 });
-                JSObject output = new JSObject(); output.put("directory", "device-library/" + result.getName()); call.resolve(output);
+                call.resolve(result);
             } catch (Exception error) { call.reject("Gift import could not be completed."); }
         });
     }

@@ -320,6 +320,9 @@ export async function migrateDeviceLibraryFileExtensions() {
     const books = storedBooks();
     let changed = false;
     for (const book of books) {
+      // Gift filenames and metadata are receipt-bound; renaming a committed
+      // file would break native crash recovery and its alignment dependencies.
+      if (/^device:gift:/.test(book.id)) continue;
       for (const track of book.tracks) {
         const path = track.localFilePath;
         if (!path) continue;
@@ -364,6 +367,7 @@ export async function backfillDeviceLibraryMetadata() {
     const books = storedBooks();
     let changed = false;
     for (const book of books) {
+      if (/^device:gift:/.test(book.id)) continue;
       const untagged =
         !book.author && !book.localCoverPath && !book.chapters.some((chapter) => chapter.source === "embedded-chapters");
       if (!untagged) continue;

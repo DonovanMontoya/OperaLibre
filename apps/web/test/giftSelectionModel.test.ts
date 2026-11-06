@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { defaultGiftSelection, giftAssetDisabledReason, giftSelectionSummary, parseCreatedGift, parseGiftInventory, selectedGiftRequest, type GiftInventory } from "../src/giftSelectionModel.ts";
+import { alignmentGiftSelection, defaultGiftSelection, giftAssetDisabledReason, giftSelectionSummary, parseCreatedGift, parseGiftInventory, selectedGiftRequest, type GiftInventory } from "../src/giftSelectionModel.ts";
 
 function inventory(): GiftInventory {
   return { bookId: "server-book", title: "A book", maxBytes: 5000, assets: [
@@ -32,6 +32,38 @@ test("selected IDs, metadata, availability and matching dependencies are validat
   inv.assets[3].requiresAssetIds = ["ebook"];
   assert.match(giftSelectionSummary(inv, ["metadata", "audio"]).errors.join(" "), /requires book.epub/);
   assert.equal(giftSelectionSummary(inv, ["metadata", "ebook", "audio"]).errors.length, 0);
+});
+
+test("alignment opt-in expands the matching EPUB and complete audio without enabling an unverified build", () => {
+  const inv = inventory();
+  const candidate = alignmentGiftSelection(inv, "alignment", ["metadata"]);
+  assert.deepEqual(candidate.selectedAssetIds, ["metadata", "ebook", "audio", "alignment"]);
+  assert.match(candidate.disabledReason!, /verified native\/local map loading/);
+  assert.throws(() => selectedGiftRequest(inv, candidate.selectedAssetIds, ""), /not supported/);
+  const ready = { alignmentReady: true };
+  assert.equal(alignmentGiftSelection(inv, "alignment", ["metadata"], ready).disabledReason, null);
+  assert.deepEqual(giftSelectionSummary(inv, candidate.selectedAssetIds, ready).errors, []);
+  assert.deepEqual(selectedGiftRequest(inv, candidate.selectedAssetIds, "", 900, ready).selectedAssetIds, candidate.selectedAssetIds);
+  assert.ok(giftSelectionSummary(inv, candidate.selectedAssetIds.filter(id => id !== "audio"), ready).errors.length);
+  // Even an explicitly integrated build cannot override server rejection.
+  inv.assets[4].available = false; inv.assets[4].disabledReason = "Map no longer matches the trusted EPUB.";
+  assert.match(alignmentGiftSelection(inv, "alignment", [], ready).disabledReason!, /no longer matches/);
+});
+
+test("alignment planner rejects subset-audio dependencies, ambiguous editions and unavailable matching files", () => {
+  const inv = inventory();
+  inv.assets.push({ id: "audio2", kind: "audio", fileName: "second.mp3", sizeBytes: 100, available: true });
+  assert.throws(() => alignmentGiftSelection(inv, "alignment"), /complete audio set/);
+  inv.assets[4].requiresAssetIds!.push("audio2");
+  assert.deepEqual(alignmentGiftSelection(inv, "alignment", []).selectedAssetIds, ["metadata", "ebook", "audio", "alignment", "audio2"]);
+  inv.assets[3].available = false;
+  assert.throws(() => alignmentGiftSelection(inv, "alignment"), /not available/);
+  inv.assets[3].available = true;
+  inv.assets.push({ id: "other-edition", kind: "ebook", fileName: "other.epub", sizeBytes: 100, available: true });
+  inv.assets[4].requiresAssetIds!.push("other-edition");
+  assert.throws(() => alignmentGiftSelection(inv, "alignment"), /matching EPUB/);
+  const pdf = inventory(); pdf.assets[1].fileName = "book.pdf";
+  assert.throws(() => alignmentGiftSelection(pdf, "alignment"), /matching EPUB/);
 });
 
 test("inventory rejects other books, duplicate IDs, missing metadata and unsafe resource declarations", () => {

@@ -49,6 +49,45 @@ final class GiftStagingStore {
         if (!OsConstants.S_ISREG(stat.st_mode) || stat.st_nlink != 1 || stat.st_size < 0 || stat.st_size > maximum) throw new IOException();
         return stat;
     }
+
+    /** Called only under the gift's inactive staging guard after extraction.
+     * Return no bytes until this bounded regular file matches its receipt. */
+    static String readMetadata(File directory, GiftArchiveExtractor.Asset asset) throws Exception {
+        final int maximum = 256 * 1024;
+        if (asset == null || asset.size < 1 || asset.size > maximum || asset.name == null
+            || !asset.name.matches("[^/\\\\\\p{Cntrl}]{1,255}") || asset.name.equals(".") || asset.name.equals("..")
+            || asset.sha256 == null || !asset.sha256.matches("[a-f0-9]{64}")
+            || !directory.getCanonicalFile().equals(directory.getAbsoluteFile())) throw new IOException();
+        StructStat parent = Os.lstat(directory.getPath());
+        if (!OsConstants.S_ISDIR(parent.st_mode)) throw new IOException();
+        File file = new File(directory, asset.name);
+        FileDescriptor fd = GiftRecoveryStore.open(file.getPath(), OsConstants.O_RDONLY | OsConstants.O_NOFOLLOW | OsConstants.O_NONBLOCK, 0);
+        try {
+            StructStat before = regular(fd, maximum), path = Os.lstat(file.getPath());
+            if (before.st_size != asset.size || before.st_dev != path.st_dev || before.st_ino != path.st_ino) throw new IOException();
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream((int) asset.size);
+            byte[] buffer = new byte[16 * 1024];
+            for (;;) {
+                int count = Os.read(fd, buffer, 0, Math.min(buffer.length, (int) asset.size - bytes.size() + 1));
+                if (count == 0) break;
+                if (count > asset.size - bytes.size()) throw new IOException();
+                bytes.write(buffer, 0, count);
+            }
+            StructStat after = regular(fd, maximum), current = Os.lstat(directory.getPath()), finalPath = Os.lstat(file.getPath());
+            if (bytes.size() != asset.size || after.st_size != before.st_size
+                || current.st_dev != parent.st_dev || current.st_ino != parent.st_ino || !OsConstants.S_ISDIR(current.st_mode)
+                || finalPath.st_dev != before.st_dev || finalPath.st_ino != before.st_ino
+                || !directory.getCanonicalFile().equals(directory.getAbsoluteFile())) throw new IOException();
+            byte[] content = bytes.toByteArray();
+            StringBuilder digest = new StringBuilder(64);
+            for (byte b : MessageDigest.getInstance("SHA-256").digest(content)) digest.append(String.format(Locale.ROOT, "%02x", b & 255));
+            if (!digest.toString().equals(asset.sha256)) throw new IOException();
+            return StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                .decode(java.nio.ByteBuffer.wrap(content)).toString();
+        } finally { Os.close(fd); }
+    }
     private static Guard guard(File data, String id) throws Exception {
         if (id == null || !id.matches("[A-Za-z0-9_-]{16,128}")) throw new IOException();
         File parent = new File(data.getCanonicalFile(), "gift-incoming");

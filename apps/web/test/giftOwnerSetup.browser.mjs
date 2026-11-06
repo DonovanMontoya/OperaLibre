@@ -5,6 +5,36 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 const origin = process.env.OPERALIBRE_GIFT_TEST_ORIGIN ?? "http://127.0.0.1:5199";
 
+test("private sender retention is opt-in and recovery contacts the adapter only on explicit activation", { timeout: 15000 }, async () => {
+  const browser = await chromium.launch({ executablePath: process.env.OPERALIBRE_TEST_CHROMIUM || undefined, headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await page.goto(`${origin}/test/gift-owner-setup.html?secure=1`);
+    await page.getByRole("button", { name: "Load saved setup" }).click();
+    const retain = page.getByRole("checkbox", { name: /Retain private selected archives/ });
+    assert.equal(await retain.isChecked(), false);
+    const recover = page.getByRole("button", { name: "Recover retained gift senders" });
+    assert.equal(await recover.isDisabled(), true);
+    await retain.check();
+    await page.getByRole("checkbox", { name: /I control this broker/ }).check();
+    await page.getByRole("button", { name: "Save private server configuration" }).click();
+    await page.getByRole("status").filter({ hasText: "Configuration saved privately" }).waitFor();
+    assert.deepEqual((await page.evaluate(() => window.ownerSetupCalls)).map(call => call.kind), ["load", "save"]);
+    assert.equal(await recover.isEnabled(), true);
+    await recover.click();
+    await page.getByRole("status").filter({ hasText: "1 started; 0 already active; 0 pending" }).waitFor();
+    assert.deepEqual((await page.evaluate(() => window.ownerSetupCalls)).map(call => call.kind), ["load", "save", "recover"]);
+    assert.match(await page.getByRole("status").innerText(), /does not prove a recipient/);
+    const abandon=page.getByRole("button",{name:"Abandon retained gifts",exact:true});
+    assert.equal(await abandon.isDisabled(),true);
+    await page.getByRole("checkbox",{name:/Revoke all retained gifts on this broker/}).check();
+    await abandon.click();
+    await page.getByRole("status").filter({hasText:"Retained gifts revoked: 1"}).waitFor();
+    assert.match(await page.getByRole("status").innerText(),/Recipient copies and external backups cannot be recalled/);
+    assert.deepEqual((await page.evaluate(()=>window.ownerSetupCalls)).map(call=>call.kind),["load","save","recover","abandon"]);
+  } finally { await browser.close(); }
+});
+
 test("owner setup loads only explicitly, omits retained secrets/connectivity, and cleans/removes explicitly", { timeout: 15000 }, async () => {
   const browser = await chromium.launch({ executablePath: process.env.OPERALIBRE_TEST_CHROMIUM || undefined, headless: true });
   try {
@@ -24,7 +54,7 @@ test("owner setup loads only explicitly, omits retained secrets/connectivity, an
     await confirm.check();
     await page.getByRole("button", { name: "Save private server configuration" }).click();
     await page.getByRole("status").filter({ hasText: "Configuration saved privately" }).waitFor();
-    assert.deepEqual((await page.evaluate(() => window.ownerSetupCalls)).find(call => call.kind === "save").input, { brokerOrigin: "https://broker.example", allowReaders: false, ownerControlsBroker: true });
+    assert.deepEqual((await page.evaluate(() => window.ownerSetupCalls)).find(call => call.kind === "save").input, { brokerOrigin: "https://broker.example", allowReaders: false, retainSenderState: false, ownerControlsBroker: true });
     await page.getByLabel("New broker owner secret").fill("bad"); await confirm.check();
     await page.getByRole("button", { name: "Save private server configuration" }).click();
     await page.getByRole("status").filter({ hasText: "32–1024" }).waitFor();
@@ -133,7 +163,7 @@ test("advanced connectivity is opt-in, clears private inputs, and posts only exp
     await page.getByRole("button", { name: "Save private server configuration" }).click();
     await page.getByRole("status").filter({ hasText: "Configuration saved privately" }).waitFor();
     const save = (await page.evaluate(() => window.ownerSetupCalls)).find(call => call.kind === "save");
-    assert.deepEqual(save.input, { brokerOrigin: "https://broker.example", allowReaders: false, ownerControlsBroker: true, connectivity: { iceServers: [{ urls: ["stun:stun.example:3478"] }, { urls: ["turn:relay.example:3478?transport=udp"], turnRestSecret: "PRIVATE_COTURN_SECRET_FOR_TEST_1234" }], relayAllowed: true, requireRelay: true } });
+    assert.deepEqual(save.input, { brokerOrigin: "https://broker.example", allowReaders: false, retainSenderState: false, ownerControlsBroker: true, connectivity: { iceServers: [{ urls: ["stun:stun.example:3478"] }, { urls: ["turn:relay.example:3478?transport=udp"], turnRestSecret: "PRIVATE_COTURN_SECRET_FOR_TEST_1234" }], relayAllowed: true, requireRelay: true } });
     assert.equal(await change.isChecked(), false);
     assert.equal(await password.count(), 0);
     assert.equal((await page.locator("body").innerText()).includes("PRIVATE_COTURN_SECRET_FOR_TEST_1234"), false);

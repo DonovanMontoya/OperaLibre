@@ -1079,6 +1079,7 @@ export function LibraryPane({
             native={native}
             readalongEnabled={readalongEnabled}
             sentenceFollowAvailable={shelf.sentenceFollowAvailable}
+            sentenceFollowAvailableForBook={shelf.sentenceFollowAvailableForBook}
             onSelectBook={selectFromShelf}
             onToggleGroup={toggleShelfGroup}
           />

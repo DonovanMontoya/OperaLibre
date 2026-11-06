@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Gift, X } from "lucide-react";
 import { captureGiftOwnerSetupGuard as captureGiftServerGuard, createSelectedBookGift, getBookGiftInventory } from "./api";
 import { useModalFocus } from "./useModalFocus";
-import { defaultGiftSelection, giftAssetDisabledReason, giftSelectionSummary, giftSizeLabel, parseCreatedGift, parseGiftInventory, selectedGiftRequest, type CreatedGift, type GiftInventory, type SelectedGiftRequest, type SenderCreatedGift } from "./giftSelectionModel";
+import { alignmentGiftSelection, defaultGiftSelection, giftAssetDisabledReason, giftSelectionSummary, giftSizeLabel, parseCreatedGift, parseGiftInventory, selectedGiftRequest, type CreatedGift, type GiftInventory, type SelectedGiftRequest, type SenderCreatedGift } from "./giftSelectionModel";
 import "./giftShare.css";
 
 // The server routes and native recipient path remain experimental. Do not turn
@@ -16,16 +16,16 @@ export type GiftSenderApi = {
 };
 const senderApi: GiftSenderApi = { captureGuard: captureGiftServerGuard, inventory: getBookGiftInventory, create: createSelectedBookGift };
 
-export function GiftShareAction({ bookId, enabled, api = senderApi }: { bookId: string; enabled: boolean; api?: GiftSenderApi }) {
+export function GiftShareAction({ bookId, enabled, alignmentReady = false, api = senderApi }: { bookId: string; enabled: boolean; alignmentReady?: boolean; api?: GiftSenderApi }) {
   const [open, setOpen] = useState(false);
   if (!enabled) return null;
   return <>
     <button className="book-action" type="button" onClick={() => setOpen(true)} aria-haspopup="dialog"><span className="book-action-dot"><Gift size={16} aria-hidden="true" /></span><span className="book-action-label">Share gift</span></button>
-    {open ? createPortal(<GiftShareDialog key={bookId} bookId={bookId} api={api} onClose={() => setOpen(false)} />, document.body) : null}
+    {open ? createPortal(<GiftShareDialog key={bookId} bookId={bookId} api={api} alignmentReady={alignmentReady} onClose={() => setOpen(false)} />, document.body) : null}
   </>;
 }
 
-export function GiftShareDialog({ bookId, api, onClose }: { bookId: string; api: GiftSenderApi; onClose(): void }) {
+export function GiftShareDialog({ bookId, api, alignmentReady = false, onClose }: { bookId: string; api: GiftSenderApi; alignmentReady?: boolean; onClose(): void }) {
   const [inventory, setInventory] = useState<GiftInventory | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [message, setMessage] = useState("");
@@ -42,7 +42,7 @@ export function GiftShareDialog({ bookId, api, onClose }: { bookId: string; api:
   const creating = useRef(false);
   const attempt = useRef(0);
   const sameServer = useRef<(() => boolean) | null>(null);
-  const summary = inventory ? giftSelectionSummary(inventory, selected) : null;
+  const summary = inventory ? giftSelectionSummary(inventory, selected, { alignmentReady }) : null;
   const messageLength = Array.from(message).length;
   const stopCreation = () => {
     controller.current?.abort(); attempt.current++;
@@ -75,7 +75,7 @@ export function GiftShareDialog({ bookId, api, onClose }: { bookId: string; api:
     if (!inventory || phase !== "ready" || creating.current) return;
     if (!sameServer.current?.()) { setError("The connected server or sign-in changed. Reopen this gift dialog before sending a personal message or creating a link."); return; }
     let input: SelectedGiftRequest;
-    try { input = selectedGiftRequest(inventory, selected, message, expiry); }
+    try { input = selectedGiftRequest(inventory, selected, message, expiry, { alignmentReady }); }
     catch (failure) { setError(failure instanceof Error ? failure.message : "Check the selected contents."); return; }
     const active = new AbortController(); controller.current = active;
     creating.current = true;
@@ -123,10 +123,17 @@ export function GiftShareDialog({ bookId, api, onClose }: { bookId: string; api:
         <p>Select a lightweight ebook gift, or opt in to available audio. Metadata is always included. Unselected files are not requested for this gift.</p>
         <fieldset disabled={phase === "creating"}><legend>Included contents</legend>
           {inventory.assets.map((asset, index) => {
-            const reason = giftAssetDisabledReason(asset);
+            const reason = giftAssetDisabledReason(asset, alignmentReady);
             const descriptionId = `gift-asset-reason-${index}`;
             return <div className="gift-share-asset" key={asset.id}>
-              <label><input type="checkbox" checked={selected.includes(asset.id)} disabled={asset.kind === "metadata" || !!reason} aria-describedby={reason || asset.kind === "metadata" ? descriptionId : undefined} onChange={event => { const checked = event.currentTarget.checked; setSelected(current => checked ? [...current, asset.id] : current.filter(id => id !== asset.id)); }} /><span>{asset.fileName} <small>{asset.kind} · {giftSizeLabel(asset.sizeBytes)}</small></span></label>
+              <label><input type="checkbox" checked={selected.includes(asset.id)} disabled={asset.kind === "metadata" || !!reason} aria-describedby={reason || asset.kind === "metadata" ? descriptionId : undefined} onChange={event => {
+                const checked = event.currentTarget.checked;
+                if (checked && asset.kind === "alignment") {
+                  try { const plan = alignmentGiftSelection(inventory, asset.id, selected, { alignmentReady }); if (plan.disabledReason) throw new Error(plan.disabledReason); setSelected(plan.selectedAssetIds); }
+                  catch (failure) { setError(failure instanceof Error ? failure.message : "Alignment dependencies are unavailable."); }
+                } else setSelected(current => checked ? [...current, asset.id] : current.filter(id => id !== asset.id));
+              }} /><span>{asset.fileName} <small>{asset.kind} · {giftSizeLabel(asset.sizeBytes)}</small></span></label>
+              {asset.kind === "alignment" ? <small>Selecting this map requires the matching EPUB and all {inventory.assets.filter(item => item.kind === "audio").length} audio files. Partial-audio maps are not supported.</small> : null}
               {reason || asset.kind === "metadata" ? <small id={descriptionId}>{reason ?? "Required metadata; it cannot be removed."}</small> : null}
             </div>;
           })}

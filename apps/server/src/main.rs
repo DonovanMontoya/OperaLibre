@@ -95,12 +95,15 @@ mod reading;
 mod reading_log;
 mod scan_input;
 mod share;
+mod share_alignment;
 #[allow(dead_code)]
 mod share_broker;
 #[allow(dead_code)]
 mod share_connectivity;
 #[allow(dead_code)]
 mod share_cover_preview;
+#[allow(dead_code)]
+mod share_metadata;
 #[allow(dead_code)]
 mod share_peer_proof;
 #[cfg(test)]
@@ -109,6 +112,8 @@ mod share_peer_tests;
 mod share_preview_crypto;
 #[allow(dead_code)]
 mod share_sender;
+#[allow(dead_code)]
+mod share_sender_recovery;
 #[allow(dead_code)]
 mod share_service;
 #[allow(dead_code)]

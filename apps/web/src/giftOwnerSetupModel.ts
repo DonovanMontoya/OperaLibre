@@ -1,8 +1,8 @@
 import { giftBrokerOrigin } from "./giftBrokerOrigin.ts";
 
 export type GiftConnectivity = { iceServers: { urls: string[]; turnRestSecret?: string }[]; relayAllowed: boolean; requireRelay: boolean };
-export type GiftOwnerConfiguration = { configured: boolean; brokerOrigin: string | null; ownerSecretConfigured: boolean; allowReaders: boolean; productionEnabled: false; connectivity: { iceServers: { urls: string[]; usernameConfigured: boolean; credentialConfigured: boolean; turnRestSecretConfigured: boolean }[]; relayAllowed: boolean; requireRelay: boolean } };
-export type GiftOwnerConfigurationRequest = { brokerOrigin: string; ownerSecret?: string; allowReaders: boolean; ownerControlsBroker: true; connectivity?: GiftConnectivity };
+export type GiftOwnerConfiguration = { configured: boolean; brokerOrigin: string | null; ownerSecretConfigured: boolean; allowReaders: boolean; retainSenderState?: boolean; productionEnabled: false; connectivity: { iceServers: { urls: string[]; usernameConfigured: boolean; credentialConfigured: boolean; turnRestSecretConfigured: boolean }[]; relayAllowed: boolean; requireRelay: boolean } };
+export type GiftOwnerConfigurationRequest = { brokerOrigin: string; ownerSecret?: string; allowReaders: boolean; retainSenderState?: boolean; ownerControlsBroker: true; connectivity?: GiftConnectivity };
 
 function udpIceUrl(value: string, kind: "stun" | "turn"): string {
   const fail = () => new Error(`Enter a ${kind === "turn" ? "UDP coturn TURN" : "UDP STUN"} URL with a host and explicit port; TCP/TLS, credentials and extra URL components are unsupported.`);
@@ -43,7 +43,8 @@ export function parseGiftOwnerConfiguration(value: unknown): GiftOwnerConfigurat
     if (!Array.isArray(server.urls) || server.urls.length > 4 || server.urls.some(url => typeof url !== "string" || url.length > 512 || /[\u0000-\u0020\u007f]/.test(url)) || typeof server.usernameConfigured !== "boolean" || typeof server.credentialConfigured !== "boolean" || typeof server.turnRestSecretConfigured !== "boolean") throw new Error("Gift setup could not be read.");
     return { urls: [...server.urls], usernameConfigured: server.usernameConfigured, credentialConfigured: server.credentialConfigured, turnRestSecretConfigured: server.turnRestSecretConfigured };
   });
-  return { configured: v.configured, brokerOrigin: v.brokerOrigin, ownerSecretConfigured: v.ownerSecretConfigured, allowReaders: v.allowReaders, productionEnabled: false, connectivity: { iceServers, relayAllowed: v.connectivity.relayAllowed, requireRelay: v.connectivity.requireRelay } };
+  if (v.retainSenderState !== undefined && typeof v.retainSenderState !== "boolean") throw new Error("Gift setup could not be read.");
+  return { configured: v.configured, brokerOrigin: v.brokerOrigin, ownerSecretConfigured: v.ownerSecretConfigured, allowReaders: v.allowReaders, ...(v.retainSenderState !== undefined ? { retainSenderState: v.retainSenderState } : {}), productionEnabled: false, connectivity: { iceServers, relayAllowed: v.connectivity.relayAllowed, requireRelay: v.connectivity.requireRelay } };
 }
 
 export function giftOwnerConfigurationRequest(input: { brokerInput: string; ownerSecret: string; allowReaders: boolean; ownerConfirmed: boolean; existing: GiftOwnerConfiguration }): GiftOwnerConfigurationRequest {

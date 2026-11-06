@@ -491,6 +491,14 @@ pub(crate) fn build_router(
             "/api/admin/shares/config/cleanup",
             post(crate::share_setup::retry_configured_cleanup),
         )
+        .route(
+            "/api/admin/shares/config/recover",
+            post(crate::share_setup::recover_configured_senders),
+        )
+        .route(
+            "/api/admin/shares/config/abandon",
+            post(crate::share_setup::abandon_configured_senders),
+        )
         .route("/api/shares", post(create_share))
         .route("/api/shares/{token}", delete(revoke_share))
         .route(

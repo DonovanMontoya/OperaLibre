@@ -15,6 +15,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
+#[path = "share_recovery_service_tests.rs"]
+mod share_recovery_service_tests;
 #[path = "share_setup_http_tests.rs"]
 mod share_setup_http_tests;
 

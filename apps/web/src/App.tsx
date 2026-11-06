@@ -1512,6 +1512,7 @@ function MainApp({
     native,
     playbackFold,
     sentenceFollowAvailable: readalong.sentenceFollowAvailable,
+    sentenceFollowAvailableForBook: readalong.sentenceFollowAvailableForBook,
     shelfExpanded
   });
   const {

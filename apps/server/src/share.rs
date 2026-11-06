@@ -675,7 +675,7 @@ struct SelectionInventory {
     book: Book,
     inventory: ShareInventory,
     candidates: Vec<TrustedShareFile>,
-    metadata: Vec<u8>,
+    alignment: Option<crate::share_alignment::AlignmentPlan>,
 }
 
 fn selection_inventory(
@@ -685,7 +685,11 @@ fn selection_inventory(
     max_bytes: u64,
 ) -> Result<SelectionInventory, ApiError> {
     let book = library.book(book_id)?.clone();
-    let metadata = canonical_share_metadata(&book)
+    let alignment = book
+        .sync_file
+        .as_ref()
+        .and_then(|_| crate::share_alignment::AlignmentPlan::from_library(library, book_id).ok());
+    let metadata = crate::share_metadata::selected(&book, &[])
         .map_err(|_| ApiError::internal("Cannot prepare share metadata."))?;
     let mut assets = vec![ShareInventoryAsset {
         id: format!("metadata:{book_id}"),
@@ -712,8 +716,8 @@ fn selection_inventory(
             .as_ref()
             .and_then(|file| file.metadata().ok())
             .map(|meta| meta.len());
-        let unsupported_reason = if kind == ShareAssetKind::Alignment {
-            Some("Read-along gifts are not supported by the recipient yet.".into())
+        let unsupported_reason = if kind == ShareAssetKind::Alignment && !supported {
+            Some("Read-along requires a readable primary EPUB, its served sentence map and every audio track in known playback order with durations.".into())
         } else if !supported {
             Some("This file format is not supported by the recipient.".into())
         } else {
@@ -810,7 +814,7 @@ fn selection_inventory(
             ShareAssetKind::Alignment,
             "alignment.sync.json".into(),
             library.sync_paths.get(book_id),
-            false,
+            alignment.is_some(),
             dependencies,
         );
     }
@@ -830,7 +834,7 @@ fn selection_inventory(
             default_selected_asset_ids,
         },
         candidates,
-        metadata,
+        alignment,
     })
 }
 
@@ -934,6 +938,24 @@ pub(crate) async fn create_selected_share_for_user(
         .into_iter()
         .filter(|candidate| seen.contains(&candidate.id))
         .collect();
+    let selected_alignment = if selected
+        .iter()
+        .any(|asset| asset.kind == ShareAssetKind::Alignment)
+    {
+        let alignment = selection.alignment.as_ref().ok_or_else(|| {
+            ApiError::bad_request("Matching read-along contents are unavailable.")
+        })?;
+        alignment
+            .ensure_selected(&input.selected_asset_ids)
+            .map_err(|_| {
+                ApiError::bad_request(
+                    "Read-along requires the matching EPUB and complete audio set.",
+                )
+            })?;
+        Some(alignment.metadata_projection())
+    } else {
+        None
+    };
     if !selected.iter().any(|candidate| {
         matches!(
             candidate.kind,
@@ -951,7 +973,9 @@ pub(crate) async fn create_selected_share_for_user(
         .min(DEFAULT_MAX_BOOK_DOWNLOAD_GIB * GIBIBYTE_BYTES);
     let library_root = state.library_root.clone();
     let covers_root = state.covers_dir.clone();
-    let metadata = selection.metadata;
+    let metadata_book = selection.book.clone();
+    let sync_root = state.sync_dir.clone();
+    let metadata_selected_ids = input.selected_asset_ids.clone();
     let book_id = input.book_id.clone();
     let permit = state
         .download_task_slots
@@ -960,6 +984,10 @@ pub(crate) async fn create_selected_share_for_user(
         .map_err(|_| ApiError::too_many_requests("Share preparation capacity is full."))?;
     let assets = tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        let metadata = crate::share_metadata::with_alignment(
+            crate::share_metadata::selected(&metadata_book, &metadata_selected_ids)?,
+            selected_alignment.as_ref(),
+        )?;
         let mut assets = Vec::new();
         let mut total = metadata.len() as u64;
         let mut names = HashSet::from(["metadata.json".to_string()]);
@@ -977,7 +1005,11 @@ pub(crate) async fn create_selected_share_for_user(
             );
             let mut file = open_selected_source(
                 &candidate.path,
-                &[library_root.as_path(), covers_root.as_path()],
+                &[
+                    library_root.as_path(),
+                    covers_root.as_path(),
+                    sync_root.as_path(),
+                ],
             )?;
             anyhow::ensure!(
                 file.metadata()?.len() == candidate.size_bytes,
@@ -1065,6 +1097,7 @@ pub(crate) async fn create_selected_share_for_user(
         revoked: false,
         include_metadata: true,
         trusted_selection: true,
+        metadata_version: crate::share_metadata::VERSION,
         broker_rooms: Vec::new(),
     });
     write_invitations(&state.database, invitations).await?;
@@ -1130,6 +1163,8 @@ pub(crate) struct ShareInvitation {
     #[serde(default)]
     trusted_selection: bool,
     #[serde(default)]
+    metadata_version: u8,
+    #[serde(default)]
     broker_rooms: Vec<PendingBrokerRoom>,
 }
 
@@ -1149,6 +1184,61 @@ struct PendingBrokerRoom {
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
+}
+
+fn invitation_metadata(
+    book: &Book,
+    invitation: &ShareInvitation,
+    alignment: Option<&crate::share_alignment::AlignmentPlan>,
+) -> anyhow::Result<Vec<u8>> {
+    match invitation.metadata_version {
+        0 => canonical_share_metadata(book),
+        crate::share_metadata::VERSION => crate::share_metadata::with_alignment(
+            crate::share_metadata::selected(book, &invitation.selected_asset_ids)?,
+            alignment.map(|plan| plan.metadata_projection()).as_ref(),
+        ),
+        _ => anyhow::bail!("unsupported gift metadata version"),
+    }
+}
+
+fn invitation_alignment(
+    library: &LibraryState,
+    invitation: &ShareInvitation,
+) -> Result<Option<crate::share_alignment::AlignmentPlan>, ApiError> {
+    if !invitation
+        .manifest
+        .assets
+        .iter()
+        .any(|asset| asset.kind == ShareAssetKind::Alignment)
+    {
+        return Ok(None);
+    }
+    if invitation.metadata_version != crate::share_metadata::VERSION {
+        return Err(ApiError::conflict(
+            "This invitation has no verified alignment metadata.",
+        ));
+    }
+    let plan =
+        crate::share_alignment::AlignmentPlan::from_library(library, &invitation.manifest.book_id)
+            .map_err(|_| {
+                ApiError::conflict("Read-along inputs no longer match the selected book.")
+            })?;
+    plan.ensure_selected(&invitation.selected_asset_ids)
+        .map_err(|_| ApiError::conflict("Read-along requires matching text and complete audio."))?;
+    Ok(Some(plan))
+}
+
+fn verify_alignment_archive(
+    path: &FsPath,
+    temp_root: &FsPath,
+    alignment: Option<crate::share_alignment::AlignmentPlan>,
+    receipt: &VerifiedArchive,
+) -> anyhow::Result<()> {
+    if let Some(plan) = alignment {
+        let mut file = open_selected_source(path, &[temp_root])?;
+        plan.validate_archive(&mut file, receipt)?;
+    }
+    Ok(())
 }
 
 fn reservation_id(owner_secret: &str, token_digest: &str, room: &str) -> String {
@@ -1425,6 +1515,7 @@ pub(crate) async fn create_share(
             .iter()
             .any(|asset| matches!(asset.kind, ShareAssetKind::Metadata)),
         trusted_selection: false,
+        metadata_version: 0,
         broker_rooms: Vec::new(),
     };
     invitations.push(invitation);
@@ -1458,7 +1549,20 @@ pub(crate) async fn revoke_share(
     Extension(auth): Extension<AuthUser>,
     Path(token): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let mut gate = INVITATION_GATE.lock().await;
+    // Admit before detaching: an abandoned HTTP waiter cannot leave a committed
+    // database revocation without cancellation, or queue unbounded workers.
+    let gate = INVITATION_GATE.lock().await;
+    tokio::spawn(async move { revoke_owned(state, auth, token, gate).await })
+        .await
+        .map_err(|_| ApiError::internal("Share revocation worker failed."))?
+}
+
+async fn revoke_owned(
+    state: AppState,
+    auth: AuthUser,
+    token: String,
+    mut gate: tokio::sync::MutexGuard<'static, HashMap<String, Vec<ActiveSender>>>,
+) -> Result<StatusCode, ApiError> {
     let digest = share_digest_string(&token);
     let mut invitations = read_invitations(&state.database).await?;
     let invitation = invitations
@@ -1602,6 +1706,7 @@ pub(crate) async fn retry_revocations_for_owner(
     owner_secret: &str,
 ) -> Result<RetryBrokerRevocationsResponse, ApiError> {
     let mut gate = INVITATION_GATE.lock().await;
+    let recoverable = recovery::recoverable_rooms(state).await?;
     let origin = broker.origin().origin().ascii_serialization();
     let mut invitations = read_invitations(&state.database).await?;
     let mut attempt_order = invitations
@@ -1645,7 +1750,15 @@ pub(crate) async fn retry_revocations_for_owner(
                         sender.room == entry.room && sender.cancel.receiver_count() > 0
                     })
                 });
-            if !invitation.revoked && !entry.cleanup_pending && has_live_sender {
+            if !invitation.revoked
+                && !entry.cleanup_pending
+                && (has_live_sender
+                    || recoverable.contains(&(
+                        invitation.token_digest.clone(),
+                        entry.origin.clone(),
+                        entry.room.clone(),
+                    )))
+            {
                 remaining.push(entry);
                 continue;
             }
@@ -1718,6 +1831,30 @@ pub(crate) async fn start_invitation_sender_with_connectivity(
     owner_secret: &str,
     connectivity: &crate::share_connectivity::Connectivity,
 ) -> Result<PreparedShareSession, ApiError> {
+    start_invitation_sender_with_recovery(
+        enabled,
+        state,
+        auth,
+        token,
+        broker,
+        owner_secret,
+        connectivity,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn start_invitation_sender_with_recovery(
+    enabled: bool,
+    state: &AppState,
+    auth: &AuthUser,
+    token: &str,
+    broker: &crate::share_broker::BrokerClient,
+    owner_secret: &str,
+    connectivity: &crate::share_connectivity::Connectivity,
+    retain_sender_state: bool,
+) -> Result<PreparedShareSession, ApiError> {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     if !enabled {
         return Err(ApiError::service_unavailable("Book sharing is disabled."));
@@ -1764,15 +1901,20 @@ pub(crate) async fn start_invitation_sender_with_connectivity(
     let planned = plan_selected_assets(
         &candidates,
         &invitation.selected_asset_ids,
-        &[state.library_root.as_path(), state.covers_dir.as_path()],
+        &[
+            state.library_root.as_path(),
+            state.covers_dir.as_path(),
+            state.sync_dir.as_path(),
+        ],
         state.max_book_download_bytes.unwrap_or(u64::MAX),
     )
     .map_err(|error| ApiError::conflict(format!("Share contents changed: {error}")))?;
     let book = library.book(&invitation.manifest.book_id)?.clone();
+    let alignment = invitation_alignment(&library, &invitation)?;
     let generated = if invitation.include_metadata {
         vec![GeneratedArchiveEntry {
             archive_name: "metadata.json".into(),
-            contents: canonical_share_metadata(&book)
+            contents: invitation_metadata(&book, &invitation, alignment.as_ref())
                 .map_err(|error| ApiError::internal(error.to_string()))?,
         }]
     } else {
@@ -1792,14 +1934,18 @@ pub(crate) async fn start_invitation_sender_with_connectivity(
     let archive_path = path.clone();
     let root = state.library_root.clone();
     let covers_root = state.covers_dir.clone();
-    let (receipt, permit) = blocking_share_preparation(permit, move || {
-        write_verified_archive_roots(
+    let sync_root = state.sync_dir.clone();
+    let temp_root = state.download_temp_dir.clone();
+    let (receipt, mut permit) = blocking_share_preparation(permit, move || {
+        let receipt = write_verified_archive_roots(
             &archive_path,
             &planned,
             &generated,
-            &[root.as_path(), covers_root.as_path()],
+            &[root.as_path(), covers_root.as_path(), sync_root.as_path()],
             limit,
-        )
+        )?;
+        verify_alignment_archive(&archive_path, &temp_root, alignment, &receipt)?;
+        Ok::<_, anyhow::Error>(receipt)
     })
     .await
     .map_err(|error| ApiError::internal(error.to_string()))?;
@@ -1872,6 +2018,46 @@ pub(crate) async fn start_invitation_sender_with_connectivity(
     };
     record.broker_rooms.push(pending.clone());
     write_invitations(&state.database, invitations).await?;
+    let retained = if retain_sender_state {
+        let store = recovery::recovery_store(state)?;
+        let source = archive
+            .try_clone()
+            .await
+            .map_err(|_| ApiError::internal("Cannot retain selected archive."))?
+            .into_std()
+            .await;
+        let snapshot = crate::share_sender_recovery::PersistedSender {
+            server_id: state.server_id.to_string(),
+            invitation_digest: invitation.token_digest.clone(),
+            sender_user_id: auth.id.clone(),
+            book_id: book.id.clone(),
+            broker_origin: pending.origin.clone(),
+            room: room.clone(),
+            gift_id: gift_id.clone(),
+            expires_at,
+            archive_size: size,
+            archive_sha256: receipt.sha256.clone(),
+            signing_seed: signing.to_bytes(),
+            preview_key,
+            producer: None,
+            pending_producer: None,
+            cleanup_only: false,
+        };
+        let (id, admitted) = store
+            .prepare_admitted(snapshot, source, now, permit)
+            .await
+            .map_err(|_| {
+                ApiError::service_unavailable("Private sender retention could not be prepared.")
+            })?;
+        permit = admitted;
+        archive
+            .seek(SeekFrom::Start(0))
+            .await
+            .map_err(|_| ApiError::internal("Cannot rewind retained archive."))?;
+        Some((store, id))
+    } else {
+        None
+    };
     let reservation_id = reservation_id(owner_secret, &invitation.token_digest, &room);
     if broker
         .reserve(owner_secret, &room, &reservation_id, expires_at)
@@ -1948,16 +2134,40 @@ pub(crate) async fn start_invitation_sender_with_connectivity(
     gift_url.set_fragment(Some(&fragment));
     let peer_broker = broker.clone();
     let peer_room = room.to_string();
-    let session_result = crate::share_service::start(
-        enabled,
-        broker,
-        owner_secret,
-        &room,
-        &nonce,
-        expires_at,
-        move |capability, stop| async move {
-            let _guards = (temp, permit);
-            crate::share_sender::run_authenticated_sender_with_connectivity(
+    let session_result = async {
+        let capability = broker
+            .issue(owner_secret, &room, &nonce, expires_at)
+            .await?;
+        let mut temporary = Some(temp);
+        if let Some((store, id)) = &retained {
+            store.set_producer(id, capability.clone()).await?;
+            store.activate_initial(id, broker).await?;
+            let (restored, admitted) = store
+                .restore_admitted(
+                    id,
+                    &crate::share_sender_recovery::RecoveryAuthority {
+                        invitation_digest: &invitation.token_digest,
+                        sender_user_id: &auth.id,
+                        book_id: &book.id,
+                        room: &room,
+                        broker_origin: &pending.origin,
+                        invitation_expires_at: invitation.expires_at as u64,
+                        revoked: invitation.revoked,
+                        access_allowed: true,
+                    },
+                    now,
+                    permit,
+                )
+                .await?;
+            permit = admitted;
+            archive = restored.archive;
+            drop(temporary.take());
+        } else {
+            broker.claim(&room, &capability).await?;
+        }
+        crate::share_service::run_authorized(enabled, expires_at, move |stop| async move {
+            let _guards = (temporary, permit);
+            let result = crate::share_sender::run_authenticated_sender_with_connectivity(
                 peer_broker,
                 peer_room,
                 capability,
@@ -1973,13 +2183,20 @@ pub(crate) async fn start_invitation_sender_with_connectivity(
                 connectivity,
                 stop,
             )
-            .await
-        },
-    )
+            .await;
+            if let Some((store, id)) = retained
+                && result.is_ok()
+            {
+                let _ = store.remove(&id).await;
+            }
+            result
+        })
+        .await
+    }
     .await;
     let session = match session_result {
         Ok(session) => session,
-        Err(error) => {
+        Err(_) => {
             cleanup_failed_preparation(
                 state,
                 broker,
@@ -1988,9 +2205,9 @@ pub(crate) async fn start_invitation_sender_with_connectivity(
                 &pending,
             )
             .await?;
-            return Err(ApiError::internal(format!(
-                "Share session could not start: {error}"
-            )));
+            return Err(ApiError::service_unavailable(
+                "Share session could not start; owner cleanup may be pending.",
+            ));
         }
     };
     let mark_active = async {
@@ -2038,6 +2255,12 @@ pub(crate) async fn start_invitation_sender_with_connectivity(
     })
 }
 
+#[path = "share_recovery.rs"]
+mod recovery;
+pub(crate) use recovery::{
+    SenderRecoveryReport, abandon_retained_senders, prune_confirmed_recovery, recover_saved_senders,
+};
+
 /// Transfer the server's bounded book archive after the recipient accepts the
 /// preview. This is intentionally a one-way bearer route; it never creates a
 /// recipient account or exposes the sender's session.
@@ -2065,21 +2288,29 @@ pub(crate) async fn share_download(
     let planned = plan_selected_assets(
         &candidates,
         &invitation.selected_asset_ids,
-        &[state.library_root.as_path(), state.covers_dir.as_path()],
+        &[
+            state.library_root.as_path(),
+            state.covers_dir.as_path(),
+            state.sync_dir.as_path(),
+        ],
         state.max_book_download_bytes.unwrap_or(u64::MAX),
     )
     .map_err(|error| ApiError::conflict(format!("Share contents changed: {error}")))?;
+    let alignment = invitation_alignment(&library, &invitation)?;
     let generated = if invitation.include_metadata {
         vec![GeneratedArchiveEntry {
             archive_name: "metadata.json".into(),
-            contents: canonical_share_metadata(
-                &library.book(&invitation.manifest.book_id)?.clone(),
+            contents: invitation_metadata(
+                library.book(&invitation.manifest.book_id)?,
+                &invitation,
+                alignment.as_ref(),
             )
             .map_err(|error| ApiError::internal(error.to_string()))?,
         }]
     } else {
         Vec::new()
     };
+    drop(library);
     let limit = share_archive_limit(&state, &planned, &generated)?;
     let permit = state
         .download_task_slots
@@ -2097,14 +2328,22 @@ pub(crate) async fn share_download(
     let archive_path = path.clone();
     let library_root = state.library_root.clone();
     let covers_root = state.covers_dir.clone();
+    let sync_root = state.sync_dir.clone();
+    let temp_root = state.download_temp_dir.clone();
     let (receipt, permit) = blocking_share_preparation(permit, move || {
-        write_verified_archive_roots(
+        let receipt = write_verified_archive_roots(
             &archive_path,
             &planned,
             &generated,
-            &[library_root.as_path(), covers_root.as_path()],
+            &[
+                library_root.as_path(),
+                covers_root.as_path(),
+                sync_root.as_path(),
+            ],
             limit,
-        )
+        )?;
+        verify_alignment_archive(&archive_path, &temp_root, alignment, &receipt)?;
+        Ok::<_, anyhow::Error>(receipt)
     })
     .await
     .map_err(|error| ApiError::internal(error.to_string()))?;
