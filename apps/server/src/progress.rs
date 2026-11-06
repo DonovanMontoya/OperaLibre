@@ -1156,38 +1156,23 @@ pub(crate) fn validated_book_position_seconds(
     position_seconds: f64,
     reported: Option<f64>,
 ) -> f64 {
-    let derived = book_position_seconds(book, track, position_seconds);
-    let unknown_earlier_tracks = unknown_earlier_track_count(book, track);
-    if unknown_earlier_tracks == 0 {
-        return derived;
-    }
-    // The derived offset counts unknown tracks as empty, so it is a floor. The
-    // ceiling keeps one wild report from becoming a stored position that every
-    // later checkpoint regresses from.
-    let ceiling = derived + unknown_earlier_tracks as f64 * PROGRESS_UNKNOWN_TRACK_MAX_SECONDS;
-    reported
-        .filter(|reported| reported.is_finite())
-        .unwrap_or(derived)
-        .clamp(derived, ceiling)
-}
-
-/// Earlier tracks the scan could not time. A whole-book position on a track
-/// after any of them is the client's word, not the server's arithmetic.
-pub(crate) fn unknown_earlier_track_count(book: &Book, track: &Track) -> usize {
-    book.tracks
+    let prefix_is_known = book
+        .tracks
         .iter()
         .take_while(|candidate| candidate.id != track.id)
-        .filter(|candidate| {
-            !candidate
+        .all(|candidate| {
+            candidate
                 .duration_seconds
                 .is_some_and(|duration| duration > 0.0)
-        })
-        .count()
+        });
+    if prefix_is_known {
+        book_position_seconds(book, track, position_seconds)
+    } else {
+        reported
+            .unwrap_or_else(|| book_position_seconds(book, track, position_seconds))
+            .max(0.0)
+    }
 }
-
-/// The most one untimed track may add to a client-reported book position.
-/// Multi-file books rarely have a part this long.
-pub(crate) const PROGRESS_UNKNOWN_TRACK_MAX_SECONDS: f64 = 48.0 * 60.0 * 60.0;
 
 /// Slack absorbs realistic clock skew between devices; a genuinely stale
 /// replay (offline queue flush, reinstalled client) is hours or days old.
