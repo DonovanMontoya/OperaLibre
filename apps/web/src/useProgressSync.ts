@@ -123,7 +123,7 @@ export function useProgressSync({
     nativeAudio, persistProgress, adoptNewerServerProgress, refreshClock: showMediaClock
   };
 
-  function persistProgress(): Promise<void> {
+  function persistProgress(options?: { keepalive?: boolean }): Promise<void> {
     if (
       !playbackBook ||
       restoredProgressBookId.current !== playbackBook.id ||
@@ -221,7 +221,8 @@ export function useProgressSync({
       isPaused: nativeAudio ? !nativePlaybackPlayingRef.current : audioRef.current.paused,
       intentionalSeekGeneration,
       seekIntentId: persistedIntent.intentionalSeek ? seekIntent?.id : undefined,
-      intentionalRegression
+      intentionalRegression,
+      keepalive: (existingQueued?.keepalive ?? false) || options?.keepalive === true
     });
     return flushProgressSaveQueue();
   }
@@ -264,8 +265,7 @@ export function useProgressSync({
                 persistedSeekPending || entry.intentionalSeekGeneration
                 > (acknowledgedSeekGenerationRef.current.get(entry.bookId) ?? 0),
               signal: abortController.signal,
-              // The pagehide save would otherwise be cancelled with the tab.
-              keepalive: true
+              keepalive: entry.keepalive === true
             }
           );
           acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, entry.bookId, entry.seekIntentId);

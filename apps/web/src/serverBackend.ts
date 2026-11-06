@@ -9,8 +9,8 @@ export type ProgressWriteOptions = {
   signal?: AbortSignal;
   /**
    * Let the save outlive a closing page. Browsers cap all outstanding
-   * keepalive bodies together at 64 KB, so only the one-at-a-time playback
-   * saves ask for it, never a bulk replay.
+   * keepalive bodies together at 64 KB and keep a timed-out one open, so only
+   * the save queued when the page hides or closes asks for it.
    */
   keepalive?: boolean;
 };
