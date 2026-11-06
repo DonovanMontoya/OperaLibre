@@ -1,6 +1,24 @@
 export type GiftLink = { broker: string; token: string; previewKey?: string; signingKey?: string; giftId?: string };
 export type NativeGiftLaunch = { originalUrl: string; link: GiftLink };
 
+/** Build-time domain declarations must also exist in the native entitlement /
+ * manifest and on that exact domain. This parser cannot verify that ownership.
+ * Stock builds default to no HTTPS domains, never a wildcard owner domain. */
+export function parseGiftAssociatedOrigins(raw: unknown): readonly string[] {
+  if (raw === undefined || raw === "") return [];
+  try {
+    if (typeof raw !== "string" || raw.length > 2048) return [];
+    const entries: unknown = JSON.parse(raw);
+    if (!Array.isArray(entries) || entries.length > 4 || new Set(entries).size !== entries.length) return [];
+    for (const value of entries) {
+      if (typeof value !== "string" || value.length > 512 || /[^\x21-\x7e]/.test(value)) return [];
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.origin !== value || url.port || url.username || url.password || !url.hostname.includes(".") || url.hostname.includes("*") || url.hostname.endsWith(".") || url.hostname.startsWith("[") || /^[0-9.]+$/.test(url.hostname)) return [];
+    }
+    return entries;
+  } catch { return []; }
+}
+
 /** Private credentials are bounded before URLSearchParams allocation. Never
  * interpret these fields as login details or a server-configuration request. */
 export function parseExperimentalGiftFragment(fragment: string): GiftLink | null {
@@ -44,9 +62,20 @@ export function createExperimentalGiftLink(landing: string, link: GiftLink): str
 /** Only the exact custom authority is registered. Reject normalization tricks,
  * query credentials, ports, userinfo, alternate hosts and paths before parsing.
  * Keep the original private URI in memory; do not replace it with a server URL. */
-export function parseNativeGiftUrl(value: string): NativeGiftLaunch | null {
-  if (typeof value !== "string" || value.length > 8220 || !value.startsWith("operalibre://gift#")) return null;
-  const fragment = value.slice("operalibre://gift".length);
+export function parseNativeGiftUrl(value: string, associatedOrigins: readonly string[] = []): NativeGiftLaunch | null {
+  if (typeof value !== "string" || value.length > 16384 || /[^\x21-\x7e]/.test(value)) return null;
+  let fragment: string;
+  if (value.startsWith("operalibre://gift#")) fragment = value.slice("operalibre://gift".length);
+  else {
+    // A configured domain is routing context, never broker authorization. Keep
+    // the original fragment and require exact spelling to reject normalization
+    // tricks (userinfo, path escapes, queries and non-default ports).
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || !associatedOrigins.includes(url.origin) || value !== `${url.origin}/gift${url.hash}` || url.pathname !== "/gift" || !url.hash) return null;
+      fragment = url.hash;
+    } catch { return null; }
+  }
   const link = parseExperimentalGiftFragment(fragment);
   if (!link?.previewKey || !link.signingKey) return null;
   return { originalUrl: value, link };
@@ -59,13 +88,13 @@ export type NativeGiftApp = {
 
 /** Subscribe before reading cold launch so a newer warm event wins. Cleanup is
  * safe even while the native listener promise is pending (React StrictMode). */
-export function watchNativeGiftLinks(app: NativeGiftApp, onGift: (launch: NativeGiftLaunch) => void, onReady: () => void): () => void {
+export function watchNativeGiftLinks(app: NativeGiftApp, onGift: (launch: NativeGiftLaunch) => void, onReady: () => void, associatedOrigins: readonly string[] = []): () => void {
   let active = true;
   let receivedEvent = false;
   let handle: { remove(): Promise<void> } | undefined;
   const receive = (value: string, event: boolean) => {
     if (!active) return;
-    const launch = parseNativeGiftUrl(value);
+    const launch = parseNativeGiftUrl(value, associatedOrigins);
     if (!launch) return;
     if (event) receivedEvent = true;
     onGift(launch);

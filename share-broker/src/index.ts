@@ -6,12 +6,13 @@ import { issue, consume, ownerAuthorized, readBounded, verifyClaim, signClaim } 
 import { rotateRole, claimRecipientRecovery, recipientRecoverySuccessor, recipientRecoveryAuthorized, type Transaction, type TransactionalStorage } from "./claims.js";
 import { cleanupRoom, reserveRoom, validReservation } from "./reservations.js";
 import { giftLandingResponse } from "./gift-landing.js";
+import { giftAssociationResponse } from "./app-associations.js";
 
 type DurableObject = { fetch(request: Request): Promise<Response> };
 type DurableObjectState = { storage: { get<T>(key: string): Promise<T | undefined>; put(key: string, value: unknown): Promise<void>; transaction<T>(fn: (txn: Transaction) => Promise<T>): Promise<T> } };
 type DurableObjectNamespace = { idFromName(name: string): unknown; get(id: unknown): DurableObject };
 
-type Env = { ROOMS: DurableObjectNamespace; CAPABILITY_SECRET: string; OWNER_SECRET_DIGEST_HEX: string; SIGNING_SECRET: string; EXPERIMENTAL_ENABLED?: string };
+type Env = { ROOMS: DurableObjectNamespace; CAPABILITY_SECRET: string; OWNER_SECRET_DIGEST_HEX: string; SIGNING_SECRET: string; EXPERIMENTAL_ENABLED?: string; GIFT_APP_ASSOCIATIONS?: string };
 type Capability = { room: string; invitationDigest: string; nonce: string; expiresAt: number; maxBytes: number; assets: string[] };
 
 function json(body: unknown, status = 200) {
@@ -226,6 +227,8 @@ export default {
   async fetch(request: Request, env: Env) {
     // This gate stays closed until independent security and native review.
     if (env.EXPERIMENTAL_ENABLED !== "true") return json({ error: "Book sharing broker is not enabled." }, 503);
+    const association = giftAssociationResponse(request, env.GIFT_APP_ASSOCIATIONS);
+    if (association) return association;
     if (request.method === "GET" && new URL(request.url).pathname === "/gift") return giftLandingResponse();
     const origin = request.headers.get("origin");
     if (origin && !APP_ORIGINS.has(origin)) return new Response(null, { status: 403 });

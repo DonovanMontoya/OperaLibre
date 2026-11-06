@@ -219,6 +219,38 @@ archive. This is not a hard CPU-time sandbox.
 
 ## Development verification
 
+### Optional owner-domain app associations
+
+No stock app domain or signing identity is assumed. The disabled Worker can
+serve public `/.well-known/apple-app-site-association` and
+`/.well-known/assetlinks.json` declarations only after an owner explicitly sets
+`GIFT_APP_ASSOCIATIONS` to bounded JSON with `origin`, `appleAppIds`,
+`androidApps` (`packageName` and uppercase `sha256Fingerprints`), and
+`matchingAppBuildAcknowledged: true`. Use the actual application-identifier
+prefix/bundle identifier and actual installed release signing certificates,
+not guessed IDs or debug fingerprints. The exact HTTPS origin must match the
+served host; redirects, wildcard hosts and request-derived identities are not
+used. Missing configuration returns 404, and the experimental gate stays closed
+by default. No private gift data appears in either declaration.
+
+This is only the website half of a two-way association. A matching owner-built
+iOS app still needs an authorized Associated Domains entitlement for the exact
+host. Android needs an `autoVerify` HTTPS intent filter restricted to `/gift`
+and the exact host. Its website statement delegates the host, so the manifest's
+path restriction matters on older Android releases. Both builds must set
+`VITE_GIFT_ASSOCIATED_ORIGINS` to a JSON array of the same exact HTTPS origins
+(at most four) to route received HTTPS gifts through the native pre-onboarding
+boundary. This is a domain allowlist, not an API server origin. It is empty in
+stock builds and does not enable gifts or modify native entitlements/manifests.
+Do not set `VITE_API_BASE`.
+
+See Apple's [two-way association guidance](https://developer.apple.com/documentation/xcode/supporting-universal-links-in-your-app)
+and Android's [website association requirements](https://developer.android.com/training/app-links/configure-assetlinks).
+Owners must control the domain, use a matching signed build and verify OS link
+delivery on the intended devices. A setting or served JSON is not proof of
+ownership, verification or deferred restoration after installing from a store.
+No domain, entitlement, credential or application has been provisioned here.
+
 From the repository root, `npm run test:broker` compiles and exercises the
 actual Worker entrypoint with simulated transactional Durable Object storage.
 `npm run test:book-gifts` starts its own disposable loopback Vite server and

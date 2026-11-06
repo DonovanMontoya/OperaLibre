@@ -1,10 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { createExperimentalGiftLink, parseNativeGiftUrl, parseExperimentalGiftFragment, watchNativeGiftLinks, type NativeGiftApp } from "../src/giftAppLinks.ts";
+import { createExperimentalGiftLink, parseGiftAssociatedOrigins, parseNativeGiftUrl, parseExperimentalGiftFragment, watchNativeGiftLinks, type NativeGiftApp } from "../src/giftAppLinks.ts";
 
 const fragment = `gift=${"a".repeat(64)}&broker=${encodeURIComponent("https://owner.example")}&key=${"b".repeat(43)}&signing=${"c".repeat(43)}`;
 const uri = `operalibre://gift#${fragment}`;
+
+test("HTTPS native routing requires an explicit exact build domain without changing gift authority", () => {
+  const domains = parseGiftAssociatedOrigins('["https://gifts.owner.example"]');
+  const https = `https://gifts.owner.example/gift#${fragment}`;
+  assert.equal(parseNativeGiftUrl(https), null);
+  const gift = parseNativeGiftUrl(https, domains)!;
+  assert.equal(gift.originalUrl, https); assert.equal(gift.link.broker, "https://owner.example");
+  assert.equal(parseNativeGiftUrl(uri, domains)?.originalUrl, uri);
+  for (const value of [https.replace("/gift#", "/%67ift#"), https.replace("/gift#", "/gift?private=x#"), https.replace("gifts.owner", "other.owner"), https.replace("https:", "http:"), https.replace("gifts.owner.example", "user:secret@gifts.owner.example"), https.replace("gifts.owner.example", "gifts.owner.example:443"), https.replace("/gift#", "/other/../gift#"), https + "\n"]) assert.equal(parseNativeGiftUrl(value, domains), null);
+  for (const raw of ["not json", '["https://*.example"]', '["https://owner.example/"]', '["http://owner.example"]', '["https://127.0.0.1"]', '["https://localhost"]', '["https://owner.example:8443"]', '["https://owner.example","https://owner.example"]', "x".repeat(2049)]) assert.deepEqual(parseGiftAssociatedOrigins(raw), []);
+});
 
 test("decoded fields require exact alphabets, including encoded final line terminators", () => {
   const base = new URLSearchParams(`${fragment}&id=gift____________`);

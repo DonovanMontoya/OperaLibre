@@ -28,16 +28,23 @@ async function fixture() {
 test("recipient secret enrollment is atomic and retryable but the original link cannot recover", async () => {
   const f = await fixture();
   assert.equal((await f.call(`recovery-successor/${f.room}`, { ...f.current, recoverySecret: f.secret })).status, 403);
-  const results = await Promise.all([f.call(`recovery-claim/${f.room}`, { ...f.current, recoverySecret: f.secret }), f.call(`recovery-claim/${f.room}`, { ...f.current, recoverySecret: "A".repeat(43) })]);
-  assert.deepEqual(results.map(r => r.status), [204, 403]);
+  const contenders = [f.secret, "A".repeat(43)];
+  const results = await Promise.all(contenders.map(recoverySecret => f.call(`recovery-claim/${f.room}`, { ...f.current, recoverySecret })));
+  // WebCrypto can finish either request first. The security invariant is one
+  // transaction winner, not Promise.all input order. Bind every later probe to
+  // the actual enrolled secret and prove the losing secret stays unauthorized.
+  assert.deepEqual(results.map(r => r.status).sort(), [204, 403]);
+  const winner = results.findIndex(response => response.status === 204);
+  f.secret = contenders[winner];
+  const losingSecret = contenders[1 - winner];
   assert.equal((await f.call(`recovery-claim/${f.room}`, { ...f.current, recoverySecret: f.secret })).status, 204, "lost successful response can be retried");
   assert.equal((await f.call(`claim/${f.room}`, f.current)).status, 403);
   for (const [route, extra] of [["session", {}], ["poll", { after: 0 }], ["send", { sequence: 1, kind: "ready", message: "{}" }], ["preview-read", {}]]) {
     assert.equal((await f.call(`${route}/${f.room}`, { ...f.current, ...extra })).status, 403, `original link cannot use ${route} after enrollment`);
-    assert.equal((await f.call(`${route}/${f.room}`, { ...f.current, ...extra, recoverySecret: "A".repeat(43) })).status, 403);
+    assert.equal((await f.call(`${route}/${f.room}`, { ...f.current, ...extra, recoverySecret: losingSecret })).status, 403);
   }
   assert.equal((await f.call(`session/${f.room}`, { ...f.current, recoverySecret: f.secret })).status, 200);
-  for (const recoverySecret of [undefined, "A".repeat(43), f.secret + "\n"]) {
+  for (const recoverySecret of [undefined, losingSecret, f.secret + "\n"]) {
     assert.equal((await f.call(`recovery-successor/${f.room}`, { ...f.current, recoverySecret })).status, 403);
   }
   assert.equal((await f.call(`recovery-claim/${f.room}`, { ...f.current, recoverySecret: f.secret + "\n" })).status, 403);

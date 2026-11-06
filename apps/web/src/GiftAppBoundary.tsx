@@ -1,8 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { ExperimentalGiftRoute, type GiftTransport } from "./ExperimentalGiftRoute";
-import { parseExperimentalGiftFragment, watchNativeGiftLinks, type NativeGiftApp, type NativeGiftLaunch } from "./giftAppLinks";
+import { parseExperimentalGiftFragment, parseGiftAssociatedOrigins, watchNativeGiftLinks, type NativeGiftApp, type NativeGiftLaunch } from "./giftAppLinks";
 
 const loadNativeApp = async (): Promise<NativeGiftApp> => (await import("@capacitor/app")).App;
+const associatedOrigins = parseGiftAssociatedOrigins(import.meta.env.VITE_GIFT_ASSOCIATED_ORIGINS);
 
 /** A launch boundary, not a login or server-selection hook. The production
  * caller keeps enabled=false until transport and native imports are verified. */
@@ -24,7 +25,7 @@ export function GiftAppBoundary({ enabled, native, transport, children, loadApp 
     let active = true;
     let stop: (() => void) | undefined;
     void loadApp().then(app => {
-      if (active) stop = watchNativeGiftLinks(app, launch => setGift(launch), () => setLaunchPending(false));
+      if (active) stop = watchNativeGiftLinks(app, launch => setGift(launch), () => setLaunchPending(false), associatedOrigins);
     }).catch(() => { if (active) setLaunchPending(false); });
     return () => { active = false; stop?.(); };
   }, [enabled, native, loadApp]);
