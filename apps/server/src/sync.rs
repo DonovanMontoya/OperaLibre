@@ -1370,21 +1370,15 @@ pub(crate) async fn run_sync_generation(
         },
         outcomes: Vec::new(),
     };
-    match fs::read(&checkpoint_path).await {
-        Ok(bytes) => {
-            let checkpoint: SyncCheckpoint = serde_json::from_slice(&bytes)?;
-            if checkpoint.fingerprint == run.fingerprint
-                && checkpoint.completed_scopes <= selected.len()
-            {
-                run = checkpoint;
-                done_weight = selected[..run.completed_scopes]
-                    .iter()
-                    .map(|&index| scope_weights[index])
-                    .sum();
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+    if let Some(checkpoint) = read_checkpoint(&checkpoint_path).await?
+        && checkpoint.fingerprint == run.fingerprint
+        && checkpoint.completed_scopes <= selected.len()
+    {
+        run = checkpoint;
+        done_weight = selected[..run.completed_scopes]
+            .iter()
+            .map(|&index| scope_weights[index])
+            .sum();
     }
     let mut attempted = selected[..run.completed_scopes]
         .iter()
@@ -1715,6 +1709,28 @@ async fn align_unless_paused(
         biased;
         _ = wait_for_manual_pause(aligner.state, aligner.job_id) => None,
         result = aligner.align_scope(scope, track, transcript, scope_number, progress) => Some(result),
+    }
+}
+
+/// A checkpoint only saves time, so one that cannot be parsed (a torn write
+/// from an older version, or a newer format after a downgrade) is treated
+/// like a changed input: the book starts over instead of the job failing.
+async fn read_checkpoint(path: &FsPath) -> anyhow::Result<Option<SyncCheckpoint>> {
+    let bytes = match fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(checkpoint) => Ok(Some(checkpoint)),
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                path = %path.display(),
+                "discarding a read-along checkpoint that could not be read"
+            );
+            Ok(None)
+        }
     }
 }
 
@@ -5582,6 +5598,20 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
             assert_eq!(report.chapters[0].status, ChapterStatus::Failed);
             assert!(report.chapters[0].error.is_some());
             assert_eq!(report.chapters[1].status, ChapterStatus::Aligned);
+        }
+
+        #[tokio::test]
+        async fn an_unreadable_checkpoint_restarts_the_book_instead_of_failing_the_job() {
+            let book = ChapterBook::new(2);
+            let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
+            let checkpoint = sync_checkpoint_path(&book.state, &job);
+            std::fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+            std::fs::write(&checkpoint, b"{\"fingerprint\": tru").unwrap();
+
+            let generated = book.run_job(&job, None).await.unwrap();
+            assert!(generated.failed.is_empty());
+            assert_eq!(book.calls(), ["1.wav", "2.wav"]);
+            assert_eq!(starts(&book.map()).len(), 2);
         }
 
         fn gaps_of(gaps: &[alignment::RecoveryGap]) -> Vec<(f64, f64)> {
