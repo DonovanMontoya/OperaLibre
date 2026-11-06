@@ -49,6 +49,17 @@ public class DownloadSourcePolicyTest {
         assertFalse(stored.allows(new URL("https://books.example/api/books/1/cover")));
     }
 
+    @Test public void escapedBasePathRoundTripsThroughTheStoredJob() throws Exception {
+        for (String base : new String[] {"audio%20books", "100%25"}) {
+            DownloadSourcePolicy stored = DownloadSourcePolicy.forServer(
+                DownloadSourcePolicy.forServer("https://books.example/" + base).serverAddress()
+            );
+            assertNotNull(base, stored);
+            assertTrue(base, stored.allows(new URL("https://books.example/" + base + "/api/books/1/cover")));
+            assertFalse(base, stored.allows(new URL("https://books.example/api/books/1/cover")));
+        }
+    }
+
     @Test public void jobsSavedWithoutAServerKeepTheirSourceOrigin() throws Exception {
         DownloadSourcePolicy legacy = DownloadSourcePolicy.forSourceOrigin(new URL("https://books.example/api/books/1/download"));
         assertTrue(legacy.allows(new URL("https://books.example/files/1")));
