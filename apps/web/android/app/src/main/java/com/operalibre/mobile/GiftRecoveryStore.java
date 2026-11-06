@@ -90,7 +90,7 @@ final class GiftRecoveryStore {
                     files.add(file);
                 } catch (ErrnoException error) { if (error.errno != OsConstants.ENOENT) throw error; }
             }
-            for (File file : files) Os.unlink(file.getPath());
+            for (File file : files) Os.remove(file.getPath());
             syncDirectory(parent);
             return null;
         });
