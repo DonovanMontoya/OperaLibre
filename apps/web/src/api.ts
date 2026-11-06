@@ -1170,9 +1170,7 @@ async function saveOperaLibreProgress(bookId: string, progress: ProgressWrite, o
   const { updatedAt, trackId, positionSeconds, bookPositionSeconds, durationSeconds, baseUpdatedAt, recording } = progress;
   return request<Progress>(`/api/books/${encodeURIComponent(bookId)}/progress`, {
     method: "PUT",
-    // The pagehide save would otherwise be cancelled with the closing tab.
-    // The body is a few hundred bytes, far under keepalive's 64 KB budget.
-    keepalive: apiIsSameOrigin(),
+    keepalive: !!options?.keepalive && apiIsSameOrigin(),
     signal: options?.signal,
     body: JSON.stringify({
       trackId, positionSeconds, bookPositionSeconds, durationSeconds,

@@ -7,6 +7,12 @@ export type ProgressWriteOptions = {
   intentionalRegression?: boolean;
   intentionalSeek?: boolean;
   signal?: AbortSignal;
+  /**
+   * Let the save outlive a closing page. Browsers cap all outstanding
+   * keepalive bodies together at 64 KB, so only the one-at-a-time playback
+   * saves ask for it, never a bulk replay.
+   */
+  keepalive?: boolean;
 };
 
 /** The client contract. Server protocols and credential formats stay in adapters. */

@@ -263,7 +263,9 @@ export function useProgressSync({
               intentionalSeek:
                 persistedSeekPending || entry.intentionalSeekGeneration
                 > (acknowledgedSeekGenerationRef.current.get(entry.bookId) ?? 0),
-              signal: abortController.signal
+              signal: abortController.signal,
+              // The pagehide save would otherwise be cancelled with the tab.
+              keepalive: true
             }
           );
           acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, entry.bookId, entry.seekIntentId);
