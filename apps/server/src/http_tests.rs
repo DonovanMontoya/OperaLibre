@@ -6067,6 +6067,25 @@ async fn spread_guessing_cannot_lock_the_owner_out() {
     assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
 }
 
+/// Signing in often must not count toward the limit that marks a name as
+/// under attack, or an owner's own successes would slow their next typo.
+#[tokio::test]
+async fn successful_sign_ins_do_not_count_against_the_name() {
+    let server = TestServer::start(0).await;
+    let password = reader_with_generated_password(&server, "target").await;
+    let device = std::net::IpAddr::from([192, 0, 2, 44]);
+    for _ in 0..3 {
+        sign_in_from(&server, device, "target", &password)
+            .await
+            .expect("the owner signs in");
+    }
+    let attempts = server.state.login_attempts.lock().await;
+    let failures = |key: &String| attempts.get(key).map_or(0, |throttle| throttle.failures);
+    let keys = super::LoginThrottleKeys::new(device, "target");
+    assert_eq!(failures(&keys.username), 0);
+    assert_eq!(failures(&keys.ip), 0);
+}
+
 /// A flood of made-up names that fills the throttle map must not turn into a
 /// lockout for everyone else.
 #[tokio::test]

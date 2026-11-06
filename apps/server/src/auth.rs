@@ -987,15 +987,18 @@ pub(crate) async fn authenticate_and_open_session(
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
     // A success clears only this address's counter for the account. The
-    // per-address counter stays: otherwise anyone holding one valid account
-    // could sign in to it between guesses at others and never meet the address
-    // limit. The username counter stays too: it no longer stands in the way of
-    // a clean address, and clearing it would hand everyone guessing at this
-    // name a fresh allowance each time its owner signs in.
+    // address and username counters just take back this attempt's charge:
+    // clearing the address counter would let anyone holding one valid account
+    // sign in to it between guesses at others, and clearing the username
+    // counter would hand everyone guessing at this name a fresh allowance.
+    // Keeping the charge would let frequent sign-ins put the name over its
+    // attack limit.
     let mut attempts = state.login_attempts.lock().await;
     attempts.remove(&throttle_keys.account);
-    if let Some(ip) = attempts.get_mut(&throttle_keys.ip) {
-        ip.failures = ip.failures.saturating_sub(1);
+    for key in [&throttle_keys.ip, &throttle_keys.username] {
+        if let Some(throttle) = attempts.get_mut(key) {
+            throttle.failures = throttle.failures.saturating_sub(1);
+        }
     }
     drop(attempts);
 
