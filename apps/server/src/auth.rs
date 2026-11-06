@@ -1060,7 +1060,9 @@ pub(crate) fn login_ip_throttle_key(client_ip: IpAddr) -> String {
 /// that counter covers the /64; otherwise one machine could present a clean
 /// address on every attempt. Link-local, unique local (which includes
 /// Tailscale) and other non-public IPv6 addresses are each a device of their
-/// own, and count alone.
+/// own, and count alone. Known limit: a host on the local network that picks
+/// its own ULA or link-local addresses is not held to this budget. Grouping
+/// them would let one device's typos lock out its neighbours.
 pub(crate) fn login_throttle_network(client_ip: IpAddr) -> String {
     match client_ip.to_canonical() {
         // Global unicast is 2000::/3.
@@ -1211,7 +1213,10 @@ fn evict_weakest_login_throttle(
 /// [`LoginThrottleKeys::is_locked`] makes now. Besides each counter's own
 /// limit, an (address, username) pair with a recent failure is what holds its
 /// address to one guess a window while that username is under attack, even
-/// with a single failure.
+/// with a single failure. A /64 counter with a recent failure is kept too:
+/// every fresh address in the /64 is clean, so that counter is all that
+/// holds the network to its budget, and two networks could otherwise evict
+/// each other's counters under a full map.
 fn login_throttle_holds_lock(
     attempts: &HashMap<String, LoginThrottle>,
     key: &str,
@@ -1224,7 +1229,8 @@ fn login_throttle_holds_lock(
     // A pair key is `ip:{address}:user:{name}`; an address never contains
     // `user`, so the first match is where the username key starts.
     let Some(username_at) = key.find(":user:") else {
-        return throttle.is_locked(now, LOGIN_IP_MAX_FAILURES);
+        return throttle.is_locked(now, LOGIN_IP_MAX_FAILURES)
+            || (key.ends_with("/64") && !throttle.is_stale(now));
     };
     throttle.is_locked(now, LOGIN_MAX_FAILURES)
         || (!throttle.is_stale(now)

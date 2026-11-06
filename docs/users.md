@@ -62,7 +62,9 @@ Tokens are random opaque strings. Sessions end on logout, account deletion, or 3
 
 Failed sign-ins are rate limited: after 5 failures for a username from one address (or 25 from one address across all usernames), further attempts from that address are rejected for 60 seconds. Other devices can still sign in. If a username draws 50 failures from many addresses, each address that has failed against it gets one attempt a minute until the guessing stops; a device that has not failed against it signs in as usual.
 
-The server sees an address, not a device. Devices behind one public address, such as a home router or a mobile carrier, count as one address when they reach the server from outside, and so do all clients of a reverse proxy unless it runs on the same machine and sends `X-Forwarded-For`. On a public IPv6 network, the 25-failure limit covers the device's whole /64 network, since a single device can use any address in it.
+The server sees an address, not a device. Devices behind one public address, such as a home router or a mobile carrier, count as one address when they reach the server from outside, and so do all clients of a reverse proxy unless it runs on the same machine and sends `X-Forwarded-For`. On a public IPv6 network, the 25-failure limit covers the device's whole /64 network, since a single device can use any address in it. Local IPv6 addresses (link-local, unique local and Tailscale) each count alone, so devices on one network don't lock each other out; the tradeoff is that a device on your local network that picks its own local addresses isn't held to that limit.
+
+The server keeps failed sign-ins in a table of limited size. Someone guessing from a very large number of addresses, such as many IPv6 networks or a device on your local network cycling its own addresses, can fill it. New sign-ins are then rejected until the guessing has stopped for a minute. Devices that are already signed in keep working.
 
 ## Resetting a forgotten admin password
 

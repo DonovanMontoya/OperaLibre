@@ -8331,6 +8331,55 @@ async fn a_login_throttle_map_full_of_locks_grows_to_a_ceiling_then_refuses() {
     assert!(attempts.contains_key("ip:198.18.0.0"));
 }
 
+/// Under a map full of locks, the only evictable entries would be /64
+/// counters below their limit. Two public networks alternating fresh
+/// addresses against an attacked name must not evict each other's counters
+/// and reset their budgets.
+#[cfg(unix)]
+#[tokio::test]
+async fn public_ipv6_networks_cannot_evict_each_others_budget_under_a_full_map() {
+    use std::net::{IpAddr, Ipv6Addr};
+
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let now = super::unix_now_seconds();
+    {
+        let mut attempts = state.login_attempts.lock().await;
+        for index in 0..super::LOGIN_THROTTLE_MAX_ENTRIES {
+            attempts.insert(
+                format!("ip:198.18.{}.{}", index / 256, index % 256),
+                super::LoginThrottle {
+                    failures: super::LOGIN_IP_MAX_FAILURES,
+                    last_failure: now,
+                },
+            );
+        }
+        attempts.insert(
+            super::login_throttle_key("target"),
+            super::LoginThrottle {
+                failures: super::LOGIN_ACCOUNT_MAX_FAILURES,
+                last_failure: now,
+            },
+        );
+    }
+
+    let networks = [0x2001_0db8_0000_0001_u64, 0x2001_0db8_0000_0002];
+    let mut admitted = [0_u32; 2];
+    for host in 1..=u64::from(super::LOGIN_IP_MAX_FAILURES) * 2 {
+        for (network, admitted) in networks.iter().zip(&mut admitted) {
+            let address = Ipv6Addr::from((u128::from(*network) << 64) | u128::from(host));
+            let keys = super::LoginThrottleKeys::new(IpAddr::V6(address), "target");
+            if keys.is_locked(&*state.login_attempts.lock().await, now) {
+                continue;
+            }
+            assert!(super::record_login_failures(&state, keys.all()).await);
+            *admitted += 1;
+        }
+    }
+
+    assert_eq!(admitted, [super::LOGIN_IP_MAX_FAILURES; 2]);
+}
+
 #[test]
 fn nonpositive_prefix_durations_do_not_discard_reported_book_positions() {
     for duration in [None, Some(0.0), Some(-1.0)] {
