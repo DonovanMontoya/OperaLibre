@@ -54,6 +54,7 @@ struct ContractBroker {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoopbackMode {
     Good,
+    Resumed,
     Forged,
     BadReceipt,
     Cancel,
@@ -73,6 +74,7 @@ async fn authenticated_loopback(mode: LoopbackMode) -> anyhow::Result<()> {
     const ROOM: &str = "room____________";
     const GIFT: &str = "gift____________";
     const PREFIX: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let generation = if mode == LoopbackMode::Resumed { 1 } else { 0 };
     let state = ContractBroker {
         queues: Arc::new(tokio::sync::Mutex::new([Vec::new(), Vec::new()])),
         changed: Arc::new(tokio::sync::Notify::new()),
@@ -96,7 +98,8 @@ async fn authenticated_loopback(mode: LoopbackMode) -> anyhow::Result<()> {
                             _ => return StatusCode::FORBIDDEN.into_response(),
                         };
                         if room != ROOM
-                            || body.get("generation").and_then(|v| v.as_u64()).unwrap_or(0) != 0
+                            || body.get("generation").and_then(|v| v.as_u64()).unwrap_or(0)
+                                != generation
                         {
                             return StatusCode::CONFLICT.into_response();
                         }
@@ -157,6 +160,7 @@ async fn authenticated_loopback(mode: LoopbackMode) -> anyhow::Result<()> {
     let challenge = URL_SAFE_NO_PAD.encode([4_u8; 32]);
     let send = |sequence: u64, kind: &str, message: String| {
         let mut body = recipient.clone();
+        body["generation"] = generation.into();
         body["sequence"] = sequence.into();
         body["kind"] = kind.into();
         body["message"] = message.into();
@@ -165,14 +169,6 @@ async fn authenticated_loopback(mode: LoopbackMode) -> anyhow::Result<()> {
             .json(&body)
             .send()
     };
-    send(
-        1,
-        "ready",
-        serde_json::json!({"challenge": challenge}).to_string(),
-    )
-    .await?
-    .error_for_status()?;
-
     let bytes: Vec<u8> = (0..50_000).map(|n| (n % 251) as u8).collect();
     let hex = |value: &[u8]| {
         value
@@ -181,6 +177,23 @@ async fn authenticated_loopback(mode: LoopbackMode) -> anyhow::Result<()> {
             .collect::<String>()
     };
     let digest = hex(&Sha256::digest(&bytes));
+    let resume_offset = if mode == LoopbackMode::Resumed {
+        20_000
+    } else {
+        0
+    };
+    let prefix = if resume_offset > 0 {
+        hex(&Sha256::digest(&bytes[..resume_offset]))
+    } else {
+        PREFIX.to_string()
+    };
+    let mut ready = serde_json::json!({"challenge": challenge});
+    if resume_offset > 0 {
+        ready["resume"] = serde_json::json!({"offset":resume_offset,"prefixSha256":prefix});
+    }
+    send(1, "ready", ready.to_string())
+        .await?
+        .error_for_status()?;
     let mut source = tempfile::tempfile()?;
     source.write_all(&bytes)?;
     let signing = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
@@ -198,7 +211,7 @@ async fn authenticated_loopback(mode: LoopbackMode) -> anyhow::Result<()> {
             payload: "producer".into(),
             signature: "producer-secret".into(),
         },
-        0,
+        generation,
         tokio::fs::File::from_std(source),
         bytes.len() as u64,
         expires,
@@ -213,7 +226,7 @@ async fn authenticated_loopback(mode: LoopbackMode) -> anyhow::Result<()> {
 
     let envelope = loop {
         let notified = state.changed.notified();
-        let response = client.post(format!("http://{address}/poll/{ROOM}")).json(&serde_json::json!({"payload":"recipient","signature":"recipient-secret","after":0})).send().await?.error_for_status()?;
+        let response = client.post(format!("http://{address}/poll/{ROOM}")).json(&serde_json::json!({"payload":"recipient","signature":"recipient-secret","after":0,"generation":generation})).send().await?.error_for_status()?;
         let signals: Vec<serde_json::Value> = response.json().await?;
         if let Some(signal) = signals.first() {
             assert_eq!(signal["sequence"], 1);
@@ -236,9 +249,9 @@ async fn authenticated_loopback(mode: LoopbackMode) -> anyhow::Result<()> {
     assert_eq!(offer["expiresAt"], expires);
     assert_eq!(offer["archiveSize"], bytes.len());
     assert_eq!(offer["archiveSha256"], digest);
-    assert_eq!(offer["generation"], 0);
-    assert_eq!(offer["offset"], 0);
-    assert_eq!(offer["prefixSha256"], PREFIX);
+    assert_eq!(offer["generation"], generation);
+    assert_eq!(offer["offset"], resume_offset);
+    assert_eq!(offer["prefixSha256"], prefix);
     assert_eq!(offer["challenge"], challenge);
     let description = offer["offer"].as_str().unwrap();
 
@@ -271,7 +284,7 @@ async fn authenticated_loopback(mode: LoopbackMode) -> anyhow::Result<()> {
             .ok_or_else(|| anyhow::anyhow!("missing answer"))?,
     )?;
     let transcript = format!(
-        "operalibre-peer-proof-v1\n{ROOM}\n{GIFT}\n{expires}\n0\n{}\n{digest}\n0\n{PREFIX}\n{challenge}\n{}\n{}",
+        "operalibre-peer-proof-v1\n{ROOM}\n{GIFT}\n{expires}\n{generation}\n{}\n{digest}\n{resume_offset}\n{prefix}\n{challenge}\n{}\n{}",
         bytes.len(),
         hex(&Sha256::digest(description.as_bytes())),
         hex(&Sha256::digest(answer.as_bytes()))
@@ -309,9 +322,11 @@ async fn authenticated_loopback(mode: LoopbackMode) -> anyhow::Result<()> {
             "forged proof received archive data"
         );
     } else {
+        let mut staged = tempfile::tempfile()?;
+        staged.write_all(&bytes[..resume_offset])?;
         let mut receiver = crate::share_transfer::Receiver::resume(
-            tempfile::tempfile()?,
-            0,
+            staged,
+            resume_offset as u64,
             bytes.len() as u64,
             Sha256::digest(&bytes).into(),
         )?;
@@ -383,7 +398,7 @@ async fn authenticated_loopback(mode: LoopbackMode) -> anyhow::Result<()> {
         }
         let result = sender.await?;
         match mode {
-            LoopbackMode::Good => result?,
+            LoopbackMode::Good | LoopbackMode::Resumed => result?,
             LoopbackMode::BadReceipt => assert!(
                 result
                     .unwrap_err()
@@ -400,6 +415,16 @@ async fn authenticated_loopback(mode: LoopbackMode) -> anyhow::Result<()> {
     }
     recipient_peer.close().await?;
     server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn authenticated_peer_resumes_verified_prefix_at_rotated_generation() -> anyhow::Result<()> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(45),
+        authenticated_loopback(LoopbackMode::Resumed),
+    )
+    .await??;
     Ok(())
 }
 

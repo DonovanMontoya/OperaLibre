@@ -13,7 +13,7 @@ let loads = 0;
 // Imports are rewritten to read the supplied mocks and the result is loaded by
 // Node's own type stripping, which the minimum supported Node 22.12 already has;
 // `stripTypeScriptTypes` from `node:module` only exists from 22.13.
-export function loadHook(name: string, dependencies: Record<string, unknown>) {
+export function loadHook(name: string, dependencies: Record<string, unknown>, exportName = name) {
   const key = `${name}:${loads++}`;
   registry.set(key, (id: string) => {
     // Gift import is disabled by default; these hook fixtures have no staged
@@ -36,7 +36,7 @@ export function loadHook(name: string, dependencies: Record<string, unknown>) {
   try {
     const file = join(directory, `${name}.mts`);
     writeFileSync(file, source);
-    return require(file)[name] as (options: any) => any;
+    return require(file)[exportName] as (options: any) => any;
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

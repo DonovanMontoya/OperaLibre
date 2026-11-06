@@ -1,6 +1,6 @@
 import { registerPlugin } from "@capacitor/core";
 import { isSupportedAudioFileName } from "./mediaFiles.ts";
-import { publishGiftIndex } from "./giftLibraryIndex.ts";
+import { publishGiftIndex, recoverGiftIndex } from "./giftLibraryIndex.ts";
 import type { Book, MetadataSummary, Track } from "./types";
 
 export type NativeGiftAsset = { name: string; size: number; sha256: string; kind: "ebook" | "audio" | "cover" | "metadata" | "alignment" };
@@ -65,6 +65,18 @@ async function withImportLock<T>(storage: JournalStorage, action: () => Promise<
 
 export async function recoverGiftExtraction(storage: JournalStorage, extract: NativeGiftPlugin["extract"]): Promise<"imported" | "duplicate" | null> {
   return withImportLock(storage, () => recoverExtraction(storage, extract));
+}
+
+/** Removal must not race extraction or leave a journal that restores the book. */
+export async function removeGiftImport(storage: JournalStorage, bookId: string, remove: () => Promise<void>): Promise<void> {
+  if (!/^device:gift:[A-Za-z0-9_-]{16,128}$/.test(bookId)) throw new Error("Invalid gift book identity.");
+  return withImportLock(storage, async () => {
+    // Recover a committed publication so removal can still find its local files.
+    recoverGiftIndex(storage);
+    const raw = storage.getItem(IMPORT_JOURNAL);
+    if (raw && `device:gift:${JSON.parse(raw).giftId}` === bookId) storage.removeItem(IMPORT_JOURNAL);
+    await remove();
+  });
 }
 
 export async function stageGiftImport(storage: JournalStorage, giftId: string, assets: NativeGiftAsset[], metadata: GiftMetadata, extract: NativeGiftPlugin["extract"]): Promise<"imported" | "duplicate"> {

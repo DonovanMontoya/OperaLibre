@@ -18,6 +18,15 @@ pub(crate) fn verify_resume_request<F: Read + Seek>(
     expected_size: u64,
     request: &ResumeRequest,
 ) -> anyhow::Result<u64> {
+    verify_resume_request_checked(file, expected_size, request, || Ok(()))
+}
+
+pub(crate) fn verify_resume_request_checked<F: Read + Seek>(
+    file: &mut F,
+    expected_size: u64,
+    request: &ResumeRequest,
+    check: impl FnMut() -> anyhow::Result<()>,
+) -> anyhow::Result<u64> {
     let text = request.prefix_sha256.as_bytes();
     anyhow::ensure!(
         text.len() == 64
@@ -30,7 +39,7 @@ pub(crate) fn verify_resume_request<F: Read + Seek>(
     for (i, item) in digest.iter_mut().enumerate() {
         *item = u8::from_str_radix(std::str::from_utf8(&text[i * 2..i * 2 + 2])?, 16)?;
     }
-    verify_resume_prefix(file, request.offset, expected_size, digest)?;
+    verify_prefix_checked(file, request.offset, expected_size, digest, check)?;
     Ok(request.offset)
 }
 
@@ -42,6 +51,17 @@ pub(crate) fn verify_resume_prefix<F: Read + Seek>(
     expected_size: u64,
     prefix_digest: [u8; 32],
 ) -> anyhow::Result<()> {
+    verify_prefix_checked(file, offset, expected_size, prefix_digest, || Ok(()))
+}
+
+fn verify_prefix_checked<F: Read + Seek>(
+    file: &mut F,
+    offset: u64,
+    expected_size: u64,
+    prefix_digest: [u8; 32],
+    mut check: impl FnMut() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    check()?;
     anyhow::ensure!(offset <= expected_size, "resume offset exceeds archive");
     anyhow::ensure!(
         file.seek(SeekFrom::End(0))? == expected_size,
@@ -52,6 +72,7 @@ pub(crate) fn verify_resume_prefix<F: Read + Seek>(
     let mut remaining = offset;
     let mut buffer = [0_u8; 8192];
     while remaining > 0 {
+        check()?;
         let wanted = usize::try_from(remaining.min(buffer.len() as u64))?;
         let count = file.read(&mut buffer[..wanted])?;
         anyhow::ensure!(count != 0, "archive prefix ended early");
@@ -59,6 +80,7 @@ pub(crate) fn verify_resume_prefix<F: Read + Seek>(
         remaining -= count as u64;
     }
     let actual: [u8; 32] = hash.finalize().into();
+    check()?;
     anyhow::ensure!(actual == prefix_digest, "resume prefix mismatch");
     Ok(())
 }
@@ -184,6 +206,23 @@ impl<F: Read + Write + Seek> Receiver<F> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn resume_prefix_stops_reading_when_cancelled() {
+        let mut input = Cursor::new(vec![1_u8; 100_000]);
+        let request = ResumeRequest {
+            offset: 100_000,
+            prefix_sha256: "0".repeat(64),
+        };
+        let mut checks = 0;
+        let result = verify_resume_request_checked(&mut input, 100_000, &request, || {
+            checks += 1;
+            anyhow::ensure!(checks < 4, "cancelled");
+            Ok(())
+        });
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert!(input.position() < 100_000);
+    }
 
     #[test]
     fn interruption_resume_rehashes_prefix_and_verifies_complete_file() {

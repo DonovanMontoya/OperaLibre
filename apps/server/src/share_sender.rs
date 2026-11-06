@@ -49,6 +49,7 @@ pub(crate) struct PeerAuthentication {
 #[serde(deny_unknown_fields)]
 struct Ready {
     challenge: String,
+    resume: Option<crate::share_transfer::ResumeRequest>,
 }
 
 #[derive(serde::Deserialize)]
@@ -230,7 +231,7 @@ impl AuthSignaling {
     }
 }
 
-/// Initial authenticated exchange; no resume or trickle ICE is negotiated.
+/// Authenticated exchange over an already authorized signaling generation.
 pub(crate) async fn run_authenticated_peer(
     broker: crate::share_broker::BrokerClient,
     room: String,
@@ -250,6 +251,42 @@ pub(crate) async fn run_authenticated_peer(
     };
     let ready: Ready = serde_json::from_str(&ready_message)?;
     decode_32(&ready.challenge)?;
+    let (file, offset, prefix) = if let Some(request) = ready.resume {
+        anyhow::ensure!(generation > 0, "resume requires a rotated generation");
+        let file = file.into_std().await;
+        let stopped = stop.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut file = file;
+            let offset = crate::share_transfer::verify_resume_request_checked(
+                &mut file,
+                size,
+                &request,
+                || {
+                    anyhow::ensure!(
+                        !*stopped.borrow() && stopped.has_changed().is_ok(),
+                        "share cancelled"
+                    );
+                    anyhow::ensure!(
+                        SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() < expires_at,
+                        "share expired"
+                    );
+                    Ok(())
+                },
+            )?;
+            Ok::<_, anyhow::Error>((
+                tokio::fs::File::from_std(file),
+                offset,
+                request.prefix_sha256,
+            ))
+        })
+        .await??
+    } else {
+        (
+            file,
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+        )
+    };
     let runtime = webrtc::runtime::default_runtime()
         .ok_or_else(|| anyhow::anyhow!("WebRTC runtime unavailable"))?;
     let mut media = MediaEngine::default();
@@ -282,7 +319,6 @@ pub(crate) async fn run_authenticated_peer(
         )?;
         // The proof primitive accepts descriptions of at most 4096 bytes.
         anyhow::ensure!(offer.len() <= 4096, "offer exceeds proof limit");
-        let prefix = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         let binding = crate::share_peer_proof::PeerProofBinding {
             room: room.clone(),
             gift_id: auth.gift_id.clone(),
@@ -290,8 +326,8 @@ pub(crate) async fn run_authenticated_peer(
             generation,
             archive_size: size,
             archive_sha256: auth.archive_sha256.clone(),
-            offset: 0,
-            prefix_sha256: prefix.into(),
+            offset,
+            prefix_sha256: prefix.clone(),
             challenge: ready.challenge.clone(),
         };
         let signed = crate::share_preview_crypto::sign_peer_offer(
@@ -303,8 +339,8 @@ pub(crate) async fn run_authenticated_peer(
                 archive_size: size,
                 archive_sha256: &auth.archive_sha256,
                 generation,
-                offset: 0,
-                prefix_sha256: prefix,
+                offset,
+                prefix_sha256: &prefix,
                 challenge: &ready.challenge,
                 offer: &offer,
             },
@@ -358,7 +394,7 @@ pub(crate) async fn run_authenticated_peer(
                 file,
                 "archive",
                 size,
-                0,
+                offset,
                 expires_at,
                 cancelled.clone(),
             )
@@ -654,6 +690,53 @@ pub(crate) async fn send_archive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn invalid_resume_prefix_is_rejected_before_offer() -> anyhow::Result<()> {
+        use axum::{
+            Json, Router, extract::Path, http::StatusCode, response::IntoResponse, routing::post,
+        };
+        use std::io::Write;
+        let app = Router::new().route("/{action}/{room}", post(|Path((action, _)): Path<(String, String)>| async move {
+            if action != "poll" { panic!("an invalid prefix must not produce signaling"); }
+            (StatusCode::OK, Json(serde_json::json!([{"sequence":1,"kind":"ready","message":serde_json::json!({"challenge":URL_SAFE_NO_PAD.encode([1_u8;32]),"resume":{"offset":1,"prefixSha256":"0".repeat(64)}}).to_string()}]))).into_response()
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let task = tokio::spawn(async move { axum::serve(listener, app).await });
+        let broker = crate::share_broker::BrokerClient::local(&format!("http://{address}/"))?;
+        let mut file = tempfile::tempfile()?;
+        file.write_all(b"x")?;
+        let (_cancel, stopped) = tokio::sync::watch::channel(false);
+        let result = run_authenticated_peer(
+            broker,
+            "room____________".into(),
+            crate::share_broker::Capability {
+                payload: "p".into(),
+                signature: "s".into(),
+            },
+            1,
+            tokio::fs::File::from_std(file),
+            1,
+            u64::MAX,
+            PeerAuthentication {
+                gift_id: "gift____________".into(),
+                archive_sha256: "a".repeat(64),
+                signing: ed25519_dalek::SigningKey::from_bytes(&[1; 32]),
+                preview_key: [2; 32],
+            },
+            stopped,
+        )
+        .await;
+        task.abort();
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("resume prefix mismatch")
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn cancellation_interrupts_a_blocked_final_send() {
         let (sender, mut receiver) = tokio::sync::watch::channel(false);

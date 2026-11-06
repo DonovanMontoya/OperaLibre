@@ -5,6 +5,7 @@ import { readAudioFileTags, rangeSource, type AudioFileTags, type EmbeddedCover 
 import { isSupportedAudioFileName, storedMediaExtension } from "./mediaFiles";
 import { mergeLibraryBooks } from "./libraryMerge";
 import { recoverGiftIndex } from "./giftLibraryIndex";
+import { removeGiftImport } from "./giftDeviceImport";
 import type { AuthUser, Book, Chapter, MetadataSummary, Progress, Track } from "./types";
 import {
   summarizeBookProgress
@@ -531,16 +532,20 @@ export async function importDeviceAudioFiles(
 }
 
 export async function removeDeviceBook(bookId: string) {
-  const book = storedBooks().find((candidate) => candidate.id === bookId);
   const giftId = bookId.startsWith("device:gift:") ? bookId.slice("device:gift:".length) : "";
   const giftDirectory = /^[A-Za-z0-9_-]{16,128}$/.test(giftId) ? `device-library/gift-${giftId}` : null;
-  const giftEbook = giftDirectory ? book?.companions?.find(file => file.localFilePath?.startsWith(`${giftDirectory}/`) && !file.localFilePath.slice(giftDirectory.length + 1).includes("/"))?.localFilePath : undefined;
-  const primaryPath = book?.tracks[0]?.localFilePath ?? giftEbook;
-  const path = primaryPath?.split("/").slice(0, -1).join("/");
-  if (path) await Filesystem.rmdir({ path, directory: Directory.Data, recursive: true }).catch(() => undefined);
-  writeJson(LIBRARY_KEY, storedBooks().filter((candidate) => candidate.id !== bookId));
-  // Media and listening history have different lifetimes. Keep the compact
-  // progress record even when the on-device files are removed.
+  const remove = async () => {
+    const books = storedBooks();
+    const book = books.find((candidate) => candidate.id === bookId);
+    const path = giftDirectory ?? book?.tracks[0]?.localFilePath?.split("/").slice(0, -1).join("/");
+    // A failed shelf write must leave the listed book's files available.
+    writeJson(LIBRARY_KEY, books.filter((candidate) => candidate.id !== bookId));
+    if (path) await Filesystem.rmdir({ path, directory: Directory.Data, recursive: true }).catch(() => undefined);
+    // Media and listening history have different lifetimes. Keep the compact
+    // progress record even when the on-device files are removed.
+  };
+  if (giftDirectory) await removeGiftImport(localStorage, bookId, remove);
+  else await remove();
 }
 
 /** Pair one EPUB with an imported audiobook without contacting a server. */
