@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { giftBrokerReadiness } from "../src/giftBrokerReadiness.ts";
 
 const input = { transportSecure: true, brokerInput: "https://broker.example", ownerConfirmed: true };
+
+test("gift source module names are unambiguous on case-insensitive filesystems", async () => {
+  const files = (await readdir(new URL("../src/", import.meta.url))).filter(name => /^gift.*\.tsx?$/i.test(name));
+  const names = new Set<string>();
+  for (const file of files) {
+    const name = file.replace(/\.tsx?$/i, "").toLowerCase();
+    assert.equal(names.has(name), false, `Ambiguous gift module: ${file}`);
+    names.add(name);
+  }
+});
 
 test("local transport and owner statement never establish sharing readiness", () => {
   const steps = giftBrokerReadiness(input);

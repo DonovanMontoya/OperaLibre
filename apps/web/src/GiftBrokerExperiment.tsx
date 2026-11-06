@@ -3,7 +3,7 @@ import { isGiftBrokerTransportSecure, retryGiftBrokerRevocations } from "./api";
 import { ExperimentSection } from "./ExperimentSection";
 import { giftBrokerOrigin } from "./giftBrokerOrigin";
 import { giftBrokerReadiness } from "./giftBrokerReadiness";
-import { GiftBrokerReadiness } from "./GiftBrokerReadiness";
+import { GiftReadinessSteps } from "./GiftReadinessSteps";
 
 export function GiftBrokerExperiment() {
   const secretRef = useRef<HTMLInputElement>(null);
@@ -47,7 +47,7 @@ export function GiftBrokerExperiment() {
         <label className="admin-all-access"><input type="checkbox" style={{ width: "auto", minHeight: 0, flexShrink: 0 }} checked={ownerConfirmed} onChange={event => setOwnerConfirmed(event.currentTarget.checked)} disabled={busy} /><span>I control and trust this broker. This is my statement, not a verified ownership check.</span></label>
         <p role="status">{steps.find(step => step.id === "broker")!.label}. Sharing remains disabled regardless of these local checks.</p>
         <ExperimentSection title="Guided readiness and remaining blockers">
-          <GiftBrokerReadiness steps={steps} />
+          <GiftReadinessSteps steps={steps} />
         </ExperimentSection>
         <ExperimentSection title="Retry pending cleanup">
           <p>This test-only action sends the entered origin and owner secret to your connected OperaLibre server to retry its queued revocations. That server contacts the owner-controlled broker. It does not configure the broker or test gift transfer.</p>
