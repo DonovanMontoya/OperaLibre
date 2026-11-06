@@ -6012,40 +6012,61 @@ async fn sign_in_from(
     .await
 }
 
+/// A reader account with a generated password, for sign-in tests.
+async fn reader_with_generated_password(server: &TestServer, username: &str) -> String {
+    let owner = server.setup_owner().await;
+    let password = format!("test-{}", super::mint_identity_id());
+    let created = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({"username": username, "password": password, "isAdmin": false}),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    password
+}
+
 /// Guessing spread across many addresses holds each of them to one guess a
-/// window, but cannot keep the owner out: a device that has not failed
-/// against the name signs in with the right password.
+/// window, but cannot keep the account's owner out: a device that has not
+/// failed against the name signs in with the right password.
 #[tokio::test]
 async fn spread_guessing_cannot_lock_the_owner_out() {
     let server = TestServer::start(0).await;
-    server.setup_owner().await;
+    let password = reader_with_generated_password(&server, "target").await;
     let attacker = |host: u32| {
         std::net::IpAddr::V4(std::net::Ipv4Addr::from(
             u32::from(std::net::Ipv4Addr::new(10, 0, 0, 0)) + host,
         ))
     };
     for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
-        let error = sign_in_from(&server, attacker(host), "owner", "guess-password-1234")
-            .await
-            .unwrap_err();
+        let error = sign_in_from(
+            &server,
+            attacker(host),
+            "target",
+            &super::mint_identity_id(),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error.status, StatusCode::UNAUTHORIZED);
     }
 
     // An address that has guessed is refused before its password is checked,
     // even when this guess would have been right.
-    let error = sign_in_from(&server, attacker(1), "owner", "owner-password-1234")
+    let error = sign_in_from(&server, attacker(1), "target", &password)
         .await
         .unwrap_err();
     assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
 
     let owner_device = std::net::IpAddr::from([192, 0, 2, 44]);
-    let (user, _) = sign_in_from(&server, owner_device, "owner", "owner-password-1234")
+    let (user, _) = sign_in_from(&server, owner_device, "target", &password)
         .await
         .expect("the owner signs in from a device that has not failed");
-    assert_eq!(user.username, "owner");
+    assert_eq!(user.username, "target");
 
     // The owner signing in does not reopen the name to the guessers.
-    let error = sign_in_from(&server, attacker(2), "owner", "guess-password-1234")
+    let error = sign_in_from(&server, attacker(2), "target", &super::mint_identity_id())
         .await
         .unwrap_err();
     assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
@@ -6056,7 +6077,7 @@ async fn spread_guessing_cannot_lock_the_owner_out() {
 #[tokio::test]
 async fn a_full_login_throttle_map_still_admits_a_correct_password() {
     let server = TestServer::start(0).await;
-    server.setup_owner().await;
+    let password = reader_with_generated_password(&server, "target").await;
     let now = super::unix_now_seconds();
     {
         let mut attempts = server.state.login_attempts.lock().await;
@@ -6072,12 +6093,12 @@ async fn a_full_login_throttle_map_still_admits_a_correct_password() {
     }
 
     let address = std::net::IpAddr::from([192, 0, 2, 44]);
-    let error = sign_in_from(&server, address, "owner", "wrong-password-1234")
+    let error = sign_in_from(&server, address, "target", &super::mint_identity_id())
         .await
         .unwrap_err();
     assert_eq!(error.status, StatusCode::UNAUTHORIZED);
     let other = std::net::IpAddr::from([192, 0, 2, 45]);
-    sign_in_from(&server, other, "owner", "owner-password-1234")
+    sign_in_from(&server, other, "target", &password)
         .await
         .expect("a full map makes room for a new sign-in");
     assert!(server.state.login_attempts.lock().await.len() <= super::LOGIN_THROTTLE_MAX_ENTRIES);

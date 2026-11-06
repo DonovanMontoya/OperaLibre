@@ -8190,7 +8190,7 @@ async fn account_lockouts_slow_spread_guessing_without_locking_out_the_owner() {
         &super::HeaderMap::new(),
         super::LoginRequest {
             username: "target".to_string(),
-            password: "whatever-password-1234".to_string(),
+            password: super::mint_identity_id(),
         },
     )
     .await
@@ -8205,7 +8205,7 @@ async fn account_lockouts_slow_spread_guessing_without_locking_out_the_owner() {
         &super::HeaderMap::new(),
         super::LoginRequest {
             username: "target".to_string(),
-            password: "whatever-password-1234".to_string(),
+            password: super::mint_identity_id(),
         },
     )
     .await
@@ -8256,7 +8256,7 @@ async fn a_full_login_throttle_map_evicts_stale_then_oldest_entries() {
     let attempts = state.login_attempts.lock().await;
     assert_eq!(attempts.len(), super::LOGIN_THROTTLE_MAX_ENTRIES);
     for key in newcomer.all() {
-        assert_eq!(attempts[key].failures, 1, "{key} was not recorded");
+        assert_eq!(attempts.get(key).map(|throttle| throttle.failures), Some(1));
     }
     assert!(!attempts.contains_key("stale"));
     assert!(!attempts.contains_key("oldest"));
