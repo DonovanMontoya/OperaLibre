@@ -35,6 +35,7 @@ import { acknowledgeProgressSeekIntent, progressSeekStorage, progressSeekOptions
  */
 export function useLibrary({
   audioRef,
+  booksRef,
   currentUser,
   initialLibraryHydrated,
   isOperaLibre,
@@ -65,6 +66,7 @@ export function useLibrary({
   storeCanonicalServerProgress
 }: {
   audioRef: RefObject<HTMLAudioElement | null>;
+  booksRef: RefObject<Book[]>;
   currentUser: AuthUser;
   initialLibraryHydrated: RefObject<boolean>;
   isOperaLibre: boolean;
@@ -214,9 +216,12 @@ export function useLibrary({
       void Promise.all(nextBooks.map((book) => {
         if (book.source !== "server" || resumeReconciliationBookIdRef.current === book.id) return;
         const previousReplay = libraryProgressReplaysRef.current.get(book.id);
+        // A rescan supersedes the listing, but only a successor replay or
+        // session teardown takes ownership of this book's unsent progress.
+        const ownsReplay = () => libraryProgressReplaysRef.current.get(book.id) === replay;
         const replay = (previousReplay ?? Promise.resolve(null)).catch(() => null)
           .then(async (previousResult): Promise<LibraryProgressReplay> => {
-          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
+          if (!ownsReplay() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
           const deviceProgress = book.deviceBookId ? getDeviceProgress(book.deviceBookId) : null;
           const deviceBook = book.deviceBookId
             ? deviceBooks.find((candidate) => candidate.id === book.deviceBookId)
@@ -238,7 +243,7 @@ export function useLibrary({
             book.id
           );
           const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
-          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
+          if (!ownsReplay() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
           let local = freshestProgress(mappedDevice, checkpoint, cached);
           if (local && previousResult) {
             if (previousResult.saved.accepted === true
@@ -269,7 +274,7 @@ export function useLibrary({
           }
           const location = resolveProgressLocation(book.tracks, local);
           if (!location) return previousResult;
-          if (!isCurrentRequest() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
+          if (!ownsReplay() || resumeReconciliationBookIdRef.current === book.id) return previousResult;
           const attempted: Progress = identifyProgressRecording({
             ...local,
             trackId: location.trackId,
@@ -330,8 +335,11 @@ export function useLibrary({
         ? hydratedServerBooks
         : withoutCachedBookGains(await getCachedLibrary(currentUser.id));
       if (!isCurrentRequest()) return;
-      const cached = mergeDeviceAndServerBooks(cachedServer, deviceBooks);
-      applyLoadedBooks(cached, true);
+      // The current shelf may include rescan discoveries absent from the
+      // cache. A failed request cannot remove those books or their playback.
+      const currentBooks = booksRef.current;
+      const cached = currentBooks.length ? currentBooks : mergeDeviceAndServerBooks(cachedServer, deviceBooks);
+      if (!currentBooks.length || !startupNavigationResolved.current) applyLoadedBooks(cached, true);
       const retryIn = (delayMs: number) => {
         libraryRetryTimerRef.current = window.setTimeout(() => {
           libraryRetryTimerRef.current = null;
