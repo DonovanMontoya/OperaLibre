@@ -24,3 +24,5 @@ CLAUDE.md
 
 # Local test traces, benchmarks, and generated native test projects.
 output/
+
+__pycache__/
