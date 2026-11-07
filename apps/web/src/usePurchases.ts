@@ -634,7 +634,10 @@ export function usePurchases({
   // Refreshing Get books asks Libation to check Audible rather than reread its
   // last scan; the list reloads when that job finishes.
   async function refreshAudiblePurchases() {
-    if (canCheckAudible(libationStatus, libationRefreshPending || !!refreshLibationJob)) {
+    const canRefresh = currentUser.isAdmin
+      ? canCheckAudible(libationStatus, isRefreshingAudible)
+      : canBrowseLibation && libationStatus?.enabled && !isRefreshingAudible;
+    if (canRefresh) {
       await startLibationSync();
     } else {
       await loadLibationBooks();
