@@ -226,7 +226,10 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             assert not (data / "update-result.txt").exists()
             # Deliberately request takeover before readiness, reproducing the
             # old VERSION watcher timing. The shared lock must defer it.
-            starter = subprocess.Popen([str(root / "operalibre-service"), "--service-start"], cwd=scratch if external else root, env=env)
+            # The service start runs from the installation, where relative
+            # config paths have always resolved, so it gets the absolute path.
+            starter_env = dict(env, OPERALIBRE_SERVER_CONFIG=str(config)) if external else env
+            starter = subprocess.Popen([str(root / "operalibre-service"), "--service-start"], cwd=scratch if external else root, env=starter_env)
             assert updater.wait(timeout=20) == (1 if fails else 0)
             result = (data / "update-result.txt").read_text()
             assert result.startswith("Failed:" if fails else "Succeeded:"), result

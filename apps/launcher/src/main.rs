@@ -81,6 +81,10 @@ fn run() -> Result<(), String> {
     }
 
     let root = installation_root()?;
+    // Relative OPERALIBRE_SERVER_CONFIG and OPERALIBRE_DATA_DIR values have
+    // always resolved against the installation, wherever the launcher starts.
+    env::set_current_dir(&root)
+        .map_err(|error| format!("Could not open {}: {error}", root.display()))?;
 
     if arguments.get(1).is_some_and(|arg| arg == "--service-start") {
         return start_supervised_server(&root);
