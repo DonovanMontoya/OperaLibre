@@ -20,3 +20,8 @@ test("sign-in accepts marketplace URLs and rejects control characters and lookal
     assert.equal(validAudibleResponse(value), false, value);
   }
 });
+
+test("Audible hourly refresh limit is shown as the actionable error message", () => {
+  const message = "You have used all 3 Audible refreshes for this hour. Try again in 47 minutes.";
+  assert.equal(libationHelp(message), message);
+});

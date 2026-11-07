@@ -2290,6 +2290,12 @@ async fn approval_requests_are_deduplicated_and_can_be_declined() {
 async fn readers_get_three_libation_refreshes_per_hour_while_admins_are_unlimited() {
     let root = tempfile::tempdir().unwrap();
     let (state, _) = fake_libation_state(root.path());
+    std::fs::write(
+        root.path().join("libation-accounts.tsv"),
+        "owner@example.test\tOwner\tus\tYes\tYes\n",
+    )
+    .unwrap();
+    super::read_libation_status(&state, &admin_user()).await;
 
     for _ in 0..super::DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR {
         let created = super::sync_libation_library(
@@ -2380,6 +2386,12 @@ async fn readers_get_three_libation_refreshes_per_hour_while_admins_are_unlimite
 async fn simultaneous_reader_refreshes_join_before_spending_the_quota() {
     let root = tempfile::tempdir().unwrap();
     let (mut state, _) = fake_libation_state(root.path());
+    std::fs::write(
+        root.path().join("libation-accounts.tsv"),
+        "owner@example.test\tOwner\tus\tYes\tYes\n",
+    )
+    .unwrap();
+    super::read_libation_status(&state, &admin_user()).await;
     state.libation_config.reader_refreshes_per_hour = 1;
 
     // Start both calls together. The reservation lock makes the first publish

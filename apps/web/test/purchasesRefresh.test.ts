@@ -19,10 +19,10 @@ const connectedStatus: LibationStatus = {
 };
 
 function fixture({
-  admin = false, native = true, enabled = true, access = "approval", status = connectedStatus,
+  admin = false, native = true, enabled = true, canCheckAudible = true, access = "approval", status = connectedStatus,
   localMode = false, demoMode = false, server = "operalibre", sync = async () => ({ jobId: "refresh" })
 }: {
-  admin?: boolean; native?: boolean; enabled?: boolean; access?: LibationAccess; status?: LibationStatus;
+  admin?: boolean; native?: boolean; enabled?: boolean; canCheckAudible?: boolean | null; access?: LibationAccess; status?: LibationStatus;
   localMode?: boolean; demoMode?: boolean; server?: ServerType; sync?: () => Promise<JobCreated>;
 } = {}) {
   const states: unknown[] = [], refs: unknown[] = [];
@@ -55,7 +55,7 @@ function fixture({
     "./api": {
       getLibationAccess: async () => {
         counts.access++;
-        return { enabled, libationAccess: access, autoRefreshHours: 24, manualRefreshesPerHour: 3 };
+        return { enabled, ...(canCheckAudible === null ? {} : { canCheckAudible }), libationAccess: access, autoRefreshHours: 24, manualRefreshesPerHour: 3 };
       },
       getLibationStatus: async () => { counts.status++; return status; },
       getLibationBooks: async () => { counts.reads++; return []; },
@@ -180,6 +180,18 @@ test("administrator Get books refresh retains account and sign-in guards", async
       await f.render().loadLibationStatus();
       await f.render().refreshAudiblePurchases();
       assert.deepEqual(f.counts, { syncs, reads: syncs ? 0 : 1, access: 0, status: syncs ? 1 : 2 });
+    });
+  }
+});
+
+test("reader refresh only rereads the catalog without permission to check Audible", async (t) => {
+  for (const canCheckAudible of [false, null]) {
+    await t.test(canCheckAudible === null ? "older server" : "no signed-in account", async () => {
+      const f = fixture({ canCheckAudible });
+      await f.render().loadLibationStatus();
+      assert.equal(f.render().canBrowseLibation, true);
+      await f.render().refreshAudiblePurchases();
+      assert.deepEqual(f.counts, { syncs: 0, reads: 1, access: 2, status: 0 });
     });
   }
 });

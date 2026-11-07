@@ -9956,3 +9956,135 @@ async fn a_burst_of_six_legitimate_logins_can_wait_for_password_workers() {
         assert!(!token.is_empty());
     }
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_sync_without_a_signed_in_account_preserves_reader_quota() {
+    let mut server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "audible-reader").await;
+    let (fake, _) = unit_tests::fake_libation_state(server._root.path());
+    server.state.libation_config = fake.libation_config;
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let timestamps = vec![unix_now_seconds()];
+    server
+        .state
+        .libation_refreshes
+        .mutate(|store| {
+            store
+                .manual_refreshes
+                .insert(reader_id.clone(), timestamps.clone());
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    for accounts in ["", "owner@example.test\tPrivate Name\tus\tYes\tNo\n"] {
+        std::fs::write(server._root.path().join("libation-accounts.tsv"), accounts).unwrap();
+        for token in [&reader, &owner] {
+            let response = server
+                .send_json("POST", "/api/libation/sync", token, serde_json::json!({}))
+                .await;
+            assert_eq!(
+                response.status,
+                StatusCode::BAD_REQUEST,
+                "{}",
+                response.text()
+            );
+            assert!(
+                response.json()["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Sign in")
+            );
+            assert_eq!(
+                server
+                    .state
+                    .libation_refreshes
+                    .read()
+                    .await
+                    .manual_refreshes[&reader_id],
+                timestamps
+            );
+            assert!(server.state.jobs.read().await.is_empty());
+            assert!(!server._root.path().join("libation-scans.log").exists());
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_access_reports_check_capability_without_account_details() {
+    let mut server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "audible-reader").await;
+    let (fake, _) = unit_tests::fake_libation_state(server._root.path());
+    server.state.libation_config = fake.libation_config;
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    for (accounts, can_check) in [
+        ("", false),
+        ("owner@example.test\tPrivate Name\tus\tYes\tNo\n", false),
+        ("owner@example.test\tPrivate Name\tus\tYes\tYes\n", true),
+        (
+            "owner@example.test\tPrivate Name\tus\tYes\tYes\nother@example.test\tOther Name\tus\tYes\tNo\n",
+            true,
+        ),
+    ] {
+        std::fs::write(server._root.path().join("libation-accounts.tsv"), accounts).unwrap();
+        let response = server.get("/api/libation/access", &reader).await;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response.json(),
+            serde_json::json!({
+                "enabled": true, "canCheckAudible": can_check, "libationAccess": "approval",
+                "autoRefreshHours": DEFAULT_LIBATION_AUTO_REFRESH_HOURS,
+                "manualRefreshesPerHour": DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR
+            })
+        );
+    }
+
+    // A different administrator's pending sign-in is private to that admin,
+    // but still prevents readers from starting a check on a healthy account.
+    let job_guard = server.state.libation_job_lock.clone().lock_owned().await;
+    let (response_sender, _response_receiver) = std::sync::mpsc::channel::<String>();
+    let (_completion_sender, completion) =
+        tokio::sync::oneshot::channel::<Result<String, String>>();
+    server.state.libation_login_sessions.lock().await.insert(
+        "private-session".into(),
+        PendingLibationLogin {
+            profile_id: "new-profile".into(),
+            started_by: "other-admin".into(),
+            created_account: false,
+            login_url: "https://www.amazon.com/ap/signin?session=private".into(),
+            expires_at: unix_now_seconds().saturating_add(60),
+            response_sender,
+            completion,
+            _job_guard: Arc::new(job_guard),
+        },
+    );
+    let response = server.get("/api/libation/access", &reader).await;
+    assert_eq!(response.json()["canCheckAudible"], false);
+    assert!(!response.text().contains("private"));
+    let response = server
+        .send_json("POST", "/api/libation/sync", &reader, serde_json::json!({}))
+        .await;
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert!(
+        server
+            .state
+            .libation_refreshes
+            .read()
+            .await
+            .manual_refreshes
+            .is_empty()
+    );
+    server.state.libation_login_sessions.lock().await.clear();
+    assert_eq!(
+        server.get("/api/libation/access", &reader).await.json()["canCheckAudible"],
+        true
+    );
+}

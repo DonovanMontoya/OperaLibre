@@ -194,7 +194,7 @@ export function usePurchases({
           libationFilesDir: null,
           libraryRoot: "",
           accounts: [],
-          authenticated: access.enabled,
+          authenticated: access.canCheckAudible === true,
           message: access.enabled ? null : "Libation is not configured on this server.",
           autoRefreshHours: access.autoRefreshHours,
           manualRefreshesPerHour: access.manualRefreshesPerHour
@@ -636,7 +636,7 @@ export function usePurchases({
   async function refreshAudiblePurchases() {
     const canRefresh = currentUser.isAdmin
       ? canCheckAudible(libationStatus, isRefreshingAudible)
-      : canBrowseLibation && libationStatus?.enabled && !isRefreshingAudible;
+      : canBrowseLibation && libationStatus?.enabled && libationStatus.authenticated && !isRefreshingAudible;
     if (canRefresh) {
       await startLibationSync();
     } else {

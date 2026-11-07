@@ -1,4 +1,7 @@
 export function libationHelp(detail: string): string {
+  if (/^You have used all \d+ Audible refreshes for this hour\./.test(detail)) {
+    return detail;
+  }
   if (/already connected|already configured/i.test(detail)) {
     return "This account is already connected. Use Reconnect on its existing entry.";
   }

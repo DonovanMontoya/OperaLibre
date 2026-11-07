@@ -247,6 +247,7 @@ pub(crate) struct DecideLibationDownloadRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LibationAccessResponse {
     pub(crate) enabled: bool,
+    pub(crate) can_check_audible: bool,
     pub(crate) libation_access: LibationAccess,
     pub(crate) auto_refresh_hours: Option<u64>,
     pub(crate) manual_refreshes_per_hour: u64,
@@ -1152,6 +1153,7 @@ pub(crate) async fn get_libation_access(
 ) -> Json<LibationAccessResponse> {
     Json(LibationAccessResponse {
         enabled: state.libation_config.enabled(),
+        can_check_audible: can_check_audible(&state, &auth).await,
         libation_access: if auth.is_owner {
             LibationAccess::Direct
         } else {
@@ -1856,6 +1858,15 @@ pub(crate) fn normalize_match_key(value: &str) -> String {
         .join(" ")
 }
 
+async fn can_check_audible(state: &AppState, viewer: &AuthUser) -> bool {
+    let status = read_libation_status(state, viewer).await;
+    status.enabled
+        && status.accounts.iter().any(|account| account.authenticated)
+        && !status.accounts.iter().any(|account| account.connection_state == "signing_in")
+        // Readers cannot see pending login details, but any sign-in holds Libation.
+        && state.libation_login_sessions.lock().await.is_empty()
+}
+
 pub(crate) async fn sync_libation_library(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -1863,6 +1874,12 @@ pub(crate) async fn sync_libation_library(
     if !state.libation_config.enabled() {
         return Err(ApiError::bad_request(
             "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH.",
+        ));
+    }
+
+    if !can_check_audible(&state, &auth).await {
+        return Err(ApiError::bad_request(
+            "Sign in to an Audible account and finish any pending sign-in before checking Audible.",
         ));
     }
 

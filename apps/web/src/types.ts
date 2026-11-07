@@ -420,6 +420,7 @@ export type LibationAccess = "direct" | "approval";
 
 export type LibationAccessStatus = {
   enabled: boolean;
+  canCheckAudible?: boolean;
   libationAccess: LibationAccess;
   autoRefreshHours: number | null;
   manualRefreshesPerHour: number;

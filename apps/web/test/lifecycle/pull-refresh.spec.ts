@@ -31,7 +31,7 @@ async function openShelf(page: Page, source: string) {
       id: 'audible-check', kind: 'libation-sync', targetId: null, status: 'completed',
       startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T00:00:01Z', exitCode: 0, output: '', error: null
     };
-    else if (path === '/api/libation/access') body = { enabled: true, autoRefreshHours: null, manualRefreshesPerHour: 2 };
+    else if (path === '/api/libation/access') body = { enabled: true, canCheckAudible: true, autoRefreshHours: null, manualRefreshesPerHour: 2 };
     else if (path === '/api/libation/status') body = { accounts: [], configured: false, available: false };
     else if (path === '/api/me/libro') body = {
       connected: true, email, accounts: [{ email, syncedAt: null }], syncedAt: null, jobs: [],
@@ -101,4 +101,15 @@ test('canceling a threshold-crossing pull clears it without refreshing', async (
   await pull(page, 'touchend');
   await expect.poll(() => requests.libro).toBe(1);
   await expect(page.locator('.pull-indicator')).not.toHaveClass(/refreshing/);
+});
+
+test('reader sees the hourly Audible limit without opening Details', async ({ page }, testInfo) => {
+  await openShelf(page, 'all');
+  const message = 'You have used all 3 Audible refreshes for this hour. Try again in 47 minutes.';
+  await page.route('**/api/libation/sync', route => route.fulfill({ status: 429, json: { message } }));
+  await pull(page, 'touchend');
+  await expect(page.locator('.audible-error > p')).toHaveText(message);
+  await expect(page.locator('.audible-error > p')).toBeVisible();
+  await expect(page.locator('.audible-error details')).not.toHaveAttribute('open');
+  await page.screenshot({ path: testInfo.outputPath('audible-quota.png') });
 });

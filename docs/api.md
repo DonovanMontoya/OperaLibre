@@ -394,7 +394,7 @@ semantics. Job kind is `libro-import` and uses the standard jobs endpoints.
 | `POST` | `/api/libation/books/{asin}/liberate` | Download one title. Admin or directly permitted reader. Returns `429` at 100 unfinished downloads per user or 1,000 saved downloads overall. |
 | `POST` | `/api/libation/accounts/{profile_id}/books/{asin}/liberate` | Download one title through the selected Audible account. Admin or directly permitted reader, with the same unfinished-download limits. Duplicate requests reuse the existing job; a concurrent retry during registration returns `409`. |
 | `POST` | `/api/libation/liberate-all` | Download all eligible titles. Admin only. |
-| `GET` | `/api/libation/access` | Libation availability and the signed-in reader's direct/approval policy. |
+| `GET` | `/api/libation/access` | Libation availability, whether an Audible check can start, and the signed-in reader's direct/approval policy. |
 | `GET` | `/api/libation/requests` | The account's own requests; authorized approvers receive all requests. |
 | `POST` | `/api/libation/requests/{asin}` | Submit a per-title approval request. |
 | `PUT` | `/api/libation/requests/{request_id}/decision` | Approve or decline another account's request. Approval permission required. |
@@ -402,6 +402,8 @@ semantics. Job kind is `libro-import` and uses the standard jobs endpoints.
 | `GET` | `/api/jobs/{job_id}` | Poll a background job (e.g., liberation download). |
 
 Libation status, setup checks, account changes, download-all, and the job listing require an administrator. Refresh is also available to authenticated readers with the configured rate limit. Account removal requires an owner. Download-all also requires direct-download access, while request decisions require the separate approval permission. Authenticated accounts can browse the catalog in installed apps; one-title downloads require direct access or an approved request. Account-aware requests include `profileId` so duplicate ASINs owned by multiple Audible accounts remain distinct. A requester cannot approve their own request. If Libation is not configured, acquisition endpoints respond with an explanatory error.
+
+`GET /api/libation/access` includes `canCheckAudible`: true when Libation is enabled, at least one Audible account is signed in, and no account sign-in is in progress. It contains no Audible account details. Clients connecting to older servers should treat a missing field as false and reread the saved catalog instead of starting a check. `POST /api/libation/sync` returns `400` with an explanatory message if no account is signed in or a sign-in is pending, before consuming any reader refresh quota. This applies to administrators too; administrators remain exempt from the hourly limit.
 
 Libation download jobs enforce `max_upload_gib` per title, including temporary files, and monitor `min_download_free_gib` on the library volume. Budget failures set the job to `failed` and discard staged files. Accepted single-title and bulk download intent persists across server restarts. Approved requests retain their decision; retrying a failed approved request reuses that approval. Recovered jobs receive new job IDs, so clients should reload requests and jobs after a restart. The same checks apply to approved requests and each title in download-all. Existing local titles are reused.
 
