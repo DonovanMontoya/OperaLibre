@@ -677,6 +677,13 @@ fn stage_installed_files(
 ) -> Result<(), String> {
     fs::create_dir_all(backup_root)
         .map_err(|error| format!("Could not create {}: {error}", backup_root.display()))?;
+    // Recorded before anything moves, so failing here leaves the installation
+    // as it was. Rollback then removes the new build's VERSION.txt rather
+    // than keeping it.
+    if !install_root.join("VERSION.txt").exists() {
+        fs::write(backup_root.join(NO_VERSION_MARKER), b"")
+            .map_err(|error| format!("Could not record the missing VERSION.txt: {error}"))?;
+    }
     let mut moved = Vec::new();
     for name in [server_binary_name(), "web", "VERSION.txt"] {
         if name == "web" && !includes_web {
@@ -684,12 +691,6 @@ fn stage_installed_files(
         }
         let source = install_root.join(name);
         if !source.exists() {
-            if name == "VERSION.txt" {
-                // Rollback then removes the new build's, rather than keeping it.
-                fs::write(backup_root.join(NO_VERSION_MARKER), b"").map_err(|error| {
-                    format!("Could not record the missing VERSION.txt: {error}")
-                })?;
-            }
             continue;
         }
         if let Err(error) = move_required(&source, &backup_root.join(name)) {
@@ -1513,7 +1514,28 @@ mod tests {
             "keep web"
         );
         assert!(!backup.join("VERSION.txt").exists());
+        assert!(backup.join(super::NO_VERSION_MARKER).is_file());
         assert!(!backup.join("web").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failing_to_record_a_missing_version_moves_nothing() {
+        let root = scratch("staging-no-version-marker");
+        let install = root.join("install");
+        let backup = root.join("backup");
+        std::fs::create_dir_all(install.join("web")).unwrap();
+        std::fs::write(install.join(super::server_binary_name()), "old server").unwrap();
+        // The marker cannot be written where a folder already sits.
+        std::fs::create_dir_all(backup.join(super::NO_VERSION_MARKER)).unwrap();
+
+        assert!(super::stage_installed_files(&install, &backup, true).is_err());
+        assert_eq!(
+            std::fs::read_to_string(install.join(super::server_binary_name())).unwrap(),
+            "old server"
+        );
+        assert!(install.join("web").is_dir());
+        assert!(!backup.join(super::server_binary_name()).exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 
