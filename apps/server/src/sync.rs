@@ -530,7 +530,7 @@ pub(crate) async fn resume_queue(state: &AppState) {
     if pending.is_empty()
         || state
             .update_manager
-            .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+            .sync_addon_runtime(&state.alignment_config)
             .await
             .is_none()
     {
@@ -611,7 +611,7 @@ pub(crate) async fn alignment_status(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let runtime = state
         .update_manager
-        .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+        .sync_addon_runtime(&state.alignment_config)
         .await;
     Ok(Json(serde_json::json!({
         "enabled": runtime.is_some(),
@@ -735,7 +735,7 @@ pub(crate) async fn enqueue_sync_batch(
         })?;
     if state
         .update_manager
-        .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+        .sync_addon_runtime(&state.alignment_config)
         .await
         .is_none()
     {
@@ -851,7 +851,7 @@ async fn enqueue_sync_map_inner(
         })?;
     let Some(mut runtime) = state
         .update_manager
-        .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+        .sync_addon_runtime(&state.alignment_config)
         .await
     else {
         return Err(ApiError::bad_request(
@@ -3648,18 +3648,21 @@ async fn extract_alignment_audio_with_timeout(
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct AlignmentConfig {
-    pub(crate) cli_path: Option<PathBuf>,
+pub(crate) enum AlignmentConfig {
+    Manual(PathBuf),
+    Path(PathBuf),
+    Managed,
 }
 
 impl AlignmentConfig {
     pub(crate) fn from_server_config(config: &ServerConfig) -> Self {
-        let cli_path = config
+        config
             .alignment_cli_path
             .clone()
             .filter(|path| path.is_file())
-            .or_else(find_alignment_cli_on_path);
-        Self { cli_path }
+            .map(Self::Manual)
+            .or_else(|| find_alignment_cli_on_path().map(Self::Path))
+            .unwrap_or(Self::Managed)
     }
 }
 
@@ -3670,6 +3673,60 @@ pub(crate) fn find_alignment_cli_on_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn path_runtime_discovery_preserves_source_and_manual_precedence() {
+        const CHILD: &str = "OPERALIBRE_TEST_PATH_RUNTIME";
+        if let Some(expected_path) = std::env::var_os(CHILD) {
+            let config = ServerConfig::load().unwrap();
+            let alignment = AlignmentConfig::from_server_config(&config);
+            match (config.alignment_cli_path, alignment) {
+                (None, AlignmentConfig::Path(path)) => {
+                    assert_eq!(path, PathBuf::from(expected_path))
+                }
+                (Some(expected), AlignmentConfig::Manual(path)) => assert_eq!(path, expected),
+                (configured, actual) => {
+                    panic!("Unexpected runtime source: {configured:?}, {actual:?}")
+                }
+            }
+            return;
+        }
+        // Isolate PATH in a child process so parallel tests never see it.
+        let root = tempfile::tempdir().unwrap();
+        let cli = root.path().join("echogarden");
+        let manual = root.path().join("manual-cli");
+        std::fs::write(&cli, []).unwrap();
+        std::fs::write(&manual, []).unwrap();
+        let config = root.path().join("fixture.config");
+        for explicit in [false, true] {
+            std::fs::write(
+                &config,
+                if explicit {
+                    "alignment_cli_path=manual-cli\n"
+                } else {
+                    ""
+                },
+            )
+            .unwrap();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "sync::tests::path_runtime_discovery_preserves_source_and_manual_precedence",
+                    "--nocapture",
+                ])
+                .env("PATH", root.path())
+                .env("OPERALIBRE_SERVER_CONFIG", &config)
+                .env(CHILD, &cli)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
+
     #[tokio::test]
     async fn checkpoint_rejects_changed_runtime_components_at_the_same_paths() {
         let root = tempfile::tempdir().unwrap();

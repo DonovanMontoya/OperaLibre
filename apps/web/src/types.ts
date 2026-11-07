@@ -528,6 +528,7 @@ export type SyncAddonStatus = {
   installed: boolean;
   enabled: boolean;
   managed: boolean;
+  canToggle?: boolean;
   installedVersion: string | null;
   latestVersion: string | null;
   updateAvailable: boolean;
