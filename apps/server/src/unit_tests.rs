@@ -7797,6 +7797,15 @@ async fn waiting_on_a_job_gives_up_at_the_ceiling() {
 async fn recording_activity_updates_one_row_and_the_cache() {
     let root = tempfile::tempdir().unwrap();
     let (state, _) = fake_libation_state(root.path());
+    state
+        .users
+        .mutate(|users| {
+            users.users.push(stored_user("reader", false, false));
+            users.users.push(stored_user("other", false, false));
+            Ok(())
+        })
+        .await
+        .unwrap();
     // Seed another listener through the whole-store path so the targeted
     // write can be seen to leave them alone.
     state

@@ -348,6 +348,128 @@ async fn deleting_user_removes_libro_credentials_under_the_account_guard() {
     );
 }
 
+#[tokio::test]
+async fn deleted_user_activity_is_removed_from_cache_database_and_backup() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let deleted = server.add_reader(&owner, "deleted-reader").await;
+    let survivor = server.add_reader(&owner, "surviving-reader").await;
+    let deleted_auth = resolve_session(&server.state, &deleted).await.unwrap();
+    let survivor_auth = resolve_session(&server.state, &survivor).await.unwrap();
+    record_activity(&server.state, &deleted_auth.id, 7200.0, 0).await;
+    record_activity(&server.state, &survivor_auth.id, 3600.0, 0).await;
+    let before = server.get("/api/profile/stats", &survivor).await;
+    assert_eq!(before.status, StatusCode::OK);
+    assert_eq!(before.json()["totalHoursRead"], 1.0);
+    let survivor_days = server.state.activity.read().await.by_user[&survivor_auth.id].clone();
+
+    let deletion = server
+        .send_json(
+            "DELETE",
+            &format!("/api/users/{}", deleted_auth.id),
+            &owner,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(deletion.status, StatusCode::OK, "{}", deletion.text());
+    assert_eq!(
+        server.get("/api/profile/stats", &deleted).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let cached = server.state.activity.read().await.clone();
+    assert!(!cached.by_user.contains_key(&deleted_auth.id));
+    assert_eq!(cached.by_user[&survivor_auth.id], survivor_days);
+    let stored = server
+        .state
+        .database
+        .call(|connection| {
+            read_activity_rows(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+    assert!(!stored.by_user.contains_key(&deleted_auth.id));
+    assert_eq!(stored.by_user[&survivor_auth.id], survivor_days);
+    let backup = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(backup.status, StatusCode::OK, "{}", backup.text());
+    let activity = &backup.json()["data"]["activity"];
+    assert!(activity.get(&deleted_auth.id).is_none());
+    assert_eq!(
+        activity[&survivor_auth.id],
+        serde_json::json!(survivor_days)
+    );
+    let after = server.get("/api/profile/stats", &survivor).await;
+    assert_eq!(after.status, StatusCode::OK);
+    assert_eq!(after.json(), before.json());
+}
+
+#[tokio::test]
+async fn deleted_user_activity_stays_absent_after_late_progress_bookkeeping() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "late-reader").await;
+    // Middleware gives an admitted request this owned snapshot, which can
+    // outlive the account while the request waits to record its checkpoint.
+    let auth = resolve_session(&server.state, &reader).await.unwrap();
+    let book = server.state.library.read().await.books[0].clone();
+    let previous = fresh_progress(&book, &book.tracks[0], None, unix_now_millis() - 1000);
+    let mut saved = previous.clone();
+    saved.position_seconds = 1.0;
+    saved.book_position_seconds = 1.0;
+    saved.updated_at = unix_now_millis().to_string();
+    assert_eq!(
+        plausible_listened_delta(Some(&previous), &saved, false),
+        1.0
+    );
+
+    let deletion = server
+        .send_json(
+            "DELETE",
+            &format!("/api/users/{}", auth.id),
+            &owner,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(deletion.status, StatusCode::OK, "{}", deletion.text());
+    record_progress_bookkeeping(
+        &server.state,
+        &auth,
+        &book,
+        &saved,
+        Some(&previous),
+        ProgressBookkeeping {
+            intentional_seek: false,
+            tz_offset_minutes: Some(0),
+            speed: None,
+            client: None,
+            completion_source: None,
+        },
+    )
+    .await;
+    assert!(
+        !server
+            .state
+            .activity
+            .read()
+            .await
+            .by_user
+            .contains_key(&auth.id)
+    );
+    let stored = server
+        .state
+        .database
+        .call(|connection| {
+            read_activity_rows(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+    assert!(!stored.by_user.contains_key(&auth.id));
+    let backup = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(backup.status, StatusCode::OK, "{}", backup.text());
+    assert!(backup.json()["data"]["activity"].get(&auth.id).is_none());
+}
+
 /// A booted server with a temporary data directory and a fixture library.
 struct TestServer {
     router: Router,

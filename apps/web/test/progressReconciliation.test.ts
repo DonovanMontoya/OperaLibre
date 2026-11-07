@@ -954,6 +954,60 @@ for (const scenario of ["automatic", "replayed seek", "new seek"] as const) {
   });
 }
 
+for (const [action, target, resetBypass] of [
+  ["forward seek", 1030, false], ["rewind", 400, true], ["restart", 0, true]
+] as const) {
+  test(`CarPlay ${action} keeps seek authorization and its reset policy after a near-zero clock replaces the queued target`, async () => {
+    const f = fixture();
+    f.write(reliability.syncedProgress(f.server, "2026-09-30T11:55:00Z"));
+    f.options.acknowledgedServerPositionRef.current.set("book", 1000);
+    f.options.restoredProgressBookId.current = "book";
+    f.options.playbackTouchedRef.current = true;
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    f.dependencies["./api"].saveProgress = async (bookId: string, progress: Progress, options: unknown) => {
+      f.writes.push({ progress, options });
+      if (bookId === "blocker") await blocked;
+      return { ...f.server, ...progress, bookId, updatedAt: "1790769660000", accepted: true };
+    };
+    const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+    // An unrelated in-flight save holds the drain while the native target is replaced.
+    f.options.queuedProgressSaves.current.set("blocker", {
+      bookId: "blocker", progress: { ...f.server, bookId: "blocker" }, isPaused: true,
+      intentionalSeekGeneration: 0, intentionalRegression: false
+    });
+    const draining = sync.flushProgressSaveQueue();
+    let sessionQueued!: () => void;
+    const queued = new Promise<void>(resolve => { sessionQueued = resolve; });
+    const session = { bookId: "book", trackId: "track", positionSeconds: target, bookPositionSeconds: target,
+      durationSeconds: 7200, finished: false, intentionalRegression: true,
+      updatedAt: Date.parse("2026-09-30T12:05:00Z") };
+    const car = loadHook("useCarPlay", {
+      ...f.dependencies,
+      react: { ...f.dependencies.react, useMemo: (fn: () => unknown) => fn(), useState: (value: unknown) => [value, () => {}] },
+      "./carLibrary.ts": carLibrary, "./bookVolume": { BOOK_GAIN_DEFAULT: 1 },
+      "./carPlay": { supportsCarPlay: () => true, setCarPlaybackOwner: () => {},
+        getCarPlayState: async () => ({ carOwnedBookId: "book", sessions: [session] }), acknowledgeCarSessions: async () => {} }
+    })({ ...f.options, booksRef: { current: [f.book] }, downloadedBookIds: new Set(), bookGains: {},
+      updateBookProgress: sessionQueued, flushProgressSaveQueue: sync.flushProgressSaveQueue });
+    const adopting = car.adoptCarPlaybackState();
+    await queued;
+    assert.equal(f.checkpoint().bookPositionSeconds, target);
+    assert.equal(f.options.queuedProgressSaves.current.get("book").intentionalSeekGeneration, 1);
+    assert.equal(seekIntent.readProgressSeekIntent(f.storage, "server", "reader", "book")?.targetBookPosition, target);
+    f.options.audioRef.current.currentTime = 1;
+    const persisting = sync.persistProgress();
+    assert.equal(f.options.queuedProgressSaves.current.get("book").progress.bookPositionSeconds, 1);
+    assert.equal(f.writes.length, 1, "the native target and replacement must both wait for the drain");
+    release();
+    await Promise.all([draining, adopting, persisting]);
+    assert.equal(f.writes.length, 2);
+    assert.equal(f.writes[1].progress.bookPositionSeconds, 1);
+    assert.deepEqual(f.writes.map(write => write.options.intentionalRegression), [false, resetBypass]);
+    assert.equal(f.writes[1].options.intentionalSeek, true, "skipped distance must retain seek authorization");
+  });
+}
+
 test("idle conflict adoption stages canonical position before advancing the playback base", async () => {
   const f = fixture();
   const rejected = { ...f.server, positionSeconds: 1800, bookPositionSeconds: 1800,
