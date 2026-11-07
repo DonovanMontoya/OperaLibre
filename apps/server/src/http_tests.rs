@@ -6495,6 +6495,117 @@ async fn sync_queue_restores_ids_order_and_results_and_retries_interrupted_books
     assert!(!server.state.jobs.read().await[&first].resume_pending);
 }
 
+#[tokio::test]
+async fn recovery_retries_when_the_runtime_is_disabled_after_its_availability_check() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let cli = server._root.path().join("echogarden");
+    fs::write(&cli, b"fixture").await.unwrap();
+    server.state.alignment_config = AlignmentConfig::Path(cli);
+    {
+        let mut library = server.state.library.write().await;
+        library.books[0].reading_file = Some(ReadingFile {
+            id: "epub".into(),
+            file_name: "book.epub".into(),
+            extension: "epub".into(),
+            content_type: "application/epub+zip".into(),
+            url: "/readalong".into(),
+        });
+        library
+            .reading_paths
+            .insert("epub".into(), server._root.path().join("missing.epub"));
+    }
+    let (id, _) = create_queued_job(&server.state, "sync-generate", Some(book_id)).await;
+    let (paused, _) =
+        create_queued_job(&server.state, "sync-generate", Some("paused-book".into())).await;
+    let (invalid, _) =
+        create_queued_job(&server.state, "sync-generate", Some("removed-book".into())).await;
+    {
+        let mut jobs = server.state.jobs.write().await;
+        jobs.get_mut(&paused).unwrap().status = "paused".into();
+        jobs.get_mut(&paused).unwrap().pause_requested = true;
+    }
+    crate::sync::save_queue(&server.state, &*server.state.jobs.read().await)
+        .await
+        .unwrap();
+    server.state.jobs = Arc::default();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+
+    // Stop at recovery's availability/dispatch boundary, then complete the
+    // owner's disable before dispatch takes its lifecycle read lock.
+    let pending = server
+        .state
+        .jobs
+        .read()
+        .await
+        .values()
+        .filter(|job| job.resume_pending)
+        .cloned()
+        .collect();
+    assert!(
+        server
+            .state
+            .update_manager
+            .sync_addon_runtime(&server.state.alignment_config)
+            .await
+            .is_some()
+    );
+    server
+        .state
+        .update_manager
+        .set_sync_addon_enabled(false, &server.state.alignment_config)
+        .await
+        .unwrap();
+    crate::sync::resume_pending_jobs(&server.state, pending).await;
+    {
+        let jobs = server.state.jobs.read().await;
+        assert_eq!(jobs[&id].status, "queued");
+        assert!(jobs[&id].resume_pending);
+        assert!(jobs[&invalid].resume_pending);
+        assert_eq!(jobs[&paused].status, "paused");
+        assert!(!jobs[&paused].resume_pending);
+    }
+    server.state.jobs = Arc::default();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    assert!(server.state.jobs.read().await[&id].resume_pending);
+    server
+        .state
+        .update_manager
+        .set_sync_addon_enabled(true, &server.state.alignment_config)
+        .await
+        .unwrap();
+    let slot = server
+        .state
+        .update_manager
+        .sync_slots
+        .acquire()
+        .await
+        .unwrap();
+    crate::sync::resume_queue(&server.state).await;
+    {
+        let jobs = server.state.jobs.read().await;
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(jobs[&id].status, "queued");
+        assert!(!jobs[&id].resume_pending);
+        assert_eq!(jobs[&invalid].status, "failed");
+        assert!(!jobs[&invalid].resume_pending);
+        assert_eq!(jobs[&paused].status, "paused");
+        assert!(!jobs[&paused].resume_pending);
+    }
+    let finished = server.state.update_manager.sync_queue_changed.notified();
+    tokio::pin!(finished);
+    finished.as_mut().enable();
+    drop(slot);
+    // Missing input files still produce a real failure once work resumes.
+    tokio::time::timeout(Duration::from_secs(5), finished)
+        .await
+        .unwrap();
+    let jobs = server.state.jobs.read().await;
+    assert_eq!(jobs[&id].status, "failed");
+    assert!(jobs[&id].running_at.is_some());
+}
+
 /// Puts `server` into an update trial with `token`, serving a web app too.
 fn start_update_trial(server: &mut TestServer, token: &str) -> std::path::PathBuf {
     let web = server._root.path().join("web");

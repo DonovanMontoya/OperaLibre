@@ -517,7 +517,7 @@ pub(crate) async fn resume_queue(state: &AppState) {
     {
         return;
     }
-    let mut pending: Vec<_> = state
+    let pending: Vec<_> = state
         .jobs
         .read()
         .await
@@ -536,6 +536,10 @@ pub(crate) async fn resume_queue(state: &AppState) {
     {
         return;
     }
+    resume_pending_jobs(state, pending).await;
+}
+
+pub(crate) async fn resume_pending_jobs(state: &AppState, mut pending: Vec<JobStatus>) {
     pending.sort_by_key(sync_queue_order);
     for job in pending {
         let Some(book_id) = job.target_id else {
@@ -854,9 +858,14 @@ async fn enqueue_sync_map_inner(
         .sync_addon_runtime(&state.alignment_config)
         .await
     else {
-        return Err(ApiError::bad_request(
-            "Follow-along sync generation is not enabled. An owner can install and enable it under Administration → Experimental features.",
-        ));
+        let message = "Follow-along sync generation is not enabled. An owner can install and enable it under Administration → Experimental features.";
+        // The runtime can be disabled after recovery's availability check.
+        // Keep accepted jobs pending until it is available again.
+        return Err(if resume_id.is_some() {
+            ApiError::conflict(message)
+        } else {
+            ApiError::bad_request(message)
+        });
     };
     runtime.ffmpeg_path = runtime.ffmpeg_path.or_else(|| {
         state
