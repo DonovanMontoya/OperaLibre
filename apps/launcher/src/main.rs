@@ -758,24 +758,31 @@ fn prepare_rollback_records(backup_root: &Path) -> Result<(), String> {
 }
 
 /// The data half of a rollback, with the failed server stopped. Only putting
-/// the snapshot back can fail it: recording the decision and keeping the
-/// failed build's data are worth having, never worth leaving the
-/// installation down for.
+/// the snapshot back can fail it: keeping the failed build's data and
+/// recording the decision are worth having, never worth leaving the
+/// installation down for. `restore-required` is recorded after the failed
+/// data is kept and before the snapshot goes back, so it also marks the point
+/// past which the live files may be the snapshot's: a rollback that finds it
+/// restores again and never adds those files to what was kept.
 fn roll_back_data(install_root: &Path, data: &Path, backup_root: &Path) -> Result<(), String> {
     let marker = backup_root.join(RESTORE_REQUIRED);
-    if !marker.is_file()
-        && let Err(error) = fs::rename(backup_root.join(RESTORE_PENDING), &marker)
+    let kept = if marker.is_file() {
+        "left the failed build's data as an earlier rollback kept it".to_string()
+    } else {
+        let kept = match preserve_failed_data(data, backup_root) {
+            Ok(kept) => format!("kept the failed build's data in {}", kept.display()),
+            Err(error) => format!("could not keep the failed build's data: {error}"),
+        };
+        if let Err(error) = fs::rename(backup_root.join(RESTORE_PENDING), &marker)
             .or_else(|_| fs::write(&marker, b""))
-    {
-        append_log(
-            install_root,
-            &format!("could not record the data restore ({error}); restoring anyway"),
-        );
-    }
-    sync_directory(backup_root);
-    let kept = match preserve_failed_data(data, backup_root) {
-        Ok(kept) => format!("kept the failed build's data in {}", kept.display()),
-        Err(error) => format!("could not keep the failed build's data: {error}"),
+        {
+            append_log(
+                install_root,
+                &format!("could not record the data restore ({error}); restoring anyway"),
+            );
+        }
+        sync_directory(backup_root);
+        kept
     };
     restore_data(data, &backup_root.join("data"))?;
     append_log(
@@ -1830,6 +1837,47 @@ mod tests {
         fs::write(backup.join(super::FAILED_DATA), b"blocked").unwrap();
         super::roll_back_data(&root, &data, &backup).unwrap();
         assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A rollback run again, after the previous build failed to start on the
+    /// restored data, must not top up what was kept with the restored files.
+    #[test]
+    fn a_second_rollback_never_mixes_restored_files_into_the_kept_data() {
+        let root = scratch("data-rollback-twice");
+        let data = root.join("data");
+        let backup = root.join("backup");
+        drop(seed_data(&data, 4, "{\"version\":1}"));
+        super::snapshot_data(&data, &backup.join("data")).unwrap();
+        super::prepare_rollback_records(&backup).unwrap();
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute("UPDATE schema_version SET version = 5", [])
+            .unwrap();
+        fs::write(data.join("library-identities.json"), "{\"version\":2}").unwrap();
+        // Keeping the failed data cannot finish.
+        let partial = backup.join(super::FAILED_DATA_PARTIAL);
+        fs::write(backup.join(super::FAILED_DATA), b"blocked").unwrap();
+        super::roll_back_data(&root, &data, &backup).unwrap();
+        assert_eq!(
+            super::identity_version(&data.join("library-identities.json")),
+            Ok(1)
+        );
+        assert!(backup.join(super::RESTORE_REQUIRED).is_file());
+
+        // The previous build starts, writes a log, and fails readiness.
+        fs::write(data.join("operalibre.db-wal"), b"previous build wal").unwrap();
+        fs::remove_file(backup.join(super::FAILED_DATA)).unwrap();
+        super::roll_back_data(&root, &data, &backup).unwrap();
+        assert_eq!(
+            super::identity_version(&partial.join("library-identities.json")),
+            Ok(2)
+        );
+        assert!(!partial.join("operalibre.db-wal").exists());
+        assert!(!backup.join(super::FAILED_DATA).exists());
+        assert_eq!(super::schema_version(&partial.join("operalibre.db")), Ok(5));
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        assert!(!data.join("operalibre.db-wal").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
