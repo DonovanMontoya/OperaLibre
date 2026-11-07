@@ -1913,7 +1913,7 @@ exit 0
             auto_refresh_hours: Some(super::DEFAULT_LIBATION_AUTO_REFRESH_HOURS),
             reader_refreshes_per_hour: super::DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR,
         },
-        alignment_config: super::AlignmentConfig { cli_path: None },
+        alignment_config: super::AlignmentConfig::Managed,
         faststart_tools: None,
         update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000, None)
             .unwrap(),

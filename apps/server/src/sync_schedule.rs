@@ -270,7 +270,7 @@ pub(crate) async fn schedule(
     }
     if state
         .update_manager
-        .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+        .sync_addon_runtime(&state.alignment_config)
         .await
         .is_none()
     {
@@ -496,7 +496,7 @@ pub(crate) async fn run_sweep_now(
 ) -> Result<Json<SweepRun>, ApiError> {
     if state
         .update_manager
-        .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+        .sync_addon_runtime(&state.alignment_config)
         .await
         .is_none()
     {
@@ -608,7 +608,7 @@ pub(crate) async fn tick(state: &AppState) -> Result<(), ApiError> {
             if !ready
                 || state
                     .update_manager
-                    .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+                    .sync_addon_runtime(&state.alignment_config)
                     .await
                     .is_none()
             {
