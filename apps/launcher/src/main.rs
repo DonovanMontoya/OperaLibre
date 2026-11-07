@@ -493,6 +493,8 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     }
 
     let _ = fs::remove_dir_all(&data_snapshot);
+    let _ = fs::remove_file(backup_root.join(RESTORE_PENDING));
+    let _ = fs::remove_dir(backup_root.join(FAILED_DATA_PARTIAL));
     Ok(())
 }
 
@@ -731,7 +733,58 @@ fn prepare_update(
     includes_web: bool,
 ) -> Result<(), String> {
     snapshot_data(&data_dir(install_root), &backup_root.join("data"))
+        .and_then(|()| prepare_rollback_records(backup_root))
         .and_then(|()| stage_installed_files(install_root, backup_root, includes_web))
+}
+
+const RESTORE_REQUIRED: &str = "restore-required";
+const RESTORE_PENDING: &str = "restore-pending";
+const FAILED_DATA: &str = "failed-data";
+const FAILED_DATA_PARTIAL: &str = "failed-data.partial";
+
+/// Rollback may run on a disk the failed build filled, so what it records is
+/// made now: the folder that keeps the failed build's data, and the marker
+/// that a rename turns into `restore-required`.
+fn prepare_rollback_records(backup_root: &Path) -> Result<(), String> {
+    let partial = backup_root.join(FAILED_DATA_PARTIAL);
+    fs::create_dir_all(&partial)
+        .map_err(|error| format!("Could not create {}: {error}", partial.display()))?;
+    let pending = backup_root.join(RESTORE_PENDING);
+    fs::write(&pending, b"")
+        .map_err(|error| format!("Could not create {}: {error}", pending.display()))?;
+    sync_file(&pending)?;
+    sync_directory(backup_root);
+    Ok(())
+}
+
+/// The data half of a rollback, with the failed server stopped. Only putting
+/// the snapshot back can fail it: recording the decision and keeping the
+/// failed build's data are worth having, never worth leaving the
+/// installation down for.
+fn roll_back_data(install_root: &Path, data: &Path, backup_root: &Path) -> Result<(), String> {
+    let marker = backup_root.join(RESTORE_REQUIRED);
+    if !marker.is_file()
+        && let Err(error) = fs::rename(backup_root.join(RESTORE_PENDING), &marker)
+            .or_else(|_| fs::write(&marker, b""))
+    {
+        append_log(
+            install_root,
+            &format!("could not record the data restore ({error}); restoring anyway"),
+        );
+    }
+    sync_directory(backup_root);
+    let kept = match preserve_failed_data(data, backup_root) {
+        Ok(kept) => format!("kept the failed build's data in {}", kept.display()),
+        Err(error) => format!("could not keep the failed build's data: {error}"),
+    };
+    restore_data(data, &backup_root.join("data"))?;
+    append_log(
+        install_root,
+        &format!(
+            "the failed update had upgraded the data; restored the copy taken before it and {kept}"
+        ),
+    );
+    Ok(())
 }
 
 fn rollback_update(
@@ -746,26 +799,12 @@ fn rollback_update(
     // Decided once: after a restore the formats match the snapshot again, so a
     // rollback run a second time (the previous build failed to start after
     // the first) still restores instead of keeping that build's leftovers.
-    let restore_marker = backup_root.join("restore-required");
+    let restore_marker = backup_root.join(RESTORE_REQUIRED);
     if restore_marker.is_file() || data_was_upgraded(&data, &snapshot) {
         // Files replaced under a server that is still running would keep
         // receiving its writes after the previous build had started.
         stopped?;
-        if !restore_marker.is_file() {
-            fs::write(&restore_marker, b"")
-                .map_err(|error| format!("Could not record the data restore: {error}"))?;
-            sync_file(&restore_marker)?;
-            sync_directory(backup_root);
-        }
-        let kept = preserve_failed_data(&data, backup_root)?;
-        restore_data(&data, &snapshot)?;
-        append_log(
-            install_root,
-            &format!(
-                "the failed update had upgraded the data; restored the copy taken before it and kept the failed build's data in {}",
-                kept.display()
-            ),
-        );
+        roll_back_data(install_root, &data, backup_root)?;
     }
     let backup_version = backup_root.join("VERSION.txt");
     if backup_version.exists() {
@@ -784,6 +823,8 @@ fn rollback_update(
     require_ready_start(start_server(install_root, false, None)?)?;
     let _ = fs::remove_dir_all(snapshot);
     let _ = fs::remove_file(restore_marker);
+    let _ = fs::remove_file(backup_root.join(RESTORE_PENDING));
+    let _ = fs::remove_dir(backup_root.join(FAILED_DATA_PARTIAL));
     Ok(())
 }
 
@@ -816,11 +857,11 @@ fn restore_backed_up(backup: &Path, installed: &Path) -> Result<(), String> {
 /// restore has begun, every live file is still the failed build's, and a
 /// file already kept is never replaced.
 fn preserve_failed_data(data: &Path, backup_root: &Path) -> Result<PathBuf, String> {
-    let kept = backup_root.join("failed-data");
+    let kept = backup_root.join(FAILED_DATA);
     if kept.is_dir() {
         return Ok(kept);
     }
-    let partial = backup_root.join("failed-data.partial");
+    let partial = backup_root.join(FAILED_DATA_PARTIAL);
     fs::create_dir_all(&partial)
         .map_err(|error| format!("Could not create {}: {error}", partial.display()))?;
     let wal = format!("{DATABASE}-wal");
@@ -1762,6 +1803,59 @@ mod tests {
         assert_eq!(super::identity_version(&identities), Ok(1));
         assert_eq!(progress_books(&data), ["before-update"]);
         assert!(snapshot.join("operalibre.db").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Rollback can run on a disk the failed build filled. What it records
+    /// is prepared before the new build runs, and failing to record it never
+    /// stops the snapshot going back.
+    #[test]
+    fn the_data_goes_back_even_when_nothing_else_can_be_recorded() {
+        let root = scratch("data-rollback-records");
+        let data = root.join("data");
+        let backup = root.join("backup");
+        drop(seed_data(&data, 4, "{\"version\":1}"));
+        super::snapshot_data(&data, &backup.join("data")).unwrap();
+        super::prepare_rollback_records(&backup).unwrap();
+        assert!(backup.join(super::FAILED_DATA_PARTIAL).is_dir());
+        assert!(backup.join(super::RESTORE_PENDING).is_file());
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute("UPDATE schema_version SET version = 5", [])
+            .unwrap();
+
+        // Neither the marker nor the kept folder can land.
+        fs::remove_file(backup.join(super::RESTORE_PENDING)).unwrap();
+        fs::create_dir_all(backup.join(super::RESTORE_REQUIRED).join("blocked")).unwrap();
+        fs::write(backup.join(super::FAILED_DATA), b"blocked").unwrap();
+        super::roll_back_data(&root, &data, &backup).unwrap();
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_rollback_records_its_restore_with_a_rename() {
+        let root = scratch("data-rollback-marker");
+        let data = root.join("data");
+        let backup = root.join("backup");
+        drop(seed_data(&data, 4, "{\"version\":1}"));
+        super::snapshot_data(&data, &backup.join("data")).unwrap();
+        super::prepare_rollback_records(&backup).unwrap();
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute("UPDATE schema_version SET version = 5", [])
+            .unwrap();
+
+        super::roll_back_data(&root, &data, &backup).unwrap();
+        assert!(backup.join(super::RESTORE_REQUIRED).is_file());
+        assert!(!backup.join(super::RESTORE_PENDING).exists());
+        assert!(
+            backup
+                .join(super::FAILED_DATA)
+                .join("operalibre.db")
+                .is_file()
+        );
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
         fs::remove_dir_all(root).unwrap();
     }
 
