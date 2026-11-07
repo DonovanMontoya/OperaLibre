@@ -1,5 +1,3 @@
-import { createPlaybackReporter } from "./playbackReporting";
-import type { ServerBackend, ProgressWrite, ProgressWriteOptions } from "./serverBackend";
 import { Capacitor } from "@capacitor/core";
 import { ApiError } from "./apiError";
 import { fetchWithTimeout } from "./fetchWithTimeout";
@@ -26,7 +24,6 @@ import type {
   LoginResponse,
   ProfileStats,
   Progress,
-  ServerType,
   SyncAddonStatus,
   SyncMap,
   SyncReport,
@@ -35,20 +32,6 @@ import type {
   UpdateStatus,
   UpdateChannel
 } from "./types";
-import {
-  getCachedJellyfinProgress,
-  getJellyfinBooks,
-  getJellyfinUser,
-  jellyfinMediaPath,
-  loginToJellyfin,
-  logoutFromJellyfin,
-  pingJellyfin,
-  refreshJellyfinProgress,
-  reportJellyfinPlaybackStart,
-  reportJellyfinPlaybackStop,
-  saveJellyfinProgress,
-  setJellyfinBookCompletion
-} from "./jellyfin";
 import { progressTimestamp, serverStorageKey, tzOffsetMinutes } from "./reliability";
 import {
   browserApiBase,
@@ -58,6 +41,7 @@ import {
 } from "./serverAddress";
 import { readServerId, refuseDifferentServer } from "./serverIdentity";
 import { addressKey, CredentialVault, reconnectCandidates } from "./addressCredentials";
+import { dropRemovedServerConnection } from "./removedServers";
 import {
   DEMO_USER,
   demoMediaUrl,
@@ -72,11 +56,24 @@ import {
 
 const configuredApiBase = import.meta.env.VITE_API_BASE?.trim();
 const SERVER_URL_STORAGE_KEY = "operalibre.serverUrl";
-const SERVER_TYPE_STORAGE_KEY = "operalibre.serverType";
 const SERVER_IDENTITY_URL_STORAGE_KEY = "operalibre.serverIdentityUrl";
 const SERVER_ID_STORAGE_KEY = "operalibre.serverId";
 const SERVER_ALIASES_STORAGE_KEY = "operalibre.serverAliases";
 const STARTUP_TIMEOUT_MS = 8_000;
+
+export type ProgressWrite = Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">
+  & Partial<Pick<Progress, "updatedAt" | "baseUpdatedAt" | "recording">>;
+export type ProgressWriteOptions = {
+  intentionalRegression?: boolean;
+  intentionalSeek?: boolean;
+  signal?: AbortSignal;
+  /**
+   * Let the save outlive a closing page. Browsers cap all outstanding
+   * keepalive bodies together at 64 KB and keep a timed-out one open, so only
+   * the save queued when the page hides or closes asks for it.
+   */
+  keepalive?: boolean;
+};
 
 /**
  * The docs-site page (built from docs/getting-started.md in the repo) that
@@ -86,7 +83,7 @@ const STARTUP_TIMEOUT_MS = 8_000;
 export const SERVER_SETUP_GUIDE_URL = "https://donovanmontoya.github.io/OperaLibre/getting-started.html";
 const LOCAL_MODE_STORAGE_KEY = "operalibre.localMode";
 
-export function defaultServerUrl(serverType: ServerType) {
+export function defaultServerUrl() {
   if (typeof window === "undefined") {
     return "";
   }
@@ -98,10 +95,6 @@ export function defaultServerUrl(serverType: ServerType) {
   const { hostname, protocol } = window.location;
   const host = hostname || "localhost";
   const scheme = protocol === "https:" ? "https:" : "http:";
-  if (serverType === "jellyfin") {
-    const port = scheme === "https:" ? 8920 : 8096;
-    return `${scheme}//${host}:${port}`;
-  }
   // A production bundle is normally served by the Rust server or by the
   // same-origin TLS proxy. Only Vite development needs to address port 4920
   // directly; its own /api proxy remains available as a fallback as well.
@@ -220,7 +213,7 @@ export async function pinActiveServerId(replace = false): Promise<string | null>
     return pinned;
   }
   const url = getServerUrl();
-  const reported = await pingServer(getServerType(), url);
+  const reported = await pingServer(url);
   // The active address can change while the check is in flight.
   if (getServerUrl() !== url) {
     return pinned;
@@ -240,7 +233,7 @@ export async function activateServerAlias(alias: ServerAlias) {
   if (!hasSignInAt(alias.url)) {
     throw new Error("Sign in at that address before using it.");
   }
-  refuseDifferentServer(getPinnedServerId(), await pingServer(getServerType(), alias.url));
+  refuseDifferentServer(getPinnedServerId(), await pingServer(alias.url));
   setServerUrl(alias.url);
 }
 
@@ -250,16 +243,12 @@ export async function activateServerAlias(alias: ServerAlias) {
  * address alone; the active address and its sign-in are untouched.
  */
 export async function signInAtAddress(rawUrl: string, username: string, password: string) {
-  const serverType = getServerType();
-  refuseDifferentServer(getPinnedServerId(), await pingServer(serverType, rawUrl));
-  const base = serverRequestBase(serverType, rawUrl);
-  const response = serverType === "jellyfin"
-    ? await loginToJellyfin(base, username, password)
-    : await requestAt<LoginResponse>(base, null, "/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
-      ignoreUnauthorized: true
-    });
+  refuseDifferentServer(getPinnedServerId(), await pingServer(rawUrl));
+  const response = await requestAt<LoginResponse>(serverRequestBase(rawUrl), null, "/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+    ignoreUnauthorized: true
+  });
   credentialVault().update(rawUrl, {
     token: response.token,
     // Servers released before the narrower media credential return no
@@ -297,6 +286,7 @@ export async function reconnectUsingServerAliases(): Promise<boolean> {
 }
 
 let storedServerUrl: string | null = null;
+let droppedRemovedServer = false;
 
 function readStoredServerUrl(): string | null {
   if (storedServerUrl !== null) {
@@ -305,6 +295,14 @@ function readStoredServerUrl(): string | null {
   if (typeof window === "undefined") {
     return null;
   }
+  // Before anything reads the saved address: a connection to a server kind
+  // the app no longer supports must not be treated as an OperaLibre server.
+  droppedRemovedServer = dropRemovedServerConnection(window.localStorage, [
+    SERVER_URL_STORAGE_KEY,
+    SERVER_IDENTITY_URL_STORAGE_KEY,
+    SERVER_ID_STORAGE_KEY,
+    SERVER_ALIASES_STORAGE_KEY
+  ]);
   const stored = window.localStorage.getItem(SERVER_URL_STORAGE_KEY) ?? "";
   storedServerUrl = usesNativeCredentialStorage()
     ? upgradeStoredNativeServerAddress(stored)
@@ -314,13 +312,25 @@ function readStoredServerUrl(): string | null {
   }
   // Opening the vault can move the active address (see credentialVault), so
   // it happens before the address is first handed out.
-  credentialVault();
+  const credentials = credentialVault();
+  // The dropped connection's sign-ins belong to that server alone.
+  if (droppedRemovedServer) credentials.forgetAll();
   return storedServerUrl || null;
+}
+
+/**
+ * Whether this launch forgot a saved connection to a server kind the app no
+ * longer supports. The app then opens at the server picker, on every
+ * platform, and says why.
+ */
+export function droppedUnsupportedServer(): boolean {
+  readStoredServerUrl();
+  return droppedRemovedServer;
 }
 
 // The server address, ignoring the on-device and demo modes layered over it.
 function configuredServerUrl(): string {
-  const url = readStoredServerUrl() ?? configuredApiBase ?? defaultServerUrl(getServerType());
+  const url = readStoredServerUrl() ?? configuredApiBase ?? defaultServerUrl();
   return usesNativeCredentialStorage() ? upgradeStoredNativeServerAddress(url) : url;
 }
 
@@ -330,19 +340,9 @@ export function getServerUrl(): string {
   return configuredServerUrl();
 }
 
-export function getServerType(): ServerType {
-  if (isDemoMode()) return "operalibre";
-  if (typeof window === "undefined") {
-    return "operalibre";
-  }
-  return window.localStorage.getItem(SERVER_TYPE_STORAGE_KEY) === "jellyfin"
-    ? "jellyfin"
-    : "operalibre";
-}
-
 export function getServerStorageKey(): string {
   if (isLocalMode()) return "device-local";
-  return serverStorageKey(getServerType(), getServerIdentityUrl());
+  return serverStorageKey(getServerIdentityUrl());
 }
 
 export function isLocalMode(): boolean {
@@ -366,12 +366,6 @@ export function getServerIdentityUrl(): string {
     window.localStorage.setItem(SERVER_IDENTITY_URL_STORAGE_KEY, secured);
   }
   return secured;
-}
-
-function setServerType(serverType: ServerType) {
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(SERVER_TYPE_STORAGE_KEY, serverType);
-  }
 }
 
 export function hasUserConfiguredServer(): boolean {
@@ -398,12 +392,10 @@ function setServerUrl(rawValue: string) {
  * address that now reports a different server is a new connection: its
  * sign-ins and aliases belonged to the server that used to be there.
  */
-export function setServerConnection(serverType: ServerType, rawValue: string, serverId: string | null) {
+export function setServerConnection(rawValue: string, serverId: string | null) {
   const pinned = getPinnedServerId();
-  const changed = getServerType() !== serverType
-    || getServerUrl() !== normalizeServerAddress(rawValue)
+  const changed = getServerUrl() !== normalizeServerAddress(rawValue)
     || (pinned !== null && serverId !== null && pinned !== serverId);
-  setServerType(serverType);
   setServerUrl(rawValue);
   if (typeof window !== "undefined") {
     window.localStorage.setItem(SERVER_IDENTITY_URL_STORAGE_KEY, normalizeServerAddress(rawValue));
@@ -423,11 +415,7 @@ export function clearServerUrl() {
 
 function currentApiBase(): string {
   const serverUrl = getServerUrl();
-  if (
-    typeof window !== "undefined"
-    && !Capacitor.isNativePlatform()
-    && getServerType() === "operalibre"
-  ) {
+  if (typeof window !== "undefined" && !Capacitor.isNativePlatform()) {
     return browserApiBase(serverUrl, window.location.origin);
   }
   return serverUrl;
@@ -435,7 +423,7 @@ function currentApiBase(): string {
 
 // Where unauthenticated requests to a candidate address are sent, after the
 // same checks a saved address must pass.
-function serverRequestBase(serverType: ServerType, rawValue: string): string {
+function serverRequestBase(rawValue: string): string {
   const base = usesNativeCredentialStorage()
     ? requireSecurePublicServerAddress(rawValue)
     : normalizeServerAddress(rawValue);
@@ -443,12 +431,11 @@ function serverRequestBase(serverType: ServerType, rawValue: string): string {
     throw new Error("Server URL is required.");
   }
   if (Capacitor.isNativePlatform() && isLoopbackServerUrl(base)) {
-    const port = serverType === "jellyfin" ? 8096 : 4920;
     throw new Error(
-      `localhost points to this iPhone. Use the server computer's LAN address, for example http://My-Mac.local:${port}.`
+      "localhost points to this iPhone. Use the server computer's LAN address, for example http://My-Mac.local:4920."
     );
   }
-  return serverType === "operalibre" && typeof window !== "undefined"
+  return typeof window !== "undefined"
     ? browserApiBase(base, window.location.origin)
     : base;
 }
@@ -457,11 +444,8 @@ function serverRequestBase(serverType: ServerType, rawValue: string): string {
  * Check that a server answers at an address. Resolves to the identity it
  * reports, or null from a server too old to report one.
  */
-export async function pingServer(serverType: ServerType, rawValue: string): Promise<string | null> {
-  const requestBase = serverRequestBase(serverType, rawValue);
-  if (serverType === "jellyfin") {
-    return pingJellyfin(requestBase);
-  }
+export async function pingServer(rawValue: string): Promise<string | null> {
+  const requestBase = serverRequestBase(rawValue);
   return fetchWithTimeout(`${requestBase}/api/health`, {
     method: "GET",
     // Cookies go along only to an address the user has signed in at, or to
@@ -504,7 +488,9 @@ function credentialVault(): CredentialVault {
   if (vault) return vault;
   vault = new CredentialVault(
     typeof window === "undefined" ? null : window.localStorage,
-    persistsAuthToken,
+    // Native shells have no cookie session, so the token must be kept; a
+    // browser tab relies on the server's session cookie.
+    usesNativeCredentialStorage,
     originalServerUrl
   );
   // Builds from before sign-ins were kept per address had one, and could be
@@ -518,17 +504,6 @@ function credentialVault(): CredentialVault {
 
 export function getStoredToken(): string | null {
   return credentialVault().get(getServerUrl()).token ?? null;
-}
-
-// Whether the auth token lives in localStorage. Native shells have no cookie
-// session, so they must. A Jellyfin server never sets one either — its access
-// token is the whole session — so a browser tab would forget the sign-in on
-// every reload unless the token is kept. The trade-off is accepted because the
-// identical token is already persisted as the media token (Jellyfin media URLs
-// need it), so keeping it here exposes nothing more; OperaLibre servers keep
-// relying on the cookie in the browser.
-function persistsAuthToken(): boolean {
-  return usesNativeCredentialStorage() || getServerType() === "jellyfin";
 }
 
 /** Save the active address's sign-in; null ends it, media credential included. */
@@ -561,8 +536,7 @@ export function forgetAllSignIns() {
 export { ApiError };
 
 // fetch rejects with a TypeError when the server is unreachable; anything the
-// server actually answered comes back as ApiError (from this module or the
-// Jellyfin client). Callers use this to tell "offline" apart from "rejected".
+// server actually answered comes back as ApiError. Callers use this to tell "offline" apart from "rejected".
 //
 // Only the TypeErrors fetch itself raises count — every browser words them
 // with one of these ("Failed to fetch", "NetworkError when attempting to
@@ -604,14 +578,7 @@ type RequestOptions = RequestInit & {
   ignoreUnauthorized?: boolean;
 };
 
-function requireOperaLibreServer() {
-  if (getServerType() !== "operalibre") {
-    throw new ApiError("This feature requires an OperaLibre server.", 400);
-  }
-}
-
 async function request<T>(path: string, options?: RequestOptions, timeoutMs = 30_000): Promise<T> {
-  requireOperaLibreServer();
   // Read together: the token is the one issued by the address it is sent to.
   return requestAt<T>(currentApiBase(), getStoredToken(), path, options, timeoutMs);
 }
@@ -670,27 +637,6 @@ async function requestAt<T>(
 
 export async function getAuthStatus() {
   if (isDemoMode()) return { setupRequired: false, user: DEMO_USER, mediaToken: null };
-  if (getServerType() === "jellyfin") {
-    const token = getStoredToken();
-    if (!token) {
-      return { setupRequired: false, user: null, mediaToken: null };
-    }
-    try {
-      return {
-        setupRequired: false,
-        user: await getJellyfinUser(currentApiBase(), token),
-        mediaToken: token
-      };
-    } catch (error) {
-      // Only a rejected credential means "not signed in". Anything else — the
-      // server unreachable, or answering with a 5xx — is rethrown so the caller
-      // keeps the token and falls back to the cached offline session.
-      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
-        return { setupRequired: false, user: null, mediaToken: null };
-      }
-      throw error;
-    }
-  }
   return request<AuthStatus>("/api/auth/status", undefined, STARTUP_TIMEOUT_MS);
 }
 
@@ -702,17 +648,19 @@ export async function setupAdmin(username: string, password: string, setupToken?
 }
 
 export async function login(username: string, password: string) {
-  return currentBackend().login(username, password);
+  return request<LoginResponse>("/api/auth/login", {
+    method: "POST", body: JSON.stringify({ username, password })
+  });
 }
 
 export async function logout() {
   if (isDemoMode()) return { ok: true };
-  return currentBackend().logout();
+  return request("/api/auth/logout", { method: "POST" });
 }
 
 export async function getMe() {
   if (isDemoMode()) return DEMO_USER;
-  return currentBackend().user();
+  return request<AuthUser>("/api/auth/me");
 }
 
 export async function getProfileStats() {
@@ -812,7 +760,6 @@ function authenticatedHeaders(headers?: HeadersInit) {
 }
 
 export async function downloadServerBackup(): Promise<{ blob: Blob; filename: string }> {
-  requireOperaLibreServer();
   return fetchWithTimeout(`${currentApiBase()}/api/admin/backup`, {
     headers: authenticatedHeaders(),
     cache: "no-store",
@@ -836,7 +783,6 @@ export async function downloadServerBackup(): Promise<{ blob: Blob; filename: st
 }
 
 export async function restoreServerBackup(file: File): Promise<ServerRestoreResult> {
-  requireOperaLibreServer();
   return fetchWithTimeout(`${currentApiBase()}/api/admin/backup`, {
     method: "POST",
     headers: authenticatedHeaders({ "Content-Type": "application/json" }),
@@ -983,12 +929,12 @@ export async function updateAvatar(avatar: string | null) {
 /**
  * The shared "who finished what" feed.
  *
- * Backends with no such notion — Jellyfin, demo mode, a device-only library,
- * an OperaLibre server released before the feed — answer with an empty one
- * rather than an error, so the bell simply never appears.
+ * Libraries with no such notion — demo mode, a device-only library, a server
+ * released before the feed — answer with an empty one rather than an error,
+ * so the bell simply never appears.
  */
 export async function getFinishFeed(): Promise<FinishFeed> {
-  if (isDemoMode() || isLocalMode() || getServerType() === "jellyfin") {
+  if (isDemoMode() || isLocalMode()) {
     return EMPTY_FINISH_FEED;
   }
   try {
@@ -1000,7 +946,7 @@ export async function getFinishFeed(): Promise<FinishFeed> {
 }
 
 export async function markFinishFeedSeen(eventId: string): Promise<FinishFeed> {
-  if (isDemoMode() || isLocalMode() || getServerType() === "jellyfin") {
+  if (isDemoMode() || isLocalMode()) {
     return EMPTY_FINISH_FEED;
   }
   try {
@@ -1045,7 +991,8 @@ export async function changePassword(
 
 export async function getBooks() {
   if (isDemoMode()) return getDemoBooks();
-  return currentBackend().books();
+  // Startup falls back to cached books promptly when a server is unreachable.
+  return request<Book[]>("/api/books", undefined, STARTUP_TIMEOUT_MS);
 }
 
 export async function updateBookMetadata(bookId: string, metadata: BookMetadataUpdate) {
@@ -1063,17 +1010,25 @@ export async function setBookCompletion(
   if (isDemoMode()) {
     return setDemoBookCompletion(book, finished, finalProgress);
   }
-  return currentBackend().completion(book, finished, finalProgress);
+  return request<BookProgress>(`/api/books/${encodeURIComponent(book.id)}/completion`, {
+    method: "PUT",
+    // Only natural completion supplies progress and creates a dated reading event.
+    body: JSON.stringify({
+      finished,
+      ...finalProgress,
+      ...(finalProgress ? { tzOffsetMinutes: tzOffsetMinutes() } : {})
+    })
+  });
 }
 
 /**
  * Persist the listener's gain for one book so every device they sign in from
- * plays it at the corrected level. Backends without the endpoint — Jellyfin,
- * demo mode, device-only books, older OperaLibre servers — keep the setting in
- * the caller's local mirror instead of failing the adjustment.
+ * plays it at the corrected level. Libraries without the endpoint — demo mode,
+ * device-only books, older servers — keep the setting in the caller's local
+ * mirror instead of failing the adjustment.
  */
 export async function setBookVolume(bookId: string, volumeGain: number): Promise<boolean> {
-  if (isDemoMode() || isLocalMode() || getServerType() === "jellyfin") {
+  if (isDemoMode() || isLocalMode()) {
     return false;
   }
   try {
@@ -1091,9 +1046,6 @@ export async function setBookVolume(bookId: string, volumeGain: number): Promise
 }
 
 export async function rescanLibrary() {
-  if (getServerType() === "jellyfin") {
-    return getBooks();
-  }
   return request<Book[]>("/api/library/rescan", { method: "POST" });
 }
 
@@ -1135,18 +1087,7 @@ export async function uploadEbook(bookId: string, file: File) {
  */
 export async function getProgress(bookId: string, timeoutMs?: number) {
   if (isDemoMode()) return getDemoProgress(bookId);
-  return currentBackend().progress(bookId, timeoutMs);
-}
-
-/** Foreground adoption must read the backend now, not its library cache. */
-export async function getFreshProgress(book: Book, timeoutMs?: number) {
-  if (isDemoMode()) return getDemoProgress(book.id);
-  return currentBackend().freshProgress(book, timeoutMs);
-}
-
-export async function saveProgress(bookId: string, progress: ProgressWrite, options?: ProgressWriteOptions) {
-  if (isDemoMode()) return saveDemoProgress(bookId, progress);
-  return currentBackend().saveProgress(bookId, progress, options);
+  return request<Progress | null>(`/api/books/${encodeURIComponent(bookId)}/progress`, undefined, timeoutMs);
 }
 
 // The native shells reach the server cross-origin, behind a CORS preflight,
@@ -1162,7 +1103,8 @@ function apiIsSameOrigin(): boolean {
   }
 }
 
-async function saveOperaLibreProgress(bookId: string, progress: ProgressWrite, options?: ProgressWriteOptions) {
+export async function saveProgress(bookId: string, progress: ProgressWrite, options?: ProgressWriteOptions) {
+  if (isDemoMode()) return saveDemoProgress(bookId, progress);
   // The server uses the observed revision to reject obsolete checkpoints;
   // legacy writes without a revision retain timestamp ordering.
   // intentionalRegression marks a deliberate restart or rewind, allowing
@@ -1192,19 +1134,6 @@ async function saveOperaLibreProgress(bookId: string, progress: ProgressWrite, o
 }
 
 export async function getLibationStatus() {
-  if (getServerType() === "jellyfin") {
-    return {
-      enabled: false,
-      cliPath: null,
-      libationFilesDir: null,
-      libraryRoot: "",
-      accounts: [],
-      authenticated: false,
-      message: "Libation is available only with an OperaLibre server.",
-      autoRefreshHours: null,
-      manualRefreshesPerHour: 0
-    } satisfies LibationStatus;
-  }
   return request<LibationStatus>("/api/libation/status");
 }
 
@@ -1392,14 +1321,11 @@ function appendMediaToken(path: string) {
 
 export function mediaUrl(path: string) {
   if (isDemoMode() && isDemoMediaPath(path)) return demoMediaUrl(path);
-  return `${currentApiBase()}${currentBackend().mediaPath(path)}`;
+  return `${currentApiBase()}${appendMediaToken(path)}`;
 }
 
 export function bookDownloadUrl(bookId: string) {
   if (isDemoMode()) return "#";
-  if (getServerType() !== "operalibre") {
-    throw new ApiError("This server supports individual track downloads, not book archives.", 400);
-  }
   return `${currentApiBase()}${appendMediaToken(`/api/books/${encodeURIComponent(bookId)}/download`)}`;
 }
 
@@ -1411,93 +1337,6 @@ export async function deleteDownloadedBook(bookId: string) {
 
 export function readalongUrl(path: string) {
   return mediaUrl(path);
-}
-
-let playbackReporterContext: {
-  base: string;
-  token: string;
-  reporter: ReturnType<typeof createPlaybackReporter>;
-} | null = null;
-
-/** Capture credentials now: cleanup must never report an old track to a new server. */
-export function playbackReportingSession(itemId: string) {
-  if (isDemoMode() || isLocalMode() || getServerType() !== "jellyfin") return null;
-  const base = currentApiBase();
-  const token = getStoredToken();
-  if (!token) return null;
-  const reporter = jellyfinPlaybackReporter(base, token);
-  return {
-    start: (position: number) => reporter.start(itemId, position).catch(() => undefined),
-    stop: (position: number) => reporter.stop(itemId, position).catch(() => undefined)
-  };
-}
-
-function jellyfinPlaybackReporter(base: string, token: string) {
-  if (playbackReporterContext?.base !== base || playbackReporterContext?.token !== token) {
-    playbackReporterContext = {
-      base, token,
-      reporter: createPlaybackReporter((event, id, position) => event === "start"
-        ? reportJellyfinPlaybackStart(base, token, id, position)
-        : reportJellyfinPlaybackStop(base, token, id, position))
-    };
-  }
-  return playbackReporterContext.reporter;
-}
-
-function jellyfinToken() {
-  const token = getStoredToken();
-  if (!token) throw new ApiError("Not signed in.", 401);
-  return token;
-}
-
-const serverBackends: Record<ServerType, ServerBackend> = {
-  operalibre: {
-    login: (username, password) => request<LoginResponse>("/api/auth/login", {
-      method: "POST", body: JSON.stringify({ username, password })
-    }),
-    logout: () => request("/api/auth/logout", { method: "POST" }),
-    user: () => request<AuthUser>("/api/auth/me"),
-    // Startup falls back to cached books promptly when a server is unreachable.
-    books: () => request<Book[]>("/api/books", undefined, STARTUP_TIMEOUT_MS),
-    progress: (id, timeout) => request<Progress | null>(`/api/books/${encodeURIComponent(id)}/progress`, undefined, timeout),
-    freshProgress: (book, timeout) => serverBackends.operalibre.progress(book.id, timeout),
-    saveProgress: saveOperaLibreProgress,
-    completion: (book, finished, progress) => request<BookProgress>(`/api/books/${encodeURIComponent(book.id)}/completion`, {
-      method: "PUT",
-      // Only natural completion supplies progress and creates a dated reading event.
-      body: JSON.stringify({ finished, ...progress, ...(progress ? { tzOffsetMinutes: tzOffsetMinutes() } : {}) })
-    }),
-    mediaPath: appendMediaToken
-  },
-  jellyfin: {
-    login: (username, password) => loginToJellyfin(currentApiBase(), username, password),
-    logout: async () => {
-      const token = getStoredToken();
-      if (token) await logoutFromJellyfin(currentApiBase(), token);
-      return { ok: true };
-    },
-    user: () => getJellyfinUser(currentApiBase(), jellyfinToken()),
-    books: () => getJellyfinBooks(currentApiBase(), jellyfinToken()),
-    progress: async (id) => getCachedJellyfinProgress(id),
-    freshProgress: (book, timeout) => refreshJellyfinProgress(currentApiBase(), jellyfinToken(), book, timeout),
-    saveProgress: (id, progress, options) => {
-      const base = currentApiBase();
-      const token = jellyfinToken();
-      return jellyfinPlaybackReporter(base, token).write(() =>
-        saveJellyfinProgress(base, token, id, progress, options?.isPaused, options?.signal));
-    },
-    completion: (book, finished, progress) => {
-      const base = currentApiBase();
-      const token = jellyfinToken();
-      return jellyfinPlaybackReporter(base, token).write(() =>
-        setJellyfinBookCompletion(base, token, book, finished, progress));
-    },
-    mediaPath: (path) => jellyfinMediaPath(path, getStoredMediaToken())
-  }
-};
-
-function currentBackend(): ServerBackend {
-  return serverBackends[getServerType()];
 }
 
 export type SyncSchedule = {

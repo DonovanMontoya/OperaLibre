@@ -272,8 +272,8 @@ final class CarLibraryStore {
     }
 
     private func artworkFileName(_ bookId: String) -> String {
-        // Book ids come from library paths and Jellyfin ids, so they are not
-        // safe as file names on their own. Sanitizing alone would let two books
+        // Book ids come from library paths, so they are not safe as file
+        // names on their own. Sanitizing alone would let two books
         // whose ids differ only in punctuation share one cover, so the id's
         // hash rides along.
         let sanitized = bookId.unicodeScalars.prefix(48).reduce(into: "") { name, scalar in

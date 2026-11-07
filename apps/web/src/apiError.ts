@@ -1,8 +1,7 @@
 /**
  * An HTTP error the server actually answered with, as opposed to a request
- * that never reached it. Lives apart from `api.ts` so the Jellyfin client can
- * raise the same error without importing the whole API module (which imports
- * the Jellyfin client back).
+ * that never reached it. Lives apart from `api.ts` so modules that only need
+ * to recognize the error can do so without importing the whole API module.
  */
 export class ApiError extends Error {
   status: number;

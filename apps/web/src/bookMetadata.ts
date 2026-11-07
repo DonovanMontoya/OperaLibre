@@ -38,7 +38,7 @@ function decodeEntity(entity: string, name: string) {
 
 /** Hide blank descriptions and track/chapter labels stored as a comment. */
 export function displayBookDescription(book: Book) {
-  // Tags and providers such as Audible and Jellyfin often store the blurb as HTML.
+  // Tags and providers such as Audible often store the blurb as HTML.
   const description = book.description && HTML_TAG.test(book.description)
     ? cleanCatalogDescription(book.description)
     : cleanDescriptionSpaces(book.description);
@@ -74,7 +74,7 @@ export function cleanCatalogDescription(value: string | null) {
   return description || null;
 }
 
-/** Show a full timestamp, as Jellyfin and some tags store it, as a calendar date. */
+/** Show a full timestamp, as some tags store it, as a calendar date. */
 export function displayPublishedDate(value: string | null) {
   const trimmed = value?.trim();
   if (!trimmed) return null;

@@ -16,6 +16,18 @@ export function launchIntroRemainingMs(elapsedMs: number, reducedMotion: boolean
   return settled ? intro : Math.max(intro, LAUNCH_SETTLE_LIMIT_MS);
 }
 
+/**
+ * Where a launch with no saved server opens. A phone normally goes straight to
+ * the on-device library, so someone who installs the app before their server
+ * exists can still listen. A launch that just forgot a connection to a server
+ * kind the app no longer supports shows the picker everywhere instead, so the
+ * reader learns why their library is gone. Every startup path must agree, or a
+ * later auth check replaces the picker with the device library.
+ */
+export function startupWithoutServer(native: boolean, droppedUnsupportedServer: boolean): "local" | "server" {
+  return native && !droppedUnsupportedServer ? "local" : "server";
+}
+
 /** Downloaded media needs the persisted account session, not a media URL token. */
 export function canRestoreCachedNativeSession(
   native: boolean,

@@ -7,7 +7,6 @@ export type PendingSeek = { trackId: string; positionSeconds: number };
 export type QueuedProgressSave = {
   bookId: string;
   progress: Progress;
-  isPaused: boolean;
   intentionalSeekGeneration: number;
   seekIntentId?: string;
   // Whether the seek behind that generation also went backwards far enough to

@@ -47,7 +47,7 @@ import { PlaybackSpeedControl, ScrubSlider } from "./PlaybackControls";
 import { durationFromTracks, formatDurationLabel, formatTime } from "./formatting";
 import { haptic } from "./native";
 import { Capacitor } from "@capacitor/core";
-import { bookDownloadUrl, mediaUrl } from "./api";
+import { bookDownloadUrl } from "./api";
 import { displayPublishedDate, tagsForBook } from "./bookMetadata";
 import { readerStatusLabel } from "./sharedProgress";
 import { READ_ALONG_MODE_LABELS } from "./readalong";
@@ -100,7 +100,6 @@ export function PlayerPane({
   handlePlayerPaneScroll,
   hasNextChapter,
   hasPreviousChapter,
-  isOperaLibre,
   isPlaying,
   isViewingPlayingBook,
   jumpToChapter,
@@ -192,7 +191,6 @@ export function PlayerPane({
   handlePlayerPaneScroll: (event: UIEvent<HTMLElement>) => void;
   hasNextChapter: boolean;
   hasPreviousChapter: boolean;
-  isOperaLibre: boolean;
   isPlaying: boolean;
   isViewingPlayingBook: boolean;
   jumpToChapter: (chapter: Chapter) => void;
@@ -454,7 +452,7 @@ export function PlayerPane({
           ? actionFace(compactActions ? <Check size={actionIcon} /> : <CircleCheck size={actionIcon} />, "On device")
           : actionFace(<Download size={actionIcon} />, "Download", "Download to device")}
       </button>
-    ) : capabilities.bookArchive ? (
+    ) : capabilities.downloads ? (
       <a
         className={`${chip} book-action-storage`}
         href={bookDownloadUrl(selectedBook.id)}
@@ -464,22 +462,6 @@ export function PlayerPane({
       >
         {actionFace(<Download size={actionIcon} />, "Download", "Download ZIP")}
       </a>
-    ) : !native && capabilities.downloads ? (
-      <details className="track-downloads book-action-storage" onToggle={event => {
-        if (event.currentTarget.open) setBookActionsOpen(false);
-      }}>
-        <summary className={chip} title="Download individual tracks">
-          {actionFace(<Download size={actionIcon} />, "Download", "Download tracks")}
-        </summary>
-        <ul>
-          {selectedBook.tracks.map((track) => (
-            <li key={track.id}>
-              <a href={mediaUrl(track.downloadUrl ?? track.streamUrl)}
-                target="_blank" rel="noreferrer" download>{track.title}</a>
-            </li>
-          ))}
-        </ul>
-      </details>
     ) : compactActions ? (
       <span className="book-action book-action-storage is-unavailable" title="Downloads are not available for this book">
         {actionFace(<Download size={actionIcon} />, "Stream only")}
@@ -897,7 +879,6 @@ export function PlayerPane({
                         <button className="book-action book-action-more" type="button"
                           aria-label="More book actions" aria-expanded={bookActionsOpen} aria-controls={bookActionsId}
                           onClick={() => {
-                            bookActionsRef.current?.querySelector<HTMLDetailsElement>(".track-downloads")?.removeAttribute("open");
                             setBookActionsOpen(open => !open);
                           }}>
                           <span className="book-action-dot"><Ellipsis size={actionIcon} /></span>
@@ -1523,9 +1504,7 @@ export function PlayerPane({
               <h2>An empty <em>shelf</em></h2>
               <p>{localMode
                 ? "Choose audiobook files from this device to start listening."
-                : isOperaLibre
-                  ? "Add audiobook files to your server’s library folder, then refresh the library."
-                  : "Check your Jellyfin Books library and this account’s access, then refresh the library."}</p>
+                : "Add audiobook files to your server’s library folder, then refresh the library."}</p>
             </>
           )}
         </div>

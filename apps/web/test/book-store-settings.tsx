@@ -24,7 +24,7 @@ function Fixture() {
     <div style={{ height: 1600 }} />
     <BookStoreSettings
       allAudibleAccounts={[]} applyAdminLibraryChange={() => undefined} audibleManagement={<p style={params.has("tall") ? { height: 1200 } : undefined}>Audible management</p>}
-      brokenLibationAccounts={[]} canBrowseLibation currentUser={owner} isOperaLibre libroAccounts={[]} libroAvailable
+      brokenLibationAccounts={[]} canBrowseLibation currentUser={owner} libroAccounts={[]} libroAvailable
       libroOnDevice={false} libroRefreshKey={0} localMode={false} nativeTab="settings" setBooks={() => undefined}
       setLibroAccounts={() => undefined} setLibroDestination={() => undefined}
       target={target} onTargetShown={() => setTarget(null)}

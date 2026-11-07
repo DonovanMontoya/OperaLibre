@@ -221,8 +221,8 @@ test("existing phrase and partial-word searches still find their books", () => {
   assert.equal(bookMatchesShelfSearch(novel, "final-empire"), false);
 });
 
-test("Jellyfin and device book shapes search with null or partial metadata", () => {
-  const jellyfin = book({
+test("sparse server and device book shapes search with null or partial metadata", () => {
+  const sparse = book({
     title: "Alice’s Adventures in Wonderland",
     author: "Lewis Carroll",
     narrator: null,
@@ -230,10 +230,10 @@ test("Jellyfin and device book shapes search with null or partial metadata", () 
     genres: ["Classics"],
     metadata: { series: null } as Book["metadata"]
   });
-  assert.equal(bookMatchesShelfSearch(jellyfin, "classics carroll wonderland"), true);
-  assert.equal(bookMatchesShelfSearch(jellyfin, "carroll mcquillin"), false);
+  assert.equal(bookMatchesShelfSearch(sparse, "classics carroll wonderland"), true);
+  assert.equal(bookMatchesShelfSearch(sparse, "carroll mcquillin"), false);
 
-  const device = { ...jellyfin, source: "device" as const };
+  const device = { ...sparse, source: "device" as const };
   // Older cached books can omit fields added by newer frontends.
   for (const key of ["metadata", "tags", "genres"] as const) Reflect.deleteProperty(device, key);
   assert.equal(bookMatchesShelfSearch(device, "Carroll Wonderland"), true);

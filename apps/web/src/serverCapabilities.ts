@@ -1,27 +1,21 @@
-import type { AuthUser, ServerType } from "./types";
+import type { AuthUser } from "./types";
 
-/** Backend support and account permissions, independent of device/browser APIs. */
+/** Server features and account permissions, independent of device/browser APIs. */
 export function serverCapabilities(
-  server: ServerType,
-  user: Pick<AuthUser, "isAdmin" | "canDownload">,
+  user: Pick<AuthUser, "isAdmin">,
   mode: { local?: boolean; demo?: boolean } = {}
 ) {
   const connected = !mode.local && !mode.demo;
-  const opera = server === "operalibre";
   return {
-    downloads: connected && (opera || user.canDownload === true),
-    bookArchive: connected && opera,
+    downloads: connected,
     progressSync: connected,
     completion: connected,
-    readingFiles: opera,
-    sentenceAlignment: (connected || mode.demo === true) && opera,
-    // Includes the device-only ledger; detailed listening statistics still need the server.
-    statistics: opera,
-    sharedActivity: connected && opera,
-    imports: connected && opera,
-    administration: connected && opera && user.isAdmin,
-    metadataEditing: connected && opera && user.isAdmin,
-    uploads: connected && opera && user.isAdmin
+    sentenceAlignment: connected || mode.demo === true,
+    sharedActivity: connected,
+    imports: connected,
+    administration: connected && user.isAdmin,
+    metadataEditing: connected && user.isAdmin,
+    uploads: connected && user.isAdmin
   };
 }
 

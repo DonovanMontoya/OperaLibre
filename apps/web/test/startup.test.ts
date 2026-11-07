@@ -6,6 +6,7 @@ import {
   canRestoreCachedNativeSession,
   LAUNCH_SETTLE_LIMIT_MS,
   launchIntroRemainingMs,
+  startupWithoutServer,
   libraryOfflineConfirmed,
   libraryReconnectDelayMs,
   shouldAcceptNativeTrackChange,
@@ -103,4 +104,13 @@ test("a launch that misses the server retries before calling itself offline", ()
   assert.equal(libraryOfflineConfirmed(1, false, 0), true);
   assert.deepEqual([1, 2, 3, 4, 5, 6, 20].map(libraryReconnectDelayMs),
     [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]);
+});
+
+test("a phone with no server opens the device library, but a forgotten Jellyfin connection opens the picker", () => {
+  assert.equal(startupWithoutServer(true, false), "local");
+  // Both the first render and the auth check that follows it ask this, so the
+  // check cannot swap the picker for an empty device library.
+  assert.equal(startupWithoutServer(true, true), "server");
+  assert.equal(startupWithoutServer(false, false), "server");
+  assert.equal(startupWithoutServer(false, true), "server");
 });
