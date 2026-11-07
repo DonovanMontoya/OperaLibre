@@ -302,6 +302,11 @@ jobs:
           swiftc apps/macos/Sources/OperaLibre/ReleaseSignature.swift apps/macos/Tests/ReleaseSignatureTests.swift -o "$RUNNER_TEMP/release-signature-tests"
           "$RUNNER_TEMP/release-signature-tests"
 
+      - name: Test macOS frontend rollback
+        run: |
+          swiftc apps/macos/Sources/OperaLibre/FrontendUpdater.swift apps/macos/Sources/OperaLibre/ReleaseSignature.swift apps/macos/Tests/FrontendRollbackTests.swift -o "$RUNNER_TEMP/frontend-rollback-tests"
+          "$RUNNER_TEMP/frontend-rollback-tests"
+
       - name: Test iOS export compliance declaration
         run: |
           python3 script/test_ios_export_compliance.py
