@@ -1,3 +1,7 @@
+#[path = "../../launcher/src/deployment.rs"]
+mod deployment;
+use deployment::DeploymentConfig;
+
 use crate::http_client_builder;
 use anyhow::{Context, anyhow, bail};
 use reqwest::Client;
@@ -643,6 +647,7 @@ impl UpdateManager {
         if request.channel.is_some_and(|expected| expected != channel) {
             bail!("The selected channel changed. Check for updates again before installing.");
         }
+        managed_update_config()?;
         let manifest = self.channel_manifest(channel).await?;
         let status = self.status_for_manifest(&manifest, channel)?;
         if request
@@ -724,6 +729,9 @@ impl UpdateManager {
         command.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
         // Pause only after the package is verified, and before an updater
         // starts its 45-second exit deadline. Failed launches resume the queue.
+        ensure_install_root_is_writable(&install.root)?;
+        let deployment = managed_update_config()?;
+        deployment.configure_command(command.as_std_mut());
         let sync_pause = before_restart.await?;
         command
             .spawn()
@@ -918,7 +926,8 @@ impl UpdateManager {
         let latest_text = package.map_or(manifest.version.as_str(), |package| &package.version);
         let latest = Version::parse(latest_text).context("Invalid release version")?;
         let capability = validate_target(&current, &latest, channel, manifest)
-            .and_then(|()| managed_install(self.web_dist_dir.as_deref()));
+            .and_then(|()| managed_update_config())
+            .and_then(|_| managed_install(self.web_dist_dir.as_deref()));
         let can_auto_update = package.is_some() && capability.is_ok();
         let message = if package.is_none() {
             Some(manifest_notice(manifest).unwrap_or_else(|| {
@@ -1199,6 +1208,13 @@ fn managed_install(web_dist_dir: Option<&Path>) -> anyhow::Result<ManagedInstall
     // still updates its server and bundled frontend together.
     ensure_install_root_is_writable_cached(&install.root)?;
     Ok(install)
+}
+
+fn managed_update_config() -> anyhow::Result<DeploymentConfig> {
+    let deployment =
+        DeploymentConfig::load(&std::env::current_dir()?).map_err(anyhow::Error::msg)?;
+    deployment.validate_update().map_err(anyhow::Error::msg)?;
+    Ok(deployment)
 }
 
 fn release_install(web_dist_dir: Option<&Path>) -> anyhow::Result<ManagedInstall> {
@@ -1844,6 +1860,132 @@ mod tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+
+    #[test]
+    fn missing_update_config_is_unavailable_and_keeps_the_server_up() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("data")).unwrap();
+        std::fs::write(root.path().join("VERSION.txt"), super::current_version()).unwrap();
+        let executable = root.path().join(super::exe_name("operalibre-server"));
+        let source = std::env::current_exe().unwrap();
+        std::fs::hard_link(&source, &executable)
+            .or_else(|_| std::fs::copy(&source, &executable).map(|_| ()))
+            .unwrap();
+        std::fs::create_dir(root.path().join("external")).unwrap();
+        std::fs::write(
+            root.path().join("external/custom.config"),
+            "data_dir = ../data\nport = 4920\n",
+        )
+        .unwrap();
+        for test in [
+            "updates::tests::missing_update_config_child",
+            "http_tests::missing_update_config_rejects_install_child",
+            "updates::tests::external_update_config_child",
+        ] {
+            let mut command = std::process::Command::new(&executable);
+            command
+                .args(["--exact", test, "--nocapture"])
+                .current_dir(root.path())
+                .env("OPERALIBRE_TEST_MISSING_UPDATE_CONFIG", "1")
+                .env_remove("OPERALIBRE_SERVER_CONFIG")
+                .env_remove("OPERALIBRE_DATA_DIR")
+                .env_remove("PORT");
+            if test == "updates::tests::external_update_config_child" {
+                command.env("OPERALIBRE_SERVER_CONFIG", "external/custom.config");
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{test}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_update_config_child() {
+        if std::env::var_os("OPERALIBRE_TEST_MISSING_UPDATE_CONFIG").is_none() {
+            return;
+        }
+        let root = std::env::current_dir().unwrap();
+        let manager = UpdateManager::new(root.join("data"), None, 4920).unwrap();
+        let manifest = available_update_manifest();
+        let status = manager
+            .status_for_manifest(&manifest, super::UpdateChannel::Stable)
+            .unwrap();
+        assert!(status.update_available);
+        assert!(!status.can_auto_update);
+        let message = status.message.unwrap();
+        assert!(
+            message.contains("server.config") && message.contains("Create"),
+            "{message}"
+        );
+        let error = manager
+            .install_prepared(super::UpdateInstallRequest::default(), async {
+                panic!("a missing config must be rejected before pausing sync");
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("server.config") && error.contains("Create"),
+            "{error}"
+        );
+        assert!(!manager.installing.load(Ordering::SeqCst));
+    }
+
+    fn available_update_manifest() -> crate::update_manifest::Manifest {
+        crate::update_manifest::unsigned_manifest(&format!(
+            r#"{{"type":"manifest","schema":1,"version":"99.0.0",
+            "releaseUrl":"https://example.com/release",
+            "packages":[{{"component":"server","platform":"{}","version":"99.0.0",
+            "url":"https://example.com/server.zip","sha256":"{}","size":1024,
+            "format":"zip","root":"operalibre-99.0.0"}}]}}"#,
+            platform_key().unwrap(),
+            "c".repeat(64)
+        ))
+    }
+
+    #[tokio::test]
+    async fn external_update_config_child() {
+        if std::env::var_os("OPERALIBRE_TEST_MISSING_UPDATE_CONFIG").is_none() {
+            return;
+        }
+        let root = std::env::current_dir().unwrap();
+        let manager = UpdateManager::new(root.join("data"), None, 4920).unwrap();
+        let manifest = available_update_manifest();
+        assert!(
+            manager
+                .status_for_manifest(&manifest, super::UpdateChannel::Stable)
+                .unwrap()
+                .can_auto_update
+        );
+        let deployment = super::managed_update_config().unwrap();
+        assert!(deployment.config_path.is_absolute());
+        assert_eq!(
+            deployment.data_dir.canonicalize().unwrap(),
+            root.join("data").canonicalize().unwrap()
+        );
+        std::fs::remove_file(&deployment.config_path).unwrap();
+        assert!(
+            !manager
+                .status_for_manifest(&manifest, super::UpdateChannel::Stable)
+                .unwrap()
+                .can_auto_update
+        );
+        let error = manager
+            .install_prepared(super::UpdateInstallRequest::default(), async {
+                panic!("a removed config must be rejected before pausing sync");
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("custom.config") && error.contains("Restore"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn unwritable_combined_installs_keep_their_bundled_frontend() {

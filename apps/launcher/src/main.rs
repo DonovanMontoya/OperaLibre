@@ -1,5 +1,9 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod deployment;
+
+use deployment::DeploymentConfig;
+
 use std::{
     env,
     fs::{self, OpenOptions},
@@ -77,8 +81,6 @@ fn run() -> Result<(), String> {
     }
 
     let root = installation_root()?;
-    env::set_current_dir(&root)
-        .map_err(|error| format!("Could not open {}: {error}", root.display()))?;
 
     if arguments.get(1).is_some_and(|arg| arg == "--service-start") {
         return start_supervised_server(&root);
@@ -89,49 +91,34 @@ fn run() -> Result<(), String> {
     }
 
     if start_server(&root, true, None)? == StartOutcome::StillStarting {
-        let port = configured_port(&root.join("server.config")).unwrap_or(4920);
+        let port = server_port(&root)?;
         show_message(&format!(
             "OperaLibre is still starting. Scanning a large library can take a while; open http://localhost:{port} once it finishes, or check {} for details.",
-            server_log_path(&root).display()
+            server_log_path(&root)?.display()
         ));
     }
     Ok(())
 }
 
-/// The data folder the server will use: `data_dir` from `server.config`
-/// (relative paths resolve against the config file's folder, as the server
-/// does), then `OPERALIBRE_DATA_DIR`, then `data` beside the server.
-fn data_dir(root: &Path) -> PathBuf {
-    configured_value(&root.join("server.config"), "data_dir")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("OPERALIBRE_DATA_DIR").map(PathBuf::from))
-        .map(|path| {
-            if path.is_absolute() {
-                path
-            } else {
-                root.join(path)
-            }
-        })
-        .unwrap_or_else(|| root.join("data"))
+fn data_dir(root: &Path) -> Result<PathBuf, String> {
+    Ok(DeploymentConfig::load(root)?.data_dir)
 }
 
-fn server_log_path(root: &Path) -> PathBuf {
-    data_dir(root).join("server.log")
+fn server_log_path(root: &Path) -> Result<PathBuf, String> {
+    Ok(data_dir(root)?.join("server.log"))
 }
 
-fn pid_path(root: &Path) -> PathBuf {
-    data_dir(root).join("operalibre-server.pid")
+fn pid_path(root: &Path) -> Result<PathBuf, String> {
+    Ok(data_dir(root)?.join("operalibre-server.pid"))
 }
 
 /// Best-effort note in the server log, which is the file users are told to
 /// check; the launchers themselves have no console.
 fn append_log(root: &Path, message: &str) {
-    if let Ok(mut log) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(server_log_path(root))
-    {
+    let Ok(path) = server_log_path(root) else {
+        return;
+    };
+    if let Ok(mut log) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(log, "[launcher] {message}");
     }
 }
@@ -173,12 +160,13 @@ fn start_server(
 ) -> Result<StartOutcome, String> {
     fs::create_dir_all(root.join("audiobooks"))
         .map_err(|error| format!("Could not create the audiobooks folder: {error}"))?;
-    let data_dir = data_dir(root);
-    fs::create_dir_all(&data_dir)
+    let deployment = DeploymentConfig::load(root)?;
+    let data_dir = &deployment.data_dir;
+    fs::create_dir_all(data_dir)
         .map_err(|error| format!("Could not create the data folder: {error}"))?;
-    secure_directory(&data_dir)?;
+    secure_directory(data_dir)?;
 
-    let port = server_port(root);
+    let port = deployment.port;
     let log_path = data_dir.join("server.log");
 
     // A server already up, or still coming up from an earlier start, is
@@ -219,6 +207,7 @@ fn start_server(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
+    deployment.configure_command(&mut command);
     match trial_token {
         Some(token) => command.env(UPDATE_TRIAL_ENV, token),
         None => command.env_remove(UPDATE_TRIAL_ENV),
@@ -324,7 +313,7 @@ fn secure_file(_path: &Path) -> Result<(), String> {
 }
 
 fn update_lock(root: &Path) -> Result<fs::File, String> {
-    let data = data_dir(root);
+    let data = data_dir(root)?;
     fs::create_dir_all(&data).map_err(|error| error.to_string())?;
     secure_directory(&data)?;
     let mut options = OpenOptions::new();
@@ -345,12 +334,12 @@ fn start_supervised_server(root: &Path) -> Result<(), String> {
     // publication so a queued updater cannot race the takeover.
     let _lock = update_lock(root)?;
     stop_server(root)?;
-    fs::write(pid_path(root), std::process::id().to_string())
+    fs::write(pid_path(root)?, std::process::id().to_string())
         .map_err(|error| format!("Could not save the supervised PID: {error}"))?;
-    secure_file(&pid_path(root))?;
-    let error = Command::new(root.join(server_binary_name()))
-        .current_dir(root)
-        .exec();
+    secure_file(&pid_path(root)?)?;
+    let mut command = Command::new(root.join(server_binary_name()));
+    DeploymentConfig::load(root)?.configure_command(&mut command);
+    let error = command.current_dir(root).exec();
     Err(format!("Could not start the supervised server: {error}"))
 }
 
@@ -371,7 +360,7 @@ fn publish_update_result(root: &Path, result: &Result<(), String>) -> Result<(),
     };
     append_log(root, &message);
     eprintln!("{message}");
-    let data = data_dir(root);
+    let data = data_dir(root)?;
     let temporary = data.join("update-result.txt.tmp");
     fs::write(&temporary, format!("{message}\n")).map_err(|error| error.to_string())?;
     secure_file(&temporary)?;
@@ -426,7 +415,7 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     let trial_token = update_trial_token()?;
     wait_for_server_exit(server_pid, port)?;
 
-    let backup_root = data_dir(&install_root).join("update-backups").join(
+    let backup_root = data_dir(&install_root)?.join("update-backups").join(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| format!("Could not create an update timestamp: {error}"))?
@@ -469,7 +458,7 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
         // Until the commit below the new build acknowledges nothing, so a
         // rollback up to that point discards no client's change.
         require_ready_start(start_server(&install_root, false, Some(&trial_token))?)?;
-        match commit_update_trial(server_port(&install_root), &trial_token)? {
+        match commit_update_trial(server_port(&install_root)?, &trial_token)? {
             TrialCommit::Committed => {}
             TrialCommit::Unsupported => append_log(
                 &install_root,
@@ -537,10 +526,7 @@ fn validate_update_paths(package_root: &Path, install_root: &Path) -> Result<(),
     {
         return Err("The staged update package is incomplete.".to_string());
     }
-    if !data_dir(install_root).is_dir() || !install_root.join("server.config").is_file() {
-        return Err("The target is not a managed OperaLibre installation.".to_string());
-    }
-    Ok(())
+    DeploymentConfig::load(install_root)?.validate_update()
 }
 
 fn wait_for_server_exit(server_pid: u32, port: u16) -> Result<(), String> {
@@ -732,7 +718,7 @@ fn prepare_update(
     backup_root: &Path,
     includes_web: bool,
 ) -> Result<(), String> {
-    snapshot_data(&data_dir(install_root), &backup_root.join("data"))
+    snapshot_data(&data_dir(install_root)?, &backup_root.join("data"))
         .and_then(|()| prepare_rollback_records(backup_root))
         .and_then(|()| stage_installed_files(install_root, backup_root, includes_web))
 }
@@ -801,7 +787,7 @@ fn rollback_update(
 ) -> Result<(), String> {
     let server_name = server_binary_name();
     let stopped = stop_server(install_root);
-    let data = data_dir(install_root);
+    let data = data_dir(install_root)?;
     let snapshot = backup_root.join("data");
     // Decided once: after a restore the formats match the snapshot again, so a
     // rollback run a second time (the previous build failed to start after
@@ -1182,7 +1168,7 @@ fn set_executable(_path: &Path) -> Result<(), String> {
 }
 
 fn stop_server(root: &Path) -> Result<(), String> {
-    let pid_path = pid_path(root);
+    let pid_path = pid_path(root)?;
     let pid = match fs::read_to_string(&pid_path) {
         Ok(pid) => pid.trim().to_string(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -1294,68 +1280,12 @@ fn signal_server(pid: u32, _force: bool) -> Result<(), String> {
     }
 }
 
-fn configured_port(config_path: &Path) -> Option<u16> {
-    port_from(configured_value(config_path, "port"), env::var("PORT").ok())
-}
-
-/// The server's rule: a blank or missing `port` falls back to the `PORT`
-/// environment variable. The caller supplies 4920 when both are unset.
-fn port_from(configured: Option<String>, environment: Option<String>) -> Option<u16> {
-    [configured, environment]
-        .into_iter()
-        .flatten()
-        .map(|value| value.trim().to_string())
-        .find(|value| !value.is_empty())?
-        .parse()
-        .ok()
-}
-
-/// The value of `key` in a `server.config` file, read the way the server
-/// reads it: keys are case-insensitive with `-` and `_` interchangeable, a
-/// repeated key takes its last value, and one matching pair of surrounding
-/// quotes is stripped. Reading a repeated `port` differently from the server
-/// would have the launcher wait on a port nothing listens on.
-fn configured_value(config_path: &Path, key: &str) -> Option<String> {
-    let contents = fs::read_to_string(config_path).ok()?;
-    configured_value_in(&contents, key)
-}
-
-fn configured_value_in(contents: &str, key: &str) -> Option<String> {
-    let wanted = key.to_ascii_lowercase().replace('-', "_");
-    contents
-        .lines()
-        // Searched from the end: the server keeps a repeated key's last value.
-        .rev()
-        .find_map(|raw_line| {
-            let line = raw_line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                return None;
-            }
-            let (candidate, value) = line.split_once('=')?;
-            (candidate.trim().to_ascii_lowercase().replace('-', "_") == wanted)
-                .then(|| unquote_config_value(value.trim()))
-        })
-}
-
-/// One matching pair of surrounding quotes, as the server's
-/// `unquote_config_value` strips.
-fn unquote_config_value(value: &str) -> String {
-    let bytes = value.as_bytes();
-    if bytes.len() >= 2
-        && bytes[0] == bytes[bytes.len() - 1]
-        && (bytes[0] == b'"' || bytes[0] == b'\'')
-    {
-        return value[1..value.len() - 1].to_string();
-    }
-    value.to_string()
-}
-
 /// The variable and header the server reads for an update trial.
 const UPDATE_TRIAL_ENV: &str = "OPERALIBRE_UPDATE_TRIAL";
 const UPDATE_TRIAL_HEADER: &str = "X-OperaLibre-Update-Trial";
 
-fn server_port(root: &Path) -> u16 {
-    configured_port(&root.join("server.config")).unwrap_or(4920)
+fn server_port(root: &Path) -> Result<u16, String> {
+    Ok(DeploymentConfig::load(root)?.port)
 }
 
 /// Unguessable, so no other local process or web page can commit a trial.
@@ -1660,6 +1590,9 @@ mod tests {
             std::fs::read_to_string(root.join("state/update-result.txt")).unwrap(),
             "Failed: restored previous version\n"
         );
+        // Other tests spawn processes; a concurrent fork can briefly retain
+        // the descriptor even after this process drops it.
+        lock.unlock().unwrap();
         drop(lock);
         contender.try_lock().unwrap();
         drop(contender);
@@ -2139,11 +2072,191 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    use super::deployment::{configured_value_in, port_from};
     use super::{
-        ServerReadiness, configured_value_in, data_dir, named_update_argument,
-        optional_named_update_argument, parse_health_response, port_from, process_command_matches,
+        ServerReadiness, data_dir, named_update_argument, optional_named_update_argument,
+        parse_health_response, process_command_matches,
     };
     use std::{env, ffi::OsString, fs, path::Path};
+
+    #[test]
+    fn external_config_selects_the_update_deployment() {
+        let root = scratch("external-config");
+        let install = root.join("install");
+        let external = root.join("external");
+        fs::create_dir_all(&install).unwrap();
+        fs::create_dir_all(&external).unwrap();
+        fs::write(
+            install.join("server.config"),
+            "data_dir = state\nport = 4101\n",
+        )
+        .unwrap();
+        fs::write(
+            external.join("custom.config"),
+            "data_dir = state\nport = 4102\n",
+        )
+        .unwrap();
+        let _wrong = seed_data(&install.join("state"), 1, r#"{"version":1}"#);
+        let _selected = seed_data(&external.join("state"), 9, r#"{"version":1}"#);
+        for config in [
+            external.join("custom.config"),
+            "../external/custom.config".into(),
+            external.join("custom.config"),
+        ] {
+            let output = std::process::Command::new(env::current_exe().unwrap())
+                .args(["--exact", "tests::selected_deployment_child", "--nocapture"])
+                .current_dir(&install)
+                .env("OPERALIBRE_TEST_INSTALL", &install)
+                .env("OPERALIBRE_SERVER_CONFIG", config)
+                .env("OPERALIBRE_DATA_DIR", "wrong-fallback")
+                .env("PORT", "4103")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let _ = fs::remove_file(install.join("server.config"));
+        }
+        assert!(!install.join("state/update.lock").exists());
+        assert!(!install.join("state/update-result.txt").exists());
+        drop(_wrong);
+        drop(_selected);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn selected_deployment_child() {
+        let Some(install) = env::var_os("OPERALIBRE_TEST_INSTALL").map(std::path::PathBuf::from)
+        else {
+            return;
+        };
+        let selected = install.parent().unwrap().join("external/state");
+        assert_eq!(
+            data_dir(&install).unwrap().canonicalize().unwrap(),
+            selected.canonicalize().unwrap()
+        );
+        assert_eq!(super::server_port(&install).unwrap(), 4102);
+        assert_eq!(
+            super::pid_path(&install)
+                .unwrap()
+                .parent()
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            selected.canonicalize().unwrap()
+        );
+        let package = install.join("package");
+        fs::create_dir_all(package.join("web")).unwrap();
+        fs::write(package.join(super::server_binary_name()), "new server").unwrap();
+        fs::write(package.join("VERSION.txt"), "2.0.0").unwrap();
+        super::validate_update_paths(&package, &install).unwrap();
+        let _lock = super::update_lock(&install).unwrap();
+        super::publish_update_result(&install, &Ok(())).unwrap();
+        assert!(selected.join("update.lock").is_file());
+        assert!(selected.join("update-result.txt").is_file());
+        fs::write(install.join(super::server_binary_name()), "old server").unwrap();
+        let backup = selected.join("backup");
+        super::prepare_update(&install, &backup, false).unwrap();
+        assert_eq!(
+            super::schema_version(&backup.join("data/operalibre.db")),
+            Ok(9)
+        );
+        super::restore_backed_up(
+            &backup.join(super::server_binary_name()),
+            &install.join(super::server_binary_name()),
+        )
+        .unwrap();
+        fs::remove_dir_all(backup).unwrap();
+    }
+
+    #[test]
+    fn deployment_defaults_and_environment_fallbacks_match_the_server() {
+        let root = scratch("config-fallbacks");
+        fs::create_dir_all(&root).unwrap();
+        let output = std::process::Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::deployment_fallbacks_child",
+                "--nocapture",
+            ])
+            .current_dir(&root)
+            .env("OPERALIBRE_TEST_FALLBACKS", "1")
+            .env_remove("OPERALIBRE_SERVER_CONFIG")
+            .env_remove("OPERALIBRE_DATA_DIR")
+            .env_remove("PORT")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deployment_fallbacks_child() {
+        if env::var_os("OPERALIBRE_TEST_FALLBACKS").is_none() {
+            return;
+        }
+        let root = env::current_dir().unwrap();
+        let config = super::DeploymentConfig::load(&root).unwrap();
+        assert_eq!(config.data_dir, root.join("data"));
+        assert_eq!(config.port, 4920);
+        assert!(config.validate_update().unwrap_err().contains("Create"));
+        fs::create_dir(root.join("data")).unwrap();
+        fs::write(root.join("server.config"), "").unwrap();
+        super::DeploymentConfig::load(&root)
+            .unwrap()
+            .validate_update()
+            .unwrap();
+        // A separate process keeps environment changes out of parallel tests.
+        let output = std::process::Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::deployment_environment_child",
+                "--nocapture",
+            ])
+            .env("OPERALIBRE_TEST_FALLBACKS", "1")
+            .env("OPERALIBRE_DATA_DIR", "fallback")
+            .env("PORT", " 4103 ")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn deployment_environment_child() {
+        if env::var_os("OPERALIBRE_TEST_FALLBACKS").is_none() {
+            return;
+        }
+        let root = env::current_dir().unwrap();
+        for contents in ["", "data_dir = ''\nport = ''\n"] {
+            fs::write(root.join("server.config"), contents).unwrap();
+            let config = super::DeploymentConfig::load(&root).unwrap();
+            assert_eq!(config.data_dir, root.join("fallback"));
+            assert_eq!(config.port, 4103);
+        }
+        fs::write(
+            root.join("server.config"),
+            "data_dir = ' state ' \nport = 4104\n",
+        )
+        .unwrap();
+        let config = super::DeploymentConfig::load(&root).unwrap();
+        assert_eq!(config.data_dir, root.join("state"));
+        assert_eq!(config.port, 4104);
+        fs::write(root.join("server.config"), "port = invalid\n").unwrap();
+        assert!(super::DeploymentConfig::load(&root).is_err());
+    }
 
     #[test]
     fn config_values_match_the_servers_key_rules() {
@@ -2176,16 +2289,16 @@ mod tests {
     fn a_blank_port_falls_back_to_the_port_variable_like_the_server() {
         let last_blank = configured_value_in("port = 4000\nport =\n", "port");
         assert_eq!(
-            port_from(last_blank.clone(), Some("4000".into())),
+            port_from(last_blank.clone(), Some("4000".into())).unwrap(),
             Some(4000)
         );
-        assert_eq!(port_from(last_blank, None), None);
+        assert_eq!(port_from(last_blank, None).unwrap(), None);
         assert_eq!(
-            port_from(Some("48917".into()), Some("4000".into())),
+            port_from(Some("48917".into()), Some("4000".into())).unwrap(),
             Some(48917)
         );
-        assert_eq!(port_from(None, Some(" 4100 ".into())), Some(4100));
-        assert_eq!(port_from(None, Some(" ".into())), None);
+        assert_eq!(port_from(None, Some(" 4100 ".into())).unwrap(), Some(4100));
+        assert_eq!(port_from(None, Some(" ".into())).unwrap(), None);
     }
 
     #[test]
@@ -2211,17 +2324,17 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let config = root.join("server.config");
 
-        assert_eq!(data_dir(&root), root.join("data"));
+        assert_eq!(data_dir(&root).unwrap(), root.join("data"));
 
         fs::write(&config, "port = 4000\ndata_dir = state/live\n").unwrap();
-        assert_eq!(data_dir(&root), root.join("state/live"));
+        assert_eq!(data_dir(&root).unwrap(), root.join("state/live"));
 
         let absolute = root.join("elsewhere");
         fs::write(&config, format!("data_dir = {}\n", absolute.display())).unwrap();
-        assert_eq!(data_dir(&root), absolute);
+        assert_eq!(data_dir(&root).unwrap(), absolute);
 
         fs::write(&config, "data_dir =\n").unwrap();
-        assert_eq!(data_dir(&root), root.join("data"));
+        assert_eq!(data_dir(&root).unwrap(), root.join("data"));
 
         let _ = fs::remove_dir_all(&root);
     }
