@@ -9958,83 +9958,131 @@ async fn a_burst_of_six_legitimate_logins_can_wait_for_password_workers() {
 }
 
 #[cfg(unix)]
-#[tokio::test]
-async fn libation_sync_without_a_signed_in_account_preserves_reader_quota() {
-    let mut server = TestServer::start(0).await;
-    let owner = server.setup_owner().await;
-    let reader = server.add_reader(&owner, "audible-reader").await;
-    let (fake, _) = unit_tests::fake_libation_state(server._root.path());
-    server.state.libation_config = fake.libation_config;
-    server.router = build_router(server.state.clone(), None, &[]).unwrap();
-    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let timestamps = vec![unix_now_seconds()];
-    server
-        .state
-        .libation_refreshes
-        .mutate(|store| {
-            store
-                .manual_refreshes
-                .insert(reader_id.clone(), timestamps.clone());
-            Ok(())
-        })
-        .await
-        .unwrap();
-
-    for accounts in ["", "owner@example.test\tPrivate Name\tus\tYes\tNo\n"] {
-        std::fs::write(server._root.path().join("libation-accounts.tsv"), accounts).unwrap();
-        for token in [&reader, &owner] {
-            let response = server
-                .send_json("POST", "/api/libation/sync", token, serde_json::json!({}))
-                .await;
-            assert_eq!(
-                response.status,
-                StatusCode::BAD_REQUEST,
-                "{}",
-                response.text()
-            );
-            assert!(
-                response.json()["message"]
-                    .as_str()
-                    .unwrap()
-                    .contains("Sign in")
-            );
-            assert_eq!(
-                server
-                    .state
-                    .libation_refreshes
-                    .read()
-                    .await
-                    .manual_refreshes[&reader_id],
-                timestamps
-            );
-            assert!(server.state.jobs.read().await.is_empty());
-            assert!(!server._root.path().join("libation-scans.log").exists());
-        }
+fn connected_libation_account() -> ManagedLibationAccount {
+    ManagedLibationAccount {
+        id: "managed-account".into(),
+        label: "Private Name".into(),
+        account_id: "owner@example.test".into(),
+        locale: "us".into(),
+        added_by: "owner".into(),
+        added_at: now_unix_string(),
+        connection_state: "connected".into(),
+        authenticated: true,
+        last_successful_auth: None,
+        last_successful_refresh: None,
+        last_error: None,
     }
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn libation_access_reports_check_capability_without_account_details() {
+async fn libation_admin_refresh_recovers_after_a_download_error() {
+    let mut server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let (fake, _) = unit_tests::fake_libation_state(server._root.path());
+    server.state.libation_config = fake.libation_config;
+    let account = connected_libation_account();
+    initialize_managed_libation_profile(
+        &server.state.libation_accounts_root.join(&account.id),
+        &server.state.library_root,
+    )
+    .await
+    .unwrap();
+    server
+        .state
+        .libation_accounts
+        .mutate(|store| {
+            store.accounts.push(account.clone());
+            Ok(())
+        })
+        .await
+        .unwrap();
+    std::fs::write(
+        server._root.path().join("libation-accounts.tsv"),
+        "owner@example.test\tPrivate Name\tus\tYes\tYes\n",
+    )
+    .unwrap();
+    mark_managed_libation_account_scan_error(&server.state, &account.id, "Download timed out")
+        .await;
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    let status = server.get("/api/libation/status", &owner).await.json();
+    assert_eq!(status["accounts"][0]["authenticated"], false);
+    assert_eq!(status["accounts"][0]["lastError"], "Download timed out");
+
+    let response = server
+        .send_json("POST", "/api/libation/sync", &owner, serde_json::json!({}))
+        .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    let job_id = response.json()["jobId"].as_str().unwrap().to_owned();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let job = server
+                .get(&format!("/api/jobs/{job_id}"), &owner)
+                .await
+                .json();
+            assert_ne!(job["status"], "failed", "{job}");
+            if job["status"] == "completed" {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("administrator recovery refresh must finish");
+    assert!(server.state.libation_accounts.read().await.accounts[0].authenticated);
+    assert!(
+        server.state.libation_accounts.read().await.accounts[0]
+            .last_error
+            .is_none()
+    );
+    assert!(
+        server
+            .state
+            .libation_refreshes
+            .read()
+            .await
+            .manual_refreshes
+            .is_empty()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_access_reports_cached_check_capability_without_account_details() {
     let mut server = TestServer::start(0).await;
     let owner = server.setup_owner().await;
     let reader = server.add_reader(&owner, "audible-reader").await;
     let (fake, _) = unit_tests::fake_libation_state(server._root.path());
     server.state.libation_config = fake.libation_config;
     server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    let connected = connected_libation_account();
+    let signed_out = ManagedLibationAccount {
+        authenticated: false,
+        connection_state: "needs_sign_in".into(),
+        ..connected.clone()
+    };
+    let signing_in = ManagedLibationAccount {
+        id: "other".into(),
+        authenticated: false,
+        connection_state: "signing_in".into(),
+        ..connected.clone()
+    };
     for (accounts, can_check) in [
-        ("", false),
-        ("owner@example.test\tPrivate Name\tus\tYes\tNo\n", false),
-        ("owner@example.test\tPrivate Name\tus\tYes\tYes\n", true),
-        (
-            "owner@example.test\tPrivate Name\tus\tYes\tYes\nother@example.test\tOther Name\tus\tYes\tNo\n",
-            true,
-        ),
+        (vec![], false),
+        (vec![signed_out.clone()], false),
+        (vec![connected.clone()], true),
+        (vec![connected.clone(), signed_out], true),
+        (vec![connected.clone(), signing_in], false),
     ] {
-        std::fs::write(server._root.path().join("libation-accounts.tsv"), accounts).unwrap();
+        server
+            .state
+            .libation_accounts
+            .mutate(|store| {
+                store.accounts = accounts;
+                Ok(())
+            })
+            .await
+            .unwrap();
         let response = server.get("/api/libation/access", &reader).await;
         assert_eq!(response.status, StatusCode::OK);
         assert_eq!(
@@ -10046,9 +10094,16 @@ async fn libation_access_reports_check_capability_without_account_details() {
             })
         );
     }
-
-    // A different administrator's pending sign-in is private to that admin,
-    // but still prevents readers from starting a check on a healthy account.
+    server
+        .state
+        .libation_accounts
+        .mutate(|store| {
+            store.accounts = vec![connected];
+            Ok(())
+        })
+        .await
+        .unwrap();
+    // A different administrator's private login still prevents a reader's check.
     let job_guard = server.state.libation_job_lock.clone().lock_owned().await;
     let (response_sender, _response_receiver) = std::sync::mpsc::channel::<String>();
     let (_completion_sender, completion) =
@@ -10069,22 +10124,84 @@ async fn libation_access_reports_check_capability_without_account_details() {
     let response = server.get("/api/libation/access", &reader).await;
     assert_eq!(response.json()["canCheckAudible"], false);
     assert!(!response.text().contains("private"));
-    let response = server
-        .send_json("POST", "/api/libation/sync", &reader, serde_json::json!({}))
-        .await;
-    assert_eq!(response.status, StatusCode::BAD_REQUEST);
-    assert!(
-        server
-            .state
-            .libation_refreshes
-            .read()
-            .await
-            .manual_refreshes
-            .is_empty()
-    );
     server.state.libation_login_sessions.lock().await.clear();
+    // A busy job must not hide the cached capability.
+    let _job_guard = server.state.libation_job_lock.lock().await;
     assert_eq!(
         server.get("/api/libation/access", &reader).await.json()["canCheckAudible"],
         true
     );
+    server
+        .state
+        .libation_accounts
+        .mutate(|store| {
+            store.accounts.clear();
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut legacy =
+        parse_libation_accounts("legacy@example.test\tPrivate Legacy\tus\tYes\tYes\n").remove(0);
+    *server.state.libation_status_accounts.write().await = vec![legacy.clone()];
+    assert_eq!(
+        server.get("/api/libation/access", &reader).await.json()["canCheckAudible"],
+        true
+    );
+    legacy.connection_state = "signing_in".into();
+    *server.state.libation_status_accounts.write().await = vec![legacy.clone()];
+    assert_eq!(
+        server.get("/api/libation/access", &reader).await.json()["canCheckAudible"],
+        false
+    );
+    // Old managed probe rows cannot override the persisted managed health.
+    legacy.managed = true;
+    legacy.connection_state = "connected".into();
+    *server.state.libation_status_accounts.write().await = vec![legacy];
+    assert_eq!(
+        server.get("/api/libation/access", &reader).await.json()["canCheckAudible"],
+        false
+    );
+    server
+        .state
+        .libation_accounts
+        .mutate(|store| {
+            store.accounts = vec![connected_libation_account()];
+            Ok(())
+        })
+        .await
+        .unwrap();
+    server.state.libation_config.cli_path = None;
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    assert_eq!(
+        server.get("/api/libation/access", &reader).await.json()["canCheckAudible"],
+        false
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_access_does_not_run_the_cli_on_a_cold_cache() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "audible-reader").await;
+    let cli = server._root.path().join("record-cli.sh");
+    let marker = server._root.path().join("cli-invocations");
+    std::fs::write(
+        &cli,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+    server.state.libation_config.cli_path = Some(cli);
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    for _ in 0..2 {
+        let response = server.get("/api/libation/access", &reader).await;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.json()["canCheckAudible"], false);
+    }
+    assert!(!marker.exists(), "access must not invoke Libation");
 }
