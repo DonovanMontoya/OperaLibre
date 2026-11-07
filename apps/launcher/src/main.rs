@@ -220,8 +220,9 @@ fn start_server(
         .map_err(|error| format!("Could not prepare the server log: {error}"))?;
 
     let mut command = Command::new(&server_path);
+    // Normal launcher commands already chdir to the installation. Updates
+    // inherit the running server's cwd, including its default data folder.
     command
-        .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
@@ -330,20 +331,33 @@ fn secure_file(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn update_lock(root: &Path) -> Result<fs::File, String> {
-    let data = DeploymentConfig::load(root)?.data_dir;
-    fs::create_dir_all(&data).map_err(|error| error.to_string())?;
-    secure_directory(&data)?;
-    let mut options = OpenOptions::new();
-    options.create(true).read(true).write(true).truncate(false);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let file = options
-        .open(data.join("update.lock"))
-        .map_err(|error| error.to_string())?;
-    file.lock()
-        .map_err(|error| format!("Could not lock the update handoff: {error}"))?;
-    Ok(file)
+fn update_lock(root: &Path) -> Result<Vec<fs::File>, String> {
+    // Already-running launchers still lock the legacy directory. Keep both
+    // locations locked until the transaction (or supervised takeover) ends.
+    let mut directories = Vec::new();
+    for data in [DeploymentConfig::load(root)?.data_dir, data_dir(root)] {
+        fs::create_dir_all(&data).map_err(|error| error.to_string())?;
+        secure_directory(&data)?;
+        directories.push(fs::canonicalize(&data).map_err(|error| error.to_string())?);
+    }
+    // Canonical paths avoid locking the same file twice through an alias;
+    // a fixed order also prevents competing new launchers from deadlocking.
+    directories.sort();
+    directories.dedup();
+    let mut locks = Vec::new();
+    for data in directories {
+        let mut options = OpenOptions::new();
+        options.create(true).read(true).write(true).truncate(false);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let file = options
+            .open(data.join("update.lock"))
+            .map_err(|error| error.to_string())?;
+        file.lock()
+            .map_err(|error| format!("Could not lock the update handoff: {error}"))?;
+        locks.push(file);
+    }
+    Ok(locks)
 }
 
 #[cfg(target_os = "linux")]
@@ -1625,7 +1639,10 @@ mod tests {
         );
         // Other tests spawn processes; a concurrent fork can briefly retain
         // the descriptor even after this process drops it.
-        lock.unlock().unwrap();
+        assert_eq!(lock.len(), 1);
+        for file in &lock {
+            file.unlock().unwrap();
+        }
         drop(lock);
         contender.try_lock().unwrap();
         drop(contender);
@@ -2153,7 +2170,7 @@ mod tests {
             );
             let _ = fs::remove_file(install.join("server.config"));
         }
-        assert!(!install.join("state/update.lock").exists());
+        assert!(install.join("state/update.lock").is_file());
         assert!(!install.join("state/update-result.txt").exists());
         drop(_wrong);
         drop(_selected);
@@ -2191,7 +2208,24 @@ mod tests {
         fs::write(package.join(super::server_binary_name()), "new server").unwrap();
         fs::write(package.join("VERSION.txt"), "2.0.0").unwrap();
         super::validate_update_paths(&package, &install).unwrap();
-        let _lock = super::update_lock(&install).unwrap();
+        let locks = super::update_lock(&install).unwrap();
+        assert_eq!(locks.len(), 2);
+        let contenders: Vec<_> = [
+            selected.join("update.lock"),
+            launcher_data.join("update.lock"),
+        ]
+        .into_iter()
+        .map(|path| {
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .unwrap()
+        })
+        .collect();
+        for file in &contenders {
+            assert!(file.try_lock().is_err());
+        }
         super::publish_update_result(&install, &Ok(())).unwrap();
         assert!(selected.join("update.lock").is_file());
         assert!(selected.join("update-result.txt").is_file());
@@ -2208,6 +2242,13 @@ mod tests {
         )
         .unwrap();
         fs::remove_dir_all(backup).unwrap();
+        for file in &locks {
+            file.unlock().unwrap();
+        }
+        drop(locks);
+        for file in contenders {
+            file.try_lock().unwrap();
+        }
     }
 
     #[test]

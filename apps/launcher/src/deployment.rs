@@ -77,8 +77,8 @@ impl DeploymentConfig {
     }
 
     pub(crate) fn configure_command(&self, command: &mut Command) -> Result<(), String> {
-        // A restart changes cwd to the installation. Preserve relative environment
-        // paths from the caller without replacing environment fallbacks with config values.
+        // Preserve relative environment paths across handoff without replacing
+        // environment fallbacks with config values.
         let current_dir = env::current_dir().map_err(|error| error.to_string())?;
         for name in ["OPERALIBRE_SERVER_CONFIG", "OPERALIBRE_DATA_DIR"] {
             if let Some(value) = env::var_os(name) {
