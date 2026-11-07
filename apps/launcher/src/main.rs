@@ -116,6 +116,41 @@ fn pid_path(root: &Path) -> Result<PathBuf, String> {
     Ok(data_dir(root)?.join("operalibre-server.pid"))
 }
 
+/// Older installed launchers ignore OPERALIBRE_SERVER_CONFIG. Keep their PID
+/// location until they have been replaced, including after a staging failure.
+fn pid_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut paths = vec![pid_path(root)?];
+    if env::var_os("OPERALIBRE_SERVER_CONFIG").is_some() {
+        let contents = fs::read_to_string(root.join("server.config")).unwrap_or_default();
+        let legacy_data = deployment::configured_value_in(&contents, "data_dir")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("OPERALIBRE_DATA_DIR").map(PathBuf::from))
+            .map(|path| root.join(path))
+            .unwrap_or_else(|| root.join("data"));
+        let legacy = legacy_data.join("operalibre-server.pid");
+        if legacy != paths[0] {
+            paths.push(legacy);
+        }
+    }
+    Ok(paths)
+}
+
+fn write_server_pid(root: &Path, pid: u32) -> Result<(), String> {
+    for (index, path) in pid_paths(root)?.iter().enumerate() {
+        if index > 0 {
+            let directory = path.parent().expect("a PID file has a data directory");
+            fs::create_dir_all(directory)
+                .map_err(|error| format!("Could not create the legacy data folder: {error}"))?;
+            secure_directory(directory)?;
+        }
+        fs::write(path, pid.to_string())
+            .map_err(|error| format!("Could not save the server process ID: {error}"))?;
+        secure_file(path)?;
+    }
+    Ok(())
+}
+
 /// Best-effort note in the server log, which is the file users are told to
 /// check; the launchers themselves have no console.
 fn append_log(root: &Path, message: &str) {
@@ -225,10 +260,7 @@ fn start_server(
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not launch {}: {error}", server_path.display()))?;
-    let pid_path = data_dir.join("operalibre-server.pid");
-    fs::write(&pid_path, child.id().to_string())
-        .map_err(|error| format!("Could not save the server process ID: {error}"))?;
-    secure_file(&pid_path)?;
+    write_server_pid(root, child.id())?;
 
     let outcome = wait_for_readiness(port, open_when_ready, &log_path, Some(&mut child))?
         .expect("a started server is polled until it settles, never given up on");
@@ -338,9 +370,7 @@ fn start_supervised_server(root: &Path) -> Result<(), String> {
     // publication so a queued updater cannot race the takeover.
     let _lock = update_lock(root)?;
     stop_server(root)?;
-    fs::write(pid_path(root)?, std::process::id().to_string())
-        .map_err(|error| format!("Could not save the supervised PID: {error}"))?;
-    secure_file(&pid_path(root)?)?;
+    write_server_pid(root, std::process::id())?;
     let mut command = Command::new(root.join(server_binary_name()));
     DeploymentConfig::load(root)?.configure_command(&mut command);
     let error = command.current_dir(root).exec();
@@ -1172,63 +1202,76 @@ fn set_executable(_path: &Path) -> Result<(), String> {
 }
 
 fn stop_server(root: &Path) -> Result<(), String> {
-    let pid_path = pid_path(root)?;
-    let pid = match fs::read_to_string(&pid_path) {
-        Ok(pid) => pid.trim().to_string(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("Could not read {}: {error}", pid_path.display())),
-    };
+    let paths = pid_paths(root)?;
+    for path in &paths {
+        let pid = match fs::read_to_string(path) {
+            Ok(pid) => pid.trim().to_string(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("Could not read {}: {error}", path.display())),
+        };
 
-    let pid_number = pid
-        .parse::<u32>()
-        .map_err(|_| "The saved server process ID is invalid.".to_string())?;
-    if !process_is_running(pid_number) {
-        let _ = fs::remove_file(pid_path);
-        return Ok(());
-    }
-    if !process_is_operalibre_server(pid_number, root) {
-        let _ = fs::remove_file(pid_path);
-        return Err(format!(
-            "The saved process ID {pid} no longer belongs to this OperaLibre installation. No process was stopped."
-        ));
-    }
-
-    // The updater may restart the server as soon as the old process and port
-    // disappear. Retire the old PID before signalling, so this stop cannot erase
-    // the new server's PID file after the updater writes it.
-    fs::remove_file(&pid_path)
-        .map_err(|error| format!("Could not retire {}: {error}", pid_path.display()))?;
-    if let Err(error) = signal_server(pid_number, false)
-        && process_is_running(pid_number)
-    {
-        let _ = fs::write(&pid_path, &pid);
-        let _ = secure_file(&pid_path);
-        return Err(format!("Could not stop server process {pid}: {error}"));
-    }
-
-    // The stop must not return while the server is still shutting down: the
-    // installer replaces the files under it as soon as this launcher exits.
-    if !wait_for_process_exit(pid_number, SHUTDOWN_CEILING) {
-        append_log(
-            root,
-            &format!(
-                "server process {pid} did not stop within {} seconds; killing it",
-                SHUTDOWN_CEILING.as_secs()
-            ),
-        );
-        let _ = signal_server(pid_number, true);
-        if !wait_for_process_exit(pid_number, Duration::from_secs(5)) {
-            if !pid_path.exists() {
-                let _ = fs::write(&pid_path, &pid);
-                let _ = secure_file(&pid_path);
-            }
+        let pid_number = pid
+            .parse::<u32>()
+            .map_err(|_| "The saved server process ID is invalid.".to_string())?;
+        if !process_is_running(pid_number) {
+            let _ = fs::remove_file(path);
+            continue;
+        }
+        if !process_is_operalibre_server(pid_number, root) {
+            let _ = fs::remove_file(path);
             return Err(format!(
-                "Could not stop server process {pid}; it is still running after being killed."
+                "The saved process ID {pid} no longer belongs to this OperaLibre installation. No process was stopped."
             ));
         }
-    }
 
+        // Retire both copies before signalling: the updater can publish a new
+        // server's PID as soon as the old process and port disappear.
+        for path in &paths {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    restore_server_pid(&paths, &pid);
+                    return Err(format!("Could not retire {}: {error}", path.display()));
+                }
+            }
+        }
+        if let Err(error) = signal_server(pid_number, false)
+            && process_is_running(pid_number)
+        {
+            restore_server_pid(&paths, &pid);
+            return Err(format!("Could not stop server process {pid}: {error}"));
+        }
+
+        // The installer replaces server files as soon as this launcher exits.
+        if !wait_for_process_exit(pid_number, SHUTDOWN_CEILING) {
+            append_log(
+                root,
+                &format!(
+                    "server process {pid} did not stop within {} seconds; killing it",
+                    SHUTDOWN_CEILING.as_secs()
+                ),
+            );
+            let _ = signal_server(pid_number, true);
+            if !wait_for_process_exit(pid_number, Duration::from_secs(5)) {
+                restore_server_pid(&paths, &pid);
+                return Err(format!(
+                    "Could not stop server process {pid}; it is still running after being killed."
+                ));
+            }
+        }
+        return Ok(());
+    }
     Ok(())
+}
+
+fn restore_server_pid(paths: &[PathBuf], pid: &str) {
+    for path in paths {
+        if !path.exists() {
+            let _ = fs::write(path, pid);
+            let _ = secure_file(path);
+        }
+    }
 }
 
 fn wait_for_process_exit(pid: u32, ceiling: Duration) -> bool {
