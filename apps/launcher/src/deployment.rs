@@ -14,6 +14,16 @@ pub(crate) struct DeploymentConfig {
 
 impl DeploymentConfig {
     pub(crate) fn load(root: &Path) -> Result<Self, String> {
+        Self::read(root, true)
+    }
+
+    /// Paths only. Stopping a server must not depend on its port being valid,
+    /// so an unparsable port falls back to the default here.
+    pub(crate) fn load_paths(root: &Path) -> Result<Self, String> {
+        Self::read(root, false)
+    }
+
+    fn read(root: &Path, strict_port: bool) -> Result<Self, String> {
         let current_dir = env::current_dir().map_err(|error| error.to_string())?;
         let root = current_dir.join(root);
         let explicit = env::var_os("OPERALIBRE_SERVER_CONFIG");
@@ -51,7 +61,12 @@ impl DeploymentConfig {
         let port = port_from(
             configured_value_in(&contents, "port"),
             env::var("PORT").ok(),
-        )?
+        );
+        let port = if strict_port {
+            port?
+        } else {
+            port.ok().flatten()
+        }
         .unwrap_or(4920);
         Ok(Self {
             config_path,

@@ -105,7 +105,7 @@ fn run() -> Result<(), String> {
 }
 
 fn data_dir(root: &Path) -> Result<PathBuf, String> {
-    Ok(DeploymentConfig::load(root)?.data_dir)
+    Ok(DeploymentConfig::load_paths(root)?.data_dir)
 }
 
 fn server_log_path(root: &Path) -> Result<PathBuf, String> {
@@ -2260,6 +2260,19 @@ mod tests {
         assert_eq!(config.port, 4104);
         fs::write(root.join("server.config"), "port = invalid\n").unwrap();
         assert!(super::DeploymentConfig::load(&root).is_err());
+        // Stop still finds the server's files when the port is unusable.
+        #[cfg(unix)]
+        {
+            let data = super::DeploymentConfig::load_paths(&root).unwrap().data_dir;
+            assert_eq!(data, root.join("fallback"));
+            fs::create_dir_all(&data).unwrap();
+            let mut exited = std::process::Command::new("true").spawn().unwrap();
+            let pid = exited.id();
+            exited.wait().unwrap();
+            fs::write(data.join("operalibre-server.pid"), pid.to_string()).unwrap();
+            super::stop_server(&root).unwrap();
+            assert!(!data.join("operalibre-server.pid").exists());
+        }
     }
 
     #[test]
