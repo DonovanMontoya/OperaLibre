@@ -1862,26 +1862,19 @@ async fn can_check_audible(state: &AppState) -> bool {
     if !state.libation_config.enabled() {
         return false;
     }
+    // Only managed accounts keep persisted health. Legacy profiles are probed
+    // only from administrator flows, so readers there keep rereading the catalog.
     let (authenticated, signing_in) = {
         let managed = state.libation_accounts.read().await;
-        let cached = state.libation_status_accounts.read().await;
-        // Managed health is persisted; only legacy profiles need the probe cache.
-        let accounts = managed
+        managed
             .accounts
             .iter()
-            .map(|account| (account.authenticated, account.connection_state.as_str()))
-            .chain(
-                cached
-                    .iter()
-                    .filter(|account| !account.managed)
-                    .map(|account| (account.authenticated, account.connection_state.as_str())),
-            );
-        accounts.fold(
-            (false, false),
-            |(authenticated, signing_in), (auth, status)| {
-                (authenticated || auth, signing_in || status == "signing_in")
-            },
-        )
+            .fold((false, false), |(authenticated, signing_in), account| {
+                (
+                    authenticated || account.authenticated,
+                    signing_in || account.connection_state == "signing_in",
+                )
+            })
     };
     authenticated && !signing_in && state.libation_login_sessions.lock().await.is_empty()
 }

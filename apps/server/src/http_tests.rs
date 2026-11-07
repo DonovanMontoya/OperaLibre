@@ -10140,22 +10140,9 @@ async fn libation_access_reports_cached_check_capability_without_account_details
         })
         .await
         .unwrap();
-    let mut legacy =
+    // Legacy profiles have no persisted health, so readers keep rereading.
+    let legacy =
         parse_libation_accounts("legacy@example.test\tPrivate Legacy\tus\tYes\tYes\n").remove(0);
-    *server.state.libation_status_accounts.write().await = vec![legacy.clone()];
-    assert_eq!(
-        server.get("/api/libation/access", &reader).await.json()["canCheckAudible"],
-        true
-    );
-    legacy.connection_state = "signing_in".into();
-    *server.state.libation_status_accounts.write().await = vec![legacy.clone()];
-    assert_eq!(
-        server.get("/api/libation/access", &reader).await.json()["canCheckAudible"],
-        false
-    );
-    // Old managed probe rows cannot override the persisted managed health.
-    legacy.managed = true;
-    legacy.connection_state = "connected".into();
     *server.state.libation_status_accounts.write().await = vec![legacy];
     assert_eq!(
         server.get("/api/libation/access", &reader).await.json()["canCheckAudible"],
