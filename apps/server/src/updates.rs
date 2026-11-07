@@ -731,7 +731,12 @@ impl UpdateManager {
         // starts its 45-second exit deadline. Failed launches resume the queue.
         ensure_install_root_is_writable(&install.root)?;
         let deployment = managed_update_config()?;
-        deployment.configure_command(command.as_std_mut());
+        if deployment.port != self.port {
+            bail!("The configured port changed. Restart the server before installing an update.");
+        }
+        deployment
+            .configure_command(command.as_std_mut())
+            .map_err(anyhow::Error::msg)?;
         let sync_pause = before_restart.await?;
         command
             .spawn()
@@ -1871,10 +1876,10 @@ mod tests {
         std::fs::hard_link(&source, &executable)
             .or_else(|_| std::fs::copy(&source, &executable).map(|_| ()))
             .unwrap();
-        std::fs::create_dir(root.path().join("external")).unwrap();
+        std::fs::create_dir_all(root.path().join("external/state")).unwrap();
         std::fs::write(
             root.path().join("external/custom.config"),
-            "data_dir = ../data\nport = 4920\n",
+            "data_dir = state\nport = 4920\n",
         )
         .unwrap();
         for test in [
@@ -1953,7 +1958,9 @@ mod tests {
             return;
         }
         let root = std::env::current_dir().unwrap();
-        let manager = UpdateManager::new(root.join("data"), None, 4920).unwrap();
+        let server_config = crate::config::ServerConfig::load().unwrap();
+        let manager =
+            UpdateManager::new(server_config.data_dir.clone(), None, server_config.port).unwrap();
         let manifest = available_update_manifest();
         assert!(
             manager
@@ -1965,7 +1972,25 @@ mod tests {
         assert!(deployment.config_path.is_absolute());
         assert_eq!(
             deployment.data_dir.canonicalize().unwrap(),
-            root.join("data").canonicalize().unwrap()
+            root.join("external/state").canonicalize().unwrap()
+        );
+        assert_eq!(
+            server_config.data_dir.canonicalize().unwrap(),
+            deployment.data_dir.canonicalize().unwrap()
+        );
+        std::fs::write(
+            root.join("data/update-result.txt"),
+            "Failed: wrong deployment\n",
+        )
+        .unwrap();
+        std::fs::write(
+            deployment.data_dir.join("update-result.txt"),
+            "Succeeded: 2.0.0\n",
+        )
+        .unwrap();
+        assert_eq!(
+            manager.last_update_result().await.as_deref(),
+            Some("Succeeded: 2.0.0")
         );
         std::fs::remove_file(&deployment.config_path).unwrap();
         assert!(

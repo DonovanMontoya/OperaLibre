@@ -26,6 +26,10 @@ fn main() {
     if env::var_os("TEST_REQUIRE_ABSOLUTE_CONFIG").is_some() {
         assert!(config.is_absolute(), "the restarted server needs an absolute config path");
     }
+    if env::var_os("TEST_REQUIRE_ABSOLUTE_CONFIG").is_some() {
+        assert_eq!(env::var_os("OPERALIBRE_DATA_DIR"), env::var_os("TEST_EXPECT_DATA_ENV"));
+        assert_eq!(env::var("PORT").unwrap(), "4103");
+    }
     let values = fs::read_to_string(&config).unwrap();
     let value = |key: &str| values.lines().find_map(|line| {
         let (name, value) = line.split_once('=')?;
@@ -163,10 +167,10 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
     binary = scratch / "fake-server"
     subprocess.run(["rustc", "--edition=2024", str(source), "-o", str(binary)], check=True)
     for scenario in ("success", "legacy-target", "startup-failure", "upgraded-data-rollback", "staging-failure", "stop-handoff", "external-config", "relative-config", "external-config-rollback", "external-staging-failure", "external-stop-handoff",
-                     "missing-config-stop", "invalid-config-stop", "stale-effective-stop", "default-old-stop"):
+                     "missing-config-stop", "invalid-config-stop", "invalid-port-stop", "default-old-stop"):
         if SELECTED and scenario not in SELECTED:
             continue
-        stop_only = scenario in ("missing-config-stop", "invalid-config-stop", "stale-effective-stop", "default-old-stop")
+        stop_only = scenario in ("missing-config-stop", "invalid-config-stop", "invalid-port-stop", "default-old-stop")
         staging_failure = scenario in ("staging-failure", "external-staging-failure")
         fails = scenario in ("startup-failure", "upgraded-data-rollback", "external-config-rollback")
         external = scenario in ("external-config", "relative-config", "external-config-rollback", "external-staging-failure", "external-stop-handoff")
@@ -214,6 +218,10 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
         for variable in ("OPERALIBRE_SERVER_CONFIG", "OPERALIBRE_DATA_DIR", "PORT"):
             env.pop(variable, None)
         if external:
+            fallback = root / "fallback-state"
+            env["OPERALIBRE_DATA_DIR"] = str(fallback.relative_to(scratch) if scenario == "relative-config" else fallback)
+            env["TEST_EXPECT_DATA_ENV"] = str(fallback)
+            env["PORT"] = "4103"
             env["OPERALIBRE_SERVER_CONFIG"] = str(config.relative_to(scratch) if scenario == "relative-config" else config)
         if scenario == "startup-failure":
             env["TEST_FAIL_NEW"] = "1"
@@ -242,10 +250,15 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                     if scenario == "invalid-config-stop":
                         explicit.write_bytes(b"\xff\xfe")
                     stop_env["OPERALIBRE_SERVER_CONFIG"] = str(explicit)
-                    if scenario == "stale-effective-stop":
-                        exited = subprocess.Popen(["true"])
-                        exited.wait(timeout=5)
-                        (root / "data/operalibre-server.pid").write_text(str(exited.pid))
+                    if scenario == "invalid-port-stop":
+                        (root / "server.config").write_text("port = invalid\ndata_dir = legacy-state\n")
+                        stop_env.pop("OPERALIBRE_SERVER_CONFIG", None)
+                if scenario != "default-old-stop":
+                    rejected = subprocess.run([str(root / "operalibre-service"), "--service-start"],
+                        cwd=root, env=stop_env, capture_output=True)
+                    assert rejected.returncode == 1, rejected.stderr.decode()
+                    assert healthy(port), "invalid start config stopped the running server"
+                    assert legacy_pid.read_text() == str(old.pid)
                 subprocess.run([str(root / "operalibre-service"), "--stop"], cwd=root, env=stop_env, check=True)
                 old.wait(timeout=5)
                 assert not legacy_pid.exists()
@@ -269,12 +282,12 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                 subprocess.run([str(root / "operalibre-service"), "--stop"], cwd=scratch if external else root, env=env, check=True)
                 old.wait(timeout=5)
                 assert updater.wait(timeout=20) == 0
-                pid = int((data / "operalibre-server.pid").read_text())
+                pid = int(legacy_pid.read_text())
                 assert pid != old.pid
                 assert os.readlink(f"/proc/{pid}/exe") == str(root / "operalibre-server")
                 until(lambda: healthy(port))
                 assert legacy_pid.read_text() == str(pid)
-                print(f"PASS: {scenario} preserves both restarted server PID copies", flush=True)
+                print(f"PASS: {scenario} preserves the single restarted server PID", flush=True)
                 continue
             old.terminate()
             old.wait(timeout=5)
@@ -285,15 +298,10 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                 assert "previous server was restarted" in result, result
                 assert (root / "VERSION.txt").read_text().strip() == "1.0.0"
                 until(lambda: healthy(port))
-                restarted_pid = int((data / "operalibre-server.pid").read_text())
+                restarted_pid = int(legacy_pid.read_text())
                 subprocess.run([str(root / "operalibre-service"), "--stop"], cwd=root, env=env, check=True)
                 until(lambda: not healthy(port))
                 assert not Path(f"/proc/{restarted_pid}/exe").exists()
-                # Old Stop knows only the legacy file; new Stop retires the stale effective copy.
-                if external:
-                    shutil.copy2(LAUNCHER, root / "new-service")
-                    subprocess.run([str(root / "new-service"), "--stop"], cwd=root, env=env, check=True)
-                assert not (data / "operalibre-server.pid").exists()
                 assert not legacy_pid.exists()
                 print(f"PASS: {scenario} lets installed Stop retire the restarted previous server", flush=True)
                 continue
@@ -303,12 +311,12 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             # old VERSION watcher timing. The shared lock must defer it.
             # The service start runs from the installation, where relative
             # config paths have always resolved, so it gets the absolute path.
-            starter_env = dict(env, OPERALIBRE_SERVER_CONFIG=str(config)) if external else env
+            starter_env = dict(env, OPERALIBRE_SERVER_CONFIG=str(config), OPERALIBRE_DATA_DIR=str(fallback)) if external else env
             starter = subprocess.Popen([str(root / "operalibre-service"), "--service-start"], cwd=scratch if external else root, env=starter_env)
             assert updater.wait(timeout=20) == (1 if fails else 0)
             result = (data / "update-result.txt").read_text()
             assert result.startswith("Failed:" if fails else "Succeeded:"), result
-            until(lambda: (data / "operalibre-server.pid").read_text() == str(starter.pid))
+            until(lambda: legacy_pid.read_text() == str(starter.pid))
             until(lambda: os.readlink(f"/proc/{starter.pid}/exe") == str(root / "operalibre-server"))
             assert (root / "VERSION.txt").read_text().strip() == ("1.0.0" if fails else "2.0.0")
             until(lambda: healthy(port))
@@ -330,9 +338,12 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             if external:
                 assert not (root / "data/update.lock").exists()
                 assert not (root / "data/update-result.txt").exists()
-                assert legacy_pid.read_text() == str(starter.pid)
+                assert not (data / "operalibre-server.pid").exists()
+                assert not (data / "server.log").exists()
                 assert stat.S_IMODE(legacy_pid.stat().st_mode) == 0o600
                 assert read_data(root / "data") == (1, 1, ["before-update"])
+            assert list(root.rglob("operalibre-server.pid")) == [legacy_pid]
+            assert (legacy_pid.parent / "server.log").is_file()
             with (data / "update.lock").open("r+") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             print(f"PASS: {scenario} survives early takeover; PID owned, data readable by the running build, lock released", flush=True)
@@ -344,7 +355,7 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             # If an assertion fails before takeover, retire only the fake
             # server belonging to this temporary fixture, never another PID.
             try:
-                pid = int((data / "operalibre-server.pid").read_text())
+                pid = int(legacy_pid.read_text())
                 if os.readlink(f"/proc/{pid}/exe") == str(root / "operalibre-server"):
                     os.kill(pid, 15)
             except (OSError, ValueError):

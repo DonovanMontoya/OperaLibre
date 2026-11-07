@@ -140,7 +140,7 @@ These variables affect the Open launcher. For the data folder and the port, a va
 | --- | --- |
 | `OPERALIBRE_SERVER_CONFIG` | Use this config file instead of `server.config` beside the server. Relative config paths are resolved from the installation folder; relative paths inside the file are resolved from its folder. The updater uses the same file as the running server. |
 | `OPERALIBRE_NO_BROWSER` | Set to any value, such as `1`, to start the server without opening a browser. |
-| `OPERALIBRE_DATA_DIR` | Data folder used when `data_dir` is absent or blank. Relative paths use the installation folder. The default is `data` in the installation folder. The launcher writes `server.log` and the process id file here. |
+| `OPERALIBRE_DATA_DIR` | Data folder used when `data_dir` is absent or blank. Relative paths use the installation folder. The default is `data` in the installation folder. The launcher writes `server.log` and the process id file using `data_dir` from the installation’s `server.config`, then this variable, then `data` in the installation folder. `OPERALIBRE_SERVER_CONFIG` does not move these launcher files. |
 | `PORT` | Port used when `port` is absent or blank. The launcher waits for this port and opens it in the browser. The default is `4920`. |
 
 ## Stop OperaLibre

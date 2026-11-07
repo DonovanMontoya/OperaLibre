@@ -14,19 +14,6 @@ pub(crate) struct DeploymentConfig {
 
 impl DeploymentConfig {
     pub(crate) fn load(root: &Path) -> Result<Self, String> {
-        Self::read(root, true)
-    }
-
-    /// Paths only, for stopping and logging. Those must keep working with a
-    /// config the server would reject, so an unreadable file reads as empty
-    /// and an unparsable port falls back to the default.
-    // The server shares this file but never stops a server.
-    #[allow(dead_code)]
-    pub(crate) fn load_paths(root: &Path) -> Result<Self, String> {
-        Self::read(root, false)
-    }
-
-    fn read(root: &Path, strict: bool) -> Result<Self, String> {
         let current_dir = env::current_dir().map_err(|error| error.to_string())?;
         let root = current_dir.join(root);
         let explicit = env::var_os("OPERALIBRE_SERVER_CONFIG");
@@ -44,7 +31,6 @@ impl DeploymentConfig {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound && explicit.is_none() => {
                 String::new()
             }
-            Err(_) if !strict => String::new(),
             Err(error) => {
                 return Err(format!(
                     "Could not read {}: {error}. Restore this config file before installing an update.",
@@ -66,7 +52,7 @@ impl DeploymentConfig {
             configured_value_in(&contents, "port"),
             env::var("PORT").ok(),
         );
-        let port = if strict { port? } else { port.ok().flatten() }.unwrap_or(4920);
+        let port = port?.unwrap_or(4920);
         Ok(Self {
             config_path,
             data_dir,
@@ -90,17 +76,19 @@ impl DeploymentConfig {
         Ok(())
     }
 
-    pub(crate) fn configure_command(&self, command: &mut Command) {
-        // Restarts run from the installation, which may differ from the old
-        // server's cwd. Preserve the selected file and fallback data location.
-        if self.config_path.is_file() || env::var_os("OPERALIBRE_SERVER_CONFIG").is_some() {
-            command.env("OPERALIBRE_SERVER_CONFIG", &self.config_path);
-        } else {
-            command.env_remove("OPERALIBRE_SERVER_CONFIG");
+    pub(crate) fn configure_command(&self, command: &mut Command) -> Result<(), String> {
+        // A restart changes cwd to the installation. Preserve relative environment
+        // paths from the caller without replacing environment fallbacks with config values.
+        let current_dir = env::current_dir().map_err(|error| error.to_string())?;
+        for name in ["OPERALIBRE_SERVER_CONFIG", "OPERALIBRE_DATA_DIR"] {
+            if let Some(value) = env::var_os(name) {
+                let path = PathBuf::from(value);
+                if !path.as_os_str().is_empty() && path.is_relative() {
+                    command.env(name, current_dir.join(path));
+                }
+            }
         }
-        command
-            .env("OPERALIBRE_DATA_DIR", &self.data_dir)
-            .env("PORT", self.port.to_string());
+        Ok(())
     }
 }
 

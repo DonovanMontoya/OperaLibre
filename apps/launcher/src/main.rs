@@ -81,8 +81,8 @@ fn run() -> Result<(), String> {
     }
 
     let root = installation_root()?;
-    // Relative OPERALIBRE_SERVER_CONFIG and OPERALIBRE_DATA_DIR values have
-    // always resolved against the installation, wherever the launcher starts.
+    // Normal launcher commands resolve relative environment paths from the
+    // installation; --apply-update above keeps the server's inherited cwd.
     env::set_current_dir(&root)
         .map_err(|error| format!("Could not open {}: {error}", root.display()))?;
 
@@ -98,66 +98,45 @@ fn run() -> Result<(), String> {
         let port = server_port(&root)?;
         show_message(&format!(
             "OperaLibre is still starting. Scanning a large library can take a while; open http://localhost:{port} once it finishes, or check {} for details.",
-            server_log_path(&root)?.display()
+            server_log_path(&root).display()
         ));
     }
     Ok(())
 }
 
-fn data_dir(root: &Path) -> Result<PathBuf, String> {
-    Ok(DeploymentConfig::load_paths(root)?.data_dir)
+// Keep launcher files where previously installed Open and Stop launchers look.
+// The selected deployment's data folder is used separately for update state.
+fn data_dir(root: &Path) -> PathBuf {
+    configured_value(&root.join("server.config"), "data_dir")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("OPERALIBRE_DATA_DIR").map(PathBuf::from))
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                root.join(path)
+            }
+        })
+        .unwrap_or_else(|| root.join("data"))
 }
 
-fn server_log_path(root: &Path) -> Result<PathBuf, String> {
-    Ok(data_dir(root)?.join("server.log"))
+fn server_log_path(root: &Path) -> PathBuf {
+    data_dir(root).join("server.log")
 }
 
-fn pid_path(root: &Path) -> Result<PathBuf, String> {
-    Ok(data_dir(root)?.join("operalibre-server.pid"))
-}
-
-/// Older installed launchers ignore OPERALIBRE_SERVER_CONFIG. Keep their PID
-/// location until they have been replaced, including after a staging failure.
-fn pid_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut paths = vec![pid_path(root)?];
-    if env::var_os("OPERALIBRE_SERVER_CONFIG").is_some() {
-        let contents = fs::read_to_string(root.join("server.config")).unwrap_or_default();
-        let legacy_data = deployment::configured_value_in(&contents, "data_dir")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| env::var_os("OPERALIBRE_DATA_DIR").map(PathBuf::from))
-            .map(|path| root.join(path))
-            .unwrap_or_else(|| root.join("data"));
-        let legacy = legacy_data.join("operalibre-server.pid");
-        if legacy != paths[0] {
-            paths.push(legacy);
-        }
-    }
-    Ok(paths)
-}
-
-fn write_server_pid(root: &Path, pid: u32) -> Result<(), String> {
-    for (index, path) in pid_paths(root)?.iter().enumerate() {
-        if index > 0 {
-            let directory = path.parent().expect("a PID file has a data directory");
-            fs::create_dir_all(directory)
-                .map_err(|error| format!("Could not create the legacy data folder: {error}"))?;
-            secure_directory(directory)?;
-        }
-        fs::write(path, pid.to_string())
-            .map_err(|error| format!("Could not save the server process ID: {error}"))?;
-        secure_file(path)?;
-    }
-    Ok(())
+fn pid_path(root: &Path) -> PathBuf {
+    data_dir(root).join("operalibre-server.pid")
 }
 
 /// Best-effort note in the server log, which is the file users are told to
 /// check; the launchers themselves have no console.
 fn append_log(root: &Path, message: &str) {
-    let Ok(path) = server_log_path(root) else {
-        return;
-    };
-    if let Ok(mut log) = OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut log) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(server_log_path(root))
+    {
         let _ = writeln!(log, "[launcher] {message}");
     }
 }
@@ -200,10 +179,10 @@ fn start_server(
     fs::create_dir_all(root.join("audiobooks"))
         .map_err(|error| format!("Could not create the audiobooks folder: {error}"))?;
     let deployment = DeploymentConfig::load(root)?;
-    let data_dir = &deployment.data_dir;
-    fs::create_dir_all(data_dir)
+    let data_dir = data_dir(root);
+    fs::create_dir_all(&data_dir)
         .map_err(|error| format!("Could not create the data folder: {error}"))?;
-    secure_directory(data_dir)?;
+    secure_directory(&data_dir)?;
 
     let port = deployment.port;
     let log_path = data_dir.join("server.log");
@@ -246,7 +225,7 @@ fn start_server(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
-    deployment.configure_command(&mut command);
+    deployment.configure_command(&mut command)?;
     match trial_token {
         Some(token) => command.env(UPDATE_TRIAL_ENV, token),
         None => command.env_remove(UPDATE_TRIAL_ENV),
@@ -260,7 +239,10 @@ fn start_server(
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not launch {}: {error}", server_path.display()))?;
-    write_server_pid(root, child.id())?;
+    let pid_path = pid_path(root);
+    fs::write(&pid_path, child.id().to_string())
+        .map_err(|error| format!("Could not save the server process ID: {error}"))?;
+    secure_file(&pid_path)?;
 
     let outcome = wait_for_readiness(port, open_when_ready, &log_path, Some(&mut child))?
         .expect("a started server is polled until it settles, never given up on");
@@ -349,7 +331,7 @@ fn secure_file(_path: &Path) -> Result<(), String> {
 }
 
 fn update_lock(root: &Path) -> Result<fs::File, String> {
-    let data = data_dir(root)?;
+    let data = DeploymentConfig::load(root)?.data_dir;
     fs::create_dir_all(&data).map_err(|error| error.to_string())?;
     secure_directory(&data)?;
     let mut options = OpenOptions::new();
@@ -368,11 +350,17 @@ fn update_lock(root: &Path) -> Result<fs::File, String> {
 fn start_supervised_server(root: &Path) -> Result<(), String> {
     // The descriptor closes on exec. Hold the lock through retirement and PID
     // publication so a queued updater cannot race the takeover.
+    let deployment = DeploymentConfig::load(root)?;
     let _lock = update_lock(root)?;
+    let data = data_dir(root);
+    fs::create_dir_all(&data).map_err(|error| error.to_string())?;
+    secure_directory(&data)?;
     stop_server(root)?;
-    write_server_pid(root, std::process::id())?;
+    fs::write(pid_path(root), std::process::id().to_string())
+        .map_err(|error| format!("Could not save the supervised PID: {error}"))?;
+    secure_file(&pid_path(root))?;
     let mut command = Command::new(root.join(server_binary_name()));
-    DeploymentConfig::load(root)?.configure_command(&mut command);
+    deployment.configure_command(&mut command)?;
     let error = command.current_dir(root).exec();
     Err(format!("Could not start the supervised server: {error}"))
 }
@@ -394,7 +382,7 @@ fn publish_update_result(root: &Path, result: &Result<(), String>) -> Result<(),
     };
     append_log(root, &message);
     eprintln!("{message}");
-    let data = data_dir(root)?;
+    let data = DeploymentConfig::load(root)?.data_dir;
     let temporary = data.join("update-result.txt.tmp");
     fs::write(&temporary, format!("{message}\n")).map_err(|error| error.to_string())?;
     secure_file(&temporary)?;
@@ -449,13 +437,16 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     let trial_token = update_trial_token()?;
     wait_for_server_exit(server_pid, port)?;
 
-    let backup_root = data_dir(&install_root)?.join("update-backups").join(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("Could not create an update timestamp: {error}"))?
-            .as_secs()
-            .to_string(),
-    );
+    let backup_root = DeploymentConfig::load(&install_root)?
+        .data_dir
+        .join("update-backups")
+        .join(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|error| format!("Could not create an update timestamp: {error}"))?
+                .as_secs()
+                .to_string(),
+        );
     let server_name = server_binary_name();
     let install_server = install_root.join(server_name);
     let install_web = install_root.join("web");
@@ -752,9 +743,12 @@ fn prepare_update(
     backup_root: &Path,
     includes_web: bool,
 ) -> Result<(), String> {
-    snapshot_data(&data_dir(install_root)?, &backup_root.join("data"))
-        .and_then(|()| prepare_rollback_records(backup_root))
-        .and_then(|()| stage_installed_files(install_root, backup_root, includes_web))
+    snapshot_data(
+        &DeploymentConfig::load(install_root)?.data_dir,
+        &backup_root.join("data"),
+    )
+    .and_then(|()| prepare_rollback_records(backup_root))
+    .and_then(|()| stage_installed_files(install_root, backup_root, includes_web))
 }
 
 const RESTORE_REQUIRED: &str = "restore-required";
@@ -821,7 +815,7 @@ fn rollback_update(
 ) -> Result<(), String> {
     let server_name = server_binary_name();
     let stopped = stop_server(install_root);
-    let data = data_dir(install_root)?;
+    let data = DeploymentConfig::load(install_root)?.data_dir;
     let snapshot = backup_root.join("data");
     // Decided once: after a restore the formats match the snapshot again, so a
     // rollback run a second time (the previous build failed to start after
@@ -1202,76 +1196,63 @@ fn set_executable(_path: &Path) -> Result<(), String> {
 }
 
 fn stop_server(root: &Path) -> Result<(), String> {
-    let paths = pid_paths(root)?;
-    for path in &paths {
-        let pid = match fs::read_to_string(path) {
-            Ok(pid) => pid.trim().to_string(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(format!("Could not read {}: {error}", path.display())),
-        };
+    let pid_path = pid_path(root);
+    let pid = match fs::read_to_string(&pid_path) {
+        Ok(pid) => pid.trim().to_string(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("Could not read {}: {error}", pid_path.display())),
+    };
 
-        let pid_number = pid
-            .parse::<u32>()
-            .map_err(|_| "The saved server process ID is invalid.".to_string())?;
-        if !process_is_running(pid_number) {
-            let _ = fs::remove_file(path);
-            continue;
-        }
-        if !process_is_operalibre_server(pid_number, root) {
-            let _ = fs::remove_file(path);
-            return Err(format!(
-                "The saved process ID {pid} no longer belongs to this OperaLibre installation. No process was stopped."
-            ));
-        }
-
-        // Retire both copies before signalling: the updater can publish a new
-        // server's PID as soon as the old process and port disappear.
-        for path in &paths {
-            match fs::remove_file(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    restore_server_pid(&paths, &pid);
-                    return Err(format!("Could not retire {}: {error}", path.display()));
-                }
-            }
-        }
-        if let Err(error) = signal_server(pid_number, false)
-            && process_is_running(pid_number)
-        {
-            restore_server_pid(&paths, &pid);
-            return Err(format!("Could not stop server process {pid}: {error}"));
-        }
-
-        // The installer replaces server files as soon as this launcher exits.
-        if !wait_for_process_exit(pid_number, SHUTDOWN_CEILING) {
-            append_log(
-                root,
-                &format!(
-                    "server process {pid} did not stop within {} seconds; killing it",
-                    SHUTDOWN_CEILING.as_secs()
-                ),
-            );
-            let _ = signal_server(pid_number, true);
-            if !wait_for_process_exit(pid_number, Duration::from_secs(5)) {
-                restore_server_pid(&paths, &pid);
-                return Err(format!(
-                    "Could not stop server process {pid}; it is still running after being killed."
-                ));
-            }
-        }
+    let pid_number = pid
+        .parse::<u32>()
+        .map_err(|_| "The saved server process ID is invalid.".to_string())?;
+    if !process_is_running(pid_number) {
+        let _ = fs::remove_file(pid_path);
         return Ok(());
     }
-    Ok(())
-}
+    if !process_is_operalibre_server(pid_number, root) {
+        let _ = fs::remove_file(pid_path);
+        return Err(format!(
+            "The saved process ID {pid} no longer belongs to this OperaLibre installation. No process was stopped."
+        ));
+    }
 
-fn restore_server_pid(paths: &[PathBuf], pid: &str) {
-    for path in paths {
-        if !path.exists() {
-            let _ = fs::write(path, pid);
-            let _ = secure_file(path);
+    // The updater may restart the server as soon as the old process and port
+    // disappear. Retire the old PID before signalling, so this stop cannot erase
+    // the new server's PID file after the updater writes it.
+    fs::remove_file(&pid_path)
+        .map_err(|error| format!("Could not retire {}: {error}", pid_path.display()))?;
+    if let Err(error) = signal_server(pid_number, false)
+        && process_is_running(pid_number)
+    {
+        let _ = fs::write(&pid_path, &pid);
+        let _ = secure_file(&pid_path);
+        return Err(format!("Could not stop server process {pid}: {error}"));
+    }
+
+    // The stop must not return while the server is still shutting down: the
+    // installer replaces the files under it as soon as this launcher exits.
+    if !wait_for_process_exit(pid_number, SHUTDOWN_CEILING) {
+        append_log(
+            root,
+            &format!(
+                "server process {pid} did not stop within {} seconds; killing it",
+                SHUTDOWN_CEILING.as_secs()
+            ),
+        );
+        let _ = signal_server(pid_number, true);
+        if !wait_for_process_exit(pid_number, Duration::from_secs(5)) {
+            if !pid_path.exists() {
+                let _ = fs::write(&pid_path, &pid);
+                let _ = secure_file(&pid_path);
+            }
+            return Err(format!(
+                "Could not stop server process {pid}; it is still running after being killed."
+            ));
         }
     }
+
+    Ok(())
 }
 
 fn wait_for_process_exit(pid: u32, ceiling: Duration) -> bool {
@@ -1325,6 +1306,11 @@ fn signal_server(pid: u32, _force: bool) -> Result<(), String> {
         Ok(status) => Err(format!("the stop command exited with {status}")),
         Err(error) => Err(error.to_string()),
     }
+}
+
+fn configured_value(config_path: &Path, key: &str) -> Option<String> {
+    let contents = fs::read_to_string(config_path).ok()?;
+    deployment::configured_value_in(&contents, key)
 }
 
 /// The variable and header the server reads for an update trial.
@@ -2182,18 +2168,23 @@ mod tests {
         };
         let selected = install.parent().unwrap().join("external/state");
         assert_eq!(
-            data_dir(&install).unwrap().canonicalize().unwrap(),
-            selected.canonicalize().unwrap()
-        );
-        assert_eq!(super::server_port(&install).unwrap(), 4102);
-        assert_eq!(
-            super::pid_path(&install)
+            super::DeploymentConfig::load(&install)
                 .unwrap()
-                .parent()
-                .unwrap()
+                .data_dir
                 .canonicalize()
                 .unwrap(),
             selected.canonicalize().unwrap()
+        );
+        assert_eq!(super::server_port(&install).unwrap(), 4102);
+        let launcher_data = data_dir(&install);
+        assert_ne!(launcher_data, selected);
+        assert_eq!(
+            super::pid_path(&install),
+            launcher_data.join("operalibre-server.pid")
+        );
+        assert_eq!(
+            super::server_log_path(&install),
+            launcher_data.join("server.log")
         );
         let package = install.join("package");
         fs::create_dir_all(package.join("web")).unwrap();
@@ -2306,7 +2297,7 @@ mod tests {
         // Stop still finds the server's files when the port is unusable.
         #[cfg(unix)]
         {
-            let data = super::DeploymentConfig::load_paths(&root).unwrap().data_dir;
+            let data = data_dir(&root);
             assert_eq!(data, root.join("fallback"));
             fs::create_dir_all(&data).unwrap();
             let mut exited = std::process::Command::new("true").spawn().unwrap();
@@ -2396,17 +2387,17 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let config = root.join("server.config");
 
-        assert_eq!(data_dir(&root).unwrap(), root.join("data"));
+        assert_eq!(data_dir(&root), root.join("data"));
 
         fs::write(&config, "port = 4000\ndata_dir = state/live\n").unwrap();
-        assert_eq!(data_dir(&root).unwrap(), root.join("state/live"));
+        assert_eq!(data_dir(&root), root.join("state/live"));
 
         let absolute = root.join("elsewhere");
         fs::write(&config, format!("data_dir = {}\n", absolute.display())).unwrap();
-        assert_eq!(data_dir(&root).unwrap(), absolute);
+        assert_eq!(data_dir(&root), absolute);
 
         fs::write(&config, "data_dir =\n").unwrap();
-        assert_eq!(data_dir(&root).unwrap(), root.join("data"));
+        assert_eq!(data_dir(&root), root.join("data"));
 
         let _ = fs::remove_dir_all(&root);
     }
