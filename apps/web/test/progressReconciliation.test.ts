@@ -116,7 +116,7 @@ function fixture() {
     scheduleStartupReveal: noop, setCurrentTrackId: noop, setDuration: noop, setPosition: noop,
     setRestoredPlaybackBookId: noop, setPendingSeek: (seek: any) => seeks.push(seek),
     storeCanonicalServerProgress: (_book: unknown, progress: Progress) => canonical.push(progress), updateBookProgress: noop,
-    audioRef: ref({ currentTime: 0, duration: 7200, paused: true }), booksRef: ref([book]), initialLibraryHydrated: ref(true),
+    audioRef: ref({ currentTime: 0, duration: 7200, paused: true }), initialLibraryHydrated: ref(true),
     isOperaLibre: false, libraryRequestGenerationRef: ref(0), libraryRetryTimerRef: ref(null), loadBooksRef: ref(noop),
     localMode: false, native: false, nativeAudioRef: ref(false), nativePlaybackPlayingRef: ref(false), onServerReachable: noop,
     reconcileServerBookGains: noop, setBooks: noop, setError: noop, setIsLoading: noop, setIsOffline: noop,

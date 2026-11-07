@@ -15,16 +15,14 @@ const react = {
 };
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
-  return { promise, resolve, reject };
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
 }
 
 function fixture(saved: string | null = "playing", selected = "browsed") {
   const cache = deferred<any[]>();
   const live = deferred<any[]>();
   const cachedApplied = deferred<void>();
-  const booksRef = ref<unknown[]>([]);
   let tab = "shelf";
   let selection: string | null = selected;
   let playback = saved;
@@ -47,12 +45,11 @@ function fixture(saved: string | null = "playing", selected = "browsed") {
     capabilities: {}, currentUser: {}, brokenLibationAccounts: [], shellRef: ref(null),
     miniPlayerRef: ref(null), readalongOpen: false, readerClosing: false });
   const options = {
-    audioRef: ref(null), booksRef, currentUser: { id: "fixture" }, initialLibraryHydrated: ref(false),
+    audioRef: ref(null), currentUser: { id: "fixture" }, initialLibraryHydrated: ref(false),
     isOperaLibre: false, libraryRequestGenerationRef: ref(0), libraryRetryTimerRef: ref(null),
     loadBooksRef: ref(noop), localMode: false, native: true, nativeAudioRef: ref(true),
     nativePlaybackPlayingRef: ref(false), onServerReachable: noop, reconcileServerBookGains: noop,
-    setBooks: (books: unknown[]) => { booksRef.current = books; },
-    setError: noop, setIsLoading: (loading: boolean) => { if (!loading) cachedApplied.resolve(); },
+    setBooks: noop, setError: noop, setIsLoading: (loading: boolean) => { if (!loading) cachedApplied.resolve(); },
     setIsOffline: noop, setLibationBooks: noop, setLibationBooksLoaded: noop,
     setNativeTab: navigation.setStartupTab, startupNavigationOverridden: navigation.startupNavigationOverridden,
     setPlaybackBookId: (update: any) => { playback = update(playback); },
@@ -147,21 +144,6 @@ test("empty definitive launch opens Shelf without waiting for playback", async (
   f.live.resolve([]);
   await loading;
   f.paint();
-  assert.deepEqual(f.visible, ["shelf"]);
-});
-
-test("an offline launch opens Shelf when the cached library lacks the saved book", async () => {
-  const f = fixture("missing");
-  f.connect();
-  const loading = f.load();
-  f.cache.resolve([browsed]);
-  await f.cachedApplied.promise;
-  f.paint();
-  assert.deepEqual(f.visible, []);
-  f.live.reject(new TypeError("Load failed"));
-  await loading;
-  f.paint();
-  assert.equal(f.state().playback, null);
   assert.deepEqual(f.visible, ["shelf"]);
 });
 

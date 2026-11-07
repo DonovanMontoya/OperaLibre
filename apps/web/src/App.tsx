@@ -1409,7 +1409,6 @@ function MainApp({
     loadBooks
   } = useLibrary({
     audioRef,
-    booksRef,
     currentUser,
     initialLibraryHydrated,
     isOperaLibre,
@@ -1557,7 +1556,6 @@ function MainApp({
       // A listing still in flight belongs to this session; when it fails it
       // must not schedule a retry that runs under the next account.
       libraryRequestGenerationRef.current += 1;
-      libraryProgressReplaysRef.current.clear();
       if (libraryRetryTimerRef.current !== null) {
         window.clearTimeout(libraryRetryTimerRef.current);
         libraryRetryTimerRef.current = null;
@@ -1981,8 +1979,6 @@ function MainApp({
     flushProgressSaveQueue,
     isOperaLibre,
     libationBooksLoaded,
-    libraryRequestGenerationRef,
-    libraryRetryTimerRef,
     librarySource,
     libroAccounts,
     libroOnDevice,

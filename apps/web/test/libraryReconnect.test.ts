@@ -41,7 +41,7 @@ function fixture(getBooks: () => Promise<unknown[]>, deviceOnline = true) {
     "./progressSeekIntent": { acknowledgeProgressSeekIntent: noop, progressSeekStorage: () => null,
       progressSeekOptions: () => ({}), readProgressSeekIntent: () => null }
   })({
-    audioRef: ref(null), booksRef: ref([]), currentUser: { id: "reader" }, initialLibraryHydrated: ref(false), isOperaLibre: false,
+    audioRef: ref(null), currentUser: { id: "reader" }, initialLibraryHydrated: ref(false), isOperaLibre: false,
     libraryProgressReplaysRef: ref(new Map()), libraryRequestGenerationRef: generation, libraryRetryTimerRef: ref(null),
     loadBooksRef, localMode: false, native: false, nativeAudioRef: ref(false), nativePlaybackPlayingRef: ref(false),
     onServerReachable: () => { reachable += 1; }, reconcileServerBookGains: noop, resumeReconciliationBookIdRef: ref(null), setBooks: noop,

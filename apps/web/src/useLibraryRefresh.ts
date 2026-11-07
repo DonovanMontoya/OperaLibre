@@ -1,7 +1,6 @@
-import { getBooks, isNetworkError, isServerNotReadyError, refreshLibroAccount, rescanLibrary } from "./api";
+import { isNetworkError, isServerNotReadyError, refreshLibroAccount, rescanLibrary } from "./api";
 import { getDeviceBooks, mergeDeviceAndServerBooks } from "./localLibrary";
 import { resolveActivePlaybackBookId, resolveBookId } from "./reliability";
-import { readStoredBookId } from "./appStorage";
 import type { AuthUser, Book, LibroAccountSummary } from "./types";
 import { type Dispatch, type RefObject, type SetStateAction, useCallback } from "react";
 import { refreshPurchaseSources } from "./purchaseRefresh";
@@ -20,8 +19,6 @@ export function useLibraryRefresh({
   flushProgressSaveQueue,
   isOperaLibre,
   libationBooksLoaded,
-  libraryRequestGenerationRef,
-  libraryRetryTimerRef,
   librarySource,
   libroAccounts,
   libroOnDevice,
@@ -53,8 +50,6 @@ export function useLibraryRefresh({
   flushProgressSaveQueue: () => Promise<void>;
   isOperaLibre: boolean;
   libationBooksLoaded: boolean;
-  libraryRequestGenerationRef: RefObject<number>;
-  libraryRetryTimerRef: RefObject<number | null>;
   librarySource: LibrarySource;
   libroAccounts: LibroAccountSummary[] | null;
   libroOnDevice: boolean;
@@ -86,41 +81,10 @@ export function useLibraryRefresh({
       await loadBooks();
       return;
     }
-    const requestGeneration = ++libraryRequestGenerationRef.current;
-    const isCurrentRequest = () => requestGeneration === libraryRequestGenerationRef.current;
-    if (libraryRetryTimerRef.current !== null) {
-      window.clearTimeout(libraryRetryTimerRef.current);
-      libraryRetryTimerRef.current = null;
-    }
     try {
-      const nextBooks = isOperaLibre && !currentUser.isAdmin
-        ? await getBooks()
-        : await rescanLibrary();
-      if (!isCurrentRequest()) return;
-      const visibleBooks = native
-        ? mergeDeviceAndServerBooks(nextBooks, getDeviceBooks())
-        : nextBooks;
-      setBooks(visibleBooks);
-      reconcileServerBookGains(nextBooks);
-      setIsOffline(false);
-      setSelectedBookId((existing) =>
-        resolveBookId(visibleBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
-      );
-      // As in loadBooks: a listing that calls the playing book finished must
-      // not pull the session out from under the listener.
-      const isPlayingNow = nativeAudio
-        ? nativePlaybackPlayingRef.current
-        : !!audioRef.current && !audioRef.current.paused;
-      setPlaybackBookId((existing) =>
-        resolveActivePlaybackBookId(
-          visibleBooks,
-          existing ?? readStoredBookId(currentUser.id, "playbackBookId"),
-          isPlayingNow
-        )
-      );
-      setError(null);
+      if (!isOperaLibre || currentUser.isAdmin) await rescanLibrary();
+      await loadBooks();
     } catch (refreshError) {
-      if (!isCurrentRequest()) return;
       if (isServerNotReadyError(refreshError)) {
         // Up but still scanning: loadBooks keeps asking until it publishes.
         setIsOffline(false);
@@ -132,9 +96,8 @@ export function useLibraryRefresh({
       // mute non-downloaded books when the server can't be reached at all.
       setIsOffline(isNetworkError(refreshError));
       setError("Library rescan failed.");
-      if (isNetworkError(refreshError)) void loadBooks();
     } finally {
-      if (isCurrentRequest()) setIsLoading(false);
+      setIsLoading(false);
     }
   }
 
