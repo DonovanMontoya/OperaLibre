@@ -550,7 +550,7 @@ impl TestServer {
             },
             alignment_config: AlignmentConfig::Managed,
             faststart_tools: None,
-            update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000, None)
+            update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000, None, None)
                 .unwrap(),
             sync_dir: data_dir.join("sync"),
             sync_schedule_lock: Arc::new(Mutex::new(())),
@@ -4772,6 +4772,7 @@ async fn catalogue_listings_are_unavailable_until_the_startup_scan_finishes() {
     // mid-flight, the way the startup scan task does.
     let config = ServerConfig {
         config_path: None,
+        config_digest: None,
         deployment_mode: DeploymentMode::Local,
         host: "127.0.0.1".to_string(),
         port: 4000,
@@ -6579,6 +6580,7 @@ async fn update_channel_is_persistent_and_invalid_channels_are_rejected() {
         None,
         4000,
         None,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -8207,6 +8209,7 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
         server.state.database_path.parent().unwrap().to_path_buf(),
         None,
         4000,
+        None,
         None,
     )
     .unwrap();

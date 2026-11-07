@@ -1915,8 +1915,14 @@ exit 0
         },
         alignment_config: super::AlignmentConfig::Managed,
         faststart_tools: None,
-        update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000, None)
-            .unwrap(),
+        update_manager: super::updates::UpdateManager::new(
+            data_dir.clone(),
+            None,
+            4000,
+            None,
+            None,
+        )
+        .unwrap(),
         sync_dir: data_dir.join("sync"),
         sync_schedule_lock: super::Arc::new(super::Mutex::new(())),
         sync_report_backfill: super::Arc::default(),

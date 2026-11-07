@@ -607,6 +607,7 @@ fn build_app_state(
             config.web_dist_dir.clone(),
             config.port,
             config.config_path.clone(),
+            config.config_digest,
         )?,
         sync_dir: config.data_dir.join("sync"),
         sync_schedule_lock: Arc::new(Mutex::new(())),

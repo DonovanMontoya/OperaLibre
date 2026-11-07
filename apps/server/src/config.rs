@@ -20,6 +20,7 @@ pub(crate) const SETUP_TOKEN_LIFETIME_SECONDS: u64 = 30 * 60;
 #[derive(Debug, Clone)]
 pub(crate) struct ServerConfig {
     pub(crate) config_path: Option<PathBuf>,
+    pub(crate) config_digest: Option<[u8; 32]>,
     pub(crate) deployment_mode: DeploymentMode,
     pub(crate) host: String,
     pub(crate) port: u16,
@@ -160,7 +161,12 @@ impl ServerConfig {
             .parent()
             .map(FsPath::to_path_buf)
             .unwrap_or_else(|| current_dir.clone());
-        let values = read_server_config_file(&config_path, explicit_config_path.is_some())?;
+        let contents = read_server_config_file(&config_path, explicit_config_path.is_some())?;
+        let values = contents
+            .as_deref()
+            .map(parse_server_config)
+            .transpose()?
+            .unwrap_or_default();
 
         let library_root = config_path_value(&values, &config_dir, "library_root")
             .or_else(|| config_path_value(&values, &config_dir, "audiobook_library"))
@@ -222,6 +228,7 @@ impl ServerConfig {
 
         Ok(Self {
             config_path: std::fs::canonicalize(&config_path).ok(),
+            config_digest: contents.map(|contents| Sha256::digest(contents.as_bytes()).into()),
             deployment_mode,
             host,
             port: match config_u16_value(&values, "port")? {
@@ -268,16 +275,16 @@ impl ServerConfig {
 pub(crate) fn read_server_config_file(
     config_path: &FsPath,
     explicit: bool,
-) -> anyhow::Result<HashMap<String, String>> {
+) -> anyhow::Result<Option<String>> {
     let contents = match std::fs::read_to_string(config_path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == io::ErrorKind::NotFound && !explicit => {
-            return Ok(HashMap::new());
+            return Ok(None);
         }
         Err(error) => return Err(error.into()),
     };
 
-    parse_server_config(&contents)
+    Ok(Some(contents))
 }
 
 pub(crate) fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>> {

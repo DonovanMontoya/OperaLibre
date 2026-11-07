@@ -42,6 +42,7 @@ const DETACHED_PROCESS: u32 = 0x0000_0008;
 #[derive(Clone)]
 pub struct UpdateManager {
     config_path: Option<PathBuf>,
+    config_digest: Option<[u8; 32]>,
     data_dir: PathBuf,
     web_dist_dir: Option<PathBuf>,
     port: u16,
@@ -253,6 +254,7 @@ impl UpdateManager {
         web_dist_dir: Option<PathBuf>,
         port: u16,
         config_path: Option<PathBuf>,
+        config_digest: Option<[u8; 32]>,
     ) -> anyhow::Result<Self> {
         let client = http_client_builder()
             .user_agent(format!("OperaLibre/{}", current_version()))
@@ -260,6 +262,7 @@ impl UpdateManager {
             .build()?;
         Ok(Self {
             config_path,
+            config_digest,
             data_dir,
             web_dist_dir,
             port,
@@ -979,7 +982,8 @@ impl UpdateManager {
             let restarted = crate::config::ServerConfig::load()?;
             let running_data_dir = self.data_dir.canonicalize()?;
             let (data_dir, port) = updater_settings(root)?;
-            Ok(restarted.config_path == self.config_path
+            Ok(restarted.config_digest == self.config_digest
+                && restarted.config_path == self.config_path
                 && restarted.data_dir.canonicalize()? == running_data_dir
                 && restarted.port == self.port
                 && data_dir.canonicalize()? == running_data_dir
@@ -1881,7 +1885,8 @@ mod tests {
     #[tokio::test]
     async fn sync_jobs_exclude_runtime_changes_and_only_one_can_process() {
         let root = tempfile::tempdir().unwrap();
-        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
+        let manager =
+            UpdateManager::new(root.path().to_path_buf(), None, 4000, None, None).unwrap();
         let running = manager.sync_lifecycle.clone().read_owned().await;
         let queued = manager.sync_lifecycle.clone().read_owned().await;
         let slot = manager.sync_slots.try_acquire().unwrap();
@@ -2052,6 +2057,8 @@ mod tests {
             "edited-port",
             "edited-invalid-port",
             "edited-invalid-mode",
+            "edited-host",
+            "edited-library",
             "relative-env",
             "relative-env-other-cwd",
         ] {
@@ -2139,6 +2146,7 @@ mod tests {
             config.web_dist_dir,
             config.port,
             config.config_path,
+            config.config_digest,
         )
         .unwrap();
         let manifest = crate::update_manifest::unsigned_manifest(&format!(
@@ -2169,6 +2177,8 @@ mod tests {
                     "edited-port" => "port = 4921\n",
                     "edited-invalid-port" => "port = invalid\n",
                     "edited-invalid-mode" => "deployment_mode = invalid\n",
+                    "edited-host" => "host = 192.0.2.1\n",
+                    "edited-library" => "library_root = changed-library\n",
                     _ => unreachable!(),
                 },
             )
@@ -2248,13 +2258,17 @@ mod tests {
             assert_eq!(manager.port, 4920);
             assert!(crate::config::ServerConfig::load().is_err());
         }
-        if matches!(scenario.as_str(), "edited-data" | "edited-port") {
+        if matches!(
+            scenario.as_str(),
+            "edited-data" | "edited-port" | "edited-library"
+        ) {
             let restarted = crate::config::ServerConfig::load().unwrap();
             let restarted = UpdateManager::new(
                 restarted.data_dir,
                 restarted.web_dist_dir,
                 restarted.port,
                 restarted.config_path,
+                restarted.config_digest,
             )
             .unwrap();
             assert!(
@@ -2434,7 +2448,8 @@ mod tests {
     #[tokio::test]
     async fn channel_changes_cannot_race_an_install_and_stale_requests_are_refused() {
         let root = tempfile::tempdir().unwrap();
-        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
+        let manager =
+            UpdateManager::new(root.path().to_path_buf(), None, 4000, None, None).unwrap();
         let guard = super::InstallGuard::acquire(&manager.installing).unwrap();
         assert!(
             manager
@@ -2468,7 +2483,8 @@ mod tests {
     #[tokio::test]
     async fn completed_update_result_bypasses_the_release_cache() {
         let root = tempfile::tempdir().unwrap();
-        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
+        let manager =
+            UpdateManager::new(root.path().to_path_buf(), None, 4000, None, None).unwrap();
         assert!(manager.last_update_result().await.is_none());
         *manager.cache.lock().await = Some(super::CachedUpdateStatus {
             checked_at: std::time::Instant::now(),
@@ -2524,7 +2540,8 @@ mod tests {
             if let Some(settings) = legacy {
                 std::fs::write(root.path().join("experimental-features.json"), settings).unwrap();
             }
-            let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
+            let manager =
+                UpdateManager::new(root.path().to_path_buf(), None, 4000, None, None).unwrap();
             let config = AlignmentConfig::Path(cli.clone());
             let status = manager.check_sync_addon(false, &config).await.unwrap();
             assert!(status.installed);
@@ -2551,7 +2568,8 @@ mod tests {
         let settings_path = root.path().join("experimental-features.json");
         std::fs::write(&settings_path, r#"{"readalongSyncEnabled":true}"#).unwrap();
         for enabled in [false, true] {
-            let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
+            let manager =
+                UpdateManager::new(root.path().to_path_buf(), None, 4000, None, None).unwrap();
             let status = manager
                 .set_sync_addon_enabled(enabled, &config)
                 .await
@@ -2562,7 +2580,7 @@ mod tests {
             assert_eq!(saved["pathRuntimeDisabled"], !enabled);
             assert_eq!(saved["readalongSyncEnabled"], true);
             let restarted =
-                UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
+                UpdateManager::new(root.path().to_path_buf(), None, 4000, None, None).unwrap();
             assert_eq!(
                 restarted
                     .check_sync_addon(false, &config)
@@ -2588,7 +2606,8 @@ mod tests {
             r#"{"readalongSyncEnabled":false,"pathRuntimeDisabled":true}"#,
         )
         .unwrap();
-        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
+        let manager =
+            UpdateManager::new(root.path().to_path_buf(), None, 4000, None, None).unwrap();
         let config = AlignmentConfig::Manual(cli.clone());
         let status = manager.check_sync_addon(false, &config).await.unwrap();
         assert!(status.installed);
@@ -2662,7 +2681,8 @@ mod tests {
         std::fs::create_dir_all(&web).unwrap();
         std::fs::write(web.join("index.html"), "server frontend").unwrap();
         std::fs::write(web.join("VERSION.txt"), "1.0.0\n").unwrap();
-        let manager = UpdateManager::new(root.path().join("data"), Some(web), 4000, None).unwrap();
+        let manager =
+            UpdateManager::new(root.path().join("data"), Some(web), 4000, None, None).unwrap();
         let manifest = crate::update_manifest::unsigned_manifest(&format!(
             r#"{{"type":"manifest","schema":1,"version":"2.0.0",
             "releaseUrl":"https://github.com/DonovanMontoya/OperaLibre/releases/tag/2.0.0",
