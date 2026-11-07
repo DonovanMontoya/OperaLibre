@@ -2272,6 +2272,18 @@ mod tests {
             fs::write(data.join("operalibre-server.pid"), pid.to_string()).unwrap();
             super::stop_server(&root).unwrap();
             assert!(!data.join("operalibre-server.pid").exists());
+            // Nor when the config cannot be read at all.
+            fs::write(root.join("server.config"), [0xff, 0xfe]).unwrap();
+            assert!(super::DeploymentConfig::load(&root).is_err());
+            fs::write(data.join("operalibre-server.pid"), pid.to_string()).unwrap();
+            super::stop_server(&root).unwrap();
+            assert!(!data.join("operalibre-server.pid").exists());
+            // SAFETY: this child test runs alone in its own process.
+            unsafe { env::set_var("OPERALIBRE_SERVER_CONFIG", root.join("missing.config")) };
+            assert!(super::DeploymentConfig::load(&root).is_err());
+            fs::write(data.join("operalibre-server.pid"), pid.to_string()).unwrap();
+            super::stop_server(&root).unwrap();
+            assert!(!data.join("operalibre-server.pid").exists());
         }
     }
 

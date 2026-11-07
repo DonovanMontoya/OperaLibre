@@ -17,13 +17,16 @@ impl DeploymentConfig {
         Self::read(root, true)
     }
 
-    /// Paths only. Stopping a server must not depend on its port being valid,
-    /// so an unparsable port falls back to the default here.
+    /// Paths only, for stopping and logging. Those must keep working with a
+    /// config the server would reject, so an unreadable file reads as empty
+    /// and an unparsable port falls back to the default.
+    // The server shares this file but never stops a server.
+    #[allow(dead_code)]
     pub(crate) fn load_paths(root: &Path) -> Result<Self, String> {
         Self::read(root, false)
     }
 
-    fn read(root: &Path, strict_port: bool) -> Result<Self, String> {
+    fn read(root: &Path, strict: bool) -> Result<Self, String> {
         let current_dir = env::current_dir().map_err(|error| error.to_string())?;
         let root = current_dir.join(root);
         let explicit = env::var_os("OPERALIBRE_SERVER_CONFIG");
@@ -41,6 +44,7 @@ impl DeploymentConfig {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound && explicit.is_none() => {
                 String::new()
             }
+            Err(_) if !strict => String::new(),
             Err(error) => {
                 return Err(format!(
                     "Could not read {}: {error}. Restore this config file before installing an update.",
@@ -62,12 +66,7 @@ impl DeploymentConfig {
             configured_value_in(&contents, "port"),
             env::var("PORT").ok(),
         );
-        let port = if strict_port {
-            port?
-        } else {
-            port.ok().flatten()
-        }
-        .unwrap_or(4920);
+        let port = if strict { port? } else { port.ok().flatten() }.unwrap_or(4920);
         Ok(Self {
             config_path,
             data_dir,
