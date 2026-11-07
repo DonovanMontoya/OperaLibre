@@ -102,6 +102,8 @@ mod sync_schedule;
 mod test_alloc;
 #[cfg(test)]
 mod unit_tests;
+#[path = "../../shared/update_backups.rs"]
+mod update_backups;
 mod update_channel;
 mod update_manifest;
 mod update_trial;
