@@ -1740,12 +1740,14 @@ fn login_throttle_locks_after_max_failures() {
     let below_limit = LoginThrottle {
         failures: super::LOGIN_MAX_FAILURES - 1,
         last_failure: now,
+        run: 0,
     };
     assert!(!below_limit.is_locked(now, super::LOGIN_MAX_FAILURES));
 
     let at_limit = LoginThrottle {
         failures: super::LOGIN_MAX_FAILURES,
         last_failure: now,
+        run: 0,
     };
     assert!(at_limit.is_locked(now, super::LOGIN_MAX_FAILURES));
     assert!(at_limit.is_locked(
@@ -8248,6 +8250,7 @@ async fn a_full_login_throttle_map_evicts_stale_then_oldest_entries() {
     let entry = |failures, age| super::LoginThrottle {
         failures,
         last_failure: now - age,
+        run: 0,
     };
     {
         let mut attempts = state.login_attempts.lock().await;
@@ -8303,6 +8306,7 @@ async fn a_login_throttle_map_full_of_locks_grows_to_a_ceiling_then_refuses() {
                 super::LoginThrottle {
                     failures: super::LOGIN_IP_MAX_FAILURES,
                     last_failure: now,
+                    run: 0,
                 },
             );
         }
@@ -8351,6 +8355,7 @@ async fn public_ipv6_networks_cannot_evict_each_others_budget_under_a_full_map()
                 super::LoginThrottle {
                     failures: super::LOGIN_IP_MAX_FAILURES,
                     last_failure: now,
+                    run: 0,
                 },
             );
         }
@@ -8359,6 +8364,7 @@ async fn public_ipv6_networks_cannot_evict_each_others_budget_under_a_full_map()
             super::LoginThrottle {
                 failures: super::LOGIN_ACCOUNT_MAX_FAILURES,
                 last_failure: now,
+                run: 0,
             },
         );
     }

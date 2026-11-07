@@ -65,6 +65,11 @@ pub(crate) const OFFICIAL_APP_ORIGINS: &[&str] = &[
 pub(crate) struct LoginThrottle {
     pub(crate) failures: u32,
     pub(crate) last_failure: u64,
+    /// Identifies this run of failures. A new one starts whenever the count
+    /// starts again from zero, so a sign-in refunding its charge late can tell
+    /// the counter it charged from one rebuilt after that counter expired or
+    /// was evicted.
+    pub(crate) run: u64,
 }
 
 impl LoginThrottle {
@@ -944,7 +949,7 @@ pub(crate) async fn authenticate_and_open_session(
     let username = normalize_username(&payload.username);
     let client_ip = request_client_ip(peer_address, headers);
     let throttle_keys = LoginThrottleKeys::new(client_ip, &username);
-    {
+    let charged = {
         let mut attempts = state.login_attempts.lock().await;
         let now = unix_now_seconds();
         attempts.retain(|_, throttle| !throttle.is_stale(now));
@@ -961,7 +966,8 @@ pub(crate) async fn authenticate_and_open_session(
                 "Too many sign-in attempts. Try again in a minute.",
             ));
         }
-    }
+        charged_runs(&attempts, [&throttle_keys.ip, &throttle_keys.username])
+    };
 
     if payload.password.chars().count() > MAX_PASSWORD_CHARS {
         let _ = verify_dummy_password_async(state, "oversized-password".to_string()).await?;
@@ -995,11 +1001,7 @@ pub(crate) async fn authenticate_and_open_session(
     // attack limit.
     let mut attempts = state.login_attempts.lock().await;
     attempts.remove(&throttle_keys.account);
-    for key in [&throttle_keys.ip, &throttle_keys.username] {
-        if let Some(throttle) = attempts.get_mut(key) {
-            throttle.failures = throttle.failures.saturating_sub(1);
-        }
-    }
+    refund_login_charge(&mut attempts, &charged);
     drop(attempts);
 
     finish_password_login(state, &user).await
@@ -1177,14 +1179,45 @@ fn record_login_failures_in<'a>(
             .or_insert(LoginThrottle {
                 failures: 0,
                 last_failure: 0,
+                run: 0,
             });
-        if entry.is_stale(now) {
+        if entry.failures == 0 || entry.is_stale(now) {
             entry.failures = 0;
+            entry.run = NEXT_LOGIN_THROTTLE_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         entry.failures += 1;
         entry.last_failure = now;
     }
     true
+}
+
+static NEXT_LOGIN_THROTTLE_RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The run each key was charged in, for [`refund_login_charge`].
+pub(crate) fn charged_runs<const N: usize>(
+    attempts: &HashMap<String, LoginThrottle>,
+    keys: [&String; N],
+) -> [(String, u64); N] {
+    keys.map(|key| {
+        let run = attempts.get(key).map_or(0, |throttle| throttle.run);
+        (key.clone(), run)
+    })
+}
+
+/// Take back one charge from each counter that is still in the run it was
+/// charged in. A counter that expired or was evicted and then rebuilt by
+/// other failures keeps all of them.
+pub(crate) fn refund_login_charge(
+    attempts: &mut HashMap<String, LoginThrottle>,
+    charged: &[(String, u64)],
+) {
+    for (key, run) in charged {
+        if let Some(throttle) = attempts.get_mut(key)
+            && throttle.run == *run
+        {
+            throttle.failures = throttle.failures.saturating_sub(1);
+        }
+    }
 }
 
 /// Drop the entry that says least about an attack: a stale one first, then

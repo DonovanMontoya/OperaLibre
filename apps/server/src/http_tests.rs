@@ -6086,6 +6086,37 @@ async fn successful_sign_ins_do_not_count_against_the_name() {
     assert_eq!(failures(&keys.ip), 0);
 }
 
+/// A sign-in still checking its password when the name's counter is evicted
+/// must not take a charge back from the counter other failures rebuilt.
+#[tokio::test]
+async fn a_late_refund_leaves_a_rebuilt_counter_alone() {
+    let server = TestServer::start(0).await;
+    let device = std::net::IpAddr::from([192, 0, 2, 44]);
+    let keys = super::LoginThrottleKeys::new(device, "target");
+    assert!(super::record_login_failures(&server.state, keys.all()).await);
+    let charged = {
+        let mut attempts = server.state.login_attempts.lock().await;
+        let charged = super::charged_runs(&attempts, [&keys.ip, &keys.username]);
+        attempts.remove(&keys.username);
+        charged
+    };
+    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        let attacker = std::net::IpAddr::from(std::net::Ipv4Addr::from(0x0a00_0000 + host));
+        let attacker = super::LoginThrottleKeys::new(attacker, "target");
+        assert!(super::record_login_failures(&server.state, attacker.all()).await);
+    }
+
+    let mut attempts = server.state.login_attempts.lock().await;
+    super::refund_login_charge(&mut attempts, &charged);
+    let failures = |key: &String| attempts.get(key).map_or(0, |throttle| throttle.failures);
+    assert_eq!(failures(&keys.username), super::LOGIN_ACCOUNT_MAX_FAILURES);
+    assert_eq!(
+        failures(&keys.ip),
+        0,
+        "the device's own counter is still refunded"
+    );
+}
+
 /// A flood of made-up names that fills the throttle map must not turn into a
 /// lockout for everyone else.
 #[tokio::test]
@@ -6101,6 +6132,7 @@ async fn a_full_login_throttle_map_still_admits_a_correct_password() {
                 super::LoginThrottle {
                     failures: 1,
                     last_failure: now,
+                    run: 0,
                 },
             );
         }
@@ -6151,6 +6183,7 @@ async fn a_full_login_throttle_map_keeps_holding_guessers_off_an_attacked_name()
                 super::LoginThrottle {
                     failures: 1,
                     last_failure: now,
+                    run: 0,
                 },
             );
         }
