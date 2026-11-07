@@ -669,7 +669,7 @@ export function AdminPanel({
   }
 
   async function handleToggleSyncAddon() {
-    if (!currentUser.isOwner || !syncAddon?.installed || !syncAddon.managed) return;
+    if (!currentUser.isOwner || !syncAddon?.installed || !(syncAddon.canToggle ?? syncAddon.managed)) return;
     setSyncAddonBusy("toggle");
     setError(null);
     setNotice(null);
@@ -1029,7 +1029,7 @@ export function AdminPanel({
                       {syncAddonBusy === "install" ? "Installing…" : syncAddon.installed ? "Update add-on" : "Install add-on"}
                     </button>
                   ) : null}
-                  {currentUser.isOwner && syncAddon?.installed && syncAddon.managed ? (
+                  {currentUser.isOwner && syncAddon?.installed && (syncAddon.canToggle ?? syncAddon.managed) ? (
                     <button
                       type="button"
                       className="quiet-button"
