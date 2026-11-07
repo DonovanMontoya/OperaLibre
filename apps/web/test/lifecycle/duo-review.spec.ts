@@ -26,7 +26,6 @@ async function openShell(page: Page, native: boolean, admin = false, inProgress 
   let connected = false;
   await page.addInitScript(() => {
     localStorage.setItem('operalibre.serverUrl', location.origin);
-    localStorage.setItem('operalibre.serverType', 'operalibre');
   });
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;

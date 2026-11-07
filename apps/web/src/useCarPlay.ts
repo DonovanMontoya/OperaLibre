@@ -244,7 +244,6 @@ export function useCarPlay({
       queuedProgressSaves.current.set(book.id, {
         bookId: book.id,
         progress,
-        isPaused: true,
         seekIntentId: seekIntent?.id,
         // A chapter jump or a restart in the car lands here as a backwards
         // move the server would otherwise refuse. The generation has to clear

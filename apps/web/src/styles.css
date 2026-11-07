@@ -7331,6 +7331,15 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane.purchase-browsin
   color: var(--ink-soft);
 }
 
+.connect-notice {
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.75rem;
+  border-left: 2px solid var(--gold);
+  font-size: 0.86rem;
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+
 .connect-form .auth-error,
 .connect-form .auth-submit {
   margin: 0;
@@ -15835,20 +15844,6 @@ html.native-app .recent-row {
 @media (max-width: 700px) { .achievement-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .achievement-card { padding: 14px; } }
 @media (max-width: 420px) { .achievements-heading { align-items: flex-start; } .achievement-tally > strong { font-size: 28px; } .achievement-tally > span { max-width: 80px; } .achievement-card-top { flex-wrap: wrap; } .ledger-rivalries { padding: 16px; } }
 
-/* Jellyfin serves tracks individually; keep long books out of the action row. */
-.track-downloads { position: relative; }
-.track-downloads summary { cursor: pointer; list-style: none; }
-.track-downloads summary::-webkit-details-marker { display: none; }
-.track-downloads ul {
-  max-height: 12rem;
-  max-width: 22rem;
-  overflow-y: auto;
-  margin: .5rem 0;
-  padding-left: 1.25rem;
-}
-.track-downloads li { margin: .35rem 0; overflow-wrap: anywhere; }
-.track-downloads a { color: inherit; }
-
 /* UIKit floats its bar over the page rather than beside it: the web view
    spans the whole screen, and the bar's clearance arrives as the bottom safe
    area. Screens run their background under it and pad their content past it. */
@@ -21949,8 +21944,7 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
   }
 }
 
-.book-action-menu,
-.book-action-bar .track-downloads > ul {
+.book-action-menu {
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
@@ -22002,8 +21996,7 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
   }
 }
 
-.book-action-item,
-.book-action-bar .track-downloads li > a {
+.book-action-item {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
   align-items: center;
@@ -22034,7 +22027,7 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
   opacity: 0.55;
 }
 
-:is(.book-action-item, .book-action-bar .track-downloads li > a):active {
+.book-action-item:active {
   background-color: rgba(var(--ink-rgb), 0.06);
 }
 
@@ -22043,21 +22036,9 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
     background-color: rgba(var(--ink-rgb), 0.07);
   }
 
-  :is(.book-action-item, .book-action-bar .track-downloads li > a):hover {
+  .book-action-item:hover {
     background-color: rgba(var(--ink-rgb), 0.05);
   }
-}
-
-.book-action-bar .track-downloads {
-  position: static;
-}
-
-.book-action-bar .track-downloads li {
-  margin: 0;
-}
-
-.book-action-bar .track-downloads li > a {
-  grid-template-columns: minmax(0, 1fr);
 }
 
 .book-detail-actions.is-compact .offline-readiness {

@@ -37,7 +37,6 @@ export function useLibrary({
   audioRef,
   currentUser,
   initialLibraryHydrated,
-  isOperaLibre,
   libraryProgressReplaysRef,
   libraryRequestGenerationRef,
   libraryRetryTimerRef,
@@ -67,7 +66,6 @@ export function useLibrary({
   audioRef: RefObject<HTMLAudioElement | null>;
   currentUser: AuthUser;
   initialLibraryHydrated: RefObject<boolean>;
-  isOperaLibre: boolean;
   libraryProgressReplaysRef: RefObject<Map<string, Promise<LibraryProgressReplay>>>;
   libraryRequestGenerationRef: RefObject<number>;
   libraryRetryTimerRef: RefObject<number | null>;
@@ -282,7 +280,7 @@ export function useLibrary({
           const saved = await saveProgress(
             book.id,
             attempted,
-            { isPaused: true, ...seekOptions }
+            seekOptions
           ).catch(() => null);
           if (!saved) return previousResult;
           // A superseding shelf fetch may not have registered a successor yet.
@@ -313,18 +311,16 @@ export function useLibrary({
       unreachableFailuresRef.current = 0;
       onServerReachable();
       if (isCurrentRequest()) void cacheLibrary(currentUser.id, serverBooks);
-      if (isOperaLibre) {
-        // Audio tags commonly omit the publisher blurb. Libation already has
-        // the correct Audible description and returns its matched local book
-        // id, so enrich in the background without delaying the shelf.
-        void getLibationBooks()
-          .then((catalog) => {
-            if (!isCurrentRequest()) return;
-            setLibationBooks(catalog);
-            setLibationBooksLoaded(true);
-          })
-          .catch(() => undefined);
-      }
+      // Audio tags commonly omit the publisher blurb. Libation already has
+      // the correct Audible description and returns its matched local book
+      // id, so enrich in the background without delaying the shelf.
+      void getLibationBooks()
+        .then((catalog) => {
+          if (!isCurrentRequest()) return;
+          setLibationBooks(catalog);
+          setLibationBooksLoaded(true);
+        })
+        .catch(() => undefined);
     } catch (loadError) {
       const cachedServer = hydratedServerBooks.length
         ? hydratedServerBooks
@@ -383,7 +379,7 @@ export function useLibrary({
     // currentUser.id (listed), refs and state setters, so the render that
     // created this callback cannot hand them anything stale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser.id, isOperaLibre, localMode, native, onServerReachable]);
+  }, [currentUser.id, localMode, native, onServerReachable]);
 
   return {
     loadBooks

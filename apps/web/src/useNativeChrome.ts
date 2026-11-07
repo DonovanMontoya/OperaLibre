@@ -1,7 +1,6 @@
 import { nativeShellColor, type NativeTab, nativeTabItems, nativeTabSelection, spreadTab } from "./nativeTabs";
 import { type Dispatch, type RefObject, type SetStateAction, useEffect, useState } from "react";
 import { useNativeTabs } from "./useNativeTabs";
-import type { ServerCapabilities } from "./serverCapabilities";
 import type { AuthUser, Book, LibationAccount, Track } from "./types";
 import type { ShelfLayout } from "./shelfSort";
 import type { AppearanceMode } from "./appearance";
@@ -12,7 +11,6 @@ export function useNativeChrome({
   launchCoverLifted,
   appearanceMode,
   brokenLibationAccounts,
-  capabilities,
   currentTrack,
   currentUser,
   gamesEnabled,
@@ -35,7 +33,6 @@ export function useNativeChrome({
   launchCoverLifted: boolean;
   appearanceMode: AppearanceMode;
   brokenLibationAccounts: LibationAccount[];
-  capabilities: ServerCapabilities;
   currentTrack: Track | null;
   currentUser: AuthUser;
   gamesEnabled: boolean;
@@ -52,7 +49,7 @@ export function useNativeChrome({
   shelfSpread: boolean;
   shellRef: RefObject<HTMLElement | null>;
 }) {
-  const showLedgerTab = native && capabilities.statistics;
+  const showLedgerTab = native;
   const iosTabs = nativeTabItems(gamesEnabled, showLedgerTab,
     currentUser.isAdmin ? brokenLibationAccounts.length : 0);
   const [chrome, setChrome] = useState<string | undefined>(undefined);

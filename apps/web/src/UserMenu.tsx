@@ -111,7 +111,6 @@ export function renderUserMenu({
   capabilities,
   currentUser,
   demoMode,
-  isOperaLibre,
   localMode,
   native,
   onCurrentUserChanged,
@@ -136,7 +135,6 @@ export function renderUserMenu({
   capabilities: ServerCapabilities;
   currentUser: AuthUser;
   demoMode: boolean;
-  isOperaLibre: boolean;
   localMode: boolean;
   native: boolean;
   onCurrentUserChanged: (user: AuthUser) => void;
@@ -168,28 +166,24 @@ export function renderUserMenu({
     <div className="user-menu" role="menu">
       <AccountHead
         user={currentUser}
-        role={isOperaLibre
-          ? localMode ? "On-device library" : demoMode ? "On-device demo" : currentUser.isOwner ? "Owner" : currentUser.isAdmin ? "Administrator" : "Reader"
-          : currentUser.isAdmin ? "Jellyfin administrator" : "Jellyfin account"}
+        role={localMode ? "On-device library" : demoMode ? "On-device demo" : currentUser.isOwner ? "Owner" : currentUser.isAdmin ? "Administrator" : "Reader"}
         onUserChanged={onCurrentUserChanged}
       />
       {!native ? <PrivacyPolicyLink role="menuitem" /> : null}
-      {capabilities.statistics ? (
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => {
-            setUserMenuOpen(false);
-            if (native) {
-              openNativeTab("ledger");
-            } else {
-              setProfileOpen(true);
-            }
-          }}
-        >
-          <ScrollText size={16} /> Reader's ledger
-        </button>
-      ) : null}
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          setUserMenuOpen(false);
+          if (native) {
+            openNativeTab("ledger");
+          } else {
+            setProfileOpen(true);
+          }
+        }}
+      >
+        <ScrollText size={16} /> Reader's ledger
+      </button>
       {/* The apps show assistants in Settings; a browser has no Settings page. */}
       {!native && capabilities.sharedActivity ? (
         <AgentAccessMenuItem
@@ -231,7 +225,7 @@ export function renderUserMenu({
       ) : null}
       {!native ? <BehaviorSection>
         <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
-        {isOperaLibre && !demoMode && !localMode ? <BookPreviewSetting enabled={bookPreviewsEnabled} onToggle={toggleBookPreviewsEnabled} /> : null}
+        {!demoMode && !localMode ? <BookPreviewSetting enabled={bookPreviewsEnabled} onToggle={toggleBookPreviewsEnabled} /> : null}
         {sentenceFollowAvailable ? (
           <div className="user-menu-follow-aggressiveness" role="group" aria-labelledby="menu-follow-aggressiveness-label">
             <div>

@@ -53,13 +53,16 @@ function seededRandom(seed: number) {
   };
 }
 
-test("offline storage keys are isolated by server and type", () => {
-  const first = serverStorageKey("operalibre", "http://books-a.local:4000");
-  const second = serverStorageKey("operalibre", "http://books-b.local:4000");
-  const jellyfin = serverStorageKey("jellyfin", "http://books-a.local:4000");
+test("offline storage keys are isolated by server", () => {
+  const first = serverStorageKey("http://books-a.local:4000");
+  const second = serverStorageKey("http://books-b.local:4000");
   assert.notEqual(first, second);
-  assert.notEqual(first, jellyfin);
-  assert.equal(first, serverStorageKey("operalibre", "HTTP://BOOKS-A.LOCAL:4000"));
+  assert.equal(first, serverStorageKey("HTTP://BOOKS-A.LOCAL:4000"));
+});
+
+test("offline storage keys match the ones earlier builds saved under", () => {
+  // Changing this orphans every cached library, checkpoint and download.
+  assert.equal(serverStorageKey("http://books-a.local:4000"), "operalibre-915a8ea5");
 });
 
 test("legacy epoch and ISO progress timestamps compare consistently", () => {

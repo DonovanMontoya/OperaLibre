@@ -15,9 +15,9 @@ test("the same server, and servers that cannot be compared, are let through", ()
   assert.doesNotThrow(() => refuseDifferentServer(null, null));
 });
 
-test("the identity is read from OperaLibre health and Jellyfin public info", () => {
+test("the identity is read from the health check", () => {
   assert.equal(readServerId({ ok: true, serverId: "abc123" }), "abc123");
-  assert.equal(readServerId({ ServerName: "Media", Id: "f00d" }), "f00d");
+  assert.equal(readServerId({ ServerName: "Media", Id: "f00d" }), null);
 });
 
 test("responses without a usable identity report none", () => {

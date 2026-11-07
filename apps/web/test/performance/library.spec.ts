@@ -25,7 +25,6 @@ test('large shelf search and real playback remain functional', async ({ page }, 
     }
     requestAnimationFrame(frame);
     localStorage.setItem('operalibre.serverUrl', location.origin);
-    localStorage.setItem('operalibre.serverType', 'operalibre');
   });
   await page.route('**/api/**', async route => {
     const request = route.request();

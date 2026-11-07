@@ -42,11 +42,11 @@ function fixture(saved: string | null = "playing", selected = "browsed") {
     } }
   });
   const paint = () => chrome({ startupViewReady: ready, native: true, nativeTab: tab,
-    capabilities: {}, currentUser: {}, brokenLibationAccounts: [], shellRef: ref(null),
+    currentUser: {}, brokenLibationAccounts: [], shellRef: ref(null),
     miniPlayerRef: ref(null), readalongOpen: false, readerClosing: false });
   const options = {
     audioRef: ref(null), currentUser: { id: "fixture" }, initialLibraryHydrated: ref(false),
-    isOperaLibre: false, libraryRequestGenerationRef: ref(0), libraryRetryTimerRef: ref(null),
+    libraryRequestGenerationRef: ref(0), libraryRetryTimerRef: ref(null),
     loadBooksRef: ref(noop), localMode: false, native: true, nativeAudioRef: ref(true),
     nativePlaybackPlayingRef: ref(false), onServerReachable: noop, reconcileServerBookGains: noop,
     setBooks: noop, setError: noop, setIsLoading: (loading: boolean) => { if (!loading) cachedApplied.resolve(); },
