@@ -67,6 +67,12 @@ export type ProgressWriteOptions = {
   intentionalRegression?: boolean;
   intentionalSeek?: boolean;
   signal?: AbortSignal;
+  /**
+   * Let the save outlive a closing page. Browsers cap all outstanding
+   * keepalive bodies together at 64 KB and keep a timed-out one open, so only
+   * the save queued when the page hides or closes asks for it.
+   */
+  keepalive?: boolean;
 };
 
 /**
@@ -1084,6 +1090,19 @@ export async function getProgress(bookId: string, timeoutMs?: number) {
   return request<Progress | null>(`/api/books/${encodeURIComponent(bookId)}/progress`, undefined, timeoutMs);
 }
 
+// The native shells reach the server cross-origin, behind a CORS preflight,
+// and keepalive with a preflight is not dependable in every WebView, so only
+// a same-origin page asks for it. A closing browser tab is the case it fixes.
+function apiIsSameOrigin(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const base = currentApiBase() || window.location.origin;
+    return new URL(base, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 export async function saveProgress(bookId: string, progress: ProgressWrite, options?: ProgressWriteOptions) {
   if (isDemoMode()) return saveDemoProgress(bookId, progress);
   // The server uses the observed revision to reject obsolete checkpoints;
@@ -1093,6 +1112,7 @@ export async function saveProgress(bookId: string, progress: ProgressWrite, opti
   const { updatedAt, trackId, positionSeconds, bookPositionSeconds, durationSeconds, baseUpdatedAt, recording } = progress;
   return request<Progress>(`/api/books/${encodeURIComponent(bookId)}/progress`, {
     method: "PUT",
+    keepalive: !!options?.keepalive && apiIsSameOrigin(),
     signal: options?.signal,
     body: JSON.stringify({
       trackId, positionSeconds, bookPositionSeconds, durationSeconds,

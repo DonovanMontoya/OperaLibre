@@ -565,6 +565,28 @@ test("library reconnect uploads dirty slow-clock progress without opening that b
   assert.equal(f.writes[0].progress.baseUpdatedAt, f.server.updatedAt);
 });
 
+// Browsers cap all in-flight keepalive bodies at 64 KB together and keep a
+// timed-out one open, so only the save queued as the page hides or closes may
+// outlive it; routine playback saves and the library replay stay cancellable.
+test("only the save queued as the page goes away asks to outlive it", async () => {
+  const keepalive = (write: { options?: unknown } | undefined) =>
+    (write?.options as { keepalive?: boolean } | undefined)?.keepalive === true;
+  const replay = fixture();
+  replay.write(replay.local);
+  await loadHook("useLibrary", replay.dependencies)(replay.options).loadBooks();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(replay.writes.length, 1);
+  assert.equal(keepalive(replay.writes[0]), false);
+
+  const playback = fixture();
+  playback.options.restoredProgressBookId.current = "book";
+  playback.options.playbackTouchedRef.current = true;
+  const sync = loadHook("useProgressSync", playback.dependencies)(playback.options);
+  await sync.persistProgress();
+  await sync.persistProgress({ keepalive: true });
+  assert.deepEqual(playback.writes.map(keepalive), [false, true]);
+});
+
 test("untouched playback writes nothing and a pending seek persists its target", async () => {
   const f = fixture();
   f.options.restoredProgressBookId.current = "book";
