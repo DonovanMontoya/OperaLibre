@@ -10,7 +10,7 @@ use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use axum::{
     Extension, Json, Router,
     body::Body,
-    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, RawQuery, Request, State},
     http::{
         HeaderMap, HeaderValue, Method, StatusCode,
         header::{

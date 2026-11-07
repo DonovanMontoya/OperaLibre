@@ -6980,6 +6980,76 @@ async fn cover_upload_persists_rescans_restarts_metadata_edits_and_restores_orig
     assert!(server.get(&format!("/api/books/{id}"), &owner).await.json()["coverArtUrl"].is_null());
 }
 
+/// Reopening the app must show covers from the device's cache without waiting
+/// on the server. A URL under the current revision may be kept; anything else
+/// is revalidated, so a replaced cover never sticks.
+#[tokio::test]
+async fn only_current_cover_revisions_are_cacheable_without_revalidation() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (id, _) = server.first_book_and_track(&owner).await;
+    let upload = server
+        .upload_cover(&id, &owner, "first.png", &cover_fixture([10, 20, 30]))
+        .await;
+    assert_eq!(upload.status, StatusCode::OK, "{}", upload.text());
+    let url = upload.json()["coverArtUrl"].as_str().unwrap().to_string();
+    let immutable = VERSIONED_COVER_CACHE_CONTROL;
+
+    let versioned = server.get(&url, &owner).await;
+    assert_eq!(versioned.status, StatusCode::OK);
+    assert_eq!(versioned.header(header::CACHE_CONTROL), immutable);
+    // The media token rides beside the revision on app image requests.
+    let with_token = server.get(&format!("{url}&token=ignored"), &owner).await;
+    assert_eq!(with_token.header(header::CACHE_CONTROL), immutable);
+    let revalidated = server
+        .send(
+            Request::builder()
+                .uri(&url)
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::IF_NONE_MATCH, versioned.header(header::ETAG))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(revalidated.status, StatusCode::NOT_MODIFIED);
+    assert_eq!(revalidated.header(header::CACHE_CONTROL), immutable);
+
+    let unversioned = format!("/api/books/{id}/cover");
+    for path in [
+        unversioned.clone(),
+        format!("{unversioned}?v="),
+        format!("{unversioned}?v=other"),
+        format!("{unversioned}?token=x"),
+    ] {
+        let response = server.get(&path, &owner).await;
+        assert_eq!(response.status, StatusCode::OK, "{path}");
+        assert_eq!(
+            response.header(header::CACHE_CONTROL),
+            COVER_CACHE_CONTROL,
+            "{path}"
+        );
+    }
+
+    let replacement = server
+        .upload_cover(&id, &owner, "next.png", &cover_fixture([0, 200, 30]))
+        .await;
+    assert_eq!(replacement.status, StatusCode::OK);
+    let stale = server.get(&url, &owner).await;
+    assert_eq!(stale.status, StatusCode::OK);
+    assert_eq!(stale.header(header::CACHE_CONTROL), COVER_CACHE_CONTROL);
+    let current = replacement.json()["coverArtUrl"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        server
+            .get(&current, &owner)
+            .await
+            .header(header::CACHE_CONTROL),
+        immutable
+    );
+}
+
 #[tokio::test]
 async fn cover_upload_enforces_auth_csrf_access_and_size_limits() {
     let mut server = TestServer::start(1).await;
