@@ -1979,6 +1979,8 @@ function MainApp({
     flushProgressSaveQueue,
     isOperaLibre,
     libationBooksLoaded,
+    libraryRequestGenerationRef,
+    libraryRetryTimerRef,
     librarySource,
     libroAccounts,
     libroOnDevice,
