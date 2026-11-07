@@ -1680,6 +1680,13 @@ pub(crate) async fn delete_user(
     revoke_agent_tokens_for_user(&state, &user_id).await?;
     state.progress.remove_user(&user_id).await?;
     state.book_settings.remove_user(&user_id).await?;
+    state
+        .activity
+        .mutate(|activity| {
+            activity.by_user.remove(&user_id);
+            Ok(())
+        })
+        .await?;
     // Dropped before the history purge, so a flush of the buffered sessions
     // cannot re-persist the account between the two steps.
     state.open_sessions.lock().await.forget_user(&user_id);
