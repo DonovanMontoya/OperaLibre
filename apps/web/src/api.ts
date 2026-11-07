@@ -1149,6 +1149,19 @@ export async function saveProgress(bookId: string, progress: ProgressWrite, opti
   return currentBackend().saveProgress(bookId, progress, options);
 }
 
+// The native shells reach the server cross-origin, behind a CORS preflight,
+// and keepalive with a preflight is not dependable in every WebView, so only
+// a same-origin page asks for it. A closing browser tab is the case it fixes.
+function apiIsSameOrigin(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const base = currentApiBase() || window.location.origin;
+    return new URL(base, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 async function saveOperaLibreProgress(bookId: string, progress: ProgressWrite, options?: ProgressWriteOptions) {
   // The server uses the observed revision to reject obsolete checkpoints;
   // legacy writes without a revision retain timestamp ordering.
@@ -1157,6 +1170,7 @@ async function saveOperaLibreProgress(bookId: string, progress: ProgressWrite, o
   const { updatedAt, trackId, positionSeconds, bookPositionSeconds, durationSeconds, baseUpdatedAt, recording } = progress;
   return request<Progress>(`/api/books/${encodeURIComponent(bookId)}/progress`, {
     method: "PUT",
+    keepalive: !!options?.keepalive && apiIsSameOrigin(),
     signal: options?.signal,
     body: JSON.stringify({
       trackId, positionSeconds, bookPositionSeconds, durationSeconds,
