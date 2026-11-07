@@ -994,16 +994,22 @@ impl ActivityLog {
             .unwrap_or(0.0)
             + delta_seconds;
         let (row_user_id, row_day) = (user_id.to_string(), day.to_string());
-        self.db
+        let written = self
+            .db
             .transaction_while_guarded(move |transaction| {
+                // An admitted request can reach bookkeeping after its user
+                // has been deleted. Check existence in the same transaction.
                 transaction.execute(
-                    "INSERT INTO activity (user_id, day, seconds) VALUES (?1, ?2, ?3)
+                    "INSERT INTO activity (user_id, day, seconds)
+                     SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM users WHERE id = ?1)
                      ON CONFLICT (user_id, day) DO UPDATE SET seconds = excluded.seconds",
                     params![row_user_id, row_day, total],
-                )?;
-                Ok(())
+                )
             })
             .await?;
+        if written == 0 {
+            return Ok(0.0);
+        }
         value
             .by_user
             .entry(user_id.to_string())
