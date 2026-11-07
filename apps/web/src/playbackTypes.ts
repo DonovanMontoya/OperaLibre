@@ -15,4 +15,6 @@ export type QueuedProgressSave = {
   // shouldFlagIntentionalRegression). Decided when the save is queued, from
   // the seek's own target rather than from whatever the clock reads later.
   intentionalRegression: boolean;
+  /** Queued by a page hide or close, which may be the last chance to send it. */
+  keepalive?: boolean;
 };
