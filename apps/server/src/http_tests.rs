@@ -348,6 +348,128 @@ async fn deleting_user_removes_libro_credentials_under_the_account_guard() {
     );
 }
 
+#[tokio::test]
+async fn deleted_user_activity_is_removed_from_cache_database_and_backup() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let deleted = server.add_reader(&owner, "deleted-reader").await;
+    let survivor = server.add_reader(&owner, "surviving-reader").await;
+    let deleted_auth = resolve_session(&server.state, &deleted).await.unwrap();
+    let survivor_auth = resolve_session(&server.state, &survivor).await.unwrap();
+    record_activity(&server.state, &deleted_auth.id, 7200.0, 0).await;
+    record_activity(&server.state, &survivor_auth.id, 3600.0, 0).await;
+    let before = server.get("/api/profile/stats", &survivor).await;
+    assert_eq!(before.status, StatusCode::OK);
+    assert_eq!(before.json()["totalHoursRead"], 1.0);
+    let survivor_days = server.state.activity.read().await.by_user[&survivor_auth.id].clone();
+
+    let deletion = server
+        .send_json(
+            "DELETE",
+            &format!("/api/users/{}", deleted_auth.id),
+            &owner,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(deletion.status, StatusCode::OK, "{}", deletion.text());
+    assert_eq!(
+        server.get("/api/profile/stats", &deleted).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let cached = server.state.activity.read().await.clone();
+    assert!(!cached.by_user.contains_key(&deleted_auth.id));
+    assert_eq!(cached.by_user[&survivor_auth.id], survivor_days);
+    let stored = server
+        .state
+        .database
+        .call(|connection| {
+            read_activity_rows(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+    assert!(!stored.by_user.contains_key(&deleted_auth.id));
+    assert_eq!(stored.by_user[&survivor_auth.id], survivor_days);
+    let backup = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(backup.status, StatusCode::OK, "{}", backup.text());
+    let activity = &backup.json()["data"]["activity"];
+    assert!(activity.get(&deleted_auth.id).is_none());
+    assert_eq!(
+        activity[&survivor_auth.id],
+        serde_json::json!(survivor_days)
+    );
+    let after = server.get("/api/profile/stats", &survivor).await;
+    assert_eq!(after.status, StatusCode::OK);
+    assert_eq!(after.json(), before.json());
+}
+
+#[tokio::test]
+async fn deleted_user_activity_stays_absent_after_late_progress_bookkeeping() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "late-reader").await;
+    // Middleware gives an admitted request this owned snapshot, which can
+    // outlive the account while the request waits to record its checkpoint.
+    let auth = resolve_session(&server.state, &reader).await.unwrap();
+    let book = server.state.library.read().await.books[0].clone();
+    let previous = fresh_progress(&book, &book.tracks[0], None, unix_now_millis() - 1000);
+    let mut saved = previous.clone();
+    saved.position_seconds = 1.0;
+    saved.book_position_seconds = 1.0;
+    saved.updated_at = unix_now_millis().to_string();
+    assert_eq!(
+        plausible_listened_delta(Some(&previous), &saved, false),
+        1.0
+    );
+
+    let deletion = server
+        .send_json(
+            "DELETE",
+            &format!("/api/users/{}", auth.id),
+            &owner,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(deletion.status, StatusCode::OK, "{}", deletion.text());
+    record_progress_bookkeeping(
+        &server.state,
+        &auth,
+        &book,
+        &saved,
+        Some(&previous),
+        ProgressBookkeeping {
+            intentional_seek: false,
+            tz_offset_minutes: Some(0),
+            speed: None,
+            client: None,
+            completion_source: None,
+        },
+    )
+    .await;
+    assert!(
+        !server
+            .state
+            .activity
+            .read()
+            .await
+            .by_user
+            .contains_key(&auth.id)
+    );
+    let stored = server
+        .state
+        .database
+        .call(|connection| {
+            read_activity_rows(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+    assert!(!stored.by_user.contains_key(&auth.id));
+    let backup = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(backup.status, StatusCode::OK, "{}", backup.text());
+    assert!(backup.json()["data"]["activity"].get(&auth.id).is_none());
+}
+
 /// A booted server with a temporary data directory and a fixture library.
 struct TestServer {
     router: Router,
@@ -426,7 +548,7 @@ impl TestServer {
                 auto_refresh_hours: None,
                 reader_refreshes_per_hour: DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR,
             },
-            alignment_config: AlignmentConfig { cli_path: None },
+            alignment_config: AlignmentConfig::Managed,
             faststart_tools: None,
             update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
             sync_dir: data_dir.join("sync"),
@@ -4928,6 +5050,144 @@ async fn paged_books_keep_progress_gains_and_sharing_and_ignore_inaccessible_cur
 }
 
 #[tokio::test]
+async fn path_runtime_owner_toggle_gates_jobs_schedules_and_sentence_following() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "path-reader").await;
+    let admin = server.add_reader(&owner, "path-admin").await;
+    let admin_user = server.get("/api/auth/me", &admin).await.json();
+    let role = server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{}/role", admin_user["id"].as_str().unwrap()),
+            &owner,
+            serde_json::json!({"isAdmin":true,"isOwner":false}),
+        )
+        .await;
+    assert_eq!(role.status, StatusCode::OK, "{}", role.text());
+    let (book_id, track_id) = server.first_book_and_track(&owner).await;
+    save_position(
+        &server,
+        &reader,
+        &book_id,
+        &track_id,
+        42.0,
+        serde_json::json!({}),
+    )
+    .await;
+    {
+        let mut library = server.state.library.write().await;
+        library.books[0].reading_file = Some(ReadingFile {
+            id: "epub".into(),
+            file_name: "book.epub".into(),
+            extension: "epub".into(),
+            content_type: "application/epub+zip".into(),
+            url: "/readalong".into(),
+        });
+    }
+    fs::create_dir_all(&server.state.sync_dir).await.unwrap();
+    let map = server.state.sync_dir.join(format!("{book_id}.sync.json"));
+    fs::write(&map, b"existing sentence timings").await.unwrap();
+    let before = server.get("/api/books", &reader).await.json();
+    let cli = server._root.path().join("echogarden");
+    fs::write(&cli, b"fixture").await.unwrap();
+    server.state.alignment_config = AlignmentConfig::Path(cli);
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    let status_uri = "/api/experimental-features/readalong-sync";
+    let toggle_uri = "/api/experimental-features/readalong-sync/enabled";
+    let schedule_uri = format!("/api/sync-schedules/{book_id}");
+    let schedule = serde_json::json!({"runAt": unix_now_millis() + 3_600_000});
+    for token in [&reader, &admin] {
+        assert_eq!(
+            server
+                .send_json(
+                    "PUT",
+                    toggle_uri,
+                    token,
+                    serde_json::json!({"enabled":false})
+                )
+                .await
+                .status,
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(server.get(status_uri, &owner).await.json()["enabled"], true);
+    assert_eq!(
+        server
+            .send_json("PUT", &schedule_uri, &owner, schedule.clone())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        server
+            .send_json(
+                "PUT",
+                toggle_uri,
+                &owner,
+                serde_json::json!({"enabled":false})
+            )
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let status = server.get(status_uri, &admin).await.json();
+    assert_eq!(status["enabled"], false);
+    assert_eq!(status["canToggle"], true);
+    assert_eq!(
+        server.get("/api/alignment/status", &reader).await.json(),
+        serde_json::json!({"enabled":false,"cliPath":null})
+    );
+    for (method, uri, body) in [
+        (
+            "POST",
+            format!("/api/books/{book_id}/sync/generate"),
+            serde_json::json!({}),
+        ),
+        ("PUT", schedule_uri.clone(), schedule.clone()),
+        ("POST", "/api/sync-sweep/run".into(), serde_json::json!({})),
+    ] {
+        let response = server.send_json(method, &uri, &owner, body).await;
+        assert_eq!(
+            response.status,
+            StatusCode::BAD_REQUEST,
+            "{uri}: {}",
+            response.text()
+        );
+    }
+    assert!(server.state.jobs.read().await.is_empty());
+    assert_eq!(
+        server.get("/api/sync-schedules", &owner).await.json()[0]["status"],
+        "scheduled"
+    );
+    assert_eq!(
+        server
+            .send_json(
+                "PUT",
+                toggle_uri,
+                &owner,
+                serde_json::json!({"enabled":true})
+            )
+            .await
+            .json()["enabled"],
+        true
+    );
+    assert_eq!(
+        server.get("/api/alignment/status", &reader).await.json()["enabled"],
+        true
+    );
+    assert_eq!(
+        server
+            .send_json("PUT", &schedule_uri, &owner, schedule)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(fs::read(map).await.unwrap(), b"existing sentence timings");
+    assert_eq!(server.get("/api/books", &reader).await.json(), before);
+}
+
+#[tokio::test]
 async fn readers_can_check_whether_sentence_following_is_enabled() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;
@@ -5249,7 +5509,7 @@ async fn sync_schedules_persist_replace_cancel_and_validate() {
     // never executed because all requests below target future times.
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     server.router = build_router(server.state.clone(), None, &[]).unwrap();
     let saved = server.send_json("PUT", &uri, &owner, request).await;
     assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
@@ -5344,7 +5604,7 @@ async fn due_sync_schedule_joins_existing_job_once_and_records_completion() {
     let (book_id, _) = server.first_book_and_track(&owner).await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     {
         let mut library = server.state.library.write().await;
         library.books[0].reading_file = Some(ReadingFile {
@@ -6344,7 +6604,7 @@ async fn sync_queue_restores_ids_order_and_results_and_retries_interrupted_books
     assert!(server.state.jobs.read().await[&first].resume_pending);
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     // Recovery revalidates inputs: neither a removed book nor a missing EPUB
     // disappears silently, and failures retain their original job IDs.
     crate::sync::resume_queue(&server.state).await;
@@ -6355,6 +6615,117 @@ async fn sync_queue_restores_ids_order_and_results_and_retries_interrupted_books
     crate::sync::restore_queue(&server.state).await.unwrap();
     assert_eq!(server.state.jobs.read().await[&first].status, "failed");
     assert!(!server.state.jobs.read().await[&first].resume_pending);
+}
+
+#[tokio::test]
+async fn recovery_retries_when_the_runtime_is_disabled_after_its_availability_check() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let cli = server._root.path().join("echogarden");
+    fs::write(&cli, b"fixture").await.unwrap();
+    server.state.alignment_config = AlignmentConfig::Path(cli);
+    {
+        let mut library = server.state.library.write().await;
+        library.books[0].reading_file = Some(ReadingFile {
+            id: "epub".into(),
+            file_name: "book.epub".into(),
+            extension: "epub".into(),
+            content_type: "application/epub+zip".into(),
+            url: "/readalong".into(),
+        });
+        library
+            .reading_paths
+            .insert("epub".into(), server._root.path().join("missing.epub"));
+    }
+    let (id, _) = create_queued_job(&server.state, "sync-generate", Some(book_id)).await;
+    let (paused, _) =
+        create_queued_job(&server.state, "sync-generate", Some("paused-book".into())).await;
+    let (invalid, _) =
+        create_queued_job(&server.state, "sync-generate", Some("removed-book".into())).await;
+    {
+        let mut jobs = server.state.jobs.write().await;
+        jobs.get_mut(&paused).unwrap().status = "paused".into();
+        jobs.get_mut(&paused).unwrap().pause_requested = true;
+    }
+    crate::sync::save_queue(&server.state, &*server.state.jobs.read().await)
+        .await
+        .unwrap();
+    server.state.jobs = Arc::default();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+
+    // Stop at recovery's availability/dispatch boundary, then complete the
+    // owner's disable before dispatch takes its lifecycle read lock.
+    let pending = server
+        .state
+        .jobs
+        .read()
+        .await
+        .values()
+        .filter(|job| job.resume_pending)
+        .cloned()
+        .collect();
+    assert!(
+        server
+            .state
+            .update_manager
+            .sync_addon_runtime(&server.state.alignment_config)
+            .await
+            .is_some()
+    );
+    server
+        .state
+        .update_manager
+        .set_sync_addon_enabled(false, &server.state.alignment_config)
+        .await
+        .unwrap();
+    crate::sync::resume_pending_jobs(&server.state, pending).await;
+    {
+        let jobs = server.state.jobs.read().await;
+        assert_eq!(jobs[&id].status, "queued");
+        assert!(jobs[&id].resume_pending);
+        assert!(jobs[&invalid].resume_pending);
+        assert_eq!(jobs[&paused].status, "paused");
+        assert!(!jobs[&paused].resume_pending);
+    }
+    server.state.jobs = Arc::default();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    assert!(server.state.jobs.read().await[&id].resume_pending);
+    server
+        .state
+        .update_manager
+        .set_sync_addon_enabled(true, &server.state.alignment_config)
+        .await
+        .unwrap();
+    let slot = server
+        .state
+        .update_manager
+        .sync_slots
+        .acquire()
+        .await
+        .unwrap();
+    crate::sync::resume_queue(&server.state).await;
+    {
+        let jobs = server.state.jobs.read().await;
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(jobs[&id].status, "queued");
+        assert!(!jobs[&id].resume_pending);
+        assert_eq!(jobs[&invalid].status, "failed");
+        assert!(!jobs[&invalid].resume_pending);
+        assert_eq!(jobs[&paused].status, "paused");
+        assert!(!jobs[&paused].resume_pending);
+    }
+    let finished = server.state.update_manager.sync_queue_changed.notified();
+    tokio::pin!(finished);
+    finished.as_mut().enable();
+    drop(slot);
+    // Missing input files still produce a real failure once work resumes.
+    tokio::time::timeout(Duration::from_secs(5), finished)
+        .await
+        .unwrap();
+    let jobs = server.state.jobs.read().await;
+    assert_eq!(jobs[&id].status, "failed");
+    assert!(jobs[&id].running_at.is_some());
 }
 
 /// Puts `server` into an update trial with `token`, serving a web app too.
@@ -6574,7 +6945,7 @@ async fn accepted_sync_queue_is_durable_and_deduplicated_before_work_starts() {
     let (book_id, _) = server.first_book_and_track(&owner).await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     let _slot = server
         .state
         .update_manager
@@ -6613,7 +6984,7 @@ async fn nightly_sync_limits_batches_and_includes_outdated_maps() {
     let owner = server.setup_owner().await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     {
         let mut library = server.state.library.write().await;
         for book in &mut library.books {
@@ -6671,7 +7042,7 @@ async fn full_sync_accepts_a_durable_batch_or_none_when_storage_fails() {
     let owner = server.setup_owner().await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     server.router = build_router(server.state.clone(), None, &[]).unwrap();
     {
         let mut library = server.state.library.write().await;
@@ -6727,7 +7098,7 @@ async fn update_before_batch_dispatch_preserves_every_accepted_job() {
     let mut server = TestServer::start(3).await;
     let cli = server._root.path().join("sync-cli");
     fs::write(&cli, "fixture").await.unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     let book_ids = server
         .state
         .library
@@ -6778,7 +7149,7 @@ async fn recovered_sync_starts_work_once_under_its_original_id() {
     let (book_id, _) = server.first_book_and_track(&owner).await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     {
         let mut library = server.state.library.write().await;
         library.books[0].reading_file = Some(ReadingFile {
@@ -6978,6 +7349,76 @@ async fn cover_upload_persists_rescans_restarts_metadata_edits_and_restores_orig
     assert_eq!(server.get(&url, &owner).await.status, StatusCode::NOT_FOUND);
     rescan_library(&server.state).await.unwrap();
     assert!(server.get(&format!("/api/books/{id}"), &owner).await.json()["coverArtUrl"].is_null());
+}
+
+/// Reopening the app must show covers from the device's cache without waiting
+/// on the server. A URL under the current revision may be kept; anything else
+/// is revalidated, so a replaced cover never sticks.
+#[tokio::test]
+async fn only_current_cover_revisions_are_cacheable_without_revalidation() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (id, _) = server.first_book_and_track(&owner).await;
+    let upload = server
+        .upload_cover(&id, &owner, "first.png", &cover_fixture([10, 20, 30]))
+        .await;
+    assert_eq!(upload.status, StatusCode::OK, "{}", upload.text());
+    let url = upload.json()["coverArtUrl"].as_str().unwrap().to_string();
+    let immutable = VERSIONED_COVER_CACHE_CONTROL;
+
+    let versioned = server.get(&url, &owner).await;
+    assert_eq!(versioned.status, StatusCode::OK);
+    assert_eq!(versioned.header(header::CACHE_CONTROL), immutable);
+    // The media token rides beside the revision on app image requests.
+    let with_token = server.get(&format!("{url}&token=ignored"), &owner).await;
+    assert_eq!(with_token.header(header::CACHE_CONTROL), immutable);
+    let revalidated = server
+        .send(
+            Request::builder()
+                .uri(&url)
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::IF_NONE_MATCH, versioned.header(header::ETAG))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(revalidated.status, StatusCode::NOT_MODIFIED);
+    assert_eq!(revalidated.header(header::CACHE_CONTROL), immutable);
+
+    let unversioned = format!("/api/books/{id}/cover");
+    for path in [
+        unversioned.clone(),
+        format!("{unversioned}?v="),
+        format!("{unversioned}?v=other"),
+        format!("{unversioned}?token=x"),
+    ] {
+        let response = server.get(&path, &owner).await;
+        assert_eq!(response.status, StatusCode::OK, "{path}");
+        assert_eq!(
+            response.header(header::CACHE_CONTROL),
+            COVER_CACHE_CONTROL,
+            "{path}"
+        );
+    }
+
+    let replacement = server
+        .upload_cover(&id, &owner, "next.png", &cover_fixture([0, 200, 30]))
+        .await;
+    assert_eq!(replacement.status, StatusCode::OK);
+    let stale = server.get(&url, &owner).await;
+    assert_eq!(stale.status, StatusCode::OK);
+    assert_eq!(stale.header(header::CACHE_CONTROL), COVER_CACHE_CONTROL);
+    let current = replacement.json()["coverArtUrl"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        server
+            .get(&current, &owner)
+            .await
+            .header(header::CACHE_CONTROL),
+        immutable
+    );
 }
 
 #[tokio::test]
@@ -7568,7 +8009,7 @@ exec sleep 60
     fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
         .await
         .unwrap();
-    server.state.alignment_config.cli_path = Some(cli.clone());
+    server.state.alignment_config = AlignmentConfig::Manual(cli.clone());
     let Json(created) = crate::sync::enqueue_sync_map(server.state.clone(), book_id)
         .await
         .unwrap();
@@ -7670,7 +8111,7 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
     fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
         .await
         .unwrap();
-    server.state.alignment_config.cli_path = Some(cli.clone());
+    server.state.alignment_config = AlignmentConfig::Manual(cli.clone());
     let Json(created) = crate::sync::enqueue_sync_map(server.state.clone(), book_id.clone())
         .await
         .unwrap();
@@ -8283,7 +8724,7 @@ async fn chapter_reruns_need_a_current_generated_map_and_survive_restarts() {
     }
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     server.router = build_router(server.state.clone(), None, &[]).unwrap();
     // Keep accepted jobs queued rather than running the fixture.
     let _slot = server

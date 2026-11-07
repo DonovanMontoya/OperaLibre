@@ -739,7 +739,7 @@ pub(crate) async fn readalong_sync_addon_status(
 ) -> Result<Json<updates::SyncAddonStatus>, ApiError> {
     state
         .update_manager
-        .check_sync_addon(query.refresh, state.alignment_config.cli_path.as_deref())
+        .check_sync_addon(query.refresh, &state.alignment_config)
         .await
         .map(Json)
         .map_err(|error| ApiError::bad_gateway(format!("Could not check the sync add-on: {error}")))
@@ -771,7 +771,7 @@ pub(crate) async fn set_readalong_sync_addon_enabled(
 ) -> Result<Json<updates::SyncAddonStatus>, ApiError> {
     state
         .update_manager
-        .set_sync_addon_enabled(input.enabled)
+        .set_sync_addon_enabled(input.enabled, &state.alignment_config)
         .await
         .map(Json)
         .map_err(|error| {

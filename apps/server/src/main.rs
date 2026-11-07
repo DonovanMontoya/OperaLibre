@@ -10,7 +10,7 @@ use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use axum::{
     Extension, Json, Router,
     body::Body,
-    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, RawQuery, Request, State},
     http::{
         HeaderMap, HeaderValue, Method, StatusCode,
         header::{
@@ -102,6 +102,8 @@ mod sync_schedule;
 mod test_alloc;
 #[cfg(test)]
 mod unit_tests;
+#[path = "../../shared/update_backups.rs"]
+mod update_backups;
 mod update_channel;
 mod update_manifest;
 mod update_trial;

@@ -1059,6 +1059,7 @@ function MainApp({
   const booksRef = useRef<Book[]>(books);
   const carPlay = useCarPlay({
     acknowledgedSeekGenerationRef,
+    acknowledgedServerPositionRef,
     bookGains,
     bookIdsKey,
     books,
