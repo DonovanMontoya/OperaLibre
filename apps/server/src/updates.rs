@@ -41,6 +41,7 @@ const DETACHED_PROCESS: u32 = 0x0000_0008;
 
 #[derive(Clone)]
 pub struct UpdateManager {
+    config_path: Option<PathBuf>,
     data_dir: PathBuf,
     web_dist_dir: Option<PathBuf>,
     port: u16,
@@ -251,12 +252,14 @@ impl UpdateManager {
         data_dir: PathBuf,
         web_dist_dir: Option<PathBuf>,
         port: u16,
+        config_path: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
         let client = http_client_builder()
             .user_agent(format!("OperaLibre/{}", current_version()))
             .connect_timeout(Duration::from_secs(10))
             .build()?;
         Ok(Self {
+            config_path,
             data_dir,
             web_dist_dir,
             port,
@@ -308,6 +311,12 @@ impl UpdateManager {
                 && cached.status.channel == channel
             {
                 let mut status = cached.status.clone();
+                if status.can_auto_update
+                    && let Err(error) = self.managed_server_install()
+                {
+                    status.can_auto_update = false;
+                    status.message = Some(error.to_string());
+                }
                 status.last_update_result = self.last_update_result().await;
                 return Ok(status);
             }
@@ -684,6 +693,7 @@ impl UpdateManager {
         if request.channel.is_some_and(|expected| expected != channel) {
             bail!("The selected channel changed. Check for updates again before installing.");
         }
+        let install = self.managed_server_install()?;
         let manifest = self.channel_manifest(channel).await?;
         let status = self.status_for_manifest(&manifest, channel)?;
         if request
@@ -711,7 +721,6 @@ impl UpdateManager {
             .package("server", Some(platform), None)
             .ok_or_else(|| anyhow!("This server platform does not have an update package."))?;
 
-        let install = managed_install(self.web_dist_dir.as_deref())?;
         // Probe afresh here: the cached answer a status check gave may be
         // hours old, and this is the moment a stale one would hurt.
         ensure_install_root_is_writable(&install.root)?;
@@ -765,6 +774,7 @@ impl UpdateManager {
         command.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
         // Pause only after the package is verified, and before an updater
         // starts its 45-second exit deadline. Failed launches resume the queue.
+        self.ensure_updater_matches_server(&install.root)?;
         let sync_pause = before_restart.await?;
         command
             .spawn()
@@ -946,6 +956,30 @@ impl UpdateManager {
         Ok(archive_path)
     }
 
+    fn managed_server_install(&self) -> anyhow::Result<ManagedInstall> {
+        let install = managed_install(self.web_dist_dir.as_deref())?;
+        self.ensure_updater_matches_server(&install.root)?;
+        Ok(install)
+    }
+
+    fn ensure_updater_matches_server(&self, root: &Path) -> anyhow::Result<()> {
+        const MESSAGE: &str = "Automatic install needs the standard layout: server.config in the install folder, used by the running server, with the same data folder and port. Update manually, or restart OperaLibre if you changed server.config.";
+        let matches = || -> anyhow::Result<bool> {
+            let config_path = root.join("server.config");
+            if !config_path.is_file()
+                || self.config_path.as_deref() != Some(config_path.canonicalize()?.as_path())
+            {
+                return Ok(false);
+            }
+            let (data_dir, port) = updater_settings(root)?;
+            Ok(data_dir.canonicalize()? == self.data_dir.canonicalize()? && port == self.port)
+        };
+        if !matches().unwrap_or(false) {
+            bail!(MESSAGE);
+        }
+        Ok(())
+    }
+
     fn status_for_manifest(
         &self,
         manifest: &Manifest,
@@ -959,7 +993,7 @@ impl UpdateManager {
         let latest_text = package.map_or(manifest.version.as_str(), |package| &package.version);
         let latest = Version::parse(latest_text).context("Invalid release version")?;
         let capability = validate_target(&current, &latest, channel, manifest)
-            .and_then(|()| managed_install(self.web_dist_dir.as_deref()));
+            .and_then(|()| self.managed_server_install());
         let can_auto_update = package.is_some() && capability.is_ok();
         let message = if package.is_none() {
             Some(manifest_notice(manifest).unwrap_or_else(|| {
@@ -1232,6 +1266,43 @@ fn installed_frontend_version(web_dist_dir: Option<&Path>) -> anyhow::Result<Str
     let version = normalize_version(&std::fs::read_to_string(marker)?);
     Version::parse(&version).context("The installed web frontend version is invalid")?;
     Ok(version)
+}
+
+// Mirrors launcher main.rs data_dir, configured_value_in, port_from and server_port.
+// Keep the updater's rules here: it does not use OPERALIBRE_SERVER_CONFIG or cwd.
+fn updater_settings(root: &Path) -> anyhow::Result<(PathBuf, u16)> {
+    let contents = std::fs::read_to_string(root.join("server.config"))?;
+    let value = |key: &str| {
+        contents.lines().rev().find_map(|raw_line| {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (candidate, value) = line.split_once('=')?;
+            (candidate.trim().to_ascii_lowercase().replace('-', "_") == key)
+                .then(|| crate::config::unquote_config_value(value.trim()))
+        })
+    };
+    let data_dir = value("data_dir")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("OPERALIBRE_DATA_DIR").map(PathBuf::from))
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                root.join(path)
+            }
+        })
+        .unwrap_or_else(|| root.join("data"));
+    let port = [value("port"), std::env::var("PORT").ok()]
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(4920);
+    Ok((data_dir, port))
 }
 
 fn managed_install(web_dist_dir: Option<&Path>) -> anyhow::Result<ManagedInstall> {
@@ -1799,7 +1870,7 @@ mod tests {
     #[tokio::test]
     async fn sync_jobs_exclude_runtime_changes_and_only_one_can_process() {
         let root = tempfile::tempdir().unwrap();
-        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
         let running = manager.sync_lifecycle.clone().read_owned().await;
         let queued = manager.sync_lifecycle.clone().read_owned().await;
         let slot = manager.sync_slots.try_acquire().unwrap();
@@ -1922,6 +1993,297 @@ mod tests {
     };
 
     #[test]
+    fn automatic_install_layouts() {
+        let scratch = tempfile::tempdir().unwrap();
+        // Compile the launcher's actual resolver functions without modifying its crate.
+        let launcher = include_str!("../../launcher/src/main.rs");
+        let mut source = String::from("use std::{env, fs, path::{Path, PathBuf}};\n");
+        for name in [
+            "data_dir",
+            "configured_port",
+            "port_from",
+            "configured_value",
+            "configured_value_in",
+            "unquote_config_value",
+            "server_port",
+        ] {
+            let start = launcher.find(&format!("fn {name}(")).unwrap();
+            let end = start + launcher[start..].find("\n}").unwrap() + 2;
+            source.push_str(&launcher[start..end]);
+            source.push('\n');
+        }
+        source.push_str("fn main() { let root = env::args_os().nth(1).unwrap(); let root = Path::new(&root); println!(\"{}\\n{}\", data_dir(root).display(), server_port(root)); }");
+        let probe_source = scratch.path().join("launcher-probe.rs");
+        let probe = scratch.path().join(super::exe_name("launcher-probe"));
+        std::fs::write(&probe_source, source).unwrap();
+        let compiled = std::process::Command::new("rustc")
+            .args(["--edition=2024", "--crate-name", "launcher_probe"])
+            .arg(&probe_source)
+            .arg("-o")
+            .arg(&probe)
+            .output()
+            .unwrap();
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+
+        let mut failures = Vec::new();
+        for scenario in [
+            "standard",
+            "missing-config",
+            "other-config",
+            "absolute-config",
+            "cwd-config",
+            "edited-data",
+            "edited-port",
+            "relative-env",
+            "relative-env-other-cwd",
+        ] {
+            let root = scratch.path().join(scenario);
+            std::fs::create_dir_all(root.join("data")).unwrap();
+            std::fs::create_dir(root.join("library")).unwrap();
+            std::fs::write(root.join("VERSION.txt"), super::current_version()).unwrap();
+            if scenario == "standard" {
+                std::fs::create_dir(root.join("web")).unwrap();
+                std::fs::write(
+                    root.join("server.config"),
+                    include_str!("../../../release/combined.config"),
+                )
+                .unwrap();
+            } else if scenario != "missing-config" {
+                std::fs::write(root.join("server.config"), "").unwrap();
+            }
+            let executable = root.join(super::exe_name("operalibre-server"));
+            std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+            let mut command = std::process::Command::new(&executable);
+            command
+                .args([
+                    "--exact",
+                    "updates::tests::automatic_install_layout_child",
+                    "--nocapture",
+                ])
+                .current_dir(&root)
+                .env("OPERALIBRE_LAYOUT_SCENARIO", scenario)
+                .env("OPERALIBRE_LAYOUT_PROBE", &probe)
+                .env_remove("OPERALIBRE_SERVER_CONFIG")
+                .env_remove("OPERALIBRE_DATA_DIR")
+                .env_remove("PORT");
+            if matches!(scenario, "absolute-config" | "relative-env-other-cwd") {
+                command.env("OPERALIBRE_SERVER_CONFIG", root.join("server.config"));
+            }
+            if scenario == "other-config" {
+                std::fs::write(root.join("other.config"), "").unwrap();
+                command.env("OPERALIBRE_SERVER_CONFIG", root.join("other.config"));
+            }
+            if matches!(scenario, "cwd-config" | "relative-env-other-cwd") {
+                let cwd = root.join("elsewhere");
+                std::fs::create_dir(&cwd).unwrap();
+                std::fs::write(cwd.join("server.config"), "").unwrap();
+                command.current_dir(cwd);
+            }
+            if scenario.starts_with("relative-env") {
+                command.env("OPERALIBRE_DATA_DIR", "env-data");
+                std::fs::create_dir(root.join("env-data")).unwrap();
+            }
+            let output = command.output().unwrap();
+            if !output.status.success() {
+                failures.push(format!(
+                    "{scenario}: {}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            std::fs::remove_file(executable).unwrap();
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[tokio::test]
+    async fn automatic_install_layout_child() {
+        let Ok(scenario) = std::env::var("OPERALIBRE_LAYOUT_SCENARIO") else {
+            return;
+        };
+        let executable = std::env::current_exe().unwrap();
+        let root = executable.parent().unwrap();
+        let config = crate::config::ServerConfig::load().unwrap();
+        std::fs::create_dir_all(&config.data_dir).unwrap();
+        let mut manager = UpdateManager::new(
+            config.data_dir,
+            config.web_dist_dir,
+            config.port,
+            config.config_path,
+        )
+        .unwrap();
+        let manifest = crate::update_manifest::unsigned_manifest(&format!(
+            r#"{{"type":"manifest","schema":1,"version":"99.0.0",
+            "releaseUrl":"https://example.com/release","packages":[{{"component":"server",
+            "platform":"{}","version":"99.0.0","url":"https://example.com/server.zip",
+            "sha256":"{}","size":1024,"format":"zip","root":"operalibre-99.0.0"}}]}}"#,
+            platform_key().unwrap(),
+            "c".repeat(64)
+        ));
+        let status = || {
+            manager
+                .status_for_manifest(&manifest, super::UpdateChannel::Stable)
+                .unwrap()
+        };
+        if matches!(scenario.as_str(), "edited-data" | "edited-port") {
+            let before = status();
+            assert!(before.can_auto_update, "standard layout before edit");
+            *manager.cache.lock().await = Some(super::CachedUpdateStatus {
+                checked_at: std::time::Instant::now(),
+                status: before,
+            });
+            std::fs::create_dir(root.join("changed-data")).unwrap();
+            std::fs::write(
+                root.join("server.config"),
+                if scenario == "edited-data" {
+                    "data_dir = changed-data\n"
+                } else {
+                    "port = 4921\n"
+                },
+            )
+            .unwrap();
+        }
+        let available = matches!(
+            scenario.as_str(),
+            "standard" | "absolute-config" | "relative-env"
+        );
+        let status = status();
+        assert!(status.update_available);
+        assert_eq!(
+            status.can_auto_update, available,
+            "{scenario}: {:?}",
+            status.message
+        );
+        if matches!(scenario.as_str(), "edited-data" | "edited-port") {
+            let cached = manager.check(false).await.unwrap();
+            assert!(
+                !cached.can_auto_update,
+                "cached release metadata must not hide config edits"
+            );
+            assert!(cached.message.unwrap().contains("standard layout"));
+        }
+        if !available {
+            let message = status.message.unwrap();
+            assert!(message.contains("standard layout") && message.contains("Update manually"));
+        }
+        // A local proxy makes any manifest request fail without contacting GitHub.
+        // Supported layouts must pass the gate and reach that request as before.
+        let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        manager.client = crate::http_client_builder()
+            .proxy(reqwest::Proxy::all(format!("http://{}", proxy.local_addr().unwrap())).unwrap())
+            .build()
+            .unwrap();
+        let proxy_task = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = proxy.accept().await.unwrap();
+            let mut request = [0; 1024];
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(
+                String::from_utf8_lossy(&request[..read]).starts_with("CONNECT github.com:443")
+            );
+            stream
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let error = manager
+            .install_prepared(
+                super::UpdateInstallRequest {
+                    channel: Some(super::UpdateChannel::Stable),
+                    version: None,
+                },
+                async { panic!("unsupported setup must not pause sync or hand off") },
+            )
+            .await
+            .unwrap_err();
+        if available {
+            assert!(
+                error.downcast_ref::<reqwest::Error>().is_some(),
+                "{error:#}"
+            );
+            proxy_task.await.unwrap();
+        } else {
+            assert!(error.to_string().contains("standard layout"), "{error:#}");
+            proxy_task.abort();
+            crate::http_tests::assert_unsupported_update_keeps_server_running(manager.clone())
+                .await;
+        }
+        assert!(!manager.installing.load(Ordering::SeqCst));
+        assert_eq!(*manager.sync_update_pause.borrow(), 0);
+        assert!(!root.join("data/updates").exists());
+        assert!(!root.join("data/update.log").exists());
+
+        if matches!(scenario.as_str(), "edited-data" | "edited-port") {
+            let restarted = crate::config::ServerConfig::load().unwrap();
+            let restarted = UpdateManager::new(
+                restarted.data_dir,
+                restarted.web_dist_dir,
+                restarted.port,
+                restarted.config_path,
+            )
+            .unwrap();
+            assert!(
+                restarted
+                    .status_for_manifest(&manifest, super::UpdateChannel::Stable)
+                    .unwrap()
+                    .can_auto_update
+            );
+        }
+        if scenario != "standard" {
+            return;
+        }
+        // Pin parsing, precedence and path resolution to the unmodified launcher.
+        for (contents, data_env, port_env) in [
+            ("", None, None),
+            (
+                "data_dir = custom\nport = 1234\n",
+                Some("ignored"),
+                Some("9876"),
+            ),
+            (
+                "DATA-DIR = 'first'\ndata_dir = \"last\"\nPORT = 1\nport = '2345'\n",
+                None,
+                None,
+            ),
+            (
+                "data_dir = ''\nport = \" \"\n",
+                Some("relative-env"),
+                Some("3456"),
+            ),
+            ("data_dir = ' data '\nport = invalid\n", None, Some("4567")),
+            ("", Some(""), Some("invalid")),
+        ] {
+            std::fs::write(root.join("server.config"), contents).unwrap();
+            // This process runs only this test, so no other threads read these variables.
+            unsafe {
+                match data_env {
+                    Some(value) => std::env::set_var("OPERALIBRE_DATA_DIR", value),
+                    None => std::env::remove_var("OPERALIBRE_DATA_DIR"),
+                }
+                match port_env {
+                    Some(value) => std::env::set_var("PORT", value),
+                    None => std::env::remove_var("PORT"),
+                }
+            }
+            let (data, port) = super::updater_settings(root).unwrap();
+            let output =
+                std::process::Command::new(std::env::var_os("OPERALIBRE_LAYOUT_PROBE").unwrap())
+                    .arg(root)
+                    .output()
+                    .unwrap();
+            assert!(output.status.success());
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("{}\n{port}\n", data.display())
+            );
+        }
+    }
+
+    #[test]
     fn unwritable_combined_installs_keep_their_bundled_frontend() {
         let root = tempfile::tempdir().unwrap();
         let web = root.path().join("web");
@@ -2041,7 +2403,7 @@ mod tests {
     #[tokio::test]
     async fn channel_changes_cannot_race_an_install_and_stale_requests_are_refused() {
         let root = tempfile::tempdir().unwrap();
-        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
         let guard = super::InstallGuard::acquire(&manager.installing).unwrap();
         assert!(
             manager
@@ -2075,7 +2437,7 @@ mod tests {
     #[tokio::test]
     async fn completed_update_result_bypasses_the_release_cache() {
         let root = tempfile::tempdir().unwrap();
-        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
         assert!(manager.last_update_result().await.is_none());
         *manager.cache.lock().await = Some(super::CachedUpdateStatus {
             checked_at: std::time::Instant::now(),
@@ -2131,7 +2493,7 @@ mod tests {
             if let Some(settings) = legacy {
                 std::fs::write(root.path().join("experimental-features.json"), settings).unwrap();
             }
-            let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+            let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
             let config = AlignmentConfig::Path(cli.clone());
             let status = manager.check_sync_addon(false, &config).await.unwrap();
             assert!(status.installed);
@@ -2158,7 +2520,7 @@ mod tests {
         let settings_path = root.path().join("experimental-features.json");
         std::fs::write(&settings_path, r#"{"readalongSyncEnabled":true}"#).unwrap();
         for enabled in [false, true] {
-            let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+            let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
             let status = manager
                 .set_sync_addon_enabled(enabled, &config)
                 .await
@@ -2168,7 +2530,8 @@ mod tests {
                 serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
             assert_eq!(saved["pathRuntimeDisabled"], !enabled);
             assert_eq!(saved["readalongSyncEnabled"], true);
-            let restarted = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+            let restarted =
+                UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
             assert_eq!(
                 restarted
                     .check_sync_addon(false, &config)
@@ -2194,7 +2557,7 @@ mod tests {
             r#"{"readalongSyncEnabled":false,"pathRuntimeDisabled":true}"#,
         )
         .unwrap();
-        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
         let config = AlignmentConfig::Manual(cli.clone());
         let status = manager.check_sync_addon(false, &config).await.unwrap();
         assert!(status.installed);
@@ -2268,7 +2631,7 @@ mod tests {
         std::fs::create_dir_all(&web).unwrap();
         std::fs::write(web.join("index.html"), "server frontend").unwrap();
         std::fs::write(web.join("VERSION.txt"), "1.0.0\n").unwrap();
-        let manager = UpdateManager::new(root.path().join("data"), Some(web), 4000).unwrap();
+        let manager = UpdateManager::new(root.path().join("data"), Some(web), 4000, None).unwrap();
         let manifest = crate::update_manifest::unsigned_manifest(&format!(
             r#"{{"type":"manifest","schema":1,"version":"2.0.0",
             "releaseUrl":"https://github.com/DonovanMontoya/OperaLibre/releases/tag/2.0.0",

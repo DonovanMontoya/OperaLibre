@@ -550,7 +550,8 @@ impl TestServer {
             },
             alignment_config: AlignmentConfig::Managed,
             faststart_tools: None,
-            update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
+            update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000, None)
+                .unwrap(),
             sync_dir: data_dir.join("sync"),
             sync_schedule_lock: Arc::new(Mutex::new(())),
             sync_report_backfill: Arc::default(),
@@ -4770,6 +4771,7 @@ async fn catalogue_listings_are_unavailable_until_the_startup_scan_finishes() {
     // the test keeps the state the router shares and can flip the scan flag
     // mid-flight, the way the startup scan task does.
     let config = ServerConfig {
+        config_path: None,
         deployment_mode: DeploymentMode::Local,
         host: "127.0.0.1".to_string(),
         port: 4000,
@@ -4936,6 +4938,40 @@ async fn disconnecting_during_restore_cannot_leave_database_and_account_cache_di
     assert_eq!(
         server.get("/api/auth/me", &removed_reader).await.status,
         StatusCode::UNAUTHORIZED
+    );
+}
+
+pub(crate) async fn assert_unsupported_update_keeps_server_running(
+    manager: updates::UpdateManager,
+) {
+    let mut server = TestServer::start(1).await;
+    server.state.update_manager = manager;
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    let owner = server.setup_owner().await;
+    let mut shutdown = server.state.shutdown.subscribe();
+    let response = server
+        .send_json("POST", "/api/update/install", &owner, serde_json::json!({}))
+        .await;
+    assert_eq!(
+        response.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        response.text()
+    );
+    assert!(response.text().contains("standard layout"));
+    assert!(matches!(
+        shutdown.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    assert!(!server.state.backup_lock.lock().await.update_started);
+    assert_eq!(*server.state.update_manager.sync_update_pause.borrow(), 0);
+    assert_eq!(
+        server.get("/api/health", &owner).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        server.get("/api/books", &owner).await.status,
+        StatusCode::OK
     );
 }
 
@@ -6542,6 +6578,7 @@ async fn update_channel_is_persistent_and_invalid_channels_are_rejected() {
         server.state.database_path.parent().unwrap().to_path_buf(),
         None,
         4000,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -8170,6 +8207,7 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
         server.state.database_path.parent().unwrap().to_path_buf(),
         None,
         4000,
+        None,
     )
     .unwrap();
     server.state.jobs.write().await.clear();

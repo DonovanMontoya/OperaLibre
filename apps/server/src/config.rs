@@ -19,6 +19,7 @@ pub(crate) const SETUP_TOKEN_LIFETIME_SECONDS: u64 = 30 * 60;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ServerConfig {
+    pub(crate) config_path: Option<PathBuf>,
     pub(crate) deployment_mode: DeploymentMode,
     pub(crate) host: String,
     pub(crate) port: u16,
@@ -220,6 +221,7 @@ impl ServerConfig {
             ))?;
 
         Ok(Self {
+            config_path: std::fs::canonicalize(&config_path).ok(),
             deployment_mode,
             host,
             port: match config_u16_value(&values, "port")? {
