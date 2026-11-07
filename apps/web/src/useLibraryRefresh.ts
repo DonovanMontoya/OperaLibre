@@ -20,6 +20,8 @@ export function useLibraryRefresh({
   flushProgressSaveQueue,
   isOperaLibre,
   libationBooksLoaded,
+  libraryRequestGenerationRef,
+  libraryRetryTimerRef,
   librarySource,
   libroAccounts,
   libroOnDevice,
@@ -51,6 +53,8 @@ export function useLibraryRefresh({
   flushProgressSaveQueue: () => Promise<void>;
   isOperaLibre: boolean;
   libationBooksLoaded: boolean;
+  libraryRequestGenerationRef: RefObject<number>;
+  libraryRetryTimerRef: RefObject<number | null>;
   librarySource: LibrarySource;
   libroAccounts: LibroAccountSummary[] | null;
   libroOnDevice: boolean;
@@ -82,10 +86,17 @@ export function useLibraryRefresh({
       await loadBooks();
       return;
     }
+    const requestGeneration = ++libraryRequestGenerationRef.current;
+    const isCurrentRequest = () => requestGeneration === libraryRequestGenerationRef.current;
+    if (libraryRetryTimerRef.current !== null) {
+      window.clearTimeout(libraryRetryTimerRef.current);
+      libraryRetryTimerRef.current = null;
+    }
     try {
       const nextBooks = isOperaLibre && !currentUser.isAdmin
         ? await getBooks()
         : await rescanLibrary();
+      if (!isCurrentRequest()) return;
       const visibleBooks = native
         ? mergeDeviceAndServerBooks(nextBooks, getDeviceBooks())
         : nextBooks;
@@ -109,6 +120,7 @@ export function useLibraryRefresh({
       );
       setError(null);
     } catch (refreshError) {
+      if (!isCurrentRequest()) return;
       if (isServerNotReadyError(refreshError)) {
         // Up but still scanning: loadBooks keeps asking until it publishes.
         setIsOffline(false);
@@ -120,8 +132,9 @@ export function useLibraryRefresh({
       // mute non-downloaded books when the server can't be reached at all.
       setIsOffline(isNetworkError(refreshError));
       setError("Library rescan failed.");
+      if (isNetworkError(refreshError)) void loadBooks();
     } finally {
-      setIsLoading(false);
+      if (isCurrentRequest()) setIsLoading(false);
     }
   }
 
