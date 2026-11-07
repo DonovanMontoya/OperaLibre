@@ -1,4 +1,5 @@
 use crate::http_client_builder;
+use crate::sync::AlignmentConfig;
 use anyhow::{Context, anyhow, bail};
 use reqwest::Client;
 use semver::Version;
@@ -174,6 +175,7 @@ pub struct SyncAddonStatus {
     pub installed: bool,
     pub enabled: bool,
     pub managed: bool,
+    pub can_toggle: bool,
     pub installed_version: Option<String>,
     pub latest_version: Option<String>,
     pub update_available: bool,
@@ -196,6 +198,9 @@ pub struct SyncAddonRuntime {
 struct ExperimentalFeatureSettings {
     #[serde(default)]
     readalong_sync_enabled: bool,
+    // PATH installs were always enabled before this opt-out existed.
+    #[serde(default)]
+    path_runtime_disabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -397,14 +402,23 @@ impl UpdateManager {
     pub async fn check_sync_addon(
         &self,
         force: bool,
-        configured_cli: Option<&Path>,
+        config: &AlignmentConfig,
     ) -> anyhow::Result<SyncAddonStatus> {
-        if let Some(cli_path) = configured_cli.filter(|path| path.is_file()) {
+        if let AlignmentConfig::Manual(cli_path) | AlignmentConfig::Path(cli_path) = config
+            && cli_path.is_file()
+        {
+            let from_path = matches!(config, AlignmentConfig::Path(_));
+            let enabled = !from_path
+                || !self
+                    .read_experimental_settings()
+                    .await
+                    .path_runtime_disabled;
             return Ok(SyncAddonStatus {
                 id: "readalong-sync",
                 installed: true,
-                enabled: true,
+                enabled,
                 managed: false,
+                can_toggle: from_path,
                 installed_version: None,
                 latest_version: None,
                 update_available: false,
@@ -412,10 +426,12 @@ impl UpdateManager {
                 package_bytes: None,
                 release_url: None,
                 cli_path: Some(cli_path.to_string_lossy().into_owned()),
-                message: Some(
+                message: Some(if from_path {
+                    "Using echogarden found on the server's PATH.".to_string()
+                } else {
                     "This generator is configured manually in server.config and is always enabled."
-                        .to_string(),
-                ),
+                        .to_string()
+                }),
             });
         }
         if !force {
@@ -434,6 +450,7 @@ impl UpdateManager {
             installed: installed.is_some(),
             enabled: installed.is_some() && settings.readalong_sync_enabled,
             managed: true,
+            can_toggle: true,
             installed_version: installed
                 .as_ref()
                 .map(|addon| addon.metadata.version.clone()),
@@ -452,6 +469,7 @@ impl UpdateManager {
             Some(platform) => platform,
             None => {
                 status.managed = false;
+                status.can_toggle = false;
                 status.message = Some(
                     "No managed sync add-on is available for this server platform.".to_string(),
                 );
@@ -461,6 +479,7 @@ impl UpdateManager {
         let install_capability = managed_install(self.web_dist_dir.as_deref());
         if let Err(error) = &install_capability {
             status.managed = false;
+            status.can_toggle = false;
             status.message = Some(error.to_string());
         }
 
@@ -546,19 +565,33 @@ impl UpdateManager {
         )
         .await?;
         *self.sync_addon_cache.lock().await = None;
-        self.check_sync_addon(true, None).await
+        self.check_sync_addon(true, &AlignmentConfig::Managed).await
     }
 
-    pub async fn set_sync_addon_enabled(&self, enabled: bool) -> anyhow::Result<SyncAddonStatus> {
+    pub async fn set_sync_addon_enabled(
+        &self,
+        enabled: bool,
+        config: &AlignmentConfig,
+    ) -> anyhow::Result<SyncAddonStatus> {
         let _lifecycle = self.sync_lifecycle.try_write().map_err(|_| {
             anyhow!("Wait for queued and running sync jobs to finish before changing the add-on.")
         })?;
-        installed_sync_addon().context("The follow-along sync add-on is not installed.")?;
         let mut settings = self.read_experimental_settings().await;
-        settings.readalong_sync_enabled = enabled;
+        match config {
+            AlignmentConfig::Manual(_) => {
+                bail!("The generator configured in server.config is always enabled.");
+            }
+            AlignmentConfig::Path(cli) if cli.is_file() => {
+                settings.path_runtime_disabled = !enabled;
+            }
+            _ => {
+                installed_sync_addon().context("The follow-along sync add-on is not installed.")?;
+                settings.readalong_sync_enabled = enabled;
+            }
+        }
         self.write_experimental_settings(&settings).await?;
         *self.sync_addon_cache.lock().await = None;
-        self.check_sync_addon(false, None).await
+        self.check_sync_addon(false, config).await
     }
 
     pub async fn remove_sync_addon(&self) -> anyhow::Result<SyncAddonStatus> {
@@ -589,14 +622,22 @@ impl UpdateManager {
         settings.readalong_sync_enabled = false;
         self.write_experimental_settings(&settings).await?;
         *self.sync_addon_cache.lock().await = None;
-        self.check_sync_addon(false, None).await
+        self.check_sync_addon(false, &AlignmentConfig::Managed)
+            .await
     }
 
-    pub async fn sync_addon_runtime(
-        &self,
-        configured_cli: Option<&Path>,
-    ) -> Option<SyncAddonRuntime> {
-        if let Some(cli_path) = configured_cli.filter(|path| path.is_file()) {
+    pub async fn sync_addon_runtime(&self, config: &AlignmentConfig) -> Option<SyncAddonRuntime> {
+        if let AlignmentConfig::Manual(cli_path) | AlignmentConfig::Path(cli_path) = config
+            && cli_path.is_file()
+        {
+            if matches!(config, AlignmentConfig::Path(_))
+                && self
+                    .read_experimental_settings()
+                    .await
+                    .path_runtime_disabled
+            {
+                return None;
+            }
             return Some(SyncAddonRuntime {
                 cli_path: cli_path.to_path_buf(),
                 cli_args: Vec::new(),
@@ -1749,7 +1790,9 @@ mod tests {
         for result in [
             manager.install_sync_addon().await,
             manager.remove_sync_addon().await,
-            manager.set_sync_addon_enabled(false).await,
+            manager
+                .set_sync_addon_enabled(false, &AlignmentConfig::Managed)
+                .await,
         ] {
             assert!(
                 result
@@ -1836,9 +1879,10 @@ mod tests {
     }
 
     use super::{
-        InstallGuard, InstallLayout, SyncAddonPackageMetadata, UpdateManager, extract_tar_gz,
-        install_frontend_files, install_layout, installed_frontend_version, normalize_version,
-        platform_key, prune_stale_staging, truncate_notes, validate_installed_sync_addon,
+        AlignmentConfig, InstallGuard, InstallLayout, SyncAddonPackageMetadata, UpdateManager,
+        extract_tar_gz, install_frontend_files, install_layout, installed_frontend_version,
+        normalize_version, platform_key, prune_stale_staging, truncate_notes,
+        validate_installed_sync_addon,
     };
     use std::sync::{
         Arc,
@@ -2047,20 +2091,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn path_runtime_stays_enabled_after_upgrade() {
+        for legacy in [None, Some(r#"{"readalongSyncEnabled":false}"#)] {
+            let root = tempfile::tempdir().unwrap();
+            let cli = root.path().join("echogarden");
+            std::fs::write(&cli, []).unwrap();
+            if let Some(settings) = legacy {
+                std::fs::write(root.path().join("experimental-features.json"), settings).unwrap();
+            }
+            let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+            let config = AlignmentConfig::Path(cli.clone());
+            let status = manager.check_sync_addon(false, &config).await.unwrap();
+            assert!(status.installed);
+            assert!(status.enabled);
+            assert!(!status.managed);
+            assert!(status.can_toggle);
+            assert_eq!(
+                status.message.as_deref(),
+                Some("Using echogarden found on the server's PATH.")
+            );
+            assert_eq!(
+                manager.sync_addon_runtime(&config).await.unwrap().cli_path,
+                cli
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn path_runtime_opt_out_is_durable_and_reversible() {
+        let root = tempfile::tempdir().unwrap();
+        let cli = root.path().join("echogarden");
+        std::fs::write(&cli, []).unwrap();
+        let config = AlignmentConfig::Path(cli.clone());
+        let settings_path = root.path().join("experimental-features.json");
+        std::fs::write(&settings_path, r#"{"readalongSyncEnabled":true}"#).unwrap();
+        for enabled in [false, true] {
+            let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+            let status = manager
+                .set_sync_addon_enabled(enabled, &config)
+                .await
+                .unwrap();
+            assert_eq!(status.enabled, enabled);
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+            assert_eq!(saved["pathRuntimeDisabled"], !enabled);
+            assert_eq!(saved["readalongSyncEnabled"], true);
+            let restarted = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+            assert_eq!(
+                restarted
+                    .check_sync_addon(false, &config)
+                    .await
+                    .unwrap()
+                    .enabled,
+                enabled
+            );
+            assert_eq!(
+                restarted.sync_addon_runtime(&config).await.is_some(),
+                enabled
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn a_manually_configured_sync_generator_stays_enabled() {
         let root = tempfile::tempdir().unwrap();
         let cli = root.path().join("echogarden");
         std::fs::write(&cli, []).unwrap();
-        let manager = UpdateManager::new(root.path().join("data"), None, 4000).unwrap();
-
-        let status = manager.check_sync_addon(false, Some(&cli)).await.unwrap();
-
+        std::fs::write(
+            root.path().join("experimental-features.json"),
+            r#"{"readalongSyncEnabled":false,"pathRuntimeDisabled":true}"#,
+        )
+        .unwrap();
+        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+        let config = AlignmentConfig::Manual(cli.clone());
+        let status = manager.check_sync_addon(false, &config).await.unwrap();
         assert!(status.installed);
         assert!(status.enabled);
         assert!(!status.managed);
+        assert!(!status.can_toggle);
         assert_eq!(
-            status.cli_path.as_deref(),
-            Some(cli.to_string_lossy().as_ref())
+            status.message.as_deref(),
+            Some("This generator is configured manually in server.config and is always enabled.")
+        );
+        assert_eq!(
+            manager.sync_addon_runtime(&config).await.unwrap().cli_path,
+            cli
+        );
+        assert!(
+            manager
+                .set_sync_addon_enabled(false, &config)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("always enabled")
         );
     }
 
