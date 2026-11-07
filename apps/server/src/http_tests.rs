@@ -20,7 +20,11 @@ async fn missing_update_config_rejects_install_child() {
     if std::env::var_os("OPERALIBRE_TEST_MISSING_UPDATE_CONFIG").is_none() {
         return;
     }
-    let server = TestServer::start(0).await;
+    let server = TestServer::start_with_update_config(
+        0,
+        Some(std::env::current_dir().unwrap().join("server.config")),
+    )
+    .await;
     let owner = server.setup_owner().await;
     let mut shutdown = server.state.shutdown.subscribe();
     let pause = server.state.update_manager.sync_update_pause.subscribe();
@@ -534,6 +538,10 @@ fn silent_wav(seconds: usize) -> Vec<u8> {
 impl TestServer {
     /// Boot a server whose library holds `book_count` two-track books.
     async fn start(book_count: usize) -> Self {
+        Self::start_with_update_config(book_count, None).await
+    }
+
+    async fn start_with_update_config(book_count: usize, config_path: Option<PathBuf>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let library_root = root.path().join("library");
         let data_dir = root.path().join("data");
@@ -576,7 +584,8 @@ impl TestServer {
             },
             alignment_config: AlignmentConfig { cli_path: None },
             faststart_tools: None,
-            update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
+            update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000, config_path)
+                .unwrap(),
             sync_dir: data_dir.join("sync"),
             sync_schedule_lock: Arc::new(Mutex::new(())),
             sync_report_backfill: Arc::default(),
@@ -4796,6 +4805,7 @@ async fn catalogue_listings_are_unavailable_until_the_startup_scan_finishes() {
     // the test keeps the state the router shares and can flip the scan flag
     // mid-flight, the way the startup scan task does.
     let config = ServerConfig {
+        config_path: None,
         deployment_mode: DeploymentMode::Local,
         host: "127.0.0.1".to_string(),
         port: 4000,
@@ -6430,6 +6440,7 @@ async fn update_channel_is_persistent_and_invalid_channels_are_rejected() {
         server.state.database_path.parent().unwrap().to_path_buf(),
         None,
         4000,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -7877,6 +7888,7 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
         server.state.database_path.parent().unwrap().to_path_buf(),
         None,
         4000,
+        None,
     )
     .unwrap();
     server.state.jobs.write().await.clear();

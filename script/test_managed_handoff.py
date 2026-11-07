@@ -22,24 +22,35 @@ fn main() {
     let root = env::current_exe().unwrap().parent().unwrap().to_path_buf();
     let version = fs::read_to_string(root.join("VERSION.txt")).unwrap();
     let config = env::var_os("OPERALIBRE_SERVER_CONFIG").map(std::path::PathBuf::from)
-        .unwrap_or_else(|| root.join("server.config"));
-    if env::var_os("TEST_REQUIRE_ABSOLUTE_CONFIG").is_some() {
-        assert!(config.is_absolute(), "the restarted server needs an absolute config path");
+        .unwrap_or_else(|| env::current_dir().unwrap().join("server.config"));
+    for name in ["OPERALIBRE_SERVER_CONFIG", "OPERALIBRE_DATA_DIR", "PORT"] {
+        if let Some(expected) = env::var_os(format!("TEST_EXPECT_{name}")) {
+            assert_eq!(env::var_os(name).unwrap_or_default(), expected, "changed {name}");
+        }
     }
-    if env::var_os("TEST_REQUIRE_ABSOLUTE_CONFIG").is_some() {
-        assert_eq!(env::var_os("OPERALIBRE_DATA_DIR"), env::var_os("TEST_EXPECT_DATA_ENV"));
-        assert_eq!(env::var("PORT").unwrap(), "4103");
-    }
-    let values = fs::read_to_string(&config).unwrap();
-    let value = |key: &str| values.lines().find_map(|line| {
+    let values = match fs::read_to_string(&config) {
+        Ok(values) => values,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && env::var_os("OPERALIBRE_SERVER_CONFIG").is_none() => String::new(),
+        Err(error) => panic!("{}: {error}", config.display()),
+    };
+    let value = |key: &str| values.lines().rev().find_map(|line| {
+        let line = line.trim();
+        if line.starts_with('#') { return None; }
         let (name, value) = line.split_once('=')?;
-        (name.trim() == key).then(|| value.trim())
+        let value = value.trim();
+        let value = if value.len() >= 2 && ((value.starts_with('\"') && value.ends_with('\"')) || (value.starts_with('\'') && value.ends_with('\''))) {
+            &value[1..value.len()-1]
+        } else { value };
+        (name.trim().to_ascii_lowercase().replace('-', "_") == key).then(|| value.trim())
     });
     let data = value("data_dir").filter(|value| !value.is_empty())
         .map(|value| config.parent().unwrap().join(value))
-        .or_else(|| env::var_os("OPERALIBRE_DATA_DIR").map(std::path::PathBuf::from))
+        .or_else(|| env::var_os("OPERALIBRE_DATA_DIR").filter(|value| !value.is_empty()).map(std::path::PathBuf::from))
         .unwrap_or_else(|| env::current_dir().unwrap().join("data"));
-    let port = value("port").unwrap();
+    let port = value("port").filter(|value| !value.is_empty()).map(str::to_string)
+        .or_else(|| env::var("PORT").ok().filter(|value| !value.trim().is_empty()))
+        .unwrap_or_else(|| "4920".to_string());
+    let port: u16 = port.trim().parse().unwrap();
     let new = version.trim() == "2.0.0";
     // Opening the data dir: the new build writes and may upgrade it; the old
     // build refuses a format newer than its own, as the real server does.
@@ -169,7 +180,7 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
         destination = old_source / Path(name).relative_to("apps/launcher")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(contents)
-    old_target = scratch / "old-target"
+    old_target = Path(os.environ.get("CARGO_TARGET_DIR", scratch)) / "handoff-old"
     subprocess.run(["cargo", "build", "--locked", "--manifest-path", str(old_source / "Cargo.toml"),
         "--target-dir", str(old_target)], check=True)
     old_launcher = old_target / "debug/operalibre-launcher"
@@ -182,14 +193,21 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
     for scenario in ("success", "legacy-target", "startup-failure", "upgraded-data-rollback", "staging-failure", "stop-handoff", "external-config", "relative-config", "external-config-rollback", "external-staging-failure", "external-stop-handoff",
                      "missing-config-stop", "invalid-config-stop", "invalid-port-stop", "default-old-stop",
                      "cwd-fallback-success", "cwd-fallback-rollback", "cwd-fallback-staging-failure",
-                     "external-old-takeover", "external-old-takeover-rollback"):
+                     "external-old-takeover", "external-old-takeover-rollback",
+                     "cwd-default-success", "cwd-default-rollback", "cwd-default-staging-failure", "cwd-default-no-install-config",
+                     "cwd-no-config-success", "cwd-no-config-rollback", "relative-data-success", "relative-data-rollback", "older-server"):
         if SELECTED and scenario not in SELECTED:
             continue
-        cwd_fallback = scenario.startswith("cwd-fallback-")
-        old_takeover = scenario.startswith("external-old-takeover")
+        cwd_default = scenario.startswith("cwd-default-")
+        no_config = scenario.startswith("cwd-no-config-")
+        relative_data = scenario.startswith("relative-data-")
+        cwd_fallback = scenario.startswith("cwd-fallback-") or cwd_default or no_config or relative_data
+        old_takeover = scenario.startswith("external-old-takeover") or relative_data
         stop_only = scenario in ("missing-config-stop", "invalid-config-stop", "invalid-port-stop", "default-old-stop")
         staging_failure = scenario in ("staging-failure", "external-staging-failure", "cwd-fallback-staging-failure")
+        staging_failure = staging_failure or scenario == "cwd-default-staging-failure"
         fails = scenario in ("startup-failure", "upgraded-data-rollback", "external-config-rollback", "cwd-fallback-rollback", "external-old-takeover-rollback")
+        fails = fails or scenario in ("cwd-default-rollback", "cwd-no-config-rollback", "relative-data-rollback")
         external = cwd_fallback or old_takeover or scenario in ("external-config", "relative-config", "external-config-rollback", "external-staging-failure", "external-stop-handoff")
         root = scratch / scenario
         package = root / "package"
@@ -220,6 +238,19 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             seed_data(root / "data")
             with sqlite3.connect(root / "data/operalibre.db") as wrong:
                 wrong.execute("UPDATE schema_version SET version = 1")
+        if cwd_default:
+            (root / "server.config").write_text(f"port = {port}\ndata_dir = data\n")
+            config = config.rename(external_dir / "server.config")
+        if scenario == "cwd-default-no-install-config":
+            (root / "server.config").unlink()
+        if no_config:
+            config.unlink()
+        if relative_data:
+            data = external_dir / "relative-state"
+            data.mkdir()
+            (root / "server.config").write_text(f"port = {wrong_port}\n")
+            (root / "relative-state").mkdir()
+            legacy_pid = root / "relative-state/operalibre-server.pid"
         seed_data(data)
         (package / "VERSION.txt").write_text("2.0.0\n")
         for destination in (root / "operalibre-server", package / "operalibre-server"):
@@ -238,12 +269,19 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             fallback = root / "fallback-state"
             if not cwd_fallback:
                 env["OPERALIBRE_DATA_DIR"] = str(fallback.relative_to(scratch) if scenario == "relative-config" else fallback)
-            env["TEST_EXPECT_DATA_ENV"] = str(fallback)
             env["PORT"] = "4103"
             env["OPERALIBRE_SERVER_CONFIG"] = str(config.relative_to(scratch) if scenario == "relative-config" else config)
+        if cwd_default or no_config:
+            env.pop("OPERALIBRE_SERVER_CONFIG", None)
+        if no_config:
+            env["PORT"] = str(port)
+        if relative_data:
+            env["OPERALIBRE_DATA_DIR"] = "relative-state"
+        for name in ("OPERALIBRE_SERVER_CONFIG", "OPERALIBRE_DATA_DIR", "PORT"):
+            env[f"TEST_EXPECT_{name}"] = env.get(name, "")
         if scenario == "startup-failure":
             env["TEST_FAIL_NEW"] = "1"
-        if scenario in ("upgraded-data-rollback", "external-config-rollback", "cwd-fallback-rollback", "external-old-takeover-rollback"):
+        if fails and scenario != "startup-failure":
             env["TEST_UNAVAILABLE_NEW"] = "1"
             env["TEST_UPGRADE_DATA"] = "1"
         if scenario == "legacy-target":
@@ -255,8 +293,6 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
         server_cwd = external_dir if cwd_fallback else scratch if external else root
         old = subprocess.Popen([str(root / "old-service"), "--service-start"] if stop_only else [str(root / "operalibre-server")],
             cwd=server_cwd, env=env)
-        if external and not cwd_fallback:
-            env["TEST_REQUIRE_ABSOLUTE_CONFIG"] = "1"
         if not stop_only:
             # The server being replaced was started by an old installed launcher.
             legacy_pid.write_text(str(old.pid))
@@ -296,9 +332,13 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                     assert not legacy_pid.exists()
                 print(f"PASS: {scenario} stops the owned server and retires its PID", flush=True)
                 continue
-            updater = subprocess.Popen([str(package / "operalibre-updater"), "--apply-update", str(package),
-                "--install-root", str(root), "--server-pid", str(old.pid), "--port", str(port), "--layout", "combined"], cwd=server_cwd, env=env)
-            until(lambda: (data / "update.lock").exists())
+            arguments = [str(package / "operalibre-updater"), "--apply-update", str(package),
+                "--install-root", str(root), "--server-pid", str(old.pid), "--port", str(port), "--layout", "combined"]
+            if scenario != "older-server":
+                arguments += ["--server-config", "none" if no_config else str(config),
+                    "--server-data-dir", str(data), "--server-port", str(port)]
+            updater = subprocess.Popen(arguments, cwd=server_cwd, env=env)
+            until(lambda: (data / "update.lock").exists() or (legacy_pid.parent / "update.lock").exists())
             if old_takeover:
                 # Start the installed old inode before refresh_launchers replaces it.
                 starter = subprocess.Popen([str(root / "operalibre-service"), "--service-start"], cwd=root, env=env)
@@ -340,6 +380,14 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                 print(f"PASS: {scenario} lets installed Stop retire the restarted previous server", flush=True)
                 continue
             if cwd_fallback and not staging_failure:
+                if relative_data:
+                    until(lambda: (data / "trial-started").exists())
+                    assert starter.poll() is None
+                    assert "operalibre-service" in os.readlink(f"/proc/{starter.pid}/exe"), "old launcher escaped the legacy lock during the trial"
+                    assert legacy_pid.read_text() != str(starter.pid)
+                    starter.terminate()
+                    starter.wait(timeout=5)
+                    (data / "release-trial").touch()
                 assert updater.wait(timeout=20) == (1 if fails else 0)
                 result = (data / "update-result.txt").read_text()
                 assert result.startswith("Failed:" if fails else "Succeeded:"), result
@@ -352,7 +400,14 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                 assert (data / "trial-committed").exists() == (not fails)
                 assert not (root / "data/update-result.txt").exists()
                 assert read_data(root / "data") == (1, 1, ["before-update"])
-                print(f"PASS: {scenario} restarts in the original cwd with its data and result", flush=True)
+                subprocess.run([str(root / "operalibre-service"), "--stop"], cwd=root, env=env, check=True)
+                until(lambda: not healthy(port))
+                assert not legacy_pid.exists(), "installed Stop missed the inherited legacy PID path"
+                if fails:
+                    kept = list((data / "update-backups").glob("*/failed-data"))
+                    assert len(kept) == 1
+                    assert read_data(kept[0]) == (5, 2, ["before-update", "new-build"])
+                print(f"PASS: {scenario} preserves cwd, environment, data, rollback, legacy lock and installed Stop", flush=True)
                 continue
             until(lambda: (root / "VERSION.txt").exists() and (root / "VERSION.txt").read_text().strip() == "2.0.0")
             assert not (data / "update-result.txt").exists()
@@ -360,7 +415,9 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             # old VERSION watcher timing. The shared lock must defer it.
             # The service start runs from the installation, where relative
             # config paths have always resolved, so it gets the absolute path.
-            starter_env = dict(env, OPERALIBRE_SERVER_CONFIG=str(config), OPERALIBRE_DATA_DIR=str(fallback)) if external else env
+            starter_env = dict(env, OPERALIBRE_SERVER_CONFIG=str(config), OPERALIBRE_DATA_DIR=str(fallback)) if external else dict(env)
+            for name in ("OPERALIBRE_SERVER_CONFIG", "OPERALIBRE_DATA_DIR", "PORT"):
+                starter_env[f"TEST_EXPECT_{name}"] = starter_env.get(name, "")
             if old_takeover:
                 until(lambda: (data / "trial-started").exists())
                 assert starter.poll() is None
@@ -379,7 +436,7 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             assert server_result(port) == result
             # Data the old build can read is kept, with what the new build
             # saved; data the new build upgraded goes back to the snapshot.
-            if scenario in ("upgraded-data-rollback", "external-config-rollback", "cwd-fallback-rollback", "external-old-takeover-rollback"):
+            if fails and scenario != "startup-failure":
                 assert read_data(data) == (4, 1, ["before-update"]), read_data(data)
                 # The failed build's own data is kept for recovery by hand.
                 kept = list((data / "update-backups").glob("*/failed-data"))
@@ -390,7 +447,7 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                 assert read_data(data) == (4, 1, ["before-update", "new-build"]), read_data(data)
             # Only an update to a build with trials is committed; a failed one never is.
             committed = data / "trial-committed"
-            assert committed.exists() == (scenario in ("success", "external-config", "relative-config", "external-old-takeover")), scenario
+            assert committed.exists() == (scenario in ("success", "external-config", "relative-config", "external-old-takeover", "older-server")), scenario
             assert not list((data / "update-backups").glob("*/data")), "the data snapshot was kept"
             if external:
                 assert (root / "data/update.lock").is_file()

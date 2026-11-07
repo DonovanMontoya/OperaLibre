@@ -19,6 +19,7 @@ pub(crate) const SETUP_TOKEN_LIFETIME_SECONDS: u64 = 30 * 60;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ServerConfig {
+    pub(crate) config_path: Option<PathBuf>,
     pub(crate) deployment_mode: DeploymentMode,
     pub(crate) host: String,
     pub(crate) port: u16,
@@ -152,9 +153,11 @@ impl ServerConfig {
     pub(crate) fn load() -> anyhow::Result<Self> {
         let current_dir = env::current_dir()?;
         let explicit_config_path = env::var_os("OPERALIBRE_SERVER_CONFIG").map(PathBuf::from);
-        let config_path = explicit_config_path
-            .clone()
-            .unwrap_or_else(|| current_dir.join("server.config"));
+        let config_path = current_dir.join(
+            explicit_config_path
+                .as_deref()
+                .unwrap_or_else(|| FsPath::new("server.config")),
+        );
         let config_dir = config_path
             .parent()
             .map(FsPath::to_path_buf)
@@ -220,6 +223,8 @@ impl ServerConfig {
             ))?;
 
         Ok(Self {
+            config_path: (explicit_config_path.is_some() || config_path.is_file())
+                .then_some(config_path),
             deployment_mode,
             host,
             port: match config_u16_value(&values, "port")? {

@@ -47,6 +47,7 @@ pub struct UpdateManager {
     data_dir: PathBuf,
     web_dist_dir: Option<PathBuf>,
     port: u16,
+    config_path: Option<PathBuf>,
     client: Client,
     cache: Arc<Mutex<Option<CachedUpdateStatus>>>,
     frontend_cache: Arc<Mutex<Option<CachedFrontendUpdateStatus>>>,
@@ -250,13 +251,15 @@ impl UpdateManager {
         data_dir: PathBuf,
         web_dist_dir: Option<PathBuf>,
         port: u16,
+        config_path: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
         let client = http_client_builder()
             .user_agent(format!("OperaLibre/{}", current_version()))
             .connect_timeout(Duration::from_secs(10))
             .build()?;
         Ok(Self {
-            data_dir,
+            data_dir: std::env::current_dir()?.join(data_dir),
+            config_path,
             web_dist_dir,
             port,
             client,
@@ -269,6 +272,16 @@ impl UpdateManager {
             sync_queue_changed: Arc::new(tokio::sync::Notify::new()),
             sync_update_pause: tokio::sync::watch::channel(0).0,
         })
+    }
+
+    fn managed_update_config(&self) -> anyhow::Result<DeploymentConfig> {
+        let deployment = DeploymentConfig {
+            config_path: self.config_path.clone(),
+            data_dir: self.data_dir.clone(),
+            port: self.port,
+        };
+        deployment.validate_update().map_err(anyhow::Error::msg)?;
+        Ok(deployment)
     }
 
     pub async fn channel(&self) -> anyhow::Result<UpdateChannel> {
@@ -647,7 +660,7 @@ impl UpdateManager {
         if request.channel.is_some_and(|expected| expected != channel) {
             bail!("The selected channel changed. Check for updates again before installing.");
         }
-        managed_update_config()?;
+        self.managed_update_config()?;
         let manifest = self.channel_manifest(channel).await?;
         let status = self.status_for_manifest(&manifest, channel)?;
         if request
@@ -730,13 +743,19 @@ impl UpdateManager {
         // Pause only after the package is verified, and before an updater
         // starts its 45-second exit deadline. Failed launches resume the queue.
         ensure_install_root_is_writable(&install.root)?;
-        let deployment = managed_update_config()?;
-        if deployment.port != self.port {
-            bail!("The configured port changed. Restart the server before installing an update.");
-        }
-        deployment
-            .configure_command(command.as_std_mut())
-            .map_err(anyhow::Error::msg)?;
+        let deployment = self.managed_update_config()?;
+        command
+            .arg("--server-config")
+            .arg(
+                deployment
+                    .config_path
+                    .as_deref()
+                    .unwrap_or_else(|| Path::new("none")),
+            )
+            .arg("--server-data-dir")
+            .arg(&deployment.data_dir)
+            .arg("--server-port")
+            .arg(deployment.port.to_string());
         let sync_pause = before_restart.await?;
         command
             .spawn()
@@ -931,7 +950,7 @@ impl UpdateManager {
         let latest_text = package.map_or(manifest.version.as_str(), |package| &package.version);
         let latest = Version::parse(latest_text).context("Invalid release version")?;
         let capability = validate_target(&current, &latest, channel, manifest)
-            .and_then(|()| managed_update_config())
+            .and_then(|()| self.managed_update_config())
             .and_then(|_| managed_install(self.web_dist_dir.as_deref()));
         let can_auto_update = package.is_some() && capability.is_ok();
         let message = if package.is_none() {
@@ -1213,13 +1232,6 @@ fn managed_install(web_dist_dir: Option<&Path>) -> anyhow::Result<ManagedInstall
     // still updates its server and bundled frontend together.
     ensure_install_root_is_writable_cached(&install.root)?;
     Ok(install)
-}
-
-fn managed_update_config() -> anyhow::Result<DeploymentConfig> {
-    let deployment =
-        DeploymentConfig::load(&std::env::current_dir()?).map_err(anyhow::Error::msg)?;
-    deployment.validate_update().map_err(anyhow::Error::msg)?;
-    Ok(deployment)
 }
 
 fn release_install(web_dist_dir: Option<&Path>) -> anyhow::Result<ManagedInstall> {
@@ -1762,7 +1774,7 @@ mod tests {
     #[tokio::test]
     async fn sync_jobs_exclude_runtime_changes_and_only_one_can_process() {
         let root = tempfile::tempdir().unwrap();
-        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
         let running = manager.sync_lifecycle.clone().read_owned().await;
         let queued = manager.sync_lifecycle.clone().read_owned().await;
         let slot = manager.sync_slots.try_acquire().unwrap();
@@ -1886,6 +1898,7 @@ mod tests {
             "updates::tests::missing_update_config_child",
             "http_tests::missing_update_config_rejects_install_child",
             "updates::tests::external_update_config_child",
+            "updates::tests::resolved_update_deployment_child",
         ] {
             let mut command = std::process::Command::new(&executable);
             command
@@ -1908,13 +1921,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn resolved_update_deployment_child() {
+        if std::env::var_os("OPERALIBRE_TEST_MISSING_UPDATE_CONFIG").is_none() {
+            return;
+        }
+        let root = std::env::current_dir().unwrap();
+        let config = crate::config::ServerConfig::load().unwrap();
+        assert!(config.config_path.is_none());
+        let manager =
+            UpdateManager::new(config.data_dir, None, config.port, config.config_path).unwrap();
+        let deployment = manager.managed_update_config().unwrap();
+        assert_eq!(deployment.data_dir, root.join("data"));
+        assert!(deployment.config_path.is_none());
+
+        let config_path = root.join("server.config");
+        std::fs::write(&config_path, "data_dir = data\nport = 4919\n").unwrap();
+        let config = crate::config::ServerConfig::load().unwrap();
+        let manager =
+            UpdateManager::new(config.data_dir, None, config.port, config.config_path).unwrap();
+        // Re-reading the file cannot change which running deployment is backed up.
+        std::fs::write(&config_path, "data_dir = other\nport = 4921\n").unwrap();
+        let deployment = manager.managed_update_config().unwrap();
+        assert_eq!(deployment.config_path, Some(config_path.clone()));
+        assert_eq!(deployment.data_dir, root.join("data"));
+        assert_eq!(deployment.port, 4919);
+        std::fs::remove_file(config_path).unwrap();
+        assert!(manager.managed_update_config().is_err());
+    }
+
     #[tokio::test]
     async fn missing_update_config_child() {
         if std::env::var_os("OPERALIBRE_TEST_MISSING_UPDATE_CONFIG").is_none() {
             return;
         }
         let root = std::env::current_dir().unwrap();
-        let manager = UpdateManager::new(root.join("data"), None, 4920).unwrap();
+        let manager = UpdateManager::new(
+            root.join("data"),
+            None,
+            4920,
+            Some(root.join("server.config")),
+        )
+        .unwrap();
         let manifest = available_update_manifest();
         let status = manager
             .status_for_manifest(&manifest, super::UpdateChannel::Stable)
@@ -1923,7 +1971,7 @@ mod tests {
         assert!(!status.can_auto_update);
         let message = status.message.unwrap();
         assert!(
-            message.contains("server.config") && message.contains("Create"),
+            message.contains("server.config") && message.contains("Restore"),
             "{message}"
         );
         let error = manager
@@ -1934,7 +1982,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("server.config") && error.contains("Create"),
+            error.contains("server.config") && error.contains("Restore"),
             "{error}"
         );
         assert!(!manager.installing.load(Ordering::SeqCst));
@@ -1959,8 +2007,13 @@ mod tests {
         }
         let root = std::env::current_dir().unwrap();
         let server_config = crate::config::ServerConfig::load().unwrap();
-        let manager =
-            UpdateManager::new(server_config.data_dir.clone(), None, server_config.port).unwrap();
+        let manager = UpdateManager::new(
+            server_config.data_dir.clone(),
+            None,
+            server_config.port,
+            server_config.config_path.clone(),
+        )
+        .unwrap();
         let manifest = available_update_manifest();
         assert!(
             manager
@@ -1968,8 +2021,8 @@ mod tests {
                 .unwrap()
                 .can_auto_update
         );
-        let deployment = super::managed_update_config().unwrap();
-        assert!(deployment.config_path.is_absolute());
+        let deployment = manager.managed_update_config().unwrap();
+        assert!(deployment.config_path.as_ref().unwrap().is_absolute());
         assert_eq!(
             deployment.data_dir.canonicalize().unwrap(),
             root.join("external/state").canonicalize().unwrap()
@@ -1992,7 +2045,7 @@ mod tests {
             manager.last_update_result().await.as_deref(),
             Some("Succeeded: 2.0.0")
         );
-        std::fs::remove_file(&deployment.config_path).unwrap();
+        std::fs::remove_file(deployment.config_path.as_ref().unwrap()).unwrap();
         assert!(
             !manager
                 .status_for_manifest(&manifest, super::UpdateChannel::Stable)
@@ -2132,7 +2185,7 @@ mod tests {
     #[tokio::test]
     async fn channel_changes_cannot_race_an_install_and_stale_requests_are_refused() {
         let root = tempfile::tempdir().unwrap();
-        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
         let guard = super::InstallGuard::acquire(&manager.installing).unwrap();
         assert!(
             manager
@@ -2166,7 +2219,7 @@ mod tests {
     #[tokio::test]
     async fn completed_update_result_bypasses_the_release_cache() {
         let root = tempfile::tempdir().unwrap();
-        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000, None).unwrap();
         assert!(manager.last_update_result().await.is_none());
         *manager.cache.lock().await = Some(super::CachedUpdateStatus {
             checked_at: std::time::Instant::now(),
@@ -2218,7 +2271,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let cli = root.path().join("echogarden");
         std::fs::write(&cli, []).unwrap();
-        let manager = UpdateManager::new(root.path().join("data"), None, 4000).unwrap();
+        let manager = UpdateManager::new(root.path().join("data"), None, 4000, None).unwrap();
 
         let status = manager.check_sync_addon(false, Some(&cli)).await.unwrap();
 
@@ -2274,7 +2327,7 @@ mod tests {
         std::fs::create_dir_all(&web).unwrap();
         std::fs::write(web.join("index.html"), "server frontend").unwrap();
         std::fs::write(web.join("VERSION.txt"), "1.0.0\n").unwrap();
-        let manager = UpdateManager::new(root.path().join("data"), Some(web), 4000).unwrap();
+        let manager = UpdateManager::new(root.path().join("data"), Some(web), 4000, None).unwrap();
         let manifest = crate::update_manifest::unsigned_manifest(&format!(
             r#"{{"type":"manifest","schema":1,"version":"2.0.0",
             "releaseUrl":"https://github.com/DonovanMontoya/OperaLibre/releases/tag/2.0.0",
