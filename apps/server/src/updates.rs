@@ -1423,17 +1423,19 @@ async fn install_frontend_files(
         .as_millis();
     let backup = data_dir
         .join("update-backups")
-        .join(format!("{timestamp}-frontend"))
-        .join("web");
+        .join(format!("{timestamp}-frontend"));
     tokio::task::spawn_blocking(move || {
+        crate::update_backups::create_generation(&backup)?;
         swap_in_directory(
             &source,
             &destination,
-            &backup,
+            &backup.join("web"),
             timestamp,
             "web frontend",
             ".operalibre-frontend",
-        )
+        )?;
+        complete_update_backup(&backup);
+        Ok(())
     })
     .await?
 }
@@ -1502,11 +1504,10 @@ fn swap_in_directory(
 
 /// Both renames stay on their own volume; the backup is verified before
 /// the live runtime is detached.
-fn remove_sync_addon_files(source: &Path, backup: &Path) -> anyhow::Result<()> {
-    let backup_parent = backup
-        .parent()
-        .context("The backup has no parent directory")?;
-    std::fs::create_dir_all(backup_parent)?;
+fn remove_sync_addon_files(source: &Path, backup_root: &Path) -> anyhow::Result<()> {
+    crate::update_backups::create_generation(backup_root)?;
+    let backup_parent = backup_root;
+    let backup = backup_root.join("readalong-sync");
     let staging = tempfile::Builder::new()
         .prefix(".sync-backup-")
         .tempdir_in(backup_parent)?;
@@ -1518,7 +1519,7 @@ fn remove_sync_addon_files(source: &Path, backup: &Path) -> anyhow::Result<()> {
         !backup.exists(),
         "The sync backup already exists; installation retained"
     );
-    std::fs::rename(&copy, backup)?;
+    std::fs::rename(&copy, &backup)?;
     let parent = source
         .parent()
         .context("The sync runtime has no parent directory")?;
@@ -1530,7 +1531,14 @@ fn remove_sync_addon_files(source: &Path, backup: &Path) -> anyhow::Result<()> {
     if let Err(error) = removed.close() {
         tracing::warn!("The sync runtime was removed, but temporary file cleanup failed: {error}");
     }
+    complete_update_backup(backup_root);
     Ok(())
+}
+
+fn complete_update_backup(backup: &Path) {
+    if let Err(error) = crate::update_backups::complete_and_prune(backup) {
+        tracing::warn!("could not finish pruning update backups: {error}");
+    }
 }
 
 fn verify_directory_copy(source: &Path, destination: &Path) -> anyhow::Result<()> {
@@ -1579,14 +1587,17 @@ async fn install_sync_addon_files(
         .join("update-backups")
         .join(format!("{timestamp}-readalong-sync"));
     tokio::task::spawn_blocking(move || {
+        crate::update_backups::create_generation(&backup)?;
         swap_in_directory(
             &source,
             &destination,
-            &backup,
+            &backup.join("readalong-sync"),
             timestamp,
             "sync add-on",
             ".readalong-sync",
-        )
+        )?;
+        complete_update_backup(&backup);
+        Ok(())
     })
     .await?
 }
@@ -1780,14 +1791,20 @@ mod tests {
         let install = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
         let source = install.path().join("runtime");
-        let backup = data.path().join("backups/runtime");
+        let backups = data.path().join("update-backups");
+        let old = backups.join("1-readalong-sync");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join(".completed"), b"").unwrap();
+        let backup = backups.join("2-readalong-sync");
         std::fs::create_dir_all(source.join("nested")).unwrap();
         std::fs::write(source.join("nested/model"), b"runtime bytes").unwrap();
         std::fs::write(data.path().join("book.sync.json"), b"map").unwrap();
         super::remove_sync_addon_files(&source, &backup).unwrap();
         assert!(!source.exists());
+        assert!(!old.exists());
+        assert!(backup.join(".completed").is_file());
         assert_eq!(
-            std::fs::read(backup.join("nested/model")).unwrap(),
+            std::fs::read(backup.join("readalong-sync/nested/model")).unwrap(),
             b"runtime bytes"
         );
         assert_eq!(
@@ -1857,6 +1874,10 @@ mod tests {
         std::fs::write(source.join("runtime"), "new").unwrap();
         std::fs::write(installed.join("runtime"), "old").unwrap();
         std::fs::write(data.join("sync/book.sync.json"), "map").unwrap();
+        let old = data.join("update-backups/1-readalong-sync");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join(".completed"), b"").unwrap();
+        std::fs::write(old.join("runtime"), "older").unwrap();
         super::install_sync_addon_files(source, installed.clone(), data.clone())
             .await
             .unwrap();
@@ -1864,6 +1885,7 @@ mod tests {
             std::fs::read_to_string(installed.join("runtime")).unwrap(),
             "new"
         );
+        assert!(!old.exists(), "older completed add-on backup was kept");
         let backup = std::fs::read_dir(data.join("update-backups"))
             .unwrap()
             .next()
@@ -1871,7 +1893,7 @@ mod tests {
             .unwrap()
             .path();
         assert_eq!(
-            std::fs::read_to_string(backup.join("runtime")).unwrap(),
+            std::fs::read_to_string(backup.join("readalong-sync/runtime")).unwrap(),
             "old"
         );
         assert_eq!(
@@ -1895,11 +1917,21 @@ mod tests {
         // The backup copy refuses entries other than files and folders.
         std::os::unix::fs::symlink("runtime", installed.join("link")).unwrap();
 
-        let error = super::install_sync_addon_files(source, installed.clone(), data)
+        let old = data.join("update-backups/1-readalong-sync");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join(".completed"), b"").unwrap();
+        let error = super::install_sync_addon_files(source, installed.clone(), data.clone())
             .await
             .unwrap_err();
 
         assert!(error.to_string().contains("rollback copy"), "{error:#}");
+        assert!(old.join(".completed").is_file());
+        for entry in std::fs::read_dir(data.join("update-backups")).unwrap() {
+            let backup = entry.unwrap().path();
+            if backup != old {
+                assert!(!backup.join(".completed").exists());
+            }
+        }
         assert_eq!(
             std::fs::read_to_string(installed.join("runtime")).unwrap(),
             "old"
@@ -2421,6 +2453,11 @@ mod tests {
         std::fs::write(destination.join("index.html"), "old frontend").unwrap();
         std::fs::write(destination.join("VERSION.txt"), "1.0.0\n").unwrap();
 
+        let old = data.join("update-backups/1-frontend");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join(".completed"), b"").unwrap();
+        std::fs::write(old.join("previous-files"), b"older frontend").unwrap();
+
         install_frontend_files(source, destination.clone(), data.clone())
             .await
             .unwrap();
@@ -2438,6 +2475,7 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(backups.len(), 1);
+        assert!(backups[0].path().join(".completed").is_file());
         assert_eq!(
             std::fs::read_to_string(backups[0].path().join("web/index.html")).unwrap(),
             "old frontend"

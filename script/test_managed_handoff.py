@@ -171,13 +171,13 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
     scratch = Path(scratch)
     # Exercise the launchers still installed when staging fails, rather than
     # approximating their PID lookup in Python.
-    old_source = scratch / "old-launcher"
+    old_source = scratch / "old-source/apps/launcher"
     (old_source / "src").mkdir(parents=True)
     old_files = subprocess.check_output(
-        ["git", "ls-tree", "-r", "--name-only", "origin/main", "apps/launcher"], cwd=REPOSITORY).decode().splitlines()
+        ["git", "ls-tree", "-r", "--name-only", "origin/main", "apps/launcher", "apps/shared"], cwd=REPOSITORY).decode().splitlines()
     for name in old_files:
         contents = subprocess.check_output(["git", "show", f"origin/main:{name}"], cwd=REPOSITORY)
-        destination = old_source / Path(name).relative_to("apps/launcher")
+        destination = scratch / "old-source" / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(contents)
     old_target = Path(os.environ.get("CARGO_TARGET_DIR", scratch)) / "handoff-old"
@@ -190,7 +190,7 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
     hook.write_text(DATA_HOOK)
     binary = scratch / "fake-server"
     subprocess.run(["rustc", "--edition=2024", str(source), "-o", str(binary)], check=True)
-    for scenario in ("success", "legacy-target", "startup-failure", "upgraded-data-rollback", "staging-failure", "stop-handoff", "external-config", "relative-config", "external-config-rollback", "external-staging-failure", "external-stop-handoff",
+    for scenario in ("success", "prune-failure", "legacy-target", "startup-failure", "upgraded-data-rollback", "staging-failure", "stop-handoff", "external-config", "relative-config", "external-config-rollback", "external-staging-failure", "external-stop-handoff",
                      "missing-config-stop", "invalid-config-stop", "invalid-port-stop", "default-old-stop",
                      "cwd-fallback-success", "cwd-fallback-rollback", "cwd-fallback-staging-failure",
                      "external-old-takeover", "external-old-takeover-rollback",
@@ -259,6 +259,27 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             shutil.copy2(LAUNCHER, destination)
         if scenario == "external-staging-failure" or old_takeover:
             shutil.copy2(old_launcher, root / "operalibre-service")
+        if scenario == "success":
+            backups = root / "data/update-backups"
+            for generation in ("1", "2", "1-frontend", "2-frontend", "1-readalong-sync", "2-readalong-sync"):
+                backup = backups / generation
+                backup.mkdir(parents=True)
+                (backup / ".completed").touch()
+                (backup / "previous-files").write_text("old backup")
+            for generation, recovery in (("3", "data"), ("4", "restore-required"),
+                    ("5", "restore-pending"), ("6", "failed-data"), ("7", "failed-data.partial")):
+                backup = backups / generation
+                (backup / recovery).mkdir(parents=True)
+                (backup / recovery / "keep").write_text("owner recovery")
+                (backup / ".completed").touch()
+            for generation in ("8", "9"):
+                (backups / generation).mkdir()
+                (backups / generation / "previous-files").write_text("unfinished or legacy")
+        if scenario == "prune-failure":
+            unreadable = root / "data/update-backups/1"
+            unreadable.mkdir(parents=True)
+            (unreadable / ".completed").touch()
+            unreadable.chmod(0)
         if staging_failure:
             # Backup preparation fails before any new files are installed.
             (data / "update-backups").write_text("not a directory")
@@ -450,8 +471,8 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                 assert read_data(data) == (4, 1, ["before-update", "new-build"]), read_data(data)
             # Only an update to a build with trials is committed; a failed one never is.
             committed = data / "trial-committed"
-            assert committed.exists() == (scenario in ("success", "external-config", "relative-config", "external-old-takeover", "older-server", "older-server-cwd")), scenario
-            assert not list((data / "update-backups").glob("*/data")), "the data snapshot was kept"
+            assert committed.exists() == (scenario in ("success", "prune-failure", "external-config", "relative-config", "external-old-takeover", "older-server", "older-server-cwd")), scenario
+            assert not [path for path in (data / "update-backups").glob("*/data") if scenario != "success" or path.parent.name != "3"], "the data snapshot was kept"
             if external:
                 assert (root / "data/update.lock").is_file()
                 assert not (root / "data/update-result.txt").exists()
@@ -464,8 +485,31 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             for directory in {data, legacy_pid.parent}:
                 with (directory / "update.lock").open("r+") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if fails:
+                assert not list((root / "data/update-backups").glob("*/.completed")), "failed update marked complete"
+            if scenario == "prune-failure":
+                unreadable.chmod(0o700)
+                assert unreadable.is_dir()
+                assert "could not finish pruning update backups" in (root / "data/server.log").read_text()
+            if scenario == "success":
+                backups = root / "data/update-backups"
+                assert not (backups / "1").exists(), "older completed server backup was kept"
+                assert not (backups / "2").exists(), "older completed server backup was kept"
+                for generation in ("3", "4", "5", "6", "7", "8", "9"):
+                    assert (backups / generation).is_dir(), f"recovery or unmarked backup {generation} removed"
+                for component in ("frontend", "readalong-sync"):
+                    assert not (backups / f"1-{component}").exists()
+                    assert (backups / f"2-{component}").is_dir()
+                current = [backup for backup in backups.iterdir() if backup.name.isdigit() and int(backup.name) > 9]
+                assert len(current) == 1, current
+                assert (current[0] / ".completed").is_file()
+                assert (current[0] / "operalibre-server").is_file()
+                assert (current[0] / "web").is_dir()
+                assert (current[0] / "VERSION.txt").read_text().strip() == "1.0.0"
             print(f"PASS: {scenario} survives early takeover; PID owned, data readable by the running build, lock released", flush=True)
         finally:
+            if scenario == "prune-failure":
+                unreadable.chmod(0o700)
             for process in (updater, starter, old):
                 if process is not None and process.poll() is None:
                     process.terminate()
