@@ -9,7 +9,26 @@ use axum::body::Bytes;
 // which matters more as playback speed increases.
 pub(crate) const MEDIA_STREAM_BUFFER_CAPACITY: usize = 256 * 1024;
 
+/// A cover requested without the current revision, or under a revision
+/// that has since been replaced, is checked with the server before use.
 pub(crate) const COVER_CACHE_CONTROL: &str = "private, no-cache";
+
+/// A cover URL carrying the current `?v=` revision names those exact bytes:
+/// a replaced cover gets a new revision and so a new URL. The client may keep
+/// it without asking again, so reopening the app shows covers from its cache
+/// even before the server answers.
+pub(crate) const VERSIONED_COVER_CACHE_CONTROL: &str = "private, max-age=31536000, immutable";
+
+/// Whether the request's `v` query parameter names the cover being served.
+fn requests_current_cover(query: Option<&str>, etag: &str) -> bool {
+    let current = etag.trim_matches('"');
+    !current.is_empty()
+        && query.is_some_and(|query| {
+            query
+                .split('&')
+                .any(|pair| pair.strip_prefix("v=") == Some(current))
+        })
+}
 
 /// Track streams and downloads carry the listener's media token in the URL,
 /// so a shared cache must never hold one.
@@ -73,6 +92,7 @@ pub(crate) async fn get_cover_art(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Path(book_id): Path<String>,
+    RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     require_book_access(&auth, &book_id)?;
@@ -81,12 +101,17 @@ pub(crate) async fn get_cover_art(
         .cover_art
         .get(&book_id)
         .ok_or(ApiError::not_found("Cover art not found"))?;
+    let cache_control = if requests_current_cover(query.as_deref(), &cover.etag) {
+        VERSIONED_COVER_CACHE_CONTROL
+    } else {
+        COVER_CACHE_CONTROL
+    };
 
     if if_none_match_matches(&headers, &cover.etag) {
         return Ok(Response::builder()
             .status(StatusCode::NOT_MODIFIED)
             .header(ETAG, cover.etag.clone())
-            .header(CACHE_CONTROL, COVER_CACHE_CONTROL)
+            .header(CACHE_CONTROL, cache_control)
             .body(Body::empty())?);
     }
 
@@ -103,7 +128,7 @@ pub(crate) async fn get_cover_art(
         .header(CONTENT_TYPE, cover.mime_type)
         .header(CONTENT_LENGTH, cover.len.to_string())
         .header(ETAG, cover.etag)
-        .header(CACHE_CONTROL, COVER_CACHE_CONTROL)
+        .header(CACHE_CONTROL, cache_control)
         .body(Body::from_stream(ReaderStream::new(file)))?)
 }
 

@@ -1243,9 +1243,10 @@ pub(crate) async fn abs_cover(
     state: State<AppState>,
     auth: Extension<AuthUser>,
     item_id: Path<String>,
+    query: RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    get_cover_art(state, auth, item_id, headers).await
+    get_cover_art(state, auth, item_id, query, headers).await
 }
 
 /// Which track a whole-book position lands in, and how far into it. `None`
