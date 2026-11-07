@@ -2456,6 +2456,8 @@ async fn untrusted_origins_cannot_use_cors_or_make_cookie_authenticated_changes(
     for origin in [
         "https://evil.example",
         "https://localhost.evil.example",
+        // No shipped app loads from here; any local site on port 80 could.
+        "http://localhost",
         "https://localhost:4444",
         "https://127.0.0.1",
         "null",
@@ -2596,7 +2598,6 @@ async fn a_cookie_change_from_an_official_app_origin_is_allowed() {
 
     for origin in [
         "capacitor://localhost",
-        "http://localhost",
         "https://localhost",
         "http://127.0.0.1:49201",
     ] {
@@ -5988,7 +5989,275 @@ async fn successful_login_keeps_the_address_throttle() {
         "the address counter survives the sign-in"
     );
     assert!(!attempts.contains_key(&mallory.account));
-    assert!(!attempts.contains_key(&mallory.username));
+    // Clearing the username counter would hand everyone guessing at the name
+    // a fresh allowance whenever its owner signs in.
+    assert!(attempts.contains_key(&mallory.username));
+}
+
+async fn sign_in_from(
+    server: &TestServer,
+    address: std::net::IpAddr,
+    username: &str,
+    password: &str,
+) -> Result<(super::User, String), super::ApiError> {
+    super::authenticate_and_open_session(
+        &server.state,
+        SocketAddr::new(address, 40_000),
+        &HeaderMap::new(),
+        super::LoginRequest {
+            username: username.to_string(),
+            password: password.to_string(),
+        },
+    )
+    .await
+}
+
+/// A reader account with a generated password, for sign-in tests.
+async fn reader_with_generated_password(server: &TestServer, username: &str) -> String {
+    let owner = server.setup_owner().await;
+    let password = format!("test-{}", super::mint_identity_id());
+    let created = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({"username": username, "password": password, "isAdmin": false}),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    password
+}
+
+/// Guessing spread across many addresses holds each of them to one guess a
+/// window, but cannot keep the account's owner out: a device that has not
+/// failed against the name signs in with the right password.
+#[tokio::test]
+async fn spread_guessing_cannot_lock_the_owner_out() {
+    let server = TestServer::start(0).await;
+    let password = reader_with_generated_password(&server, "target").await;
+    let attacker = |host: u32| {
+        std::net::IpAddr::V4(std::net::Ipv4Addr::from(
+            u32::from(std::net::Ipv4Addr::new(10, 0, 0, 0)) + host,
+        ))
+    };
+    // Charged the way sign-in admission charges a wrong guess. Fifty real
+    // password checks can outlast the lockout window in a debug build.
+    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        let keys = super::LoginThrottleKeys::new(attacker(host), "target");
+        assert!(super::record_login_failures(&server.state, keys.all()).await);
+    }
+
+    // An address that has guessed is refused before its password is checked,
+    // even when this guess would have been right.
+    let error = sign_in_from(&server, attacker(1), "target", &password)
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+
+    let owner_device = std::net::IpAddr::from([192, 0, 2, 44]);
+    let (user, _) = sign_in_from(&server, owner_device, "target", &password)
+        .await
+        .expect("the owner signs in from a device that has not failed");
+    assert_eq!(user.username, "target");
+
+    // The owner signing in does not reopen the name to the guessers.
+    let error = sign_in_from(&server, attacker(2), "target", &super::mint_identity_id())
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// Signing in often must not count toward the limit that marks a name as
+/// under attack, or an owner's own successes would slow their next typo.
+#[tokio::test]
+async fn successful_sign_ins_do_not_count_against_the_name() {
+    let server = TestServer::start(0).await;
+    let password = reader_with_generated_password(&server, "target").await;
+    let device = std::net::IpAddr::from([192, 0, 2, 44]);
+    for _ in 0..3 {
+        sign_in_from(&server, device, "target", &password)
+            .await
+            .expect("the owner signs in");
+    }
+    let attempts = server.state.login_attempts.lock().await;
+    let failures = |key: &String| attempts.get(key).map_or(0, |throttle| throttle.failures);
+    let keys = super::LoginThrottleKeys::new(device, "target");
+    assert_eq!(failures(&keys.username), 0);
+    assert_eq!(failures(&keys.ip), 0);
+}
+
+/// A sign-in still checking its password when the name's counter is evicted
+/// must not take a charge back from the counter other failures rebuilt.
+#[tokio::test]
+async fn a_late_refund_leaves_a_rebuilt_counter_alone() {
+    let server = TestServer::start(0).await;
+    let device = std::net::IpAddr::from([192, 0, 2, 44]);
+    let keys = super::LoginThrottleKeys::new(device, "target");
+    assert!(super::record_login_failures(&server.state, keys.all()).await);
+    let charged = {
+        let mut attempts = server.state.login_attempts.lock().await;
+        let charged = super::charged_runs(&attempts, [&keys.ip, &keys.username]);
+        attempts.remove(&keys.username);
+        charged
+    };
+    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        let attacker = std::net::IpAddr::from(std::net::Ipv4Addr::from(0x0a00_0000 + host));
+        let attacker = super::LoginThrottleKeys::new(attacker, "target");
+        assert!(super::record_login_failures(&server.state, attacker.all()).await);
+    }
+
+    let mut attempts = server.state.login_attempts.lock().await;
+    super::refund_login_charge(&mut attempts, &charged);
+    let failures = |key: &String| attempts.get(key).map_or(0, |throttle| throttle.failures);
+    assert_eq!(failures(&keys.username), super::LOGIN_ACCOUNT_MAX_FAILURES);
+    assert_eq!(
+        failures(&keys.ip),
+        0,
+        "the device's own counter is still refunded"
+    );
+}
+
+/// A flood of made-up names that fills the throttle map must not turn into a
+/// lockout for everyone else.
+#[tokio::test]
+async fn a_full_login_throttle_map_still_admits_a_correct_password() {
+    let server = TestServer::start(0).await;
+    let password = reader_with_generated_password(&server, "target").await;
+    let now = super::unix_now_seconds();
+    {
+        let mut attempts = server.state.login_attempts.lock().await;
+        for index in 0..super::LOGIN_THROTTLE_MAX_ENTRIES {
+            attempts.insert(
+                format!("user:flood-{index}"),
+                super::LoginThrottle {
+                    failures: 1,
+                    last_failure: now,
+                    run: 0,
+                },
+            );
+        }
+    }
+
+    let address = std::net::IpAddr::from([192, 0, 2, 44]);
+    let error = sign_in_from(&server, address, "target", &super::mint_identity_id())
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+    let other = std::net::IpAddr::from([192, 0, 2, 45]);
+    sign_in_from(&server, other, "target", &password)
+        .await
+        .expect("a full map makes room for a new sign-in");
+    assert!(server.state.login_attempts.lock().await.len() <= super::LOGIN_THROTTLE_MAX_ENTRIES);
+}
+
+/// Under a username attack, one failure is enough to hold an address off, so
+/// that single-failure entry must survive a full map. Otherwise newer one-off
+/// guesses would push it out and hand the guesser a fresh try.
+#[tokio::test]
+async fn a_full_login_throttle_map_keeps_holding_guessers_off_an_attacked_name() {
+    let server = TestServer::start(0).await;
+    let password = reader_with_generated_password(&server, "target").await;
+    let attacker = |host: u32| {
+        std::net::IpAddr::V4(std::net::Ipv4Addr::from(
+            u32::from(std::net::Ipv4Addr::new(10, 0, 0, 0)) + host,
+        ))
+    };
+    // Charged the way sign-in admission charges a wrong guess. Fifty real
+    // password checks can outlast the lockout window in a debug build.
+    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        let keys = super::LoginThrottleKeys::new(attacker(host), "target");
+        assert!(super::record_login_failures(&server.state, keys.all()).await);
+    }
+
+    // Make the guessers' entries the oldest single failures, then fill the
+    // map with newer ones.
+    let now = super::unix_now_seconds();
+    {
+        let mut attempts = server.state.login_attempts.lock().await;
+        for throttle in attempts.values_mut() {
+            throttle.last_failure = now - 1;
+        }
+        for index in attempts.len()..super::LOGIN_THROTTLE_MAX_ENTRIES {
+            attempts.insert(
+                format!("user:flood-{index}"),
+                super::LoginThrottle {
+                    failures: 1,
+                    last_failure: now,
+                    run: 0,
+                },
+            );
+        }
+    }
+
+    // Enough new addresses to evict every guesser entry if any could go.
+    for host in 1..=40u8 {
+        let newcomer = std::net::IpAddr::from([192, 0, 2, host]);
+        let keys = super::LoginThrottleKeys::new(newcomer, &format!("someone-{host}"));
+        assert!(super::record_login_failures(&server.state, keys.all()).await);
+    }
+
+    let attempts = server.state.login_attempts.lock().await;
+    assert!(attempts.len() <= super::LOGIN_THROTTLE_MAX_ENTRIES);
+    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        let keys = super::LoginThrottleKeys::new(attacker(host), "target");
+        assert!(
+            keys.is_locked(&attempts, now),
+            "address {host} may guess again"
+        );
+    }
+    drop(attempts);
+    let error = sign_in_from(&server, attacker(1), "target", &password)
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// Devices that share an address prefix are still separate devices: one
+/// mistyping its way into a lock does not keep another out. On a public IPv6
+/// network the per-address counter covers the /64, so a host rotating through
+/// its own addresses still meets it.
+#[tokio::test]
+async fn devices_sharing_a_prefix_do_not_share_a_sign_in_lock() {
+    let server = TestServer::start(0).await;
+    let password = reader_with_generated_password(&server, "target").await;
+    let ipv6 = |text: &str| text.parse::<std::net::IpAddr>().unwrap();
+    for (guesser, device) in [
+        ("fe80::1", "fe80::2"),
+        // Tailscale hands out unique local addresses under fd7a:115c:a1e0::/48.
+        ("fd7a:115c:a1e0::1", "fd7a:115c:a1e0::2"),
+        ("2001:db8:1:2::1", "2001:db8:1:2::2"),
+    ] {
+        for _ in 0..super::LOGIN_MAX_FAILURES {
+            let error = sign_in_from(&server, ipv6(guesser), "target", &super::mint_identity_id())
+                .await
+                .unwrap_err();
+            assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+        }
+        let error = sign_in_from(&server, ipv6(guesser), "target", &password)
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS, "{guesser}");
+        sign_in_from(&server, ipv6(device), "target", &password)
+            .await
+            .unwrap_or_else(|_| panic!("{device} is refused after {guesser} locked itself"));
+    }
+
+    // One wrong guess from each of many addresses in one public /64 locks
+    // that /64, and only that /64.
+    for host in 1..=super::LOGIN_IP_MAX_FAILURES {
+        let address = ipv6(&format!("2001:db8:9:9::{host:x}"));
+        let error = sign_in_from(&server, address, "target", &super::mint_identity_id())
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+    }
+    let error = sign_in_from(&server, ipv6("2001:db8:9:9::ffff"), "target", &password)
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+    sign_in_from(&server, ipv6("2001:db8:9:a::1"), "target", &password)
+        .await
+        .expect("a neighbouring /64 is unaffected");
 }
 
 #[tokio::test]
