@@ -1954,6 +1954,7 @@ exit 0
         )),
         open_sessions: super::Arc::new(super::Mutex::new(super::OpenSessions::default())),
         shutdown: tokio::sync::broadcast::channel(1).0,
+        update_trial: super::Arc::new(super::UpdateTrial::none()),
         works: super::Arc::new(super::WorksStore::new(
             database.clone(),
             super::StoreShape::Document(super::WORKS_DOCUMENT),

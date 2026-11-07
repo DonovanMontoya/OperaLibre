@@ -30,12 +30,28 @@ fn main() {
     }
     // The library cannot be loaded, as with a missing drive.
     let unavailable = new && env::var_os("TEST_UNAVAILABLE_NEW").is_some();
+    // An update trial waits for the updater's commit, as the real server
+    // does; a new build marked legacy predates trials and has no such route.
+    let trial = env::var("OPERALIBRE_UPDATE_TRIAL").ok().filter(|_| env::var_os("TEST_LEGACY_NEW").is_none());
     let listener = TcpListener::bind(format!("127.0.0.1:{}", env::var("TEST_PORT").unwrap())).unwrap();
     let start = Instant::now();
     for stream in listener.incoming() {
         let mut stream = stream.unwrap();
         let mut buffer = [0; 2048];
-        let _ = stream.read(&mut buffer);
+        let read = stream.read(&mut buffer).unwrap_or(0);
+        let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+        if request.starts_with("POST /api/update-trial/commit ") {
+            let status = match &trial {
+                None => "404 Not Found",
+                Some(token) if request.contains(&format!("X-OperaLibre-Update-Trial: {token}\r\n")) => {
+                    fs::write("data/trial-committed", version.trim()).unwrap();
+                    "204 No Content"
+                }
+                Some(_) => "403 Forbidden",
+            };
+            let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            continue;
+        }
         let ready = start.elapsed() > Duration::from_secs(2);
         let body = if unavailable {
             "{\"ok\":true,\"ready\":false,\"catalogueError\":true}".to_string()
@@ -115,7 +131,7 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
     hook.write_text(DATA_HOOK)
     binary = scratch / "fake-server"
     subprocess.run(["rustc", "--edition=2024", str(source), "-o", str(binary)], check=True)
-    for scenario in ("success", "startup-failure", "upgraded-data-rollback", "staging-failure", "stop-handoff"):
+    for scenario in ("success", "legacy-target", "startup-failure", "upgraded-data-rollback", "staging-failure", "stop-handoff"):
         fails = scenario in ("startup-failure", "upgraded-data-rollback")
         root = scratch / scenario
         package = root / "package"
@@ -141,6 +157,8 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
         if scenario == "upgraded-data-rollback":
             env["TEST_UNAVAILABLE_NEW"] = "1"
             env["TEST_UPGRADE_DATA"] = "1"
+        if scenario == "legacy-target":
+            env["TEST_LEGACY_NEW"] = "1"
         old = subprocess.Popen([str(root / "operalibre-server")], cwd=root, env=env)
         (root / "data/operalibre-server.pid").write_text(str(old.pid))
         updater = starter = None
@@ -185,8 +203,16 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             # saved; data the new build upgraded goes back to the snapshot.
             if scenario == "upgraded-data-rollback":
                 assert read_data(root / "data") == (4, 1, ["before-update"]), read_data(root / "data")
+                # The failed build's own data is kept for recovery by hand.
+                kept = list((root / "data/update-backups").glob("*/failed-data"))
+                assert len(kept) == 1, kept
+                assert read_data(kept[0]) == (5, 2, ["before-update", "new-build"]), read_data(kept[0])
+                assert not list((root / "data/update-backups").glob("*/restore-required"))
             else:
                 assert read_data(root / "data") == (4, 1, ["before-update", "new-build"]), read_data(root / "data")
+            # Only an update to a build with trials is committed; a failed one never is.
+            committed = root / "data/trial-committed"
+            assert committed.exists() == (scenario == "success"), scenario
             assert not list((root / "data/update-backups").glob("*/data")), "the data snapshot was kept"
             with (root / "data/update.lock").open("r+") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

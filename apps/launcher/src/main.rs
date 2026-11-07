@@ -88,7 +88,7 @@ fn run() -> Result<(), String> {
         return stop_server(&root);
     }
 
-    if start_server(&root, true)? == StartOutcome::StillStarting {
+    if start_server(&root, true, None)? == StartOutcome::StillStarting {
         let port = configured_port(&root.join("server.config")).unwrap_or(4920);
         show_message(&format!(
             "OperaLibre is still starting. Scanning a large library can take a while; open http://localhost:{port} once it finishes, or check {} for details.",
@@ -163,7 +163,14 @@ fn is_stop_launcher() -> bool {
         || env::args().any(|argument| argument == "--stop")
 }
 
-fn start_server(root: &Path, open_when_ready: bool) -> Result<StartOutcome, String> {
+/// Starts the server and waits for it. `trial_token` marks a build the
+/// updater has just installed: it refuses requests until committed with that
+/// token (see `commit_update_trial`).
+fn start_server(
+    root: &Path,
+    open_when_ready: bool,
+    trial_token: Option<&str>,
+) -> Result<StartOutcome, String> {
     fs::create_dir_all(root.join("audiobooks"))
         .map_err(|error| format!("Could not create the audiobooks folder: {error}"))?;
     let data_dir = data_dir(root);
@@ -171,7 +178,7 @@ fn start_server(root: &Path, open_when_ready: bool) -> Result<StartOutcome, Stri
         .map_err(|error| format!("Could not create the data folder: {error}"))?;
     secure_directory(&data_dir)?;
 
-    let port = configured_port(&root.join("server.config")).unwrap_or(4920);
+    let port = server_port(root);
     let log_path = data_dir.join("server.log");
 
     // A server already up, or still coming up from an earlier start, is
@@ -212,6 +219,10 @@ fn start_server(root: &Path, open_when_ready: bool) -> Result<StartOutcome, Stri
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
+    match trial_token {
+        Some(token) => command.env(UPDATE_TRIAL_ENV, token),
+        None => command.env_remove(UPDATE_TRIAL_ENV),
+    };
 
     #[cfg(unix)]
     command.process_group(0);
@@ -411,6 +422,8 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     let package_root = PathBuf::from(package_root);
     let install_root = PathBuf::from(install_root);
     validate_update_paths(&package_root, &install_root)?;
+    // Before the running server is waited out, so failing here leaves it up.
+    let trial_token = update_trial_token()?;
     wait_for_server_exit(server_pid, port)?;
 
     let backup_root = data_dir(&install_root).join("update-backups").join(
@@ -428,7 +441,7 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     if let Err(staging_error) = prepare_update(&install_root, &backup_root, includes_web) {
         // No new build has run, so the data is still the previous build's.
         let _ = fs::remove_dir_all(&data_snapshot);
-        let restart = start_server(&install_root, false).and_then(require_ready_start);
+        let restart = start_server(&install_root, false, None).and_then(require_ready_start);
         return Err(match restart {
             Ok(()) => format!(
                 "Could not prepare the update; the previous server was restarted: {staging_error}"
@@ -440,7 +453,7 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
         });
     }
 
-    let install_result = (|| {
+    let install_result = (|| -> Result<(), String> {
         move_required(&package_root.join(server_name), &install_server)?;
         if includes_web {
             move_required(&package_root.join("web"), &install_web)?;
@@ -453,7 +466,17 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
         set_executable(&install_server)?;
         // An update is successful only after its first catalogue is published;
         // a failed or indefinitely withheld scan must restore the old build.
-        require_ready_start(start_server(&install_root, false)?)
+        // Until the commit below the new build acknowledges nothing, so a
+        // rollback up to that point discards no client's change.
+        require_ready_start(start_server(&install_root, false, Some(&trial_token))?)?;
+        match commit_update_trial(server_port(&install_root), &trial_token)? {
+            TrialCommit::Committed => {}
+            TrialCommit::Unsupported => append_log(
+                &install_root,
+                "this build predates update trials; changes made while it was starting are not protected by a rollback",
+            ),
+        }
+        Ok(())
     })();
 
     if let Err(update_error) = install_result {
@@ -661,6 +684,12 @@ fn stage_installed_files(
         }
         let source = install_root.join(name);
         if !source.exists() {
+            if name == "VERSION.txt" {
+                // Rollback then removes the new build's, rather than keeping it.
+                fs::write(backup_root.join(NO_VERSION_MARKER), b"").map_err(|error| {
+                    format!("Could not record the missing VERSION.txt: {error}")
+                })?;
+            }
             continue;
         }
         if let Err(error) = move_required(&source, &backup_root.join(name)) {
@@ -713,34 +742,112 @@ fn rollback_update(
     let stopped = stop_server(install_root);
     let data = data_dir(install_root);
     let snapshot = backup_root.join("data");
-    if data_was_upgraded(&data, &snapshot) {
+    // Decided once: after a restore the formats match the snapshot again, so a
+    // rollback run a second time (the previous build failed to start after
+    // the first) still restores instead of keeping that build's leftovers.
+    let restore_marker = backup_root.join("restore-required");
+    if restore_marker.is_file() || data_was_upgraded(&data, &snapshot) {
         // Files replaced under a server that is still running would keep
         // receiving its writes after the previous build had started.
         stopped?;
+        if !restore_marker.is_file() {
+            fs::write(&restore_marker, b"")
+                .map_err(|error| format!("Could not record the data restore: {error}"))?;
+            sync_file(&restore_marker)?;
+            sync_directory(backup_root);
+        }
+        let kept = preserve_failed_data(&data, backup_root)?;
         restore_data(&data, &snapshot)?;
         append_log(
             install_root,
-            "the failed update had upgraded the data; restored the copy taken before it",
+            &format!(
+                "the failed update had upgraded the data; restored the copy taken before it and kept the failed build's data in {}",
+                kept.display()
+            ),
         );
     }
-    remove_if_exists(&install_root.join(server_name))?;
-    remove_if_exists(&install_root.join("VERSION.txt"))?;
-    move_required(
+    let backup_version = backup_root.join("VERSION.txt");
+    if backup_version.exists() {
+        restore_backed_up(&backup_version, &install_root.join("VERSION.txt"))?;
+    } else if backup_root.join(NO_VERSION_MARKER).exists() {
+        remove_if_exists(&install_root.join("VERSION.txt"))?;
+    }
+    restore_backed_up(
         &backup_root.join(server_name),
         &install_root.join(server_name),
     )?;
     if includes_web {
-        remove_if_exists(&install_root.join("web"))?;
-        move_required(&backup_root.join("web"), &install_root.join("web"))?;
+        restore_backed_up(&backup_root.join("web"), &install_root.join("web"))?;
     }
-    move_if_exists(
-        &backup_root.join("VERSION.txt"),
-        &install_root.join("VERSION.txt"),
-    )?;
     set_executable(&install_root.join(server_name))?;
-    require_ready_start(start_server(install_root, false)?)?;
+    require_ready_start(start_server(install_root, false, None)?)?;
     let _ = fs::remove_dir_all(snapshot);
+    let _ = fs::remove_file(restore_marker);
     Ok(())
+}
+
+/// Puts back one file or folder the update moved aside. A backup already
+/// gone was put back by an earlier run of this rollback, so the installed
+/// copy is kept rather than deleted.
+/// Left in the backup by an installation that had no VERSION.txt.
+const NO_VERSION_MARKER: &str = "no-version";
+
+fn restore_backed_up(backup: &Path, installed: &Path) -> Result<(), String> {
+    if !backup.exists() {
+        return if installed.exists() {
+            Ok(())
+        } else {
+            Err(format!("The update is missing {}.", backup.display()))
+        };
+    }
+    remove_if_exists(installed)?;
+    move_required(backup, installed)
+}
+
+/// Keeps the failed build's data beside the snapshot before the snapshot is
+/// put back, for an owner to recover anything from by hand. The database and
+/// identities are hard-linked, so the restore can still replace each live
+/// file with a single rename and there is never a moment without one; the
+/// write-ahead log and shared memory, which the restore removes anyway, are
+/// moved with them so the database stays readable on its own. A volume
+/// without hard links gets moves instead. Collected under `.partial` and
+/// renamed when complete, so an interrupted run resumes: until then no
+/// restore has begun, every live file is still the failed build's, and a
+/// file already kept is never replaced.
+fn preserve_failed_data(data: &Path, backup_root: &Path) -> Result<PathBuf, String> {
+    let kept = backup_root.join("failed-data");
+    if kept.is_dir() {
+        return Ok(kept);
+    }
+    let partial = backup_root.join("failed-data.partial");
+    fs::create_dir_all(&partial)
+        .map_err(|error| format!("Could not create {}: {error}", partial.display()))?;
+    let wal = format!("{DATABASE}-wal");
+    let shm = format!("{DATABASE}-shm");
+    for name in [DATABASE, IDENTITIES, wal.as_str(), shm.as_str()] {
+        let live = data.join(name);
+        let copy = partial.join(name);
+        if !live.exists() || copy.exists() {
+            continue;
+        }
+        let linked =
+            (name == DATABASE || name == IDENTITIES) && fs::hard_link(&live, &copy).is_ok();
+        if !linked {
+            fs::rename(&live, &copy).map_err(|error| {
+                format!(
+                    "Could not keep {} in {}: {error}",
+                    live.display(),
+                    partial.display()
+                )
+            })?;
+        }
+    }
+    sync_directory(&partial);
+    sync_directory(data);
+    fs::rename(&partial, &kept)
+        .map_err(|error| format!("Could not finish keeping the failed build's data: {error}"))?;
+    sync_directory(backup_root);
+    Ok(kept)
 }
 
 /// State the server upgrades in place and an older build then refuses: the
@@ -1194,6 +1301,65 @@ fn unquote_config_value(value: &str) -> String {
     value.to_string()
 }
 
+/// The variable and header the server reads for an update trial.
+const UPDATE_TRIAL_ENV: &str = "OPERALIBRE_UPDATE_TRIAL";
+const UPDATE_TRIAL_HEADER: &str = "X-OperaLibre-Update-Trial";
+
+fn server_port(root: &Path) -> u16 {
+    configured_port(&root.join("server.config")).unwrap_or(4920)
+}
+
+/// Unguessable, so no other local process or web page can commit a trial.
+fn update_trial_token() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| format!("Could not create the update token: {error}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TrialCommit {
+    Committed,
+    /// The build predates update trials: it never refused requests.
+    Unsupported,
+}
+
+/// Commits the trial so the new build starts accepting changes. Anything but
+/// a clear answer counts as a failed start and rolls the update back; the
+/// build may then have been committed and accepted a change in the moment
+/// before it went away, which the rollback discards.
+fn commit_update_trial(port: u16, token: &str) -> Result<TrialCommit, String> {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
+        .map_err(|error| format!("Could not reach the new server to commit it: {error}"))?;
+    // The commit restores the read-along queue first, which reads one file.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
+    let request = format!(
+        "POST /api/update-trial/commit HTTP/1.1\r\nHost: localhost\r\n{UPDATE_TRIAL_HEADER}: {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("Could not commit the new server: {error}"))?;
+    let mut response = Vec::with_capacity(512);
+    let _ = stream.take(16 * 1024).read_to_end(&mut response);
+    parse_commit_response(&response)
+}
+
+fn parse_commit_response(response: &[u8]) -> Result<TrialCommit, String> {
+    let response = String::from_utf8_lossy(response);
+    let status = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("");
+    match status {
+        "204" => Ok(TrialCommit::Committed),
+        "404" => Ok(TrialCommit::Unsupported),
+        "" => Err("The new server closed the connection before committing.".to_string()),
+        status => Err(format!("The new server refused the commit ({status}).")),
+    }
+}
+
 fn server_readiness(port: u16) -> ServerReadiness {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
@@ -1575,6 +1741,124 @@ mod tests {
         assert_eq!(progress_books(&data), ["before-update"]);
         assert!(snapshot.join("operalibre.db").is_file());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_failed_builds_data_is_kept_before_the_snapshot_goes_back() {
+        let root = scratch("data-failed-kept");
+        let data = root.join("data");
+        let backup = root.join("backup");
+        let snapshot = backup.join("data");
+        drop(seed_data(&data, 4, "{\"version\":1}"));
+        super::snapshot_data(&data, &snapshot).unwrap();
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute_batch(
+                "UPDATE schema_version SET version = 5; INSERT INTO progress VALUES ('new-build', 60);",
+            )
+            .unwrap();
+        fs::write(data.join("library-identities.json"), "{\"version\":2}").unwrap();
+        // Left behind by a build that stopped without checkpointing.
+        fs::write(data.join("operalibre.db-wal"), b"failed build wal").unwrap();
+        fs::write(data.join("operalibre.db-shm"), b"failed build shm").unwrap();
+
+        let kept = super::preserve_failed_data(&data, &backup).unwrap();
+        assert_eq!(kept, backup.join("failed-data"));
+        assert!(!backup.join("failed-data.partial").exists());
+        // Its log and shared memory moved with it, so nothing is replayed onto
+        // the restored database.
+        assert!(!data.join("operalibre.db-wal").exists());
+        assert!(!data.join("operalibre.db-shm").exists());
+        assert_eq!(
+            fs::read(kept.join("operalibre.db-wal")).unwrap(),
+            b"failed build wal"
+        );
+        super::restore_data(&data, &snapshot).unwrap();
+
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        assert_eq!(progress_books(&data), ["before-update"]);
+        fs::remove_file(kept.join("operalibre.db-wal")).unwrap();
+        fs::remove_file(kept.join("operalibre.db-shm")).unwrap();
+        assert_eq!(super::schema_version(&kept.join("operalibre.db")), Ok(5));
+        assert_eq!(progress_books(&kept), ["before-update", "new-build"]);
+        assert_eq!(
+            super::identity_version(&kept.join("library-identities.json")),
+            Ok(2)
+        );
+        // A second run finds it kept and leaves it alone.
+        assert_eq!(super::preserve_failed_data(&data, &backup).unwrap(), kept);
+        assert_eq!(super::schema_version(&kept.join("operalibre.db")), Ok(5));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn keeping_the_failed_data_resumes_after_an_interruption() {
+        let root = scratch("data-failed-resume");
+        let data = root.join("data");
+        let backup = root.join("backup");
+        drop(seed_data(&data, 5, "{\"version\":2}"));
+        fs::write(data.join("operalibre.db-wal"), b"failed build wal").unwrap();
+        // Stopped after the database was kept and before the log moved.
+        let partial = backup.join("failed-data.partial");
+        fs::create_dir_all(&partial).unwrap();
+        fs::hard_link(data.join("operalibre.db"), partial.join("operalibre.db")).unwrap();
+
+        let kept = super::preserve_failed_data(&data, &backup).unwrap();
+        assert!(!partial.exists());
+        assert_eq!(
+            fs::read(kept.join("operalibre.db-wal")).unwrap(),
+            b"failed build wal"
+        );
+        fs::remove_file(kept.join("operalibre.db-wal")).unwrap();
+        assert_eq!(super::schema_version(&kept.join("operalibre.db")), Ok(5));
+        assert!(kept.join("library-identities.json").is_file());
+        // The live files the restore replaces are still there.
+        assert!(data.join("operalibre.db").is_file());
+        assert!(data.join("library-identities.json").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn putting_back_a_backup_twice_keeps_what_the_first_run_restored() {
+        let root = scratch("restore-backed-up");
+        fs::create_dir_all(&root).unwrap();
+        let backup = root.join("backup-server");
+        let installed = root.join("server");
+        fs::write(&backup, "previous build").unwrap();
+        fs::write(&installed, "failed build").unwrap();
+
+        super::restore_backed_up(&backup, &installed).unwrap();
+        assert_eq!(fs::read_to_string(&installed).unwrap(), "previous build");
+        // The previous build failed to start and the rollback runs again.
+        super::restore_backed_up(&backup, &installed).unwrap();
+        assert_eq!(fs::read_to_string(&installed).unwrap(), "previous build");
+        fs::remove_file(&installed).unwrap();
+        assert!(super::restore_backed_up(&backup, &installed).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_a_clear_commit_answer_counts() {
+        use super::{TrialCommit, parse_commit_response};
+        assert_eq!(
+            parse_commit_response(b"HTTP/1.1 204 No Content\r\n\r\n"),
+            Ok(TrialCommit::Committed)
+        );
+        assert_eq!(
+            parse_commit_response(b"HTTP/1.1 404 Not Found\r\n\r\n{}"),
+            Ok(TrialCommit::Unsupported)
+        );
+        assert!(parse_commit_response(b"HTTP/1.1 403 Forbidden\r\n\r\n").is_err());
+        assert!(parse_commit_response(b"HTTP/1.1 500 Internal Server Error\r\n\r\n").is_err());
+        assert!(parse_commit_response(b"").is_err());
+    }
+
+    #[test]
+    fn update_trial_tokens_are_long_and_fresh() {
+        let first = super::update_trial_token().unwrap();
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, super::update_trial_token().unwrap());
     }
 
     #[test]

@@ -464,6 +464,7 @@ impl TestServer {
             )),
             open_sessions: Arc::new(Mutex::new(OpenSessions::default())),
             shutdown: tokio::sync::broadcast::channel(1).0,
+            update_trial: Arc::new(UpdateTrial::none()),
             works: Arc::new(WorksStore::new(
                 database.clone(),
                 StoreShape::Document(WORKS_DOCUMENT),
@@ -6354,6 +6355,183 @@ async fn sync_queue_restores_ids_order_and_results_and_retries_interrupted_books
     crate::sync::restore_queue(&server.state).await.unwrap();
     assert_eq!(server.state.jobs.read().await[&first].status, "failed");
     assert!(!server.state.jobs.read().await[&first].resume_pending);
+}
+
+/// Puts `server` into an update trial with `token`, serving a web app too.
+fn start_update_trial(server: &mut TestServer, token: &str) -> std::path::PathBuf {
+    let web = server._root.path().join("web");
+    std::fs::create_dir_all(&web).unwrap();
+    std::fs::write(web.join("index.html"), "<!doctype html><title>app</title>").unwrap();
+    server.state.update_trial = Arc::new(UpdateTrial::with_token(Some(token.to_string())));
+    server.router = build_router(server.state.clone(), Some(&web), &[]).unwrap();
+    web
+}
+
+fn commit_request(token: Option<&str>, peer: [u8; 4]) -> Request<Body> {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(super::UPDATE_TRIAL_COMMIT_PATH);
+    if let Some(token) = token {
+        request = request.header(super::UPDATE_TRIAL_HEADER, token);
+    }
+    let mut request = request.body(Body::empty()).unwrap();
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(SocketAddr::from((peer, 51234))));
+    request
+}
+
+async fn send_raw(server: &TestServer, request: Request<Body>) -> StatusCode {
+    server
+        .router
+        .clone()
+        .oneshot(request)
+        .await
+        .unwrap()
+        .status()
+}
+
+/// Until the updater commits a trial nothing a client sends is acknowledged,
+/// sign-in included, while the health check and the web app's files answer.
+#[tokio::test]
+async fn an_update_trial_refuses_every_dynamic_route_until_committed() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    start_update_trial(&mut server, "trial-token");
+    let get = |uri: &str| {
+        Request::builder()
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    for request in [
+        get("/api/books"),
+        get("/api/auth/me"),
+        get("/abs/api/libraries"),
+        get("/api/opds"),
+        Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"username":"owner","password":"owner-password-1234"}"#,
+            ))
+            .unwrap(),
+        Request::builder()
+            .method("POST")
+            .uri("/abs/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"username":"owner","password":"owner-password-1234"}"#,
+            ))
+            .unwrap(),
+    ] {
+        let uri = request.uri().to_string();
+        let response = server.send(request).await;
+        assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+        assert!(
+            response.headers.contains_key(header::RETRY_AFTER),
+            "{uri} must say when to retry"
+        );
+    }
+    assert_eq!(server.send(get("/api/health")).await.status, StatusCode::OK);
+    let page = server.send(get("/")).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text().contains("<title>app</title>"));
+
+    // Only the updater, on loopback with the token, can commit.
+    assert_eq!(
+        send_raw(&server, commit_request(None, [127, 0, 0, 1])).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send_raw(&server, commit_request(Some("guess"), [127, 0, 0, 1])).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send_raw(
+            &server,
+            commit_request(Some("trial-token"), [192, 168, 1, 20])
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        server.send(get("/api/books")).await.status,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    assert_eq!(
+        send_raw(&server, commit_request(Some("trial-token"), [127, 0, 0, 1])).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(server.send(get("/api/books")).await.status, StatusCode::OK);
+    // A repeated commit, say after a lost response, still succeeds.
+    assert_eq!(
+        send_raw(&server, commit_request(Some("trial-token"), [127, 0, 0, 1])).await,
+        StatusCode::NO_CONTENT
+    );
+}
+
+/// Without a trial the commit route does not exist, so an updater can tell
+/// a build that predates trials from one that refused it.
+#[tokio::test]
+async fn the_commit_route_is_absent_outside_an_update_trial() {
+    let server = TestServer::start(0).await;
+    assert_eq!(
+        send_raw(&server, commit_request(Some("anything"), [127, 0, 0, 1])).await,
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// The read-along queue lives outside the snapshot a rollback restores, so a
+/// trial leaves it alone and restores it as part of the commit, before any
+/// request could persist a queue over it.
+#[tokio::test]
+async fn an_update_trial_restores_the_read_along_queue_at_commit() {
+    let mut server = TestServer::start(0).await;
+    let queue = server.state.database_path.with_file_name("sync-jobs.json");
+    std::fs::write(&queue, b"not json").unwrap();
+    server.state.jobs = Arc::new(RwLock::new(HashMap::new()));
+    start_update_trial(&mut server, "trial-token");
+    assert!(queue.exists(), "a trial must not touch the queue");
+
+    assert_eq!(
+        send_raw(&server, commit_request(Some("trial-token"), [127, 0, 0, 1])).await,
+        StatusCode::NO_CONTENT
+    );
+    assert!(!queue.exists());
+    assert_eq!(
+        std::fs::read(queue.with_extension("json.unreadable")).unwrap(),
+        b"not json"
+    );
+}
+
+/// Work that persists outside the snapshot waits for the commit.
+#[tokio::test]
+async fn deferred_startup_work_waits_for_the_commit() {
+    let trial = Arc::new(UpdateTrial::with_token(Some("trial-token".to_string())));
+    let waiting = tokio::spawn({
+        let trial = trial.clone();
+        async move { trial.wait_for_commit().await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!waiting.is_finished());
+
+    let mut server = TestServer::start(0).await;
+    server.state.update_trial = trial.clone();
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    assert_eq!(
+        send_raw(&server, commit_request(Some("trial-token"), [127, 0, 0, 1])).await,
+        StatusCode::NO_CONTENT
+    );
+    tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("committing releases deferred work")
+        .unwrap();
+    UpdateTrial::none().wait_for_commit().await;
 }
 
 #[tokio::test]
