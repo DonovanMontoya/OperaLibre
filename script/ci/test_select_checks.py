@@ -14,6 +14,9 @@ class SelectionTests(unittest.TestCase):
     def test_server_contract_and_playback(self):
         self.assertTrue({'server', 'server_windows', 'bookplayer', 'playback', 'web'} <= select(['apps/server/src/http.rs']))
 
+    def test_shared_deployment_config_checks_both_rust_crates(self):
+        self.assertTrue({'server', 'server_windows', 'launcher'} <= select(['apps/launcher/src/deployment.rs']))
+
     def test_web_reaches_packaged_android(self):
         self.assertEqual(select(['apps/web/src/App.tsx']), {'web', 'playback', 'android'})
 

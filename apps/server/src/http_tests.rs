@@ -16,6 +16,32 @@ use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn missing_update_config_rejects_install_child() {
+    if std::env::var_os("OPERALIBRE_TEST_MISSING_UPDATE_CONFIG").is_none() {
+        return;
+    }
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let mut shutdown = server.state.shutdown.subscribe();
+    let pause = server.state.update_manager.sync_update_pause.subscribe();
+    let response = server
+        .send_json("POST", "/api/update/install", &owner, serde_json::json!({}))
+        .await;
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert!(
+        response.text().contains("server.config"),
+        "{}",
+        response.text()
+    );
+    assert!(matches!(
+        shutdown.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    assert_eq!(*pause.borrow(), 0);
+    assert_eq!(server.get("/api/health", "").await.status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn libro_nicknames_are_private_persistent_and_do_not_change_purchase_identity() {
     let server = TestServer::start(0).await;
     let owner = server.setup_owner().await;

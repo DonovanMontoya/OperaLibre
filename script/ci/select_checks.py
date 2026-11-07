@@ -12,8 +12,10 @@ def select(paths):
     for path in paths:
         if path.startswith('docs/') or path in {'README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'LICENSE.md', 'REVIEW.md'}:
             continue
-        if path.startswith('apps/server/'):
+        if path.startswith('apps/server/') or path == 'apps/launcher/src/deployment.rs':
             selected.update({'server', 'server_windows', 'playback', 'bookplayer', 'web'})
+            if path == 'apps/launcher/src/deployment.rs':
+                selected.add('launcher')
         elif path.startswith('apps/launcher/'):
             selected.update({'launcher', 'web'})
         elif path.startswith('apps/web/ios/'):
