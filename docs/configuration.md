@@ -146,11 +146,11 @@ Libation is available when the server finds its CLI at the configured path or on
 
 ### Optional readalong alignment
 
-Owners of managed release installations can install and enable the generator under **Administration → Experiments**; no configuration entry is needed. Sentence following requires an aligned map, the experiment to be enabled, and the reader to press Follow in the ebook, including for user-provided and previously generated `.sync.json` maps. Disabling it keeps those maps and leaves chapter sync available. Development and manually managed installations can configure an existing echogarden executable here instead; that explicit configuration takes priority over the managed add-on. See [Library Layout](library-layout.md#sync-maps-following-the-narration) for the sync-map workflow.
+Owners of managed release installations can install and enable the generator under **Administration → Experiments**; no configuration entry is needed. Sentence following requires an aligned map, the experiment to be enabled, and the reader to press Follow in the ebook, including for user-provided and previously generated `.sync.json` maps. Disabling it keeps those maps and listening progress and leaves chapter sync available. Development and manually managed installations can configure an existing echogarden executable here instead; that explicit configuration takes priority over the managed add-on. See [Library Layout](library-layout.md#sync-maps-following-the-narration) for the sync-map workflow.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `alignment_cli_path` | *(empty)* | Optional path to a manually managed echogarden CLI. It is treated as installed and enabled and is not changed from the Administration panel. When blank, OperaLibre uses an enabled managed add-on instead. |
+| `alignment_cli_path` | *(empty)* | Optional path to a manually managed echogarden CLI. It is treated as installed and enabled and is not changed from the Administration panel. When blank, OperaLibre searches the server's `PATH` for echogarden before using an enabled managed add-on. A PATH installation is enabled by default, including after upgrades, and the owner can disable or re-enable it under **Administration → Experiments**. |
 
 ### Optional MP4 faststart conversion
 
