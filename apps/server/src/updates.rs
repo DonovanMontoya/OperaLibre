@@ -965,14 +965,25 @@ impl UpdateManager {
     fn ensure_updater_matches_server(&self, root: &Path) -> anyhow::Result<()> {
         const MESSAGE: &str = "Automatic install needs the standard layout: server.config in the install folder, used by the running server, with the same data folder and port. Update manually, or restart OperaLibre if you changed server.config.";
         let matches = || -> anyhow::Result<bool> {
+            // The updater restarts here, so inherited relative paths must keep their meaning.
+            if std::env::current_dir()?.canonicalize()? != root.canonicalize()? {
+                return Ok(false);
+            }
             let config_path = root.join("server.config");
             if !config_path.is_file()
                 || self.config_path.as_deref() != Some(config_path.canonicalize()?.as_path())
             {
                 return Ok(false);
             }
+            // The launcher tolerates invalid values that would prevent the server starting.
+            let restarted = crate::config::ServerConfig::load()?;
+            let running_data_dir = self.data_dir.canonicalize()?;
             let (data_dir, port) = updater_settings(root)?;
-            Ok(data_dir.canonicalize()? == self.data_dir.canonicalize()? && port == self.port)
+            Ok(restarted.config_path == self.config_path
+                && restarted.data_dir.canonicalize()? == running_data_dir
+                && restarted.port == self.port
+                && data_dir.canonicalize()? == running_data_dir
+                && port == self.port)
         };
         if !matches().unwrap_or(false) {
             bail!(MESSAGE);
@@ -2035,9 +2046,12 @@ mod tests {
             "missing-config",
             "other-config",
             "absolute-config",
+            "relative-config-parent-cwd",
             "cwd-config",
             "edited-data",
             "edited-port",
+            "edited-invalid-port",
+            "edited-invalid-mode",
             "relative-env",
             "relative-env-other-cwd",
         ] {
@@ -2072,6 +2086,17 @@ mod tests {
                 .env_remove("PORT");
             if matches!(scenario, "absolute-config" | "relative-env-other-cwd") {
                 command.env("OPERALIBRE_SERVER_CONFIG", root.join("server.config"));
+            }
+            if scenario == "relative-config-parent-cwd" {
+                std::fs::write(
+                    root.join("server.config"),
+                    format!("data_dir = {}\n", root.join("data").display()),
+                )
+                .unwrap();
+                command.current_dir(scratch.path()).env(
+                    "OPERALIBRE_SERVER_CONFIG",
+                    format!("{scenario}/server.config"),
+                );
             }
             if scenario == "other-config" {
                 std::fs::write(root.join("other.config"), "").unwrap();
@@ -2129,7 +2154,7 @@ mod tests {
                 .status_for_manifest(&manifest, super::UpdateChannel::Stable)
                 .unwrap()
         };
-        if matches!(scenario.as_str(), "edited-data" | "edited-port") {
+        if scenario.starts_with("edited-") {
             let before = status();
             assert!(before.can_auto_update, "standard layout before edit");
             *manager.cache.lock().await = Some(super::CachedUpdateStatus {
@@ -2139,10 +2164,12 @@ mod tests {
             std::fs::create_dir(root.join("changed-data")).unwrap();
             std::fs::write(
                 root.join("server.config"),
-                if scenario == "edited-data" {
-                    "data_dir = changed-data\n"
-                } else {
-                    "port = 4921\n"
+                match scenario.as_str() {
+                    "edited-data" => "data_dir = changed-data\n",
+                    "edited-port" => "port = 4921\n",
+                    "edited-invalid-port" => "port = invalid\n",
+                    "edited-invalid-mode" => "deployment_mode = invalid\n",
+                    _ => unreachable!(),
                 },
             )
             .unwrap();
@@ -2158,7 +2185,7 @@ mod tests {
             "{scenario}: {:?}",
             status.message
         );
-        if matches!(scenario.as_str(), "edited-data" | "edited-port") {
+        if scenario.starts_with("edited-") {
             let cached = manager.check(false).await.unwrap();
             assert!(
                 !cached.can_auto_update,
@@ -2217,6 +2244,10 @@ mod tests {
         assert!(!root.join("data/updates").exists());
         assert!(!root.join("data/update.log").exists());
 
+        if scenario.starts_with("edited-invalid-") {
+            assert_eq!(manager.port, 4920);
+            assert!(crate::config::ServerConfig::load().is_err());
+        }
         if matches!(scenario.as_str(), "edited-data" | "edited-port") {
             let restarted = crate::config::ServerConfig::load().unwrap();
             let restarted = UpdateManager::new(

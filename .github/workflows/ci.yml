@@ -97,6 +97,9 @@ jobs:
       - name: Test Windows Libation job cleanup
         run: cargo test --locked libation_download::windows_tests -- --nocapture
 
+      - name: Test managed automatic install layouts
+        run: cargo test --locked automatic_install_layouts -- --nocapture
+
   launcher:
     needs: changes
     if: needs.changes.outputs.launcher == 'true'
