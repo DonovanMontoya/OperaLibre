@@ -195,7 +195,7 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                      "cwd-fallback-success", "cwd-fallback-rollback", "cwd-fallback-staging-failure",
                      "external-old-takeover", "external-old-takeover-rollback",
                      "cwd-default-success", "cwd-default-rollback", "cwd-default-staging-failure", "cwd-default-no-install-config",
-                     "cwd-no-config-success", "cwd-no-config-rollback", "relative-data-success", "relative-data-rollback", "older-server"):
+                     "cwd-no-config-success", "cwd-no-config-rollback", "relative-data-success", "relative-data-rollback", "older-server", "older-server-cwd"):
         if SELECTED and scenario not in SELECTED:
             continue
         cwd_default = scenario.startswith("cwd-default-")
@@ -277,6 +277,9 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             env["PORT"] = str(port)
         if relative_data:
             env["OPERALIBRE_DATA_DIR"] = "relative-state"
+        if scenario == "older-server-cwd":
+            env["OPERALIBRE_SERVER_CONFIG"] = "server.config"
+            env["OPERALIBRE_DATA_DIR"] = "fallback-state"
         for name in ("OPERALIBRE_SERVER_CONFIG", "OPERALIBRE_DATA_DIR", "PORT"):
             env[f"TEST_EXPECT_{name}"] = env.get(name, "")
         if scenario == "startup-failure":
@@ -334,10 +337,10 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                 continue
             arguments = [str(package / "operalibre-updater"), "--apply-update", str(package),
                 "--install-root", str(root), "--server-pid", str(old.pid), "--port", str(port), "--layout", "combined"]
-            if scenario != "older-server":
+            if not scenario.startswith("older-server"):
                 arguments += ["--server-config", "none" if no_config else str(config),
                     "--server-data-dir", str(data), "--server-port", str(port)]
-            updater = subprocess.Popen(arguments, cwd=server_cwd, env=env)
+            updater = subprocess.Popen(arguments, cwd=scratch if scenario == "older-server-cwd" else server_cwd, env=env)
             until(lambda: (data / "update.lock").exists() or (legacy_pid.parent / "update.lock").exists())
             if old_takeover:
                 # Start the installed old inode before refresh_launchers replaces it.
@@ -447,7 +450,7 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                 assert read_data(data) == (4, 1, ["before-update", "new-build"]), read_data(data)
             # Only an update to a build with trials is committed; a failed one never is.
             committed = data / "trial-committed"
-            assert committed.exists() == (scenario in ("success", "external-config", "relative-config", "external-old-takeover", "older-server")), scenario
+            assert committed.exists() == (scenario in ("success", "external-config", "relative-config", "external-old-takeover", "older-server", "older-server-cwd")), scenario
             assert not list((data / "update-backups").glob("*/data")), "the data snapshot was kept"
             if external:
                 assert (root / "data/update.lock").is_file()
