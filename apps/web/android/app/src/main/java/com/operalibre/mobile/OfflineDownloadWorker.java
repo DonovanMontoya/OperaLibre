@@ -273,7 +273,9 @@ public class OfflineDownloadWorker extends Worker {
     ) throws Exception {
         boolean libro = "libro".equals(job.optString("provider"));
         long retained = libro ? retainedLibroBytes(job) : 0;
-        HttpURLConnection connection = openWithSameOriginRedirects(new URL(source), libro);
+        URL url = new URL(source);
+        DownloadSourcePolicy server = libro ? null : serverPolicy(job, url);
+        HttpURLConnection connection = openWithAllowedRedirects(url, server);
         try {
             long expected = connection.getContentLengthLong();
             if (libro && expected >= 0) BookDownloadBudget.check(retained, expected, BookDownloadBudget.LIMIT);
@@ -323,17 +325,35 @@ public class OfflineDownloadWorker extends Worker {
     }
 
     /**
+     * Jobs queued before the server address was saved with them keep the
+     * same-origin rule they were queued under.
+     */
+    private static DownloadSourcePolicy serverPolicy(JSONObject job, URL source) {
+        String address = job.optString("serverOrigin", "");
+        DownloadSourcePolicy policy = address.isEmpty()
+            ? DownloadSourcePolicy.forSourceOrigin(source)
+            : DownloadSourcePolicy.forServer(address);
+        if (policy == null) throw new SecurityException("The download is not from the connected server.");
+        return policy;
+    }
+
+    /**
      * Opens {@code source} and returns a connection that answered 2xx.
      *
      * Redirects are followed by hand: the media URL carries the access token
      * in its query string, and HttpURLConnection would otherwise forward it
-     * to whatever host a redirect names. Only hops that stay on the original
-     * scheme, host, and port are followed.
+     * to whatever host a redirect names. The source and every hop must stay on
+     * the connected server ({@code server}), or on Libro.fm's download hosts
+     * when {@code server} is null.
      */
-    private static HttpURLConnection openWithSameOriginRedirects(URL original, boolean libro) throws Exception {
-        URL url = original;
+    static HttpURLConnection openWithAllowedRedirects(URL source, @Nullable DownloadSourcePolicy server) throws Exception {
+        URL url = source;
         for (int hop = 0; ; hop++) {
-            if (libro && !LibroDevicePlugin.allowedDownload(url)) throw new SecurityException("Unsupported Libro.fm download address.");
+            if (!allowedHop(url, server)) {
+                throw new SecurityException(hop == 0
+                    ? "The download is not from the connected server."
+                    : "The server redirected the download to another address.");
+            }
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
             connection.setConnectTimeout(60_000);
             connection.setReadTimeout(600_000);
@@ -358,26 +378,16 @@ public class OfflineDownloadWorker extends Worker {
             if (hop >= MAX_REDIRECTS) {
                 throw new IllegalStateException("The server redirected the download too many times.");
             }
-            URL next = new URL(url, location);
-            if (libro ? !LibroDevicePlugin.allowedDownload(next) : !sameOrigin(original, next)) {
-                throw new SecurityException("The server redirected the download to another address.");
-            }
-            url = next;
+            url = new URL(url, location);
         }
+    }
+
+    private static boolean allowedHop(URL url, @Nullable DownloadSourcePolicy server) {
+        return server == null ? LibroDevicePlugin.allowedDownload(url) : server.allows(url);
     }
 
     private static boolean isRedirect(int response) {
         return response == 301 || response == 302 || response == 303 || response == 307 || response == 308;
-    }
-
-    private static boolean sameOrigin(URL first, URL second) {
-        return first.getProtocol().equalsIgnoreCase(second.getProtocol())
-            && first.getHost().equalsIgnoreCase(second.getHost())
-            && effectivePort(first) == effectivePort(second);
-    }
-
-    private static int effectivePort(URL url) {
-        return url.getPort() == -1 ? url.getDefaultPort() : url.getPort();
     }
 
     static void deleteDownloadFiles(Context context, JSONObject job) throws Exception {
