@@ -375,3 +375,5 @@ Other apps can still use your library. The server's Audiobookshelf-compatible AP
 ## macOS app
 
 The macOS app is a small native window around the web app. From the repository root, run `./script/build_and_run.sh`, then enter the address of a running OperaLibre server on its first screen. It remembers the address and sign-in token between launches. Start the OperaLibre server separately with `npm run dev:server` while developing, or use the production server command in [Getting Started](getting-started.md#keep-it-running-recommended-after-you-have-tried-it).
+
+**OperaLibre → Check for Updates…** installs the latest signed web app. If a newly installed version fails to start, the app goes back to the version it was running before (or the one it shipped with). A version that fails to load, or that still shows nothing after loading on two separate launches, is not offered again until a fixed or newer release is published.
