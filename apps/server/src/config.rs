@@ -102,6 +102,14 @@ pub(crate) fn resolve_deployment_settings(
     configured_mode: Option<String>,
     configured_host: Option<String>,
 ) -> anyhow::Result<(DeploymentMode, String)> {
+    // Resolve this alias ourselves so the listener and updater both use IPv4 loopback.
+    let configured_host = configured_host.map(|host| {
+        if host.eq_ignore_ascii_case("localhost") {
+            "127.0.0.1".to_string()
+        } else {
+            host
+        }
+    });
     let deployment_mode = configured_mode
         .map(|value| DeploymentMode::parse(&value))
         .transpose()?
@@ -115,7 +123,9 @@ pub(crate) fn resolve_deployment_settings(
         });
     let host = configured_host.unwrap_or_else(|| deployment_mode.default_host().to_string());
     let host_address = host.parse::<IpAddr>().map_err(|error| {
-        anyhow::anyhow!("Invalid server host `{host}`: use a numeric IP address ({error})")
+        anyhow::anyhow!(
+            "Invalid server host `{host}`: use a numeric IP address or localhost ({error})"
+        )
     })?;
     if matches!(
         deployment_mode,

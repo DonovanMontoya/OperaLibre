@@ -89,7 +89,7 @@ ffprobe_path =
 | Key | Default | Description |
 | --- | --- | --- |
 | `deployment_mode` | `local` | `local` binds to loopback with HTTPS-grade cookies; `lan` listens on all interfaces and permits plain-HTTP cookies for a trusted LAN/VPN; `proxy` binds to loopback and expects a same-machine HTTPS reverse proxy. |
-| `host` | chosen by profile | Optional advanced bind override. Must be a numeric IP address, not a hostname. `local` and `proxy` require a loopback address; `lan` defaults to `0.0.0.0`. When upgrading an older config without `deployment_mode`, a non-loopback `host` is inferred as `lan` for compatibility. |
+| `host` | chosen by profile | Optional advanced bind override. Use a numeric IP address or `localhost` (which always binds to `127.0.0.1`). Other hostnames are not accepted. `local` and `proxy` require a loopback address; `lan` defaults to `0.0.0.0`. When upgrading an older config without `deployment_mode`, a non-loopback `host` is inferred as `lan` for compatibility. |
 | `port` | `4920` | TCP port the API listens on. |
 | `allowed_origins` | *(empty)* | Comma-separated list of trusted custom frontend origins, e.g. `https://reader.example.com`. These origins receive credentialed CORS access and may make cookie-authenticated changes, so do not list sites you do not control. Same-origin requests and the official app origins need no configuration. |
 

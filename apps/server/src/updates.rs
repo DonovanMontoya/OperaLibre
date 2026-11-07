@@ -966,10 +966,20 @@ impl UpdateManager {
     }
 
     fn ensure_updater_matches_server(&self, root: &Path) -> anyhow::Result<()> {
-        const MESSAGE: &str = "Automatic install needs the standard layout: server.config in the install folder, used by the running server, with the same data folder and port. Update manually, or restart OperaLibre if you changed server.config.";
+        const MESSAGE: &str = "Automatic install needs the standard layout: the packaged server and its process marker, unchanged server.config in the install folder, the same data folder on the install filesystem and nonzero port, and a bind address reachable at 127.0.0.1 (127.0.0.1, localhost, or 0.0.0.0). Update manually, or correct the configuration and restart OperaLibre.";
         let matches = || -> anyhow::Result<bool> {
             // The updater restarts here, so inherited relative paths must keep their meaning.
             if std::env::current_dir()?.canonicalize()? != root.canonicalize()? {
+                return Ok(false);
+            }
+            // Rollback stops and restarts this exact executable using the PID marker.
+            let server = root.join(exe_name("operalibre-server"));
+            if server.canonicalize()? != std::env::current_exe()?.canonicalize()?
+                || std::fs::read_to_string(self.data_dir.join("operalibre-server.pid"))?
+                    .trim()
+                    .parse::<u32>()?
+                    != std::process::id()
+            {
                 return Ok(false);
             }
             let config_path = root.join("server.config");
@@ -982,12 +992,82 @@ impl UpdateManager {
             let restarted = crate::config::ServerConfig::load()?;
             let running_data_dir = self.data_dir.canonicalize()?;
             let (data_dir, port) = updater_settings(root)?;
-            Ok(restarted.config_digest == self.config_digest
-                && restarted.config_path == self.config_path
-                && restarted.data_dir.canonicalize()? == running_data_dir
-                && restarted.port == self.port
-                && data_dir.canonicalize()? == running_data_dir
-                && port == self.port)
+            if restarted.config_digest != self.config_digest
+                || restarted.config_path != self.config_path
+                || restarted.data_dir.canonicalize()? != running_data_dir
+                || restarted.port != self.port
+                || data_dir.canonicalize()? != running_data_dir
+                || port != self.port
+            {
+                return Ok(false);
+            }
+            // A combined update moves web aside. State or tools inside it would
+            // disappear during the swap, including the updater's own staging area.
+            if install_layout(root, self.web_dist_dir.as_deref())? == InstallLayout::Combined {
+                let web = canonical_or_absolute(&root.join("web"))?;
+                for path in [
+                    Some(&config_path),
+                    Some(&restarted.data_dir),
+                    Some(&restarted.library_root),
+                    Some(&restarted.progress_file),
+                    Some(&restarted.users_file),
+                    Some(&restarted.activity_file),
+                    Some(&restarted.metadata_overrides_file),
+                    Some(&restarted.download_temp_dir),
+                    restarted.libation_cli_path.as_ref(),
+                    restarted.libation_files_dir.as_ref(),
+                    restarted.alignment_cli_path.as_ref(),
+                    restarted.ffmpeg_path.as_ref(),
+                    restarted.ffprobe_path.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    if canonical_or_absolute(path)?.starts_with(&web) {
+                        return Ok(false);
+                    }
+                }
+            }
+            // Both readiness and trial commit use IPv4 loopback, including during rollback.
+            // IPv6 wildcard dual-stack behaviour is platform-dependent and not configured.
+            if !matches!(
+                restarted.host.parse::<std::net::Ipv4Addr>(),
+                Ok(std::net::Ipv4Addr::LOCALHOST | std::net::Ipv4Addr::UNSPECIFIED)
+            ) || port == 0
+            {
+                return Ok(false);
+            }
+            // These paths are created unconditionally by the launcher. Reject known
+            // obstructions before shutdown; permissions and space can still change later.
+            for (path, directory) in [
+                (root.join("audiobooks"), true),
+                (data_dir.join("update-backups"), true),
+                (data_dir.join("update.lock"), false),
+                (data_dir.join("server.log"), false),
+                (data_dir.join("update-result.txt"), false),
+                (data_dir.join("update-result.txt.tmp"), false),
+            ] {
+                match std::fs::symlink_metadata(&path) {
+                    Ok(_) => {
+                        let metadata = std::fs::metadata(path)?;
+                        if (directory && !metadata.is_dir()) || (!directory && !metadata.is_file())
+                        {
+                            return Ok(false);
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            // Staged binaries and backups live in data_dir. Both swaps need
+            // same-filesystem renames, which a permission-only probe cannot prove.
+            let probe = tempfile::Builder::new()
+                .prefix(".operalibre-update-probe-")
+                .tempfile_in(&data_dir)?;
+            let destination = root.join(probe.path().file_name().unwrap());
+            drop(probe.persist_noclobber(&destination)?);
+            std::fs::remove_file(destination)?;
+            Ok(true)
         };
         if !matches().unwrap_or(false) {
             bail!(MESSAGE);
@@ -2048,6 +2128,35 @@ mod tests {
         let mut failures = Vec::new();
         for scenario in [
             "standard",
+            "host-loopback",
+            "host-wildcard",
+            "host-localhost",
+            "host-other-loopback",
+            "host-lan",
+            "host-ipv6-wildcard",
+            "host-ipv6-loopback",
+            "env-host-loopback",
+            "env-host-wildcard",
+            "env-host-localhost",
+            "env-host-other-loopback",
+            "env-host-lan",
+            "config-host-overrides-env",
+            "profile-local",
+            "profile-lan",
+            "profile-proxy",
+            "missing-pid",
+            "wrong-pid",
+            "renamed-server",
+            "blocked-audiobooks",
+            "zero-port",
+            "blocked-update-lock",
+            "blocked-update-result",
+            "blocked-update-backups",
+            "blocked-server-log",
+            "cross-device-data",
+            "combined-data-in-web",
+            "combined-library-in-web",
+            "server-only-data-in-web",
             "missing-config",
             "other-config",
             "absolute-config",
@@ -2062,6 +2171,27 @@ mod tests {
             "relative-env",
             "relative-env-other-cwd",
         ] {
+            let external_data: Option<tempfile::TempDir> = if scenario == "cross-device-data" {
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    let Ok(data) = tempfile::tempdir_in("/dev/shm") else {
+                        continue;
+                    };
+                    if data.path().metadata().unwrap().dev()
+                        == scratch.path().metadata().unwrap().dev()
+                    {
+                        continue;
+                    }
+                    Some(data)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    continue;
+                }
+            } else {
+                None
+            };
             let root = scratch.path().join(scenario);
             std::fs::create_dir_all(root.join("data")).unwrap();
             std::fs::create_dir(root.join("library")).unwrap();
@@ -2076,7 +2206,11 @@ mod tests {
             } else if scenario != "missing-config" {
                 std::fs::write(root.join("server.config"), "").unwrap();
             }
-            let executable = root.join(super::exe_name("operalibre-server"));
+            let executable = root.join(super::exe_name(if scenario == "renamed-server" {
+                "custom-server"
+            } else {
+                "operalibre-server"
+            }));
             std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
             let mut command = std::process::Command::new(&executable);
             command
@@ -2090,7 +2224,91 @@ mod tests {
                 .env("OPERALIBRE_LAYOUT_PROBE", &probe)
                 .env_remove("OPERALIBRE_SERVER_CONFIG")
                 .env_remove("OPERALIBRE_DATA_DIR")
+                .env_remove("OPERALIBRE_DEPLOYMENT_MODE")
+                .env_remove("HOST")
                 .env_remove("PORT");
+            let host = match scenario {
+                "host-loopback" | "env-host-loopback" => Some("127.0.0.1"),
+                "host-wildcard" | "env-host-wildcard" => Some("0.0.0.0"),
+                "host-localhost" | "env-host-localhost" => Some("localhost"),
+                "host-other-loopback" | "env-host-other-loopback" => Some("127.0.0.2"),
+                "host-lan" | "env-host-lan" => Some("192.168.1.20"),
+                "host-ipv6-wildcard" => Some("::"),
+                "host-ipv6-loopback" => Some("::1"),
+                _ => None,
+            };
+            if let Some(host) = host {
+                if scenario.starts_with("env-") {
+                    command.env("HOST", host);
+                } else {
+                    std::fs::write(root.join("server.config"), format!("host = {host}\n")).unwrap();
+                }
+            }
+            if let Some(profile) = scenario.strip_prefix("profile-") {
+                std::fs::write(
+                    root.join("server.config"),
+                    format!("deployment_mode = {profile}\nhost =\n"),
+                )
+                .unwrap();
+            }
+            if scenario == "config-host-overrides-env" {
+                std::fs::write(root.join("server.config"), "host = 127.0.0.1\n").unwrap();
+                command.env("HOST", "192.168.1.20");
+            }
+            if scenario == "blocked-audiobooks" {
+                std::fs::write(root.join("audiobooks"), "not a folder").unwrap();
+            }
+            if scenario == "zero-port" {
+                std::fs::write(root.join("server.config"), "port = 0\n").unwrap();
+            }
+            if let Some(data) = &external_data {
+                std::fs::write(
+                    root.join("server.config"),
+                    format!("data_dir = {}\n", data.path().display()),
+                )
+                .unwrap();
+            }
+            if scenario.ends_with("-in-web") {
+                std::fs::create_dir_all(root.join("web/state")).unwrap();
+                std::fs::create_dir(root.join("web/books")).unwrap();
+                std::fs::write(
+                    root.join("server.config"),
+                    format!(
+                        "data_dir = {}\nlibrary_root = {}\nweb_dist_dir = {}\n",
+                        if scenario.contains("data-in-web") {
+                            "web/state"
+                        } else {
+                            "data"
+                        },
+                        if scenario.contains("library-in-web") {
+                            "web/books"
+                        } else {
+                            "library"
+                        },
+                        if scenario.starts_with("combined-") {
+                            "web"
+                        } else {
+                            ""
+                        },
+                    ),
+                )
+                .unwrap();
+            }
+            match scenario {
+                "blocked-update-lock" => {
+                    std::fs::create_dir(root.join("data/update.lock")).unwrap();
+                }
+                "blocked-update-result" => {
+                    std::fs::create_dir(root.join("data/update-result.txt")).unwrap();
+                }
+                "blocked-update-backups" => {
+                    std::fs::write(root.join("data/update-backups"), "not a folder").unwrap();
+                }
+                "blocked-server-log" => {
+                    std::fs::create_dir(root.join("data/server.log")).unwrap();
+                }
+                _ => {}
+            }
             if matches!(scenario, "absolute-config" | "relative-env-other-cwd") {
                 command.env("OPERALIBRE_SERVER_CONFIG", root.join("server.config"));
             }
@@ -2140,6 +2358,17 @@ mod tests {
         let root = executable.parent().unwrap();
         let config = crate::config::ServerConfig::load().unwrap();
         std::fs::create_dir_all(&config.data_dir).unwrap();
+        if scenario != "missing-pid" {
+            std::fs::write(
+                config.data_dir.join("operalibre-server.pid"),
+                if scenario == "wrong-pid" {
+                    "0".to_string()
+                } else {
+                    std::process::id().to_string()
+                },
+            )
+            .unwrap();
+        }
         let mut manager = UpdateManager::new(
             config.data_dir,
             config.web_dist_dir,
@@ -2185,7 +2414,20 @@ mod tests {
         }
         let available = matches!(
             scenario.as_str(),
-            "standard" | "absolute-config" | "relative-env"
+            "standard"
+                | "absolute-config"
+                | "relative-env"
+                | "host-loopback"
+                | "host-wildcard"
+                | "host-localhost"
+                | "env-host-loopback"
+                | "env-host-wildcard"
+                | "env-host-localhost"
+                | "config-host-overrides-env"
+                | "profile-local"
+                | "profile-lan"
+                | "profile-proxy"
+                | "server-only-data-in-web"
         );
         let status = status();
         assert!(status.update_available);
@@ -2250,8 +2492,8 @@ mod tests {
         }
         assert!(!manager.installing.load(Ordering::SeqCst));
         assert_eq!(*manager.sync_update_pause.borrow(), 0);
-        assert!(!root.join("data/updates").exists());
-        assert!(!root.join("data/update.log").exists());
+        assert!(!manager.data_dir.join("updates").exists());
+        assert!(!manager.data_dir.join("update.log").exists());
 
         if scenario.starts_with("edited-invalid-") {
             assert_eq!(manager.port, 4920);
@@ -2262,6 +2504,7 @@ mod tests {
             "edited-data" | "edited-port" | "edited-library"
         ) {
             let restarted = crate::config::ServerConfig::load().unwrap();
+            crate::record_server_pid(&restarted.data_dir).unwrap();
             let restarted = UpdateManager::new(
                 restarted.data_dir,
                 restarted.web_dist_dir,

@@ -1628,6 +1628,22 @@ fn deployment_profiles_choose_safe_defaults() {
 }
 
 #[test]
+fn localhost_binds_to_ipv4_loopback() {
+    for host in ["localhost", "LOCALHOST"] {
+        let (mode, host) =
+            super::resolve_deployment_settings(None, Some(host.to_string())).unwrap();
+        assert_eq!(mode, super::DeploymentMode::Local);
+        let address: std::net::SocketAddr = format!("{host}:0").parse().unwrap();
+        let listener = std::net::TcpListener::bind(address).unwrap();
+        assert_eq!(
+            listener.local_addr().unwrap().ip(),
+            std::net::Ipv4Addr::LOCALHOST
+        );
+        std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    }
+}
+
+#[test]
 fn setup_tokens_are_bounded_and_expire() {
     let token = super::SetupToken::new("one-time-secret", 100);
     assert!(token.matches("one-time-secret", 100));
