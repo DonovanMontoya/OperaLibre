@@ -2127,7 +2127,6 @@ mod tests {
                     String::from_utf8_lossy(&output.stderr)
                 ));
             }
-            std::fs::remove_file(executable).unwrap();
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
