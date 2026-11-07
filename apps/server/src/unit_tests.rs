@@ -8265,12 +8265,14 @@ async fn a_full_login_throttle_map_evicts_stale_then_oldest_entries() {
                 super::LOGIN_LOCKOUT_SECONDS - 5,
             ),
         );
+        // Live address counters are never evicted, so the weak entries are
+        // username counters.
         attempts.insert(
-            "oldest".to_string(),
+            "user:oldest".to_string(),
             entry(1, super::LOGIN_LOCKOUT_SECONDS - 10),
         );
         for index in attempts.len()..super::LOGIN_THROTTLE_MAX_ENTRIES {
-            attempts.insert(format!("filler-{index}"), entry(1, 1));
+            attempts.insert(format!("user:filler-{index}"), entry(1, 1));
         }
     }
 
@@ -8283,7 +8285,7 @@ async fn a_full_login_throttle_map_evicts_stale_then_oldest_entries() {
         assert_eq!(attempts.get(key).map(|throttle| throttle.failures), Some(1));
     }
     assert!(!attempts.contains_key("stale"));
-    assert!(!attempts.contains_key("oldest"));
+    assert!(!attempts.contains_key("user:oldest"));
     assert!(attempts.contains_key("locked"));
 }
 
@@ -8384,6 +8386,55 @@ async fn public_ipv6_networks_cannot_evict_each_others_budget_under_a_full_map()
     }
 
     assert_eq!(admitted, [super::LOGIN_IP_MAX_FAILURES; 2]);
+}
+
+/// The same holds for IPv4 and other single-address counters: two addresses
+/// taking turns under a full map must not evict each other's counters and
+/// guess without limit.
+#[cfg(unix)]
+#[tokio::test]
+async fn ipv4_addresses_cannot_evict_each_others_budget_under_a_full_map() {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let now = super::unix_now_seconds();
+    {
+        let mut attempts = state.login_attempts.lock().await;
+        for index in 0..super::LOGIN_THROTTLE_MAX_ENTRIES {
+            attempts.insert(
+                format!("ip:198.18.{}.{}", index / 256, index % 256),
+                super::LoginThrottle {
+                    failures: super::LOGIN_IP_MAX_FAILURES,
+                    last_failure: now,
+                    run: 0,
+                },
+            );
+        }
+    }
+
+    let guessers = [
+        (IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)), "alice"),
+        (IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2)), "bob"),
+    ];
+    let mut admitted = [0_u32; 2];
+    for _ in 0..super::LOGIN_IP_MAX_FAILURES * 4 {
+        for ((address, name), admitted) in guessers.iter().zip(&mut admitted) {
+            let keys = super::LoginThrottleKeys::new(*address, name);
+            if keys.is_locked(&*state.login_attempts.lock().await, now) {
+                continue;
+            }
+            assert!(super::record_login_failures(&state, keys.all()).await);
+            *admitted += 1;
+        }
+    }
+
+    assert!(
+        admitted
+            .iter()
+            .all(|count| *count <= super::LOGIN_IP_MAX_FAILURES),
+        "admitted {admitted:?}"
+    );
 }
 
 #[test]

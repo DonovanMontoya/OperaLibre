@@ -1249,10 +1249,11 @@ fn evict_weakest_login_throttle(
 /// [`LoginThrottleKeys::is_locked`] makes now. Besides each counter's own
 /// limit, an (address, username) pair with a recent failure is what holds its
 /// address to one guess a window while that username is under attack, even
-/// with a single failure. A /64 counter with a recent failure is kept too:
-/// every fresh address in the /64 is clean, so that counter is all that
-/// holds the network to its budget, and two networks could otherwise evict
-/// each other's counters under a full map.
+/// with a single failure. An address counter (a single address, or a public
+/// IPv6 /64) with a recent failure is kept too: otherwise two addresses or
+/// networks taking turns under a full map would evict each other's counters
+/// and reset their budgets, and for a /64 every fresh address is clean, so
+/// that counter is all that holds the network to its budget.
 fn login_throttle_holds_lock(
     attempts: &HashMap<String, LoginThrottle>,
     key: &str,
@@ -1265,8 +1266,7 @@ fn login_throttle_holds_lock(
     // A pair key is `ip:{address}:user:{name}`; an address never contains
     // `user`, so the first match is where the username key starts.
     let Some(username_at) = key.find(":user:") else {
-        return throttle.is_locked(now, LOGIN_IP_MAX_FAILURES)
-            || (key.ends_with("/64") && !throttle.is_stale(now));
+        return !throttle.is_stale(now);
     };
     throttle.is_locked(now, LOGIN_MAX_FAILURES)
         || (!throttle.is_stale(now)
