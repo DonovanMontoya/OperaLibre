@@ -665,6 +665,31 @@ test("a failed save leaves a durable dirty checkpoint with its original causal b
   assert.equal(f.checkpoint().positionSeconds, 1090);
 });
 
+// An update the server has not finished answers every save with 503 and
+// Retry-After. A paused player sends nothing more, so the refused position
+// has to wait in the checkpoint until the library's retry finds the server back.
+test("a save refused while the server finishes an update is replayed when it is back", async () => {
+  const f = fixture();
+  f.options.restoredProgressBookId.current = "book";
+  f.options.playbackTouchedRef.current = true;
+  f.options.pendingSeekRef.current = { trackId: "track", positionSeconds: 1060 };
+  const api = f.dependencies["./api"];
+  const save = api.saveProgress;
+  const notReady = Object.assign(new Error("OperaLibre is finishing an update."), { status: 503, retryAfterSeconds: 5 });
+  api.saveProgress = async () => { throw notReady; };
+  api.isServerNotReadyError = (error: unknown) => error === notReady;
+  await loadHook("useProgressSync", f.dependencies)(f.options).persistProgress();
+  assert.equal(f.checkpoint().syncStatus, "pending");
+  assert.equal(f.writes.length, 0);
+
+  api.saveProgress = save;
+  await loadHook("useLibrary", f.dependencies)(f.options).loadBooks();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.writes[0].progress.positionSeconds, 1060);
+  assert.equal(f.writes[0].progress.baseUpdatedAt, f.server.updatedAt);
+});
+
 test("a restore response cannot overwrite listening recorded while its read was in flight", () => {
   const f = fixture();
   const sync = loadHook("useProgressSync", f.dependencies)(f.options);
