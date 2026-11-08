@@ -39,7 +39,7 @@ async function openShelf(page: Page, source: string) {
   await expect(page.locator('.book-row')).toHaveCount(1);
   await expect(page.locator('.native-launch-cover')).toHaveCount(0);
   await page.getByRole('button', { name: 'Get books', exact: true }).click();
-  await page.getByRole('tab', { name: source === 'libro' ? 'Libro.fm' : 'All accounts', exact: true }).click();
+  await page.getByRole('tab', { name: source === 'libro' ? 'Libro.fm' : 'All stores', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Retained purchase', exact: true })).toBeVisible();
   return requests;
 }

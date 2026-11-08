@@ -7,7 +7,7 @@ import { bookReadingAvailability, SHELF_FACET_PREVIEW_COUNT, type ShelfFacetOpti
 import type { Book } from "./types";
 import { summarizeSharedProgress } from "./sharedProgress";
 import { bookSortGroupCaption, shelfLetterIndex, type SortMode } from "./shelfSort";
-import { bookProgressLabel, bookSubtitle, durationFromTracks, formatDurationLabel } from "./formatting";
+import { bookProgressLabel, bookSubtitle, countLabel, durationFromTracks, formatDurationLabel } from "./formatting";
 import { CoverArt } from "./CoverArt";
 import type { OfflineReadiness } from "./offlineReadiness";
 
@@ -333,7 +333,16 @@ export const ShelfBookList = memo(function ShelfBookList({
                   text?" unanswerable without opening every book. */}
               <span className="book-text">
                 <strong>{book.title}</strong>
-                <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
+                {/* The app's list rows have room to give the narrator a line of
+                    their own instead of truncating a joined byline. */}
+                {native && viewMode === "list" && book.author && book.narrator ? (
+                  <>
+                    <span>{book.author}</span>
+                    <span className="book-row-narrator">Narrated by {book.narrator}</span>
+                  </>
+                ) : (
+                  <span>{bookSubtitle(book) || countLabel(book.trackCount, "track")}</span>
+                )}
                 {!isCompactView && sortMode === "series" && book.metadata.seriesPosition ? (
                   <span className="book-sort-context">Book {book.metadata.seriesPosition}{isGridView ? null : " in series"}</span>
                 ) : null}

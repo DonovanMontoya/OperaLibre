@@ -1805,15 +1805,29 @@ function MainApp({
     startPlayback
   });
 
+  // The chapter list follows playback, but opening a book page leaves its top
+  // (the way back, the cover and the actions) in view: the first chapter seen
+  // there is only noted, and later chapter changes scroll as before.
+  const followedChapterRef = useRef<string | null>(null);
+  const followedViewRef = useRef(nativePlayerView);
   useEffect(() => {
-    if (!chaptersOpen || !isViewingPlayingBook || activeChapterId === null) return;
+    const enteredBookPage = followedViewRef.current !== nativePlayerView;
+    followedViewRef.current = nativePlayerView;
+    if (!chaptersOpen || !isViewingPlayingBook || activeChapterId === null) {
+      followedChapterRef.current = null;
+      return;
+    }
+    const firstOnBookPage = native && nativePlayerView === "details"
+      && (enteredBookPage || followedChapterRef.current === null);
+    followedChapterRef.current = String(activeChapterId);
+    if (firstOnBookPage) return;
     const frame = window.requestAnimationFrame(() => {
       chaptersListRef.current
         ?.querySelector<HTMLElement>(`[data-chapter-id="${activeChapterId}"]`)
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeChapterId, chaptersOpen, isViewingPlayingBook]);
+  }, [activeChapterId, chaptersOpen, isViewingPlayingBook, native, nativePlayerView]);
 
   useEffect(() => {
     const sync = createForegroundProgressSync(
@@ -2742,7 +2756,7 @@ function MainApp({
             onClick={() => openNativeTab("reading")}
           >
             <Headphones size={20} strokeWidth={1.6} />
-            <span>Reading</span>
+            <span>Listening</span>
           </button>
           {gamesEnabled ? <button
             type="button"

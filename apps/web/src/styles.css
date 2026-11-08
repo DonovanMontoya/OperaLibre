@@ -8,6 +8,14 @@
   --oxblood-deep: #5e1e13;
   --gold: #b8893a;
   --gold-soft: #d9b574;
+  /* Text and tints on the shelf, games and sheets: paper and pale gold on
+     the dark surfaces. iOS light mode turns those surfaces to paper and
+     retints these to ink and a deeper gold. */
+  --on-spine: var(--paper);
+  --on-spine-rgb: 241, 231, 208;
+  --on-spine-bright-rgb: 255, 250, 237;
+  --spine-gold: var(--gold-soft);
+  --spine-gold-rgb: 217, 181, 116;
   --spine: #1a1410;
   --spine-deep: #0e0a07;
 
@@ -149,7 +157,7 @@ html:not(.native-app) .web-shell > .player-pane {
       transparent 2px 4px
     );
   background-blend-mode: normal, overlay;
-  color: var(--paper);
+  color: var(--on-spine);
   /* The mini-player floats over this pane too, so the last shelf rows need
      the same clearance the reading pane already reserves. */
   padding: 36px 28px 140px;
@@ -182,7 +190,7 @@ html:not(.native-app) .web-shell > .player-pane {
   gap: 16px;
   margin-bottom: 22px;
   padding-bottom: 20px;
-  border-bottom: 1px solid rgba(217, 181, 116, 0.22);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.22);
 }
 
 .pane-actions {
@@ -230,15 +238,15 @@ html:not(.native-app) .web-shell > .player-pane {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  background: rgba(217, 181, 116, 0.06);
-  border: 1px solid rgba(217, 181, 116, 0.18);
-  color: var(--gold-soft);
+  background: rgba(var(--spine-gold-rgb), 0.06);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.18);
+  color: var(--spine-gold);
   transition: border-color 0.2s ease, background 0.2s ease;
 }
 
 .library-search:focus-within {
   border-color: var(--gold-soft);
-  background: rgba(217, 181, 116, 0.12);
+  background: rgba(var(--spine-gold-rgb), 0.12);
 }
 
 .library-search input {
@@ -252,11 +260,11 @@ html:not(.native-app) .web-shell > .player-pane {
   /* >=16px so iOS doesn't zoom the page when the field is focused. */
   font-size: 1rem;
   font-style: italic;
-  color: var(--paper);
+  color: var(--on-spine);
 }
 
 .library-search input::placeholder {
-  color: rgba(241, 231, 208, 0.4);
+  color: rgba(var(--on-spine-rgb), 0.4);
   font-style: italic;
 }
 
@@ -272,7 +280,7 @@ html:not(.native-app) .web-shell > .player-pane {
   width: 32px;
   min-height: 32px;
   margin: -6px -6px -6px 0;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   background: transparent;
 }
 
@@ -299,9 +307,9 @@ html:not(.native-app) .web-shell > .player-pane {
   align-items: center;
   gap: 7px;
   padding: 0 13px;
-  background: rgba(217, 181, 116, 0.06);
-  border: 1px solid rgba(217, 181, 116, 0.18);
-  color: rgba(241, 231, 208, 0.62);
+  background: rgba(var(--spine-gold-rgb), 0.06);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.18);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: 0.66rem "JetBrains Mono", monospace;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -310,16 +318,16 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .library-filter-toggle:hover,
 .library-filter-toggle.open {
-  color: var(--gold-soft);
-  border-color: rgba(217, 181, 116, 0.45);
-  background: rgba(217, 181, 116, 0.12);
+  color: var(--spine-gold);
+  border-color: rgba(var(--spine-gold-rgb), 0.45);
+  background: rgba(var(--spine-gold-rgb), 0.12);
 }
 
 /* A filter left on is a fact about what you are looking at, so the button
    carries it in the accent colour even when the panel is shut. */
 .library-filter-toggle.engaged,
 .library-filter-toggle.status-engaged {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   border-color: var(--gold-soft);
 }
 
@@ -343,8 +351,8 @@ html:not(.native-app) .web-shell > .player-pane {
 .library-filters {
   display: grid;
   gap: 0;
-  border: 1px solid rgba(217, 181, 116, 0.2);
-  background: rgba(217, 181, 116, 0.05);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.2);
+  background: rgba(var(--spine-gold-rgb), 0.05);
   animation: filters-unfold 0.18s ease both;
 }
 
@@ -354,11 +362,11 @@ html:not(.native-app) .web-shell > .player-pane {
   justify-content: space-between;
   gap: 12px;
   padding: 8px 14px;
-  border-bottom: 1px solid rgba(217, 181, 116, 0.14);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.14);
 }
 
 .library-filters-heading strong {
-  color: var(--paper);
+  color: var(--on-spine);
   font: 1rem "Fraunces", serif;
 }
 
@@ -366,7 +374,7 @@ html:not(.native-app) .web-shell > .player-pane {
   min-height: 36px;
   padding: 8px;
   border: 0;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .library-filters-body {
@@ -385,8 +393,8 @@ html:not(.native-app) .web-shell > .player-pane {
   gap: 8px;
   padding: 8px 10px;
   min-width: 0;
-  border: 1px solid rgba(217, 181, 116, 0.22);
-  color: var(--gold-soft);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.22);
+  color: var(--spine-gold);
 }
 
 .shelf-facet-search input {
@@ -395,7 +403,7 @@ html:not(.native-app) .web-shell > .player-pane {
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--paper);
+  color: var(--on-spine);
   font-size: 1rem;
   outline: 0;
 }
@@ -436,7 +444,7 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .shelf-facet-availability {
   padding-top: 15px;
-  border-top: 1px solid rgba(217, 181, 116, 0.14);
+  border-top: 1px solid rgba(var(--spine-gold-rgb), 0.14);
 }
 
 .shelf-facet-heading {
@@ -446,14 +454,14 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .shelf-facet-title {
-  color: rgba(241, 231, 208, 0.42);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: 0.55rem "JetBrains Mono", monospace;
   letter-spacing: 0.16em;
   text-transform: uppercase;
 }
 
 .shelf-facet-count {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font: 0.55rem "JetBrains Mono", monospace;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -461,7 +469,7 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .shelf-facet-hint {
   margin: 0;
-  color: rgba(241, 231, 208, 0.4);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font-family: "Fraunces", serif;
   font-style: italic;
   font-size: 0.85rem;
@@ -475,7 +483,7 @@ html:not(.native-app) .web-shell > .player-pane {
 .shelf-status-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  border: 1px solid rgba(217, 181, 116, 0.22);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.22);
 }
 
 .shelf-status-row button {
@@ -487,7 +495,7 @@ html:not(.native-app) .web-shell > .player-pane {
   justify-content: center;
   gap: 7px;
   background: transparent;
-  color: rgba(241, 231, 208, 0.58);
+  color: rgba(var(--on-spine-rgb), 0.58);
   font: 0.6rem "JetBrains Mono", monospace;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -495,11 +503,11 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .shelf-status-row button:nth-child(odd) {
-  border-right: 1px solid rgba(217, 181, 116, 0.22);
+  border-right: 1px solid rgba(var(--spine-gold-rgb), 0.22);
 }
 
 .shelf-status-row button:nth-child(n + 3) {
-  border-top: 1px solid rgba(217, 181, 116, 0.22);
+  border-top: 1px solid rgba(var(--spine-gold-rgb), 0.22);
 }
 
 .shelf-status-row button > span {
@@ -517,8 +525,8 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .shelf-status-row button:not(:disabled):hover {
-  color: var(--gold-soft);
-  background: rgba(217, 181, 116, 0.1);
+  color: var(--spine-gold);
+  background: rgba(var(--spine-gold-rgb), 0.1);
 }
 
 .shelf-status-row button.selected {
@@ -542,7 +550,7 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .shelf-facet-groups > .shelf-facet + .shelf-facet {
   padding-top: 15px;
-  border-top: 1px solid rgba(217, 181, 116, 0.14);
+  border-top: 1px solid rgba(var(--spine-gold-rgb), 0.14);
 }
 
 .shelf-facet-chips {
@@ -558,9 +566,9 @@ html:not(.native-app) .web-shell > .player-pane {
   align-items: center;
   gap: 6px;
   padding: 4px 9px;
-  background: rgba(241, 231, 208, 0.04);
-  border: 1px solid rgba(217, 181, 116, 0.2);
-  color: rgba(241, 231, 208, 0.72);
+  background: rgba(var(--on-spine-rgb), 0.04);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.2);
+  color: rgba(var(--on-spine-rgb), 0.72);
   font-family: "Fraunces", serif;
   font-size: 0.82rem;
   line-height: 1.1;
@@ -577,16 +585,16 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .facet-chip em {
   flex: none;
-  color: rgba(241, 231, 208, 0.38);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: 0.6rem "JetBrains Mono", monospace;
   font-style: normal;
   letter-spacing: 0.04em;
 }
 
 .facet-chip:not(:disabled):hover {
-  color: var(--gold-soft);
-  border-color: rgba(217, 181, 116, 0.5);
-  background: rgba(217, 181, 116, 0.1);
+  color: var(--spine-gold);
+  border-color: rgba(var(--spine-gold-rgb), 0.5);
+  background: rgba(var(--spine-gold-rgb), 0.1);
 }
 
 .facet-chip.selected {
@@ -609,15 +617,15 @@ html:not(.native-app) .web-shell > .player-pane {
   padding: 2px 0;
   background: transparent;
   border: 0;
-  border-bottom: 1px dotted rgba(217, 181, 116, 0.45);
-  color: rgba(241, 231, 208, 0.55);
+  border-bottom: 1px dotted rgba(var(--spine-gold-rgb), 0.45);
+  color: rgba(var(--on-spine-rgb), 0.55);
   font: 0.58rem "JetBrains Mono", monospace;
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
 
 .shelf-facet-more:hover {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 /* Reads back what is narrowing the shelf when the panel is closed, so a filter
@@ -631,7 +639,7 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .library-active-filters-caption {
   margin-right: 2px;
-  color: rgba(241, 231, 208, 0.38);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: 0.55rem "JetBrains Mono", monospace;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -644,15 +652,15 @@ html:not(.native-app) .web-shell > .player-pane {
   align-items: center;
   gap: 7px;
   padding: 3px 8px;
-  background: rgba(217, 181, 116, 0.12);
-  border: 1px solid rgba(217, 181, 116, 0.38);
-  color: var(--gold-soft);
+  background: rgba(var(--spine-gold-rgb), 0.12);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.38);
+  color: var(--spine-gold);
   transition: color 0.18s ease, border-color 0.18s ease, background 0.18s ease;
 }
 
 .active-filter-caption {
   flex: none;
-  color: rgba(241, 231, 208, 0.42);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: 0.52rem "JetBrains Mono", monospace;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -669,24 +677,24 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .active-filter-chip:hover {
-  color: var(--paper);
+  color: var(--on-spine);
   border-color: var(--gold-soft);
-  background: rgba(217, 181, 116, 0.2);
+  background: rgba(var(--spine-gold-rgb), 0.2);
 }
 
 .library-clear-filters {
   padding: 3px 0;
   background: transparent;
   border: 0;
-  border-bottom: 1px dotted rgba(217, 181, 116, 0.45);
-  color: rgba(241, 231, 208, 0.55);
+  border-bottom: 1px dotted rgba(var(--spine-gold-rgb), 0.45);
+  color: rgba(var(--on-spine-rgb), 0.55);
   font: 0.58rem "JetBrains Mono", monospace;
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
 
 .library-clear-filters:hover {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .shelf-empty-state {
@@ -708,7 +716,7 @@ html:not(.native-app) .web-shell > .player-pane {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  color: rgba(241, 231, 208, 0.65);
+  color: rgba(var(--on-spine-rgb), 0.65);
   font: 0.65rem "JetBrains Mono", monospace;
 }
 
@@ -719,15 +727,15 @@ html:not(.native-app) .web-shell > .player-pane {
   gap: 5px;
   min-height: 44px;
   padding: 0 8px;
-  border: 1px solid rgba(217, 181, 116, 0.22);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.22);
   background: transparent;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font: inherit;
   white-space: nowrap;
 }
 
 .library-expand-all:hover {
-  background: rgba(217, 181, 116, 0.08);
+  background: rgba(var(--spine-gold-rgb), 0.08);
 }
 
 .library-sort {
@@ -739,13 +747,13 @@ html:not(.native-app) .web-shell > .player-pane {
   position: relative;
   display: flex;
   align-items: center;
-  border: 1px solid rgba(217, 181, 116, 0.22);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.22);
 }
 
 .library-sort > span {
   flex: none;
   padding-left: 10px;
-  color: rgba(241, 231, 208, 0.55);
+  color: rgba(var(--on-spine-rgb), 0.55);
   font: 0.6rem "JetBrains Mono", monospace;
 }
 
@@ -765,7 +773,7 @@ html:not(.native-app) .web-shell > .player-pane {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   font-style: normal;
-  color: var(--paper);
+  color: var(--on-spine);
   background-color: transparent;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' stroke='%23d9b574' stroke-width='1.5' fill='none' stroke-linecap='round'/></svg>");
   border: 0;
@@ -778,14 +786,14 @@ html:not(.native-app) .web-shell > .player-pane {
   min-height: 44px;
   display: grid;
   place-items: center;
-  color: var(--gold-soft);
-  background: rgba(217, 181, 116, 0.06);
-  border: 1px solid rgba(217, 181, 116, 0.22);
+  color: var(--spine-gold);
+  background: rgba(var(--spine-gold-rgb), 0.06);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.22);
 }
 
 .library-sort-direction:hover,
 .library-sort-direction[aria-pressed="true"] {
-  background: rgba(217, 181, 116, 0.18);
+  background: rgba(var(--spine-gold-rgb), 0.18);
   border-color: var(--gold-soft);
 }
 
@@ -796,13 +804,13 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .library-sort select option {
   background: var(--spine);
-  color: var(--paper);
+  color: var(--on-spine);
 }
 
 .view-toggle {
   display: flex;
   margin-left: auto;
-  border: 1px solid rgba(217, 181, 116, 0.22);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.22);
 }
 
 .view-toggle button {
@@ -814,17 +822,17 @@ html:not(.native-app) .web-shell > .player-pane {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: rgba(241, 231, 208, 0.55);
+  color: rgba(var(--on-spine-rgb), 0.55);
   background: transparent;
   transition: color 0.2s ease, background 0.2s ease;
 }
 
 .view-toggle button + button {
-  border-left: 1px solid rgba(217, 181, 116, 0.22);
+  border-left: 1px solid rgba(var(--spine-gold-rgb), 0.22);
 }
 
 .view-toggle button:hover {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .view-toggle button.selected {
@@ -836,7 +844,7 @@ html:not(.native-app) .web-shell > .player-pane {
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: minmax(0, 1fr);
-  border: 1px solid rgba(217, 181, 116, 0.22);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.22);
 }
 
 .source-toggle button {
@@ -852,8 +860,8 @@ html:not(.native-app) .web-shell > .player-pane {
   font-weight: 500;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: rgba(241, 231, 208, 0.58);
-  border-right: 1px solid rgba(217, 181, 116, 0.22);
+  color: rgba(var(--on-spine-rgb), 0.58);
+  border-right: 1px solid rgba(var(--spine-gold-rgb), 0.22);
 }
 
 .source-toggle button:last-child {
@@ -861,7 +869,7 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .source-toggle button:hover {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .source-toggle button.selected {
@@ -874,7 +882,7 @@ html:not(.native-app) .web-shell > .player-pane {
   padding: 0;
   gap: 0;
   border: 0;
-  border-bottom: 1px solid rgba(217, 181, 116, 0.25);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.25);
   border-radius: 0;
   background: none;
 }
@@ -893,7 +901,7 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .source-toggle.shelf-navigation button.selected {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   background: none;
   border-bottom-color: var(--gold-soft);
 }
@@ -907,24 +915,24 @@ html:not(.native-app) .web-shell > .player-pane {
 .source-toggle.shelf-navigation > button.shelf-expand-button {
   flex: none;
   width: 44px;
-  color: rgba(241, 231, 208, 0.55);
+  color: rgba(var(--on-spine-rgb), 0.55);
 }
-.source-toggle.shelf-navigation > button.shelf-expand-button:hover { color: var(--gold-soft); }
+.source-toggle.shelf-navigation > button.shelf-expand-button:hover { color: var(--spine-gold); }
 
 .purchase-source { display: grid; gap: 7px; min-width: 0; }
 .purchase-source label {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.65rem;
-  color: rgba(241, 231, 208, 0.65);
+  color: rgba(var(--on-spine-rgb), 0.65);
 }
 .purchase-source select {
   width: 100%;
   min-width: 0;
   min-height: 44px;
   padding: 9px 12px;
-  border: 1px solid rgba(217, 181, 116, 0.3);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.3);
   border-radius: 4px;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   background: var(--spine);
   font-size: 0.95rem;
   color-scheme: dark;
@@ -977,13 +985,13 @@ html:not(.native-app) .web-shell > .player-pane {
   align-items: center;
   gap: 7px;
   padding: 8px;
-  border: 1px solid rgba(217, 181, 116, 0.14);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.14);
   background: rgba(13, 16, 15, 0.24);
 }
 
 .account-health-icon {
   display: inline-flex;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .account-list-copy {
@@ -993,7 +1001,7 @@ html:not(.native-app) .web-shell > .player-pane {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.64rem;
   letter-spacing: 0.05em;
-  color: rgba(241, 231, 208, 0.56);
+  color: rgba(var(--on-spine-rgb), 0.56);
 }
 
 .account-list-copy strong,
@@ -1005,7 +1013,7 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .account-list-copy strong {
-  color: rgba(241, 231, 208, 0.82);
+  color: rgba(var(--on-spine-rgb), 0.82);
 }
 
 .account-list-copy em {
@@ -1037,8 +1045,8 @@ html:not(.native-app) .web-shell > .player-pane {
   font-size: 0.58rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--paper);
-  border: 1px solid rgba(217, 181, 116, 0.22);
+  color: var(--on-spine);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.22);
   background: transparent;
 }
 
@@ -1064,8 +1072,8 @@ html:not(.native-app) .web-shell > .player-pane {
   font-size: 0.56rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--gold-soft);
-  border: 1px solid rgba(217, 181, 116, 0.18);
+  color: var(--spine-gold);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.18);
 }
 
 @media (max-width: 620px) {
@@ -1093,8 +1101,8 @@ html:not(.native-app) .web-shell > .player-pane {
   font-weight: 500;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--paper);
-  border: 1px solid rgba(217, 181, 116, 0.24);
+  color: var(--on-spine);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.24);
   background: transparent;
 }
 
@@ -1110,9 +1118,9 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .audible-row .audible-download-status {
   box-sizing: border-box;
-  color: var(--gold-soft);
-  border-color: rgba(217, 181, 116, 0.14);
-  background: rgba(217, 181, 116, 0.055);
+  color: var(--spine-gold);
+  border-color: rgba(var(--spine-gold-rgb), 0.14);
+  background: rgba(var(--spine-gold-rgb), 0.055);
 }
 
 .audible-row .audible-download-status > span {
@@ -1122,8 +1130,8 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .audible-row .audible-download-status.queued {
-  color: rgba(241, 231, 208, 0.62);
-  background: rgba(241, 231, 208, 0.035);
+  color: rgba(var(--on-spine-rgb), 0.62);
+  background: rgba(var(--on-spine-rgb), 0.035);
 }
 
 .audible-row .audible-download-status.finalizing {
@@ -1144,8 +1152,8 @@ html:not(.native-app) .web-shell > .player-pane {
   display: grid;
   gap: 8px;
   padding: 10px;
-  border: 1px solid rgba(217, 181, 116, 0.18);
-  color: rgba(241, 231, 208, 0.62);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.18);
+  color: rgba(var(--on-spine-rgb), 0.62);
 }
 
 .job-card-head {
@@ -1164,7 +1172,7 @@ html:not(.native-app) .web-shell > .player-pane {
   font-family: "Fraunces", serif;
   font-size: 0.96rem;
   font-weight: 500;
-  color: var(--paper);
+  color: var(--on-spine);
 }
 
 .job-state {
@@ -1175,7 +1183,7 @@ html:not(.native-app) .web-shell > .player-pane {
   font-size: 0.62rem;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .job-card.running .job-state svg {
@@ -1224,11 +1232,11 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .job-meta dt {
-  color: rgba(241, 231, 208, 0.38);
+  color: rgba(var(--on-spine-rgb), 0.62);
 }
 
 .job-meta dd {
-  color: rgba(241, 231, 208, 0.72);
+  color: rgba(var(--on-spine-rgb), 0.72);
 }
 
 .job-output {
@@ -1243,7 +1251,7 @@ html:not(.native-app) .web-shell > .player-pane {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.66rem;
   line-height: 1.45;
-  color: rgba(241, 231, 208, 0.76);
+  color: rgba(var(--on-spine-rgb), 0.76);
 }
 
 @keyframes spin {
@@ -1284,11 +1292,11 @@ html:not(.native-app) .web-shell > .player-pane {
   align-items: center;
   gap: 12px;
   padding: 14px 4px;
-  border-top: 1px solid rgba(217, 181, 116, 0.12);
+  border-top: 1px solid rgba(var(--spine-gold-rgb), 0.12);
 }
 
 .audible-row:last-child {
-  border-bottom: 1px solid rgba(217, 181, 116, 0.12);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.12);
 }
 
 .audible-list--compact .audible-row {
@@ -1324,7 +1332,7 @@ html:not(.native-app) .web-shell > .player-pane {
   gap: 8px;
   padding: 0 0 12px;
   border-top: 0;
-  border-bottom: 1px solid rgba(217, 181, 116, 0.12);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.12);
 }
 
 .audible-list--grid .audible-cover {
@@ -1355,9 +1363,9 @@ html:not(.native-app) .web-shell > .player-pane {
   display: grid;
   place-items: center;
   object-fit: cover;
-  border: 1px solid rgba(217, 181, 116, 0.18);
-  background: rgba(217, 181, 116, 0.08);
-  color: rgba(217, 181, 116, 0.55);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.18);
+  background: rgba(var(--spine-gold-rgb), 0.08);
+  color: rgba(var(--spine-gold-rgb), 0.55);
 }
 
 .audible-cover.placeholder {
@@ -1373,7 +1381,7 @@ html:not(.native-app) .web-shell > .player-pane {
   font-weight: 400;
   font-size: 1rem;
   line-height: 1.18;
-  color: var(--paper);
+  color: var(--on-spine);
 }
 
 .audible-row span {
@@ -1384,7 +1392,7 @@ html:not(.native-app) .web-shell > .player-pane {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.64rem;
   letter-spacing: 0.04em;
-  color: rgba(241, 231, 208, 0.44);
+  color: rgba(var(--on-spine-rgb), 0.62);
   text-transform: uppercase;
 }
 
@@ -1397,7 +1405,7 @@ html:not(.native-app) .web-shell > .player-pane {
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.24em;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .library-pane h1 {
@@ -1408,24 +1416,24 @@ html:not(.native-app) .web-shell > .player-pane {
   font-size: 2.6rem;
   line-height: 0.95;
   letter-spacing: -0.02em;
-  color: var(--paper);
+  color: var(--on-spine);
 }
 
 .icon-button {
   width: 42px;
   height: 42px;
-  border: 1px solid rgba(217, 181, 116, 0.3);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.3);
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   background: transparent;
   transition: transform 0.4s ease, border-color 0.3s ease, color 0.3s ease;
 }
 
 .icon-button:hover {
-  color: var(--paper);
+  color: var(--on-spine);
   border-color: var(--gold-soft);
 }
 
@@ -1463,12 +1471,12 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .continue-reading-heading h2 {
   margin: 0;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font: 400 1.5rem/1.2 "Instrument Serif", serif;
 }
 
 .continue-reading-heading > span {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font: 0.65rem "JetBrains Mono", monospace;
 }
 
@@ -1486,7 +1494,7 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .continue-reading-up-next h3 {
   margin: 12px 0 0;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font: 400 1.2rem/1.2 "Instrument Serif", serif;
 }
 .continue-reading-up-next h3 span { font: 0.65rem "JetBrains Mono", monospace; }
@@ -1502,17 +1510,17 @@ html:not(.native-app) .web-shell > .player-pane {
   gap: 12px;
   width: 100%;
   padding: 12px 54px 12px 12px;
-  border: 1px solid rgba(217, 181, 116, 0.24);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.24);
   border-radius: 3px;
-  background: rgba(217, 181, 116, 0.06);
-  color: var(--paper);
+  background: rgba(var(--spine-gold-rgb), 0.06);
+  color: var(--on-spine);
   text-align: left;
   transition: background 160ms ease, border-color 160ms ease;
 }
 
 .continue-reading-book:hover {
   border-color: var(--gold-soft);
-  background: rgba(217, 181, 116, 0.12);
+  background: rgba(var(--spine-gold-rgb), 0.12);
 }
 
 .continue-reading-book:focus-visible {
@@ -1547,7 +1555,7 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .continue-reading-author {
   overflow: hidden;
-  color: rgba(241, 231, 208, 0.65);
+  color: rgba(var(--on-spine-rgb), 0.65);
   font: italic 0.85rem "Instrument Serif", serif;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1558,14 +1566,14 @@ html:not(.native-app) .web-shell > .player-pane {
   justify-content: space-between;
   gap: 8px;
   margin-top: 3px;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font: 0.58rem "JetBrains Mono", monospace;
 }
 
 .continue-reading-meter {
   height: 3px;
   overflow: hidden;
-  background: rgba(217, 181, 116, 0.18);
+  background: rgba(var(--spine-gold-rgb), 0.18);
 }
 
 .continue-reading-meter > i {
@@ -1598,8 +1606,8 @@ html:not(.native-app) .web-shell > .player-pane {
 .continue-reading-library-heading {
   margin: 0 0 10px;
   padding-top: 16px;
-  border-top: 1px solid rgba(217, 181, 116, 0.2);
-  color: rgba(241, 231, 208, 0.6);
+  border-top: 1px solid rgba(var(--spine-gold-rgb), 0.2);
+  color: rgba(var(--on-spine-rgb), 0.6);
   font: 0.65rem "JetBrains Mono", monospace;
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -1622,7 +1630,7 @@ html:not(.native-app) .web-shell > .player-pane {
   min-width: 0;
   grid-column: 1 / -1;
   margin: 18px 0 5px;
-  border-bottom: 1px solid rgba(217, 181, 116, 0.2);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.2);
 }
 
 .book-sort-group:first-child {
@@ -1658,7 +1666,7 @@ html:not(.native-app) .web-shell > .player-pane {
 .book-sort-group-chevron {
   flex: none;
   align-self: center;
-  color: rgba(241, 231, 208, 0.42);
+  color: rgba(var(--on-spine-rgb), 0.62);
   transition: transform 160ms ease;
 }
 
@@ -1673,13 +1681,13 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .book-sort-group-toggle:hover .book-sort-group-chevron {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .book-sort-group-toggle > em {
   flex: none;
   margin-left: auto;
-  color: rgba(241, 231, 208, 0.42);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: 0.55rem "JetBrains Mono", monospace;
   font-style: normal;
   letter-spacing: 0.08em;
@@ -1687,7 +1695,7 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .book-sort-group-toggle > span {
   flex: none;
-  color: rgba(241, 231, 208, 0.42);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: 0.55rem "JetBrains Mono", monospace;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -1696,7 +1704,7 @@ html:not(.native-app) .web-shell > .player-pane {
 .book-sort-group-toggle > strong {
   min-width: 0;
   overflow: hidden;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font: italic 1rem "Instrument Serif", serif;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1790,7 +1798,7 @@ html:not(.native-app) .web-shell > .player-pane {
 .book-list.is-grid .book-text > :is(.book-runtime-tag, .book-readalong-tag, .book-shared-readers) {
   grid-row: 4;
   align-self: center;
-  color: rgba(241, 231, 208, 0.55) !important;
+  color: rgba(var(--on-spine-rgb), 0.55) !important;
 }
 
 .book-list.is-grid .book-text > .book-runtime-tag {
@@ -1819,14 +1827,14 @@ html:not(.native-app) .web-shell > .player-pane {
   width: 100%;
   padding: 16px 8px 16px 4px;
   text-align: left;
-  color: var(--paper);
-  border-top: 1px solid rgba(217, 181, 116, 0.12);
+  color: var(--on-spine);
+  border-top: 1px solid rgba(var(--spine-gold-rgb), 0.12);
   position: relative;
   transition: padding 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .book-row:last-child {
-  border-bottom: 1px solid rgba(217, 181, 116, 0.12);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.12);
 }
 
 .book-row::before {
@@ -1873,13 +1881,13 @@ html:not(.native-app) .web-shell > .player-pane {
   min-width: 26px;
   height: 24px;
   padding: 0 6px;
-  border: 1px solid rgba(217, 181, 116, 0.24);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.24);
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 3px;
-  color: rgba(241, 231, 208, 0.62);
+  color: rgba(var(--on-spine-rgb), 0.62);
   background: rgba(16, 25, 27, 0.9);
   box-shadow: 0 5px 12px -7px rgba(0, 0, 0, 0.8);
   pointer-events: none;
@@ -1907,7 +1915,7 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .book-availability.server-and-device .server-availability-icon {
-  color: rgba(217, 181, 116, 0.72);
+  color: rgba(var(--spine-gold-rgb), 0.72);
 }
 
 .book-list.is-list .book-text {
@@ -2028,7 +2036,7 @@ html:not(.native-app) .web-shell > .player-pane {
   font-size: 0.7rem;
   font-weight: 500;
   letter-spacing: 0.1em;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   padding-top: 6px;
   opacity: 0.7;
 }
@@ -2044,7 +2052,7 @@ html:not(.native-app) .web-shell > .player-pane {
   object-fit: contain;
   border-radius: 1px 3px 3px 1px;
   background: var(--oxblood);
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2069,7 +2077,7 @@ img.cover-mark {
   font-weight: 400;
   font-size: 1.05rem;
   line-height: 1.2;
-  color: var(--paper);
+  color: var(--on-spine);
   letter-spacing: -0.01em;
   overflow: hidden;
   display: -webkit-box;
@@ -2079,14 +2087,14 @@ img.cover-mark {
 
 .book-row.active .book-text strong {
   font-style: italic;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .book-text span {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.7rem;
   letter-spacing: 0.04em;
-  color: rgba(241, 231, 208, 0.45);
+  color: rgba(var(--on-spine-rgb), 0.62);
   text-transform: uppercase;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2095,7 +2103,7 @@ img.cover-mark {
 }
 
 .book-text .book-sort-context {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font-size: 0.6rem;
   letter-spacing: 0.08em;
 }
@@ -2105,7 +2113,7 @@ img.cover-mark {
   height: 18px;
   position: relative;
   overflow: hidden;
-  border: 1px solid rgba(217, 181, 116, 0.16);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.16);
   border-radius: 999px;
   background: rgba(16, 25, 27, 0.64);
   display: inline-flex;
@@ -2120,7 +2128,7 @@ img.cover-mark {
   font-style: normal;
   font-size: 0.62rem;
   line-height: 1;
-  color: rgba(241, 231, 208, 0.68);
+  color: rgba(var(--on-spine-rgb), 0.68);
 }
 
 .book-progress i {
@@ -2137,27 +2145,27 @@ img.cover-mark {
 }
 
 .book-progress.notStarted {
-  border-color: rgba(217, 181, 116, 0.14);
+  border-color: rgba(var(--spine-gold-rgb), 0.14);
   background: rgba(16, 25, 27, 0.42);
 }
 
 .book-progress.notStarted em {
-  color: rgba(241, 231, 208, 0.42);
+  color: rgba(var(--on-spine-rgb), 0.62);
 }
 
 .book-progress.inProgress {
-  border-color: rgba(217, 181, 116, 0.32);
+  border-color: rgba(var(--spine-gold-rgb), 0.32);
   background: rgba(16, 25, 27, 0.78);
 }
 
 .book-progress.inProgress em {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .book-progress.inProgress i {
   background: linear-gradient(
     90deg,
-    rgba(217, 181, 116, 0.55),
+    rgba(var(--spine-gold-rgb), 0.55),
     rgba(184, 137, 58, 0.42)
   );
 }
@@ -2183,7 +2191,7 @@ img.cover-mark {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.62rem !important;
   letter-spacing: 0.14em;
-  color: rgba(241, 231, 208, 0.55) !important;
+  color: rgba(var(--on-spine-rgb), 0.55) !important;
   text-transform: uppercase;
 }
 
@@ -2202,7 +2210,7 @@ img.cover-mark {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.6rem !important;
   letter-spacing: 0.1em;
-  color: rgba(241, 231, 208, 0.48) !important;
+  color: rgba(var(--on-spine-rgb), 0.62) !important;
   /* The surrounding row uppercases its metadata labels. These are people's
      names, so keep the casing they chose instead of shouting it. `.book-text
      span` is more specific, hence the override. */
@@ -2288,7 +2296,7 @@ img.cover-mark {
       var(--oxblood-deep) 60%,
       #2a0f08 100%
     );
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2315,7 +2323,7 @@ img.large-cover {
   content: "";
   position: absolute;
   inset: 14px 12px 14px 22px;
-  border: 1px solid rgba(217, 181, 116, 0.4);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.4);
   pointer-events: none;
 }
 
@@ -2764,16 +2772,16 @@ img.large-cover {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.62rem !important;
   letter-spacing: 0.14em;
-  color: var(--gold-soft) !important;
+  color: var(--spine-gold) !important;
   text-transform: uppercase;
 }
 
 .book-readalong-tag.extras {
-  color: rgba(241, 231, 208, 0.55) !important;
+  color: rgba(var(--on-spine-rgb), 0.55) !important;
 }
 
 .native-now-read {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .readalong-header,
@@ -3392,7 +3400,7 @@ html[data-page-turn-drag]::view-transition-new(reader-page-curl) {
 }
 
 .theme-night .epub-icon-button.selected {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .epub-bottombar {
@@ -3727,7 +3735,7 @@ html[data-page-turn-drag]::view-transition-new(reader-page-curl) {
 }
 
 .theme-night .epub-toc button.current {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   background: color-mix(in srgb, var(--gold) 14%, transparent);
 }
 
@@ -3997,7 +4005,7 @@ button.epub-rail-back:hover svg {
 }
 
 .theme-night .epub-rail-back {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .epub-rail h3,
@@ -4077,7 +4085,7 @@ button.epub-rail-back:hover svg {
 }
 
 .theme-night .epub-aside-follow h3 {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 /* The follow panel carries its own frame; the section after it needs no rule. */
@@ -4147,7 +4155,7 @@ button.epub-rail-back:hover svg {
 }
 
 .theme-night .epub-catch-up button {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .epub-aside .download-btn {
@@ -4639,7 +4647,7 @@ input[type="range"]::-moz-range-thumb {
   background: var(--ink);
   box-shadow:
     0 14px 36px -10px rgba(26, 20, 16, 0.5),
-    inset 0 0 0 1px rgba(217, 181, 116, 0.18);
+    inset 0 0 0 1px rgba(var(--spine-gold-rgb), 0.18);
 }
 
 .round-button.primary::after {
@@ -5230,9 +5238,9 @@ select:focus {
   font-family: "Fraunces", serif;
   font-style: italic;
   font-size: 0.95rem;
-  color: rgba(241, 231, 208, 0.55);
+  color: rgba(var(--on-spine-rgb), 0.55);
   padding: 18px 4px;
-  border-top: 1px dotted rgba(217, 181, 116, 0.2);
+  border-top: 1px dotted rgba(var(--spine-gold-rgb), 0.2);
 }
 
 .empty-state.error {
@@ -5246,8 +5254,8 @@ select:focus {
 }
 
 .device-empty-state .download-btn {
-  color: var(--paper);
-  border-color: rgba(241, 231, 208, 0.28);
+  color: var(--on-spine);
+  border-color: rgba(var(--on-spine-rgb), 0.28);
 }
 
 /* --------- Connect-a-server pitch on the local shelf --------- */
@@ -5257,12 +5265,12 @@ select:focus {
   gap: 12px;
   margin-bottom: 18px;
   padding: 14px;
-  border: 1px solid rgba(217, 181, 116, 0.22);
-  background: rgba(217, 181, 116, 0.06);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.22);
+  background: rgba(var(--spine-gold-rgb), 0.06);
 }
 
 .connect-server-card .section-label {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .connect-server-card p {
@@ -5271,7 +5279,7 @@ select:focus {
   font-style: italic;
   font-size: 0.92rem;
   line-height: 1.4;
-  color: rgba(241, 231, 208, 0.68);
+  color: rgba(var(--on-spine-rgb), 0.68);
 }
 
 .connect-server-actions {
@@ -5288,18 +5296,18 @@ select:focus {
   font-family: "Fraunces", serif;
   font-style: italic;
   font-size: 0.88rem;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
 
 .connect-server-guide:hover {
-  color: var(--paper);
+  color: var(--on-spine);
 }
 
 .connect-server-card .download-btn {
-  color: var(--paper);
-  border-color: rgba(241, 231, 208, 0.28);
+  color: var(--on-spine);
+  border-color: rgba(var(--on-spine-rgb), 0.28);
 }
 
 /* The shelf is always dark, so the paper-surface hover/press recolors from
@@ -5312,9 +5320,9 @@ select:focus {
 .connect-server-card .download-btn:active,
 html.native-app .device-empty-state .download-btn:not(.active):hover,
 html.native-app .connect-server-card .download-btn:not(.active):hover {
-  background: rgba(241, 231, 208, 0.14);
-  color: var(--paper);
-  border-color: rgba(241, 231, 208, 0.45);
+  background: rgba(var(--on-spine-rgb), 0.14);
+  color: var(--on-spine);
+  border-color: rgba(var(--on-spine-rgb), 0.45);
 }
 
 .connect-server-dismiss {
@@ -5326,13 +5334,13 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   font-weight: 500;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: rgba(241, 231, 208, 0.5);
+  color: rgba(var(--on-spine-rgb), 0.62);
   cursor: pointer;
   transition: color 0.2s ease;
 }
 
 .connect-server-dismiss:hover {
-  color: rgba(241, 231, 208, 0.8);
+  color: rgba(var(--on-spine-rgb), 0.8);
 }
 
 .empty-player {
@@ -5387,11 +5395,11 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   align-items: center;
   gap: 16px;
   padding: 12px 18px;
-  color: var(--paper);
+  color: var(--on-spine);
   background:
     linear-gradient(180deg, rgba(33, 23, 16, 0.97), rgba(14, 10, 7, 0.99)),
     var(--spine);
-  border: 1px solid rgba(217, 181, 116, 0.22);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.22);
   box-shadow:
     0 24px 60px -22px rgba(0, 0, 0, 0.78),
     inset 0 1px 0 rgba(255, 255, 255, 0.05);
@@ -5452,7 +5460,7 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   font-weight: 500;
   letter-spacing: 0.28em;
   text-transform: uppercase;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .mini-meta strong,
@@ -5467,7 +5475,7 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   font-size: 1.02rem;
   font-weight: 400;
   letter-spacing: -0.005em;
-  color: var(--paper);
+  color: var(--on-spine);
 }
 
 .mini-meta > span {
@@ -5475,7 +5483,7 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   font-style: italic;
   font-size: 0.92rem;
   letter-spacing: 0.005em;
-  color: rgba(241, 231, 208, 0.6);
+  color: rgba(var(--on-spine-rgb), 0.6);
   text-transform: none;
 }
 
@@ -5492,13 +5500,13 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
 .mini-progress input[type="range"]::-webkit-slider-runnable-track {
   background:
     linear-gradient(var(--gold-soft), var(--gold-soft)) left center / var(--scrub-progress, 0%) 4px no-repeat,
-    linear-gradient(rgba(241, 231, 208, 0.26), rgba(241, 231, 208, 0.26)) left center / 100% 2px no-repeat;
+    linear-gradient(rgba(var(--on-spine-rgb), 0.26), rgba(var(--on-spine-rgb), 0.26)) left center / 100% 2px no-repeat;
 }
 
 .mini-progress input[type="range"]::-moz-range-track {
   background:
     linear-gradient(var(--gold-soft), var(--gold-soft)) left center / var(--scrub-progress, 0%) 4px no-repeat,
-    linear-gradient(rgba(241, 231, 208, 0.26), rgba(241, 231, 208, 0.26)) left center / 100% 2px no-repeat;
+    linear-gradient(rgba(var(--on-spine-rgb), 0.26), rgba(var(--on-spine-rgb), 0.26)) left center / 100% 2px no-repeat;
 }
 
 .mini-progress input[type="range"]::-webkit-slider-thumb {
@@ -5522,7 +5530,7 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.62rem;
   letter-spacing: 0.08em;
-  color: rgba(241, 231, 208, 0.58);
+  color: rgba(var(--on-spine-rgb), 0.58);
 }
 
 .mini-actions {
@@ -5537,15 +5545,15 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--gold-soft);
-  border: 1px solid rgba(217, 181, 116, 0.26);
+  color: var(--spine-gold);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.26);
   border-radius: 50%;
   transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
 }
 
 .mini-actions button:hover {
-  color: var(--paper);
-  background: rgba(217, 181, 116, 0.12);
+  color: var(--on-spine);
+  background: rgba(var(--spine-gold-rgb), 0.12);
   transform: translateY(-1px);
 }
 
@@ -5807,7 +5815,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane::before {
   grid-row: 1;
   grid-column: 1 / -1;
   width: auto;
-  border-bottom: 1px solid rgba(217, 181, 116, 0.22);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.22);
   background: none;
 }
 
@@ -5871,7 +5879,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane:not(.purchase-br
   margin: 40px 0 0;
   padding: 0;
   border: 0;
-  color: var(--paper);
+  color: var(--on-spine);
   font: 400 3.4rem/0.9 "Instrument Serif", serif;
   letter-spacing: 0;
   text-transform: none;
@@ -5884,7 +5892,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane > .library-toolb
   justify-content: start;
   gap: 14px;
   margin: 0;
-  color: rgba(241, 231, 208, 0.55);
+  color: rgba(var(--on-spine-rgb), 0.55);
   font: 1.05rem "Fraunces", serif;
 }
 
@@ -5913,13 +5921,13 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-control
   width: 44px;
   display: grid;
   place-items: center;
-  color: var(--gold-soft);
-  background: rgba(217, 181, 116, 0.06);
-  border: 1px solid rgba(217, 181, 116, 0.22);
+  color: var(--spine-gold);
+  background: rgba(var(--spine-gold-rgb), 0.06);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.22);
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-controls > .shelf-expand-button:hover {
-  background: rgba(217, 181, 116, 0.14);
+  background: rgba(var(--spine-gold-rgb), 0.14);
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-controls > .library-sort {
@@ -5935,7 +5943,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane > .library-toolb
   justify-self: start;
   display: flex;
   margin-top: 26px;
-  border: 1px solid rgba(217, 181, 116, 0.24);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.24);
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-status-inline button {
@@ -5944,9 +5952,9 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-status-
   gap: 8px;
   min-height: 42px;
   padding: 10px 18px;
-  border-right: 1px solid rgba(217, 181, 116, 0.24);
+  border-right: 1px solid rgba(var(--spine-gold-rgb), 0.24);
   background: none;
-  color: rgba(241, 231, 208, 0.72);
+  color: rgba(var(--on-spine-rgb), 0.72);
   font: 0.98rem "Fraunces", serif;
   white-space: nowrap;
 }
@@ -5956,13 +5964,13 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-status-
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-status-inline button em {
-  color: rgba(241, 231, 208, 0.42);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font-style: normal;
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-status-inline button.selected {
-  color: var(--gold-soft);
-  background: rgba(217, 181, 116, 0.08);
+  color: var(--spine-gold);
+  background: rgba(var(--spine-gold-rgb), 0.08);
   box-shadow: inset 0 0 0 1px var(--gold-soft);
 }
 
@@ -5998,8 +6006,8 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-filter-
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-filter-toggle.status-engaged:not(.engaged, .open) {
-  border-color: rgba(217, 181, 116, 0.16);
-  color: rgba(241, 231, 208, 0.62);
+  border-color: rgba(var(--spine-gold-rgb), 0.16);
+  color: rgba(var(--on-spine-rgb), 0.62);
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .library-filters .shelf-facet-availability {
@@ -6015,7 +6023,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-readin
   column-gap: var(--shelf-gutter);
   margin: 28px 0 0;
   padding: 26px 0;
-  border-block: 1px solid rgba(217, 181, 116, 0.2);
+  border-block: 1px solid rgba(var(--spine-gold-rgb), 0.2);
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading > * {
@@ -6033,7 +6041,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-readin
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-heading h2 {
-  color: rgba(241, 231, 208, 0.62);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: 0.7rem/1.6 "JetBrains Mono", monospace;
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -6059,7 +6067,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-readin
   overscroll-behavior-x: contain;
   scroll-snap-type: x mandatory;
   scrollbar-width: thin;
-  scrollbar-color: rgba(217, 181, 116, 0.3) transparent;
+  scrollbar-color: rgba(var(--spine-gold-rgb), 0.3) transparent;
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-rest > li {
@@ -6072,7 +6080,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .queue-hint {
   grid-row: 1;
   align-self: center;
   margin: 0;
-  color: rgba(241, 231, 208, 0.5);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: italic 1rem/1.35 "Instrument Serif", serif;
 }
 
@@ -6088,7 +6096,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-readin
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-book:hover strong {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-book .cover-mark {
@@ -6217,7 +6225,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book
   margin: 0;
   padding-top: 10px;
   border: 0;
-  border-top: 1px solid rgba(217, 181, 116, 0.5);
+  border-top: 1px solid rgba(var(--spine-gold-rgb), 0.5);
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-letter {
@@ -6227,13 +6235,13 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-letter > strong {
-  color: var(--paper);
+  color: var(--on-spine);
   font: 3rem/0.9 "Instrument Serif", serif;
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-letter > em {
   margin-top: 6px;
-  color: rgba(241, 231, 208, 0.42);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: 0.8rem "Fraunces", serif;
 }
 
@@ -6250,7 +6258,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-sort-group-toggle > strong {
   grid-column: 1 / -1;
   overflow: visible;
-  color: var(--paper);
+  color: var(--on-spine);
   font: 1.6rem/1.05 "Instrument Serif", serif;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -6264,7 +6272,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list .book-sort-group-toggle:hover > strong {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 /* Quiet type under each cover, as on a printed list: the title, who wrote
@@ -6276,7 +6284,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-gr
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-grid .book-text > strong + span {
-  color: rgba(241, 231, 208, 0.62);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: 0.88rem/1.3 "Fraunces", serif;
   letter-spacing: 0;
   text-transform: none;
@@ -6315,18 +6323,18 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-le
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-lettered > .book-letter-index > button {
   display: grid;
   place-items: center;
-  color: rgba(241, 231, 208, 0.58);
+  color: rgba(var(--on-spine-rgb), 0.58);
   font: 0.62rem "JetBrains Mono", monospace;
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-lettered > .book-letter-index > button:disabled {
-  color: rgba(241, 231, 208, 0.18);
+  color: rgba(var(--on-spine-rgb), 0.18);
   /* A press on an empty letter still starts a drag along the strip. */
   pointer-events: none;
 }
 
 html:not(.native-app) .web-shell.shelf-expanded > .library-pane .book-list.is-lettered > .book-letter-index > button[aria-current] {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font-weight: 700;
 }
 
@@ -7506,7 +7514,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane.purchase-browsin
 
 .icon-button.account-button[aria-expanded="true"] {
   border-color: var(--gold-soft);
-  box-shadow: 0 0 0 3px rgba(217, 181, 116, 0.2);
+  box-shadow: 0 0 0 3px rgba(var(--spine-gold-rgb), 0.2);
 }
 
 .user-menu {
@@ -9000,6 +9008,25 @@ html.native-app.platform-ios.dark-mode .native-shell.tab-games {
    backdrop veil reads as a wide blurred stripe on folding screens. */
 html.native-app .ios-status-veil { display: none; }
 
+/* A phone's clock sits over the Dynamic Island strip, where text scrolling
+   up behind it collides with the time. Blur only: any tint is a shade off
+   the page underneath and reads as a bar. Foldables and iPad keep the clean
+   edge above. */
+html.native-app:not([data-fold-posture]) .native-shell:not(.device-ipad) .ios-status-veil {
+  display: block;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: env(safe-area-inset-top);
+  z-index: 90;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(16px) saturate(1.04);
+  backdrop-filter: blur(16px) saturate(1.04);
+  -webkit-mask-image: linear-gradient(180deg, #000 70%, transparent);
+  mask-image: linear-gradient(180deg, #000 70%, transparent);
+}
+
 /* --- The spine tab bar --- */
 html.native-app .spine-tabs {
   position: fixed;
@@ -9012,7 +9039,7 @@ html.native-app .spine-tabs {
   align-items: stretch;
   z-index: 80;
   background: linear-gradient(180deg, var(--spine-top) 0%, #0e0a07 100%), var(--spine);
-  border-top: 1px solid rgba(217, 181, 116, 0.22);
+  border-top: 1px solid rgba(var(--spine-gold-rgb), 0.22);
   box-shadow: 0 -14px 34px -20px rgba(0, 0, 0, 0.85);
 }
 
@@ -9042,7 +9069,7 @@ html.native-app .spine-tab {
   justify-content: center;
   gap: 4px;
   padding-top: 6px;
-  color: rgba(241, 231, 208, 0.46);
+  color: rgba(var(--on-spine-rgb), 0.62);
   transition: color 0.2s ease, transform 0.08s ease;
 }
 
@@ -9055,7 +9082,7 @@ html.native-app .spine-tab span {
 }
 
 html.native-app .spine-tab.active {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 html.native-app .spine-tab:active {
@@ -9071,7 +9098,7 @@ html.native-app .spine-tab.active::after {
   height: 2px;
   border-radius: 0 0 2px 2px;
   background: var(--gold-soft);
-  box-shadow: 0 0 10px -1px rgba(217, 181, 116, 0.7);
+  box-shadow: 0 0 10px -1px rgba(var(--spine-gold-rgb), 0.7);
 }
 
 /* --- Mini-player as a bookmark ribbon docked above the spine --- */
@@ -9106,7 +9133,7 @@ html.native-app .games-shell {
   overflow: hidden;
   overscroll-behavior: none;
   padding: calc(var(--status-h) + 14px) max(16px, env(safe-area-inset-right)) calc(var(--tabs-h) + 10px) max(16px, env(safe-area-inset-left));
-  color: var(--paper);
+  color: var(--on-spine);
   background:
     radial-gradient(circle at 85% 8%, rgba(184, 137, 58, 0.16), transparent 28%),
     linear-gradient(155deg, var(--games-top), var(--games-low) 68%);
@@ -9121,7 +9148,7 @@ html.native-app .native-shell.has-mini-player .games-shell {
 
 html.native-app .games-head { flex: none; }
 html.native-app .games-head h1 { margin: 3px 0 1px; font-size: clamp(1.9rem, 8vw, 2.65rem); }
-html.native-app .games-head p { margin: 0; color: rgba(241, 231, 208, 0.55); }
+html.native-app .games-head p { margin: 0; color: rgba(var(--on-spine-rgb), 0.55); }
 
 html.native-app .games-switcher {
   flex: none;
@@ -9130,14 +9157,14 @@ html.native-app .games-switcher {
   gap: 4px;
   margin: 14px 0 10px;
   padding: 4px;
-  border: 1px solid rgba(217, 181, 116, 0.14);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.14);
   border-radius: 15px;
   background: rgba(255, 255, 255, 0.04);
 }
 
 html.native-app .games-switcher button {
   display: flex; align-items: center; justify-content: center; gap: 7px;
-  min-height: 38px; border-radius: 11px; color: rgba(241, 231, 208, 0.55);
+  min-height: 38px; border-radius: 11px; color: rgba(var(--on-spine-rgb), 0.55);
   font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em;
 }
 html.native-app .games-switcher button.active { color: #24150d; background: var(--gold-soft); box-shadow: 0 8px 22px -14px #000; }
@@ -9146,7 +9173,7 @@ html.native-app .game-card {
   flex: 0 1 auto;
   min-height: 0;
   padding: 14px;
-  border: 1px solid rgba(217, 181, 116, 0.16);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.16);
   border-radius: 20px;
   background: rgba(255, 252, 244, 0.055);
   box-shadow: 0 24px 50px -36px #000;
@@ -9156,9 +9183,9 @@ html.native-app .game-title-row { display: grid; grid-template-columns: auto 1fr
 html.native-app .game-title-row h2 { margin: 1px 0 0; font-size: 1.22rem; }
 /* .section-label's ink color is meant for paper surfaces; on the dark card it
    falls below readable contrast. */
-html.native-app .game-card .section-label { color: rgba(217, 181, 116, 0.78); }
-html.native-app .game-mark { display: grid; place-items: center; width: 39px; height: 39px; border-radius: 12px; color: var(--gold-soft); background: rgba(184, 137, 58, 0.12); }
-html.native-app .game-stat, html.native-app .game-reset { color: rgba(241, 231, 208, 0.55); font: 600 0.72rem "JetBrains Mono", monospace; }
+html.native-app .game-card .section-label { color: rgba(var(--spine-gold-rgb), 0.78); }
+html.native-app .game-mark { display: grid; place-items: center; width: 39px; height: 39px; border-radius: 12px; color: var(--spine-gold); background: rgba(184, 137, 58, 0.12); }
+html.native-app .game-stat, html.native-app .game-reset { color: rgba(var(--on-spine-rgb), 0.55); font: 600 0.72rem "JetBrains Mono", monospace; }
 html.native-app .game-reset { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: rgba(255,255,255,.06); }
 
 /* On short screens the parlour dressing gives its space to the boards: both
@@ -9202,24 +9229,24 @@ html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 260
 }
 html.native-app .word-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; }
 html.native-app .word-row.rejected { animation: word-row-rejected .3s ease-in-out; }
-html.native-app .word-tile { display: grid; place-items: center; aspect-ratio: 1; min-height: 0; border: 1px solid rgba(241,231,208,.18); border-radius: 9px; color: var(--paper); font: 700 clamp(1rem, 5vw, 1.35rem) "JetBrains Mono", monospace; background: rgba(255,255,255,.035); }
+html.native-app .word-tile { display: grid; place-items: center; aspect-ratio: 1; min-height: 0; border: 1px solid rgba(var(--on-spine-rgb),.18); border-radius: 9px; color: var(--on-spine); font: 700 clamp(1rem, 5vw, 1.35rem) "JetBrains Mono", monospace; background: rgba(255,255,255,.035); }
 html.native-app .word-tile.correct { border-color: #72936a; background: #526f4c; }
 html.native-app .word-tile.present { border-color: #b78f46; background: #8b682c; }
-html.native-app .word-tile.absent { border-color: #48423d; background: #38332f; color: rgba(241,231,208,.62); }
+html.native-app .word-tile.absent { border-color: #48423d; background: #38332f; color: rgba(var(--on-spine-rgb),.62); }
 html.native-app .word-keys { display: grid; gap: 6px; margin-top: 10px; }
 html.native-app .word-keys-row { display: flex; justify-content: center; gap: 5px; }
-html.native-app .word-key { flex: 1 1 0; min-width: 0; max-width: 34px; min-height: 44px; border-radius: 8px; border: 1px solid rgba(241,231,208,.12); color: var(--paper); background: rgba(255,255,255,.07); font: 700 .82rem "JetBrains Mono", monospace; }
+html.native-app .word-key { flex: 1 1 0; min-width: 0; max-width: 34px; min-height: 44px; border-radius: 8px; border: 1px solid rgba(var(--on-spine-rgb),.12); color: var(--on-spine); background: rgba(255,255,255,.07); font: 700 .82rem "JetBrains Mono", monospace; }
 html.native-app .word-key.wide { max-width: 56px; flex: 1.6 1 0; font-size: .68rem; }
 html.native-app .word-key:disabled { opacity: .4; }
 html.native-app .word-key.correct { border-color: #72936a; background: #526f4c; }
 html.native-app .word-key.present { border-color: #b78f46; background: #8b682c; }
-html.native-app .word-key.absent { border-color: #3d3833; background: #2c2723; color: rgba(241,231,208,.45); }
-html.native-app .game-message { min-height: 1.2em; margin: 10px 0 2px; text-align: center; color: rgba(241,231,208,.78); font-size: .8rem; }
+html.native-app .word-key.absent { border-color: #3d3833; background: #2c2723; color: rgba(var(--on-spine-rgb),.45); }
+html.native-app .game-message { min-height: 1.2em; margin: 10px 0 2px; text-align: center; color: rgba(var(--on-spine-rgb),.78); font-size: .8rem; }
 
-html.native-app .match-record { display: flex; align-items: baseline; justify-content: space-between; margin: 10px 2px 0; color: rgba(241,231,208,.4); font-size: .62rem; letter-spacing: .1em; text-transform: uppercase; }
-html.native-app .match-record strong { color: rgba(217, 181, 116, 0.78); font: 700 .85rem "JetBrains Mono", monospace; letter-spacing: 0; }
-html.native-app .match-score { display: flex; align-items: baseline; justify-content: space-between; margin: 2px 2px 7px; color: rgba(241,231,208,.62); font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; }
-html.native-app .match-score strong { color: var(--gold-soft); font: 700 1.1rem "JetBrains Mono", monospace; letter-spacing: 0; transform-origin: right center; }
+html.native-app .match-record { display: flex; align-items: baseline; justify-content: space-between; margin: 10px 2px 0; color: rgba(var(--on-spine-rgb),.4); font-size: .62rem; letter-spacing: .1em; text-transform: uppercase; }
+html.native-app .match-record strong { color: rgba(var(--spine-gold-rgb), 0.78); font: 700 .85rem "JetBrains Mono", monospace; letter-spacing: 0; }
+html.native-app .match-score { display: flex; align-items: baseline; justify-content: space-between; margin: 2px 2px 7px; color: rgba(var(--on-spine-rgb),.62); font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; }
+html.native-app .match-score strong { color: var(--spine-gold); font: 700 1.1rem "JetBrains Mono", monospace; letter-spacing: 0; transform-origin: right center; }
 html.native-app .match-score strong.score-bump { animation: match-score-bump .34s cubic-bezier(.2,.85,.35,1.3); }
 /* The frame is the card's flexible row; sizing the board from its measured
    height (100cqh) keeps the square inside the card on any screen, and
@@ -9278,7 +9305,7 @@ html.native-app .native-shell.has-mini-player .match-board { width: min(100%, ma
 html.native-app .match-board.busy { background: rgba(0,0,0,.28); box-shadow: inset 0 0 22px rgba(184,137,58,.07); }
 /* touch-action: none — a drag on a piece is a swap gesture, never a scroll;
    without it the browser takes over the pointer stream mid-swipe. */
-html.native-app .match-piece { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; aspect-ratio: 1; border-radius: 9px; color: white; font: 700 1rem/1 "Helvetica Neue", Arial, sans-serif; text-shadow: 0 1px 3px rgba(0,0,0,.35); transition: transform .16s ease, box-shadow .16s ease, filter .16s ease, opacity .16s ease; will-change: transform; touch-action: none; }
+html.native-app .match-piece { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; aspect-ratio: 1; border-radius: 9px; color: white; font: 700 16px/1 "Helvetica Neue", Arial, sans-serif; text-shadow: 0 1px 3px rgba(0,0,0,.35); transition: transform .16s ease, box-shadow .16s ease, filter .16s ease, opacity .16s ease; will-change: transform; touch-action: none; }
 /* Entrance plays only during the board's brief arriving phase; if it lived on
    the base rule, removing any modifier class would replay it on settled
    pieces. :where keeps specificity level with the base rule so the modifier
@@ -9287,8 +9314,8 @@ html.native-app .match-board:where(.arriving) .match-piece { animation: match-pi
 html.native-app .match-piece:active { transform: scale(.9); }
 /* Grows rather than shrinks: the selected piece is the likeliest next touch
    target, so its visual (and perceived) size shouldn't drop on selection. */
-html.native-app .match-piece.selected { z-index: 2; transform: scale(1.06) rotate(-3deg); box-shadow: 0 0 0 3px var(--paper), 0 0 18px rgba(241,231,208,.28); animation: match-selected-pulse .9s ease-in-out infinite; }
-html.native-app .match-piece.neighbor { box-shadow: inset 0 0 0 2px rgba(241,231,208,.42); filter: brightness(1.12); }
+html.native-app .match-piece.selected { z-index: 2; transform: scale(1.06) rotate(-3deg); box-shadow: 0 0 0 3px var(--paper), 0 0 18px rgba(var(--on-spine-rgb),.28); animation: match-selected-pulse .9s ease-in-out infinite; }
+html.native-app .match-piece.neighbor { box-shadow: inset 0 0 0 2px rgba(var(--on-spine-rgb),.42); filter: brightness(1.12); }
 html.native-app .match-piece.swapping { z-index: 4; animation: match-piece-swap .19s cubic-bezier(.45,0,.2,1) both; }
 html.native-app .match-piece.clearing { z-index: 3; pointer-events: none; animation: match-piece-clear .26s ease-in both; }
 html.native-app .match-piece.clearing::after { content: ""; position: absolute; inset: 0; border-radius: inherit; border: 2px solid rgba(255, 243, 196, 0.85); animation: match-clear-ring .26s ease-out both; }
@@ -9347,9 +9374,9 @@ html.native-app .match-message { display: inline-block; animation: match-message
   65% { transform: translateX(4px) rotate(4deg); }
 }
 @keyframes match-score-bump {
-  0% { transform: scale(1); color: var(--gold-soft); }
+  0% { transform: scale(1); color: var(--spine-gold); }
   45% { transform: scale(1.38) rotate(-3deg); color: #fff3c4; }
-  100% { transform: scale(1); color: var(--gold-soft); }
+  100% { transform: scale(1); color: var(--spine-gold); }
 }
 @keyframes match-message-in {
   from { opacity: 0; transform: translateY(4px); }
@@ -9370,7 +9397,7 @@ html.native-app .match-message { display: inline-block; animation: match-message
   html.native-app .match-score strong.score-bump,
   html.native-app .match-message { animation: none; transition-duration: 0s; }
 }
-html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,231,208,.36); text-align: center; font-size: .66rem; }
+html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(var(--on-spine-rgb),.36); text-align: center; font-size: .66rem; }
 
 /* Landscape iPads are held by their sides, so the play surface belongs under
    a thumb: the board (or Word Grid's keyboard) runs full height against the
@@ -9424,7 +9451,7 @@ html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,
     grid-row: 3;
     margin-top: 16px;
     padding-top: 14px;
-    border-top: 1px solid rgba(217, 181, 116, 0.14);
+    border-top: 1px solid rgba(var(--spine-gold-rgb), 0.14);
   }
 
   html.native-app .game-card .game-message {
@@ -9448,7 +9475,7 @@ html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,
   html.native-app .match-score strong { font-size: 2.2rem; transform-origin: left center; }
   html.native-app .match-board-frame { grid-column: 2; grid-row: 1 / -1; min-height: 0; place-items: center end; }
   html.native-app .match-board { gap: 5px; padding: 8px; border-radius: 18px; }
-  html.native-app .match-piece { border-radius: 12px; font-size: 1rem; }
+  html.native-app .match-piece { border-radius: 12px; font-size: 16px; }
   html.native-app .match-board,
   html.native-app .native-shell.has-mini-player .match-board { width: min(100%, var(--games-play-h)); }
   @supports (width: 1cqh) {
@@ -9528,7 +9555,7 @@ html.native-app .spine-tabs {
   background: rgba(18, 12, 8, 0.72);
   -webkit-backdrop-filter: blur(22px) saturate(1.3);
   backdrop-filter: blur(22px) saturate(1.3);
-  border-top: 1px solid rgba(217, 181, 116, 0.14);
+  border-top: 1px solid rgba(var(--spine-gold-rgb), 0.14);
   box-shadow: none;
 }
 
@@ -9559,7 +9586,7 @@ html.native-app .mini-player {
      620px wide; collapse it so the transport buttons stay flush right. */
   grid-template-columns: auto minmax(0, 1fr) auto;
   border-radius: 18px;
-  border: 1px solid rgba(217, 181, 116, 0.16);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.16);
   padding: 8px 12px;
   box-shadow: 0 20px 34px -18px rgba(0, 0, 0, 0.75);
 }
@@ -9690,7 +9717,7 @@ html.native-app .book-heading .heading-actions {
 }
 
 .book-quick-play-copy small {
-  color: rgba(255, 250, 237, 0.7);
+  color: rgba(var(--on-spine-bright-rgb), 0.7);
   font: 500 0.58rem/1.3 "JetBrains Mono", monospace;
   letter-spacing: 0.08em;
 }
@@ -10094,8 +10121,10 @@ html.native-app .native-now-timeline {
 
 /* The thumb's paper ring is a 3px shadow outside its box; the inline padding
    keeps it from being clipped by the input at 0% and 100%. */
+/* 44px tall for touch; the negative margins keep the 28px it is laid out at. */
 html.native-app .native-now-timeline input[type="range"] {
-  height: 28px;
+  height: 44px;
+  margin-block: -8px;
   padding-inline: 3px;
 }
 
@@ -10398,7 +10427,8 @@ html.native-app .has-native-player.native-player-view-now .native-now-playing {
   }
 
   html.native-app .native-now-timeline input[type="range"] {
-    height: 20px;
+    height: 44px;
+    margin-block: -12px;
   }
 
   html.native-app .native-now-time-row {
@@ -10522,7 +10552,7 @@ html:not(.native-app) .web-shell.player-view-now .mini-player {
   align-items: center;
   gap: 6px;
   padding-left: 14px;
-  border-left: 1px solid rgba(217, 181, 116, 0.22);
+  border-left: 1px solid rgba(var(--spine-gold-rgb), 0.22);
 }
 
 .mini-tools button {
@@ -10532,8 +10562,8 @@ html:not(.native-app) .web-shell.player-view-now .mini-player {
   min-width: 38px;
   height: 34px;
   padding: 0 8px;
-  color: var(--gold-soft);
-  border: 1px solid rgba(217, 181, 116, 0.26);
+  color: var(--spine-gold);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.26);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.66rem;
   letter-spacing: 0.04em;
@@ -10541,8 +10571,8 @@ html:not(.native-app) .web-shell.player-view-now .mini-player {
 }
 
 .mini-tools button:hover {
-  color: var(--paper);
-  background: rgba(217, 181, 116, 0.12);
+  color: var(--on-spine);
+  background: rgba(var(--spine-gold-rgb), 0.12);
 }
 
 .mini-tools small {
@@ -11296,7 +11326,7 @@ html:not(.native-app) .native-player-return-icon {
   html:not(.native-app) .sleep-sheet,
   html:not(.native-app) .details-sheet {
     max-height: min(86dvh, 760px);
-    border-bottom: 1px solid rgba(217, 181, 116, 0.18);
+    border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.18);
     border-radius: 30px;
     box-shadow: 0 30px 80px -24px rgba(0, 0, 0, 0.72);
   }
@@ -11514,7 +11544,7 @@ html.native-app .continue-reading-book {
 }
 
 html.native-app .continue-reading-book:active {
-  background: rgba(217, 181, 116, 0.12);
+  background: rgba(var(--spine-gold-rgb), 0.12);
 }
 
 html.native-app .continue-reading-play:active {
@@ -11530,7 +11560,7 @@ html.native-app .library-search {
   padding: 12px 14px;
   border-radius: var(--m-radius-sm);
   background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(217, 181, 116, 0.16);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.16);
 }
 
 html.native-app .book-list.is-list {
@@ -11557,11 +11587,11 @@ html.native-app .book-list.is-list .book-row::before {
 
 html.native-app .book-list.is-list .book-row.active {
   padding-left: 12px;
-  background: rgba(217, 181, 116, 0.1);
+  background: rgba(var(--spine-gold-rgb), 0.1);
 }
 
 html.native-app .book-list.is-list .book-row:active {
-  background: rgba(217, 181, 116, 0.07);
+  background: rgba(var(--spine-gold-rgb), 0.07);
 }
 
 html.native-app .book-row .index {
@@ -11586,13 +11616,20 @@ html.native-app .book-list.is-list .book-availability {
 }
 
 /* Author/subtitle line: readable italic instead of mono caps */
-html.native-app .book-text > span:not([class]) {
-  font-family: "Instrument Serif", serif;
-  font-style: italic;
-  font-size: 0.92rem;
+html.native-app .book-text > span:not([class]),
+html.native-app .book-text > .book-row-narrator {
+  font-family: "Fraunces", serif;
+  font-style: normal;
+  font-size: 0.86rem;
   letter-spacing: 0;
   text-transform: none;
-  color: rgba(241, 231, 208, 0.55);
+  color: rgba(var(--on-spine-rgb), 0.74);
+}
+
+html.native-app .book-text > .book-row-narrator {
+  margin-top: -2px;
+  font-size: 0.8rem;
+  color: rgba(var(--on-spine-rgb), 0.64);
 }
 
 /* Compact on the phone: the same trade as the web shelf, but the row still
@@ -11696,9 +11733,9 @@ html.native-app .pull-indicator {
   display: grid;
   place-items: center;
   border-radius: 50%;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   background: rgba(33, 23, 16, 0.94);
-  border: 1px solid rgba(217, 181, 116, 0.28);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.28);
   box-shadow: 0 10px 22px -10px rgba(0, 0, 0, 0.7);
   opacity: 0;
   pointer-events: none;
@@ -11721,7 +11758,7 @@ html.native-app .icon-button {
 html.native-app .view-toggle {
   border-radius: 12px;
   overflow: hidden;
-  border-color: rgba(217, 181, 116, 0.16);
+  border-color: rgba(var(--spine-gold-rgb), 0.16);
 }
 
 html.native-app .view-toggle button {
@@ -11740,7 +11777,7 @@ html.native-app .library-sort,
 html.native-app .library-sort-direction,
 html.native-app .shelf-facet-search {
   border-radius: 12px;
-  border-color: rgba(217, 181, 116, 0.16);
+  border-color: rgba(var(--spine-gold-rgb), 0.16);
   background-color: rgba(255, 255, 255, 0.05);
 }
 
@@ -11753,7 +11790,7 @@ html.native-app .library-filter-toggle {
   min-height: 44px;
   padding: 0 15px;
   border-radius: var(--m-radius-sm);
-  border-color: rgba(217, 181, 116, 0.16);
+  border-color: rgba(var(--spine-gold-rgb), 0.16);
   background: rgba(255, 255, 255, 0.05);
 }
 
@@ -11763,7 +11800,7 @@ html.native-app .library-filter-toggle em {
 
 html.native-app .library-filters {
   border-radius: var(--m-radius-sm);
-  border-color: rgba(217, 181, 116, 0.16);
+  border-color: rgba(var(--spine-gold-rgb), 0.16);
   background: rgba(255, 255, 255, 0.04);
 }
 
@@ -11771,7 +11808,7 @@ html.native-app .shelf-status-row {
   padding: 3px;
   gap: 3px;
   border-radius: var(--m-radius-sm);
-  border-color: rgba(217, 181, 116, 0.16);
+  border-color: rgba(var(--spine-gold-rgb), 0.16);
   background: rgba(255, 255, 255, 0.05);
 }
 
@@ -11787,7 +11824,7 @@ html.native-app .facet-chip {
   min-height: 36px;
   padding: 6px 12px;
   border-radius: 999px;
-  border-color: rgba(217, 181, 116, 0.16);
+  border-color: rgba(var(--spine-gold-rgb), 0.16);
 }
 
 html.native-app .active-filter-chip {
@@ -11864,7 +11901,7 @@ html.native-app .control-section select {
 html.native-app .source-toggle:not(.shelf-navigation) {
   padding: 3px;
   gap: 3px;
-  border: 1px solid rgba(217, 181, 116, 0.16);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.16);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.05);
 }
@@ -11903,8 +11940,8 @@ html.native-app .recent-row:hover {
 
 html.native-app .icon-button:hover {
   transform: none;
-  color: var(--gold-soft);
-  border-color: rgba(217, 181, 116, 0.3);
+  color: var(--spine-gold);
+  border-color: rgba(var(--spine-gold-rgb), 0.3);
 }
 
 html.native-app .round-button.primary:hover {
@@ -12169,17 +12206,17 @@ html.native-app .chapter-segment:not(.active):hover {
 
 html.native-app .audible-row button:not(:disabled):hover {
   background: transparent;
-  color: var(--paper);
+  color: var(--on-spine);
 }
 
 html.native-app .audible-download-status:hover {
-  color: var(--gold-soft);
-  background: rgba(217, 181, 116, 0.055);
+  color: var(--spine-gold);
+  background: rgba(var(--spine-gold-rgb), 0.055);
 }
 
 html.native-app .audible-download-status.queued:hover {
-  color: rgba(241, 231, 208, 0.62);
-  background: rgba(241, 231, 208, 0.035);
+  color: rgba(var(--on-spine-rgb), 0.62);
+  background: rgba(var(--on-spine-rgb), 0.035);
 }
 
 html.native-app .audible-row .local-marker:hover {
@@ -12188,11 +12225,11 @@ html.native-app .audible-row .local-marker:hover {
 }
 
 html.native-app .view-toggle button:not(.selected):hover {
-  color: rgba(241, 231, 208, 0.55);
+  color: rgba(var(--on-spine-rgb), 0.55);
 }
 
 html.native-app .source-toggle button:not(.selected):hover {
-  color: rgba(241, 231, 208, 0.58);
+  color: rgba(var(--on-spine-rgb), 0.58);
 }
 
 html.native-app .library-search:focus-within {
@@ -12234,6 +12271,9 @@ html.native-app .metadata-editor-scrim {
   height: var(--native-viewport-height);
   align-items: stretch;
   padding-top: var(--status-h);
+  /* The closed Duo draws its clock in a column beside the content. */
+  padding-right: env(safe-area-inset-right);
+  padding-left: env(safe-area-inset-left);
 }
 
 html.native-app .metadata-editor-card {
@@ -13377,6 +13417,21 @@ html.native-app .admin-shell:not(.admin-overlay) {
   width: 100%;
 }
 
+/* The whole row flips its switch, like an iOS settings cell. */
+.settings-toggle-row:has(> .settings-switch) {
+  position: relative;
+}
+
+.settings-toggle-row > .settings-switch {
+  position: static;
+}
+
+.settings-toggle-row > .settings-switch::after {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+}
+
 .settings-toggle-row > span {
   display: grid;
   gap: 4px;
@@ -13725,9 +13780,12 @@ html.native-app.platform-ios.dark-mode[data-dark-theme] .large-cover {
   color: var(--on-gold);
 }
 
-html.native-app.platform-ios.dark-mode[data-dark-theme] .calendar-cell.tier-1 { background: rgba(217, 181, 116, 0.28); }
-html.native-app.platform-ios.dark-mode[data-dark-theme] .calendar-cell.tier-2 { background: rgba(217, 181, 116, 0.5); }
-html.native-app.platform-ios.dark-mode[data-dark-theme] .calendar-cell.tier-3 { background: rgba(217, 181, 116, 0.75); }
+/* Dark heatmap: empty days stay visible and every listening tier clears 3:1 against the page. */
+html.native-app.platform-ios.dark-mode .calendar-cell { background: rgba(var(--on-spine-rgb), 0.1); }
+html.native-app.platform-ios.dark-mode .calendar-cell.tier-1 { background: rgba(var(--spine-gold-rgb), 0.62); }
+html.native-app.platform-ios.dark-mode .calendar-cell.tier-2 { background: rgba(var(--spine-gold-rgb), 0.78); }
+html.native-app.platform-ios.dark-mode .calendar-cell.tier-3 { background: rgba(var(--spine-gold-rgb), 0.9); }
+html.native-app.platform-ios.dark-mode .calendar-cell.tier-4 { background: rgb(var(--spine-gold-rgb)); }
 
 html.native-app.platform-ios.dark-mode body,
 html.native-app.platform-ios.dark-mode .native-shell > .player-pane,
@@ -13978,12 +14036,15 @@ html[data-theme-turn]::view-transition-old(root) {
 }
 
 .settings-value {
+  min-width: 0;
   font-family: "JetBrains Mono", monospace;
-  font-size: 0.7rem;
-  letter-spacing: 0.04em;
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
   color: var(--ink-faded);
   text-align: right;
-  word-break: break-all;
+  /* Break at the separator first, and inside an address only when it
+     cannot fit on a line of its own. */
+  overflow-wrap: anywhere;
 }
 
 .settings-downloads {
@@ -14203,10 +14264,10 @@ html.native-app .recent-row {
   padding: 13px max(22px, env(safe-area-inset-right))
     max(24px, calc(env(safe-area-inset-bottom) + 16px))
     max(22px, env(safe-area-inset-left));
-  border: 1px solid rgba(217, 181, 116, 0.18);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.18);
   border-bottom: 0;
   border-radius: 30px 30px 0 0;
-  color: var(--paper);
+  color: var(--on-spine);
   background:
     radial-gradient(circle at 80% 0, rgba(var(--oxblood-rgb), 0.2), transparent 42%),
     linear-gradient(180deg, #211713, #120d0b 72%);
@@ -14219,7 +14280,7 @@ html.native-app .recent-row {
   height: 5px;
   margin: 0 auto 18px;
   border-radius: 999px;
-  background: rgba(241, 231, 208, 0.35);
+  background: rgba(var(--on-spine-rgb), 0.35);
 }
 
 .sleep-sheet header {
@@ -14235,7 +14296,7 @@ html.native-app .recent-row {
 }
 
 .sleep-sheet .eyebrow {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .sleep-sheet h2 {
@@ -14246,14 +14307,14 @@ html.native-app .recent-row {
 }
 
 .sleep-sheet .icon-button {
-  color: var(--paper);
-  border-color: rgba(241, 231, 208, 0.14);
+  color: var(--on-spine);
+  border-color: rgba(var(--on-spine-rgb), 0.14);
   background: rgba(255, 255, 255, 0.06);
 }
 
 .sleep-sheet-hint {
   margin: 12px 0 17px;
-  color: rgba(241, 231, 208, 0.58);
+  color: rgba(var(--on-spine-rgb), 0.74);
   font-family: "Fraunces", serif;
   font-size: 0.86rem;
   font-style: italic;
@@ -14317,7 +14378,7 @@ html.native-app .recent-row {
   padding: 16px;
   overflow: hidden;
   border-radius: 20px;
-  color: var(--paper);
+  color: var(--on-spine);
   background:
     radial-gradient(circle at 92% 4%, rgba(184, 137, 58, 0.25), transparent 40%),
     linear-gradient(145deg, #3d211c, #17100d);
@@ -14338,7 +14399,7 @@ html.native-app .recent-row {
 }
 
 .details-sheet-hero > div > span {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font: 0.58rem "JetBrains Mono", monospace;
   letter-spacing: 0.13em;
   text-transform: uppercase;
@@ -14354,12 +14415,13 @@ html.native-app .recent-row {
 }
 
 .details-sheet-hero p {
+  display: -webkit-box;
   margin: 0;
   overflow: hidden;
-  color: rgba(241, 231, 208, 0.68);
-  font: italic 0.82rem "Fraunces", serif;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: rgba(var(--on-spine-rgb), 0.74);
+  font: italic 0.82rem/1.35 "Fraunces", serif;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .details-sheet-progress {
@@ -14519,7 +14581,7 @@ html.native-app .recent-row {
 
 .sleep-options {
   display: grid;
-  border-top: 1px solid rgba(241, 231, 208, 0.13);
+  border-top: 1px solid rgba(var(--on-spine-rgb), 0.13);
 }
 
 .sleep-options button {
@@ -14529,8 +14591,8 @@ html.native-app .recent-row {
   gap: 16px;
   min-height: 58px;
   padding: 0 3px;
-  border-bottom: 1px solid rgba(241, 231, 208, 0.13);
-  color: rgba(255, 250, 237, 0.88);
+  border-bottom: 1px solid rgba(var(--on-spine-rgb), 0.13);
+  color: rgba(var(--on-spine-bright-rgb), 0.88);
   text-align: left;
 }
 
@@ -14540,11 +14602,11 @@ html.native-app .recent-row {
 }
 
 .sleep-options button svg {
-  color: rgba(217, 181, 116, 0.55);
+  color: rgba(var(--spine-gold-rgb), 0.55);
 }
 
 .sleep-options button em {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.61rem;
   font-style: normal;
@@ -14553,11 +14615,11 @@ html.native-app .recent-row {
 }
 
 .sleep-options button.selected span {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .sleep-options .sleep-off span {
-  color: rgba(241, 231, 208, 0.62);
+  color: rgba(var(--on-spine-rgb), 0.62);
 }
 
 .sleep-custom-editor {
@@ -14567,7 +14629,7 @@ html.native-app .recent-row {
 .sleep-custom-row {
   gap: 12px;
   margin-top: 8px;
-  border-bottom: 1px solid rgba(241, 231, 208, 0.22);
+  border-bottom: 1px solid rgba(var(--on-spine-rgb), 0.22);
 }
 
 .sleep-custom-row:focus-within {
@@ -14577,17 +14639,17 @@ html.native-app .recent-row {
 .sleep-custom-row input[type="number"] {
   padding: 8px 3px;
   border: 0;
-  color: rgba(255, 250, 237, 0.92);
+  color: rgba(var(--on-spine-bright-rgb), 0.92);
   font-family: "Instrument Serif", serif;
   font-size: 2rem;
 }
 
 .sleep-custom-row input[type="number"]::placeholder {
-  color: rgba(241, 231, 208, 0.42);
+  color: rgba(var(--on-spine-rgb), 0.42);
 }
 
 .sleep-custom-unit {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.7rem;
 }
@@ -14602,27 +14664,27 @@ html.native-app .recent-row {
 
 .sleep-sheet .speed-wheel-shell > button,
 .sleep-sheet .book-volume-slider-row > button {
-  color: var(--paper);
-  border-color: rgba(241, 231, 208, 0.18);
+  color: var(--on-spine);
+  border-color: rgba(var(--on-spine-rgb), 0.18);
   background: rgba(255, 255, 255, 0.05);
 }
 
 .sleep-sheet .speed-wheel-shell > button:hover:not(:disabled),
 .sleep-sheet .book-volume-slider-row > button:hover:not(:disabled) {
-  color: var(--gold-soft);
-  border-color: rgba(217, 181, 116, 0.7);
+  color: var(--spine-gold);
+  border-color: rgba(var(--spine-gold-rgb), 0.7);
 }
 
 .sleep-sheet .speed-wheel-hint {
-  color: rgba(241, 231, 208, 0.55);
+  color: rgba(var(--on-spine-rgb), 0.55);
 }
 
 .sleep-sheet .speed-wheel-hint span:last-child {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .sleep-sheet .speed-wheel {
-  border-color: rgba(241, 231, 208, 0.12);
+  border-color: rgba(var(--on-spine-rgb), 0.12);
   background: rgba(255, 255, 255, 0.06);
 }
 
@@ -14640,7 +14702,7 @@ html.native-app .recent-row {
 }
 
 .sleep-sheet .speed-wheel-value {
-  color: rgba(255, 250, 237, 0.72);
+  color: rgba(var(--on-spine-bright-rgb), 0.72);
 }
 
 .sleep-sheet .speed-wheel-value.selected {
@@ -14648,12 +14710,12 @@ html.native-app .recent-row {
 }
 
 .sleep-sheet .speed-presets button {
-  color: rgba(255, 250, 237, 0.75);
-  border-color: rgba(241, 231, 208, 0.14);
+  color: rgba(var(--on-spine-bright-rgb), 0.75);
+  border-color: rgba(var(--on-spine-rgb), 0.14);
 }
 
 .sleep-sheet .speed-presets button:hover {
-  border-color: rgba(217, 181, 116, 0.55);
+  border-color: rgba(var(--spine-gold-rgb), 0.55);
 }
 
 .sleep-sheet .speed-presets button.selected {
@@ -14666,19 +14728,19 @@ html.native-app .recent-row {
    invalidates the whole selector list, taking the other engine's down too.
    The rail is flat — the value is stated above the track, and the app's other
    non-scrubber sliders do not fill either. */
-.sleep-sheet .book-volume input[type="range"]::-webkit-slider-runnable-track {
+.sleep-sheet :is(.book-volume, .speed-control) input[type="range"]::-webkit-slider-runnable-track {
   height: 6px;
   border-radius: 999px;
-  background: rgba(241, 231, 208, 0.16);
+  background: rgba(var(--on-spine-rgb), 0.16);
 }
 
-.sleep-sheet .book-volume input[type="range"]::-moz-range-track {
+.sleep-sheet :is(.book-volume, .speed-control) input[type="range"]::-moz-range-track {
   height: 6px;
   border-radius: 999px;
-  background: rgba(241, 231, 208, 0.16);
+  background: rgba(var(--on-spine-rgb), 0.16);
 }
 
-.sleep-sheet .book-volume input[type="range"]::-webkit-slider-thumb {
+.sleep-sheet :is(.book-volume, .speed-control) input[type="range"]::-webkit-slider-thumb {
   width: 20px;
   height: 20px;
   margin-top: -7px;
@@ -14686,29 +14748,29 @@ html.native-app .recent-row {
   box-shadow: 0 2px 8px -1px rgba(0, 0, 0, 0.8);
 }
 
-.sleep-sheet .book-volume input[type="range"]::-moz-range-thumb {
+.sleep-sheet :is(.book-volume, .speed-control) input[type="range"]::-moz-range-thumb {
   width: 20px;
   height: 20px;
   border: 0;
   background: var(--gold-soft);
 }
 
-.sleep-sheet .book-volume-heading output {
-  color: var(--paper);
+.sleep-sheet :is(.book-volume-heading, .speed-slider-heading) output {
+  color: var(--on-spine);
 }
 
 .sleep-sheet .book-volume-heading span,
 .sleep-sheet .book-volume-range-labels {
-  color: rgba(255, 250, 237, 0.55);
+  color: rgba(var(--on-spine-bright-rgb), 0.55);
 }
 
 .sleep-sheet .book-volume-presets button {
-  color: rgba(255, 250, 237, 0.75);
-  border-color: rgba(241, 231, 208, 0.14);
+  color: rgba(var(--on-spine-bright-rgb), 0.75);
+  border-color: rgba(var(--on-spine-rgb), 0.14);
 }
 
 .sleep-sheet .book-volume-presets button:hover {
-  border-color: rgba(217, 181, 116, 0.55);
+  border-color: rgba(var(--spine-gold-rgb), 0.55);
 }
 
 .sleep-sheet .book-volume-presets button.selected {
@@ -14718,7 +14780,7 @@ html.native-app .recent-row {
 }
 
 .sleep-sheet .book-volume-hint {
-  color: rgba(255, 250, 237, 0.55);
+  color: rgba(var(--on-spine-bright-rgb), 0.55);
 }
 
 .speed-sheet-done {
@@ -14752,7 +14814,7 @@ html.native-app .recent-row {
 }
 
 .chapter-sheet-label small {
-  color: rgba(217, 181, 116, 0.52);
+  color: rgba(var(--spine-gold-rgb), 0.52);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.61rem;
   letter-spacing: 0.08em;
@@ -14769,12 +14831,12 @@ html.native-app .recent-row {
 }
 
 .chapter-sheet-options button.selected .chapter-sheet-label strong {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 .chapter-sheet-options .chapter-sheet-time {
   flex: 0 0 auto;
-  color: rgba(241, 231, 208, 0.48);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.61rem;
   font-variant-numeric: tabular-nums;
@@ -14890,8 +14952,8 @@ html.native-app .recent-row {
     background-image:
       repeating-linear-gradient(
         180deg,
-        rgba(217, 181, 116, 0.38) 0 12px,
-        rgba(217, 181, 116, 0) 12px 26px
+        rgba(var(--spine-gold-rgb), 0.38) 0 12px,
+        rgba(var(--spine-gold-rgb), 0) 12px 26px
       ),
       linear-gradient(
         90deg,
@@ -15018,20 +15080,20 @@ html.native-app .recent-row {
   html.native-app .native-shell .book-list.is-list .book-row {
     padding: 13px 26px 13px 10px;
     border-radius: 0;
-    border-top: 1px solid rgba(217, 181, 116, 0.13);
+    border-top: 1px solid rgba(var(--spine-gold-rgb), 0.13);
     background: none;
   }
 
   html.native-app .native-shell .book-list.is-list .book-row:last-child {
-    border-bottom: 1px solid rgba(217, 181, 116, 0.13);
+    border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.13);
   }
 
   html.native-app .native-shell .book-list.is-list .book-row.active {
     padding-left: 10px;
     background: linear-gradient(
       90deg,
-      rgba(217, 181, 116, 0.13),
-      rgba(217, 181, 116, 0.03)
+      rgba(var(--spine-gold-rgb), 0.13),
+      rgba(var(--spine-gold-rgb), 0.03)
     );
     box-shadow: inset 3px 0 0 var(--gold);
   }
@@ -15054,7 +15116,7 @@ html.native-app .recent-row {
     height: 21px;
     margin-top: -10.5px;
     background:
-      linear-gradient(180deg, rgba(217, 181, 116, 0.85) 0 1px, rgba(217, 181, 116, 0) 1px),
+      linear-gradient(180deg, rgba(var(--spine-gold-rgb), 0.85) 0 1px, rgba(var(--spine-gold-rgb), 0) 1px),
       linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0) 46%),
       linear-gradient(90deg, var(--oxblood-deep), var(--oxblood));
     clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 11px 50%);
@@ -15132,7 +15194,7 @@ html.native-app .recent-row {
     font-style: normal;
     letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: rgba(var(--ink-rgb), 0.42);
+    color: rgba(var(--ink-rgb), 0.62);
   }
 
   html.native-app .native-shell .folio .dot {
@@ -15566,11 +15628,11 @@ html.native-app .recent-row {
 .libro-folder-optional { margin-top: 18px; }
 .libro-folder-optional > summary { cursor: pointer; padding: 12px 0; }
 .libro-catalog {
-  --catalog-ink: var(--paper);
+  --catalog-ink: var(--on-spine);
   --catalog-selected-text: #1a1410;
-  --catalog-muted: rgba(241, 231, 208, 0.7);
-  --catalog-border: rgba(217, 181, 116, 0.25);
-  --catalog-surface: rgba(255, 255, 255, 0.04);
+  --catalog-muted: rgba(var(--on-spine-rgb), 0.7);
+  --catalog-border: rgba(var(--spine-gold-rgb), 0.25);
+  --catalog-surface: rgba(var(--on-spine-bright-rgb), 0.04);
   padding: 18px 14px;
   color: var(--catalog-ink);
   text-align: left;
@@ -15596,7 +15658,7 @@ html.native-app .recent-row {
 .libro-catalog-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .libro-connection-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; width: 100%; padding: 16px 0; border-block: 1px solid var(--catalog-border); font: 400 .8rem/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .libro-connection-copy, .libro-account-identity { display: flex; align-items: center; gap: 9px; min-width: 0; }
-.libro-connection-copy > svg, .libro-account-identity > svg { flex: 0 0 auto; color: var(--gold-soft); }
+.libro-connection-copy > svg, .libro-account-identity > svg { flex: 0 0 auto; color: var(--spine-gold); }
 .libro-connection-copy strong { display: block; font-weight: 500; }
 .libro-connection-copy small { display: block; margin-top: 3px; font-size: .72rem; color: var(--catalog-muted); overflow-wrap: anywhere; }
 .libro-sidebar-actions { display: flex; gap: 6px; }
@@ -15752,9 +15814,9 @@ html.native-app .recent-row {
   gap: 12px;
   margin-bottom: 18px;
   padding: 12px 14px;
-  border-top: 1px solid rgba(217, 181, 116, 0.18);
-  border-bottom: 1px solid rgba(217, 181, 116, 0.18);
-  background: rgba(217, 181, 116, 0.05);
+  border-top: 1px solid rgba(var(--spine-gold-rgb), 0.18);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.18);
+  background: rgba(var(--spine-gold-rgb), 0.05);
 }
 
 .carplay-banner-copy {
@@ -15796,14 +15858,14 @@ html.native-app .recent-row {
 /* Reader's ledger: a collection of bookplates and live reading companions. */
 .ledger-achievements { margin: 32px 0; padding-top: 28px; border-top: 1px solid rgba(var(--ink-rgb), .2); }
 .achievements-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-.achievements-heading h2 { font-size: clamp(24px, 4vw, 32px); font-weight: 500; line-height: 1.15; margin: 12px 0 8px; }
-.achievements-heading p, .ledger-rivalries > p { color: var(--ink-faded); font-size: 13px; line-height: 1.6; }
+.achievements-heading h2 { font-size: clamp(1.5rem, 4vw, 32px); font-weight: 500; line-height: 1.15; margin: 12px 0 8px; }
+.achievements-heading p, .ledger-rivalries > p { color: var(--ink-faded); font-size: 0.8125rem; line-height: 1.6; }
 .achievement-tally { flex-shrink: 0; display: grid; gap: 5px; text-align: right; }
-.achievement-tally > strong { font-size: 36px; font-weight: 500; }
-.achievement-tally strong span { font-size: 19px; color: var(--ink-faded); }
-.achievement-tally > span { font-size: 11px; color: var(--ink-faded); }
+.achievement-tally > strong { font-size: 2.25rem; font-weight: 500; }
+.achievement-tally strong span { font-size: 1.1875rem; color: var(--ink-faded); }
+.achievement-tally > span { font-size: 0.6875rem; color: var(--ink-faded); }
 .achievement-filters { display: flex; gap: 8px; margin: 22px 0 16px; }
-.achievement-filters button { padding: 8px 14px; border: 1px solid rgba(var(--ink-rgb), .22); border-radius: 20px; background: transparent; color: var(--ink-soft); font: inherit; font-size: 12px; cursor: pointer; }
+.achievement-filters button { padding: 8px 14px; border: 1px solid rgba(var(--ink-rgb), .22); border-radius: 20px; background: transparent; color: var(--ink-soft); font: inherit; font-size: 0.75rem; cursor: pointer; }
 .achievement-filters button[aria-pressed="true"] { background: var(--ink); color: var(--on-ink); }
 .achievement-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .achievement-card { display: flex; flex-direction: column; min-width: 0; padding: 18px; border: 1px solid rgba(var(--ink-rgb), .17); border-radius: 5px; background: rgba(var(--lift-rgb), .2); }
@@ -15811,27 +15873,27 @@ html.native-app .recent-row {
 .achievement-card-top { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
 .achievement-seal { display: grid; place-items: center; width: 43px; height: 43px; border-radius: 50%; border: 1px solid rgba(var(--ink-rgb), .22); color: var(--ink-faded); }
 .is-earned .achievement-seal { border: 1px solid var(--gold); background: var(--gold-soft); color: var(--on-gold); box-shadow: inset 0 0 0 3px var(--paper); }
-.achievement-state { display: flex; align-items: center; gap: 3px; font-size: 10px; color: var(--ink-faded); }
-.achievement-card h3 { font-size: 18px; line-height: 1.2; font-weight: 500; margin: 16px 0 8px; overflow-wrap: anywhere; }
-.achievement-card p { font-size: 12px; line-height: 1.6; color: var(--ink-faded); margin: 0 0 18px; }
-.achievement-progress { margin-top: auto; display: grid; gap: 7px; font-size: 10px; color: var(--ink-faded); }
+.achievement-state { display: flex; align-items: center; gap: 3px; font-size: 0.625rem; color: var(--ink-faded); }
+.achievement-card h3 { font-size: 1.125rem; line-height: 1.2; font-weight: 500; margin: 16px 0 8px; overflow-wrap: anywhere; }
+.achievement-card p { font-size: 0.75rem; line-height: 1.6; color: var(--ink-faded); margin: 0 0 18px; }
+.achievement-progress { margin-top: auto; display: grid; gap: 7px; font-size: 0.625rem; color: var(--ink-faded); }
 .achievement-progress progress { appearance: none; border: none; border-radius: 4px; overflow: hidden; width: 100%; height: 4px; background: rgba(var(--ink-rgb), .12); }
 .achievement-progress progress::-webkit-progress-bar { background: rgba(var(--ink-rgb), .12); }
 .achievement-progress progress::-webkit-progress-value { background: var(--gold); }
 .achievement-progress progress::-moz-progress-bar { background: var(--gold); }
-.achievement-evidence { background: none; border: none; border-top: 1px solid rgba(var(--ink-rgb), .12); padding: 10px 0 0; margin-top: 12px; text-align: left; color: var(--ink-soft); font: inherit; font-size: 11px; cursor: pointer; overflow-wrap: anywhere; }
-.achievement-note { color: var(--ink-faded); font-size: 11px; line-height: 1.6; margin: 16px 0; }
+.achievement-evidence { background: none; border: none; border-top: 1px solid rgba(var(--ink-rgb), .12); padding: 10px 0 0; margin-top: 12px; text-align: left; color: var(--ink-soft); font: inherit; font-size: 0.6875rem; cursor: pointer; overflow-wrap: anywhere; }
+.achievement-note { color: var(--ink-faded); font-size: 0.6875rem; line-height: 1.6; margin: 16px 0; }
 .ledger-rivalries { margin-top: 26px; border: 1px solid rgba(var(--ink-rgb), .2); padding: 20px; border-radius: 5px; }
 .ledger-rivalries header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.ledger-rivalries h3 { margin: 0; font-size: 18px; font-weight: 500; }
-.ledger-rivalries header > span { margin-left: auto; font-size: 10px; color: var(--ink-faded); }
+.ledger-rivalries h3 { margin: 0; font-size: 1.125rem; font-weight: 500; }
+.ledger-rivalries header > span { margin-left: auto; font-size: 0.625rem; color: var(--ink-faded); }
 .ledger-rivalries ul { list-style: none; padding: 0; margin: 14px 0 0; }
 .ledger-rivalries li + li { border-top: 1px solid rgba(var(--ink-rgb), .12); }
 .ledger-rivalries li button { display: flex; gap: 12px; align-items: center; width: 100%; padding: 13px 0; text-align: left; background: none; border: none; color: var(--ink); font: inherit; cursor: pointer; }
 .ledger-rivalries li button > span:nth-child(2) { flex: 1; min-width: 0; display: grid; gap: 4px; }
-.ledger-rivalries li strong { font-size: 14px; font-weight: 500; }
-.ledger-rivalries li span span { color: var(--ink-faded); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-.rivalry-symbol { font-size: 24px; color: var(--ink-faded); }
+.ledger-rivalries li strong { font-size: 0.875rem; font-weight: 500; }
+.ledger-rivalries li span span { color: var(--ink-faded); font-size: 0.75rem; line-height: 1.5; overflow-wrap: anywhere; }
+.rivalry-symbol { font-size: 1.5rem; color: var(--ink-faded); }
 @media (max-width: 700px) { .achievement-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .achievement-card { padding: 14px; } }
 @media (max-width: 420px) { .achievements-heading { align-items: flex-start; } .achievement-tally > strong { font-size: 28px; } .achievement-tally > span { max-width: 80px; } .achievement-card-top { flex-wrap: wrap; } .ledger-rivalries { padding: 16px; } }
 
@@ -15939,30 +16001,30 @@ html.native-app:not(.dark-mode) .profile-shell { background: var(--paper); }
 .dark-mode .profile-page.ledger-dashboard { --ledger-base: var(--dark-bg); --ledger-surface: var(--dark-card); }
 html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 1080px; margin: 0 auto; }
 .ledger-dashboard .profile-head { gap: 14px; }
-.ledger-dashboard .profile-mono { width: 48px; height: 48px; flex: 0 0 48px; border-radius: 16px; font: 600 20px -apple-system, BlinkMacSystemFont, sans-serif; background: rgba(184,137,58,.16); color: var(--ink); }
-.ledger-dashboard .profile-id h1 { font-size: 32px; line-height: 1.1; }
-.ledger-dashboard .ledger-owner { display: block; margin-top: 6px; font-size: 14px; color: var(--ink-soft); }
-.ledger-dashboard .profile-id p { font: inherit; font-size: 12px; line-height: 1.5; margin-top: 5px; }
+.ledger-dashboard .profile-mono { width: 48px; height: 48px; flex: 0 0 48px; border-radius: 16px; font: 600 1.25rem -apple-system, BlinkMacSystemFont, sans-serif; background: rgba(184,137,58,.16); color: var(--ink); }
+.ledger-dashboard .profile-id h1 { font-size: 2rem; line-height: 1.1; }
+.ledger-dashboard .ledger-owner { display: block; margin-top: 6px; font-size: 0.875rem; color: var(--ink-soft); }
+.ledger-dashboard .profile-id p { font: inherit; font-size: 0.75rem; line-height: 1.5; margin-top: 5px; }
 .ledger-dashboard .profile-headline { background: var(--spine); border-radius: 22px; border: 0; padding: 24px; gap: 24px; align-items: center; }
 .ledger-dashboard .headline-primary { padding: 0; border: 0; gap: 10px; }
-.ledger-dashboard .headline-value { font: 500 clamp(44px, 6vw, 64px)/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: -.04em; font-variant-numeric: tabular-nums; color: var(--paper); }
-.ledger-dashboard .headline-unit { font-size: .4em; color: var(--gold-soft); }
-.ledger-dashboard .headline-label { font: inherit; font-size: 12px; line-height: 1.5; color: rgba(241, 231, 208, 0.62); }
+.ledger-dashboard .headline-value { font: 500 clamp(2.75rem, 6vw, 64px)/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: -.04em; font-variant-numeric: tabular-nums; color: var(--on-spine); }
+.ledger-dashboard .headline-unit { font-size: .4em; color: var(--spine-gold); }
+.ledger-dashboard .headline-label { font: inherit; font-size: 0.75rem; line-height: 1.5; color: rgba(var(--on-spine-rgb), 0.62); }
 .ledger-dashboard .headline-secondary { gap: 20px 16px; align-items: start; }
 .ledger-dashboard .headline-secondary > div { gap: 7px; }
-.ledger-dashboard .headline-secondary dd { font: 500 27px/1 -apple-system, BlinkMacSystemFont, sans-serif; color: var(--paper); font-variant-numeric: tabular-nums; }
-.ledger-dashboard .headline-secondary dt { font: inherit; font-size: 12px; line-height: 1.4; color: rgba(241, 231, 208, 0.62); }
-.ledger-dashboard .headline-secondary .dd-unit { color: var(--gold-soft); }
+.ledger-dashboard .headline-secondary dd { font: 500 1.6875rem/1 -apple-system, BlinkMacSystemFont, sans-serif; color: var(--on-spine); font-variant-numeric: tabular-nums; }
+.ledger-dashboard .headline-secondary dt { font: inherit; font-size: 0.75rem; line-height: 1.4; color: rgba(var(--on-spine-rgb), 0.62); }
+.ledger-dashboard .headline-secondary .dd-unit { color: var(--spine-gold); }
 .ledger-dashboard .profile-calendar { padding: 22px; background: var(--ledger-surface); border: 1px solid var(--ledger-line); border-radius: 18px; }
-.ledger-dashboard .profile-calendar h2, .ledger-dashboard .profile-recent h2 { font: 600 19px/1.3 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: -.025em; }
-.ledger-dashboard .profile-calendar header span { font: inherit; font-size: 12px; }
+.ledger-dashboard .profile-calendar h2, .ledger-dashboard .profile-recent h2 { font: 600 1.1875rem/1.3 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: -.025em; }
+.ledger-dashboard .profile-calendar header span { font: inherit; font-size: 0.75rem; }
 /* The selected day's 2px outline plus 1px offset must stay inside the
    scrollable grid, including its first/last rows and columns. */
 .ledger-dashboard .calendar-grid {
   grid-template-columns: auto minmax(0, 1fr);
   padding: 3px;
 }
-.ledger-dashboard .calendar-weekdays { font: inherit; font-size: 10px; }
+.ledger-dashboard .calendar-weekdays { font: inherit; font-size: 0.625rem; }
 .ledger-dashboard .calendar-weeks { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 5px; }
 .ledger-dashboard .calendar-week { gap: 5px; }
 .ledger-dashboard .calendar-cell { width: 100%; height: 20px; border-radius: 4px; border: 0; padding: 0; }
@@ -15971,21 +16033,21 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
 .ledger-dashboard .calendar-weekdays { gap: 5px; }
 .ledger-dashboard .calendar-weekdays span { height: 20px; }
 .calendar-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
-.calendar-footer p { margin: 0; font-size: 12px; line-height: 1.5; color: var(--ink-faded); }
-.calendar-legend { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--ink-faded); }
+.calendar-footer p { margin: 0; font-size: 0.75rem; line-height: 1.5; color: var(--ink-faded); }
+.calendar-legend { display: flex; align-items: center; gap: 4px; font-size: 0.625rem; color: var(--ink-faded); }
 .ledger-dashboard .calendar-legend .calendar-cell { width: 10px; height: 10px; border-radius: 3px; }
 .ledger-dashboard .profile-favorites { padding: 0; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .ledger-dashboard .profile-favorites > div { min-width: 0; gap: 6px; }
 .ledger-dashboard .profile-favorites span, .ledger-dashboard .profile-favorites strong { font-family: inherit; font-style: normal; }
-.ledger-dashboard .profile-favorites span { font-size: 12px; }
-.ledger-dashboard .profile-favorites strong { font-size: 15px; font-weight: 500; overflow-wrap: anywhere; }
+.ledger-dashboard .profile-favorites span { font-size: 0.75rem; }
+.ledger-dashboard .profile-favorites strong { font-size: 0.9375rem; font-weight: 500; overflow-wrap: anywhere; }
 .ledger-dashboard .ledger-achievements { margin: 0; padding-top: 26px; border-color: var(--ledger-line); }
 .ledger-dashboard .achievements-heading { gap: 14px; }
-.ledger-dashboard .achievements-heading h2 { font: 600 21px/1.2 -apple-system, BlinkMacSystemFont, sans-serif; margin: 0 0 7px; letter-spacing: -.025em; }
-.ledger-dashboard .achievements-heading p { margin: 0; font-size: 12px; }
-.ledger-dashboard .achievement-tally > strong { font-size: 25px; font-weight: 600; letter-spacing: -.04em; }
-.ledger-dashboard .achievement-tally strong span { font-size: 15px; }
-.ledger-dashboard .achievement-tally > span { font-size: 10px; }
+.ledger-dashboard .achievements-heading h2 { font: 600 1.3125rem/1.2 -apple-system, BlinkMacSystemFont, sans-serif; margin: 0 0 7px; letter-spacing: -.025em; }
+.ledger-dashboard .achievements-heading p { margin: 0; font-size: 0.75rem; }
+.ledger-dashboard .achievement-tally > strong { font-size: 1.5625rem; font-weight: 600; letter-spacing: -.04em; }
+.ledger-dashboard .achievement-tally strong span { font-size: 0.9375rem; }
+.ledger-dashboard .achievement-tally > span { font-size: 0.625rem; }
 .ledger-dashboard .achievement-filters { width: fit-content; padding: 4px; border-radius: 12px; background: rgba(var(--ink-rgb), .055); gap: 2px; margin: 20px 0 16px; }
 .ledger-dashboard .achievement-filters button { border: 0; border-radius: 9px; min-height: 36px; padding: 8px 14px; font-weight: 500; }
 .ledger-dashboard .achievement-filters button[aria-pressed="true"] { background: var(--ledger-surface); color: var(--ink); box-shadow: 0 1px 4px rgba(0,0,0,.1); }
@@ -15993,19 +16055,19 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
 .ledger-dashboard .achievement-card.is-earned { border-color: rgba(184,137,58,.4); background: var(--ledger-surface); }
 .ledger-dashboard .achievement-seal { width: 38px; height: 38px; border: 0; border-radius: 12px; background: rgba(var(--ink-rgb), .06); }
 .ledger-dashboard .is-earned .achievement-seal { background: rgba(184,137,58,.2); color: var(--ink); box-shadow: none; }
-.ledger-dashboard .achievement-state { font-size: 10px; }
-.ledger-dashboard .achievement-card h3 { font-size: 15px; font-weight: 600; margin: 14px 0 7px; }
-.ledger-dashboard .achievement-card p { font-size: 12px; line-height: 1.5; }
+.ledger-dashboard .achievement-state { font-size: 0.625rem; }
+.ledger-dashboard .achievement-card h3 { font-size: 0.9375rem; font-weight: 600; margin: 14px 0 7px; }
+.ledger-dashboard .achievement-card p { font-size: 0.75rem; line-height: 1.5; }
 .ledger-dashboard .achievement-progress { font-variant-numeric: tabular-nums; }
 .ledger-dashboard .achievement-progress progress { height: 5px; }
 .ledger-dashboard .achievement-evidence { line-height: 1.5; }
 .ledger-dashboard .ledger-rivalries { background: transparent; border-radius: 16px; border-color: var(--ledger-line); }
-.ledger-dashboard .ledger-rivalries h3 { font-size: 17px; font-weight: 600; }
+.ledger-dashboard .ledger-rivalries h3 { font-size: 1.0625rem; font-weight: 600; }
 .ledger-dashboard .recent-text strong, .ledger-dashboard .recent-text span, .ledger-dashboard .recent-time { font-family: inherit; }
 .ledger-dashboard button:focus-visible { outline: 2px solid var(--oxblood); outline-offset: 3px; }
 @media (max-width: 720px) {
   .ledger-dashboard .profile-headline { grid-template-columns: 1fr; gap: 22px; padding: 22px; }
-  .ledger-dashboard .headline-primary { border-bottom: 1px solid rgba(241, 231, 208, 0.14); padding-bottom: 20px; }
+  .ledger-dashboard .headline-primary { border-bottom: 1px solid rgba(var(--on-spine-rgb), 0.14); padding-bottom: 20px; }
   .ledger-dashboard .headline-secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ledger-dashboard .profile-calendar { padding: 18px; }
   .ledger-dashboard .achievement-card { padding: 14px; }
@@ -16052,6 +16114,7 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
   html.native-app .ledger-dashboard .profile-calendar h2 { font-size: 16px; }
   html.native-app .ledger-dashboard .calendar-weeks,
   html.native-app .ledger-dashboard .calendar-week,
+  html.native-app .ledger-dashboard .calendar-week-starts,
   html.native-app .ledger-dashboard .calendar-weekdays { gap: 4px; }
   html.native-app .ledger-dashboard .calendar-cell,
   html.native-app .ledger-dashboard .calendar-weekdays span { height: 15px; }
@@ -16189,9 +16252,9 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
     gap: 7px;
     min-height: 40px;
     padding: 8px 14px 8px 11px;
-    border: 1px solid rgba(217, 181, 116, 0.4);
+    border: 1px solid rgba(var(--spine-gold-rgb), 0.4);
     border-radius: 999px;
-    color: var(--gold-soft);
+    color: var(--spine-gold);
     background: #1a1410;
     box-shadow: 0 10px 24px -16px #000;
     font: 600 0.7rem "JetBrains Mono", monospace;
@@ -16509,7 +16572,7 @@ html.native-app[data-shelf-transition="player-split"]::view-transition-new(shelf
     gap: 8px;
     margin-top: 10px;
     padding-top: 10px;
-    border-top: 1px solid rgba(217, 181, 116, 0.14);
+    border-top: 1px solid rgba(var(--spine-gold-rgb), 0.14);
   }
   html.native-app .game-card .game-reset { grid-column: auto; margin: 0; }
 
@@ -16528,7 +16591,7 @@ html.native-app[data-shelf-transition="player-split"]::view-transition-new(shelf
   html.native-app .match-score { grid-column: 1; grid-row: 5; align-self: auto; margin: 6px 2px 0; }
   html.native-app .match-score strong { font-size: 1.35rem; }
   html.native-app .match-board-frame { grid-column: 2; grid-row: 1 / -1; min-height: 0; place-items: center end; }
-  html.native-app .match-piece { font-size: 1rem; }
+  html.native-app .match-piece { font-size: 16px; }
   html.native-app .match-board,
   html.native-app .native-shell.has-mini-player .match-board {
     width: min(100%, var(--phone-play-h));
@@ -16601,6 +16664,7 @@ html.native-app[data-shelf-transition="player-split"]::view-transition-new(shelf
   html.native-app .ledger-dashboard .profile-calendar h2 { font-size: 14px; }
   html.native-app .ledger-dashboard .calendar-weeks,
   html.native-app .ledger-dashboard .calendar-week,
+  html.native-app .ledger-dashboard .calendar-week-starts,
   html.native-app .ledger-dashboard .calendar-weekdays { gap: 3px; }
   html.native-app .ledger-dashboard .calendar-cell,
   html.native-app .ledger-dashboard .calendar-weekdays span { height: 11px; }
@@ -16894,7 +16958,7 @@ html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress 
   justify-self: start;
   min-width: 3px;
   background: var(--gold-soft);
-  box-shadow: 0 0 6px rgba(217, 181, 116, 0.45);
+  box-shadow: 0 0 6px rgba(var(--spine-gold-rgb), 0.45);
 }
 /* Finished: a ribbon bound into the top of the cover. */
 html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.finished::after {
@@ -17349,8 +17413,8 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 .libro-purchases--grid .libro-purchase-copy .libro-purchase-account { display: block; }
 
 /* Store tabs live inside Get books, beneath the main task navigation. */
-.purchase-tabs { display: flex; grid-column: 1 / -1; gap: 3px; padding: 3px; border: 1px solid rgba(217, 181, 116, 0.25); border-radius: 10px; background: rgba(0, 0, 0, 0.14); }
-.purchase-tabs button { flex: 1; min-width: 0; min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 8px 4px; border: 0; border-radius: 7px; background: transparent; color: rgba(241, 231, 208, 0.72); font: 500 0.8rem/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; white-space: nowrap; }
+.purchase-tabs { display: flex; grid-column: 1 / -1; gap: 3px; padding: 3px; border: 1px solid rgba(var(--spine-gold-rgb), 0.25); border-radius: 10px; background: rgba(0, 0, 0, 0.14); }
+.purchase-tabs button { flex: 1; min-width: 0; min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 8px 4px; border: 0; border-radius: 7px; background: transparent; color: rgba(var(--on-spine-rgb), 0.72); font: 500 0.8rem/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; white-space: nowrap; }
 .purchase-tabs button[aria-selected="true"] { background: var(--gold-soft); color: var(--spine); }
 .purchase-tabs button:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 3px; }
 .purchase-results { display: block; min-width: 0; }
@@ -17358,18 +17422,18 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 .purchase-books-pane { display: contents; }
 
 .purchase-account-filter { display: block; margin: 0 0 14px; }
-.purchase-account-filter select { width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; border: 1px solid rgba(217, 181, 116, 0.3); border-radius: 10px; background: var(--spine); color: var(--gold-soft); font: inherit; color-scheme: dark; }
+.purchase-account-filter select { width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; border: 1px solid rgba(var(--spine-gold-rgb), 0.3); border-radius: 10px; background: var(--spine); color: var(--spine-gold); font: inherit; color-scheme: dark; }
 .purchase-account-filter select:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 3px; }
 .purchase-console {
   margin-top: 10px;
-  border: 1px solid rgba(217, 181, 116, 0.18);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.18);
   border-radius: 12px;
   background: rgba(0, 0, 0, 0.12);
-  color: rgba(241, 231, 208, 0.72);
+  color: rgba(var(--on-spine-rgb), 0.72);
 }
 .purchase-console > summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   min-height: 48px;
@@ -17378,22 +17442,22 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
   list-style: none;
 }
 .purchase-console > summary::-webkit-details-marker { display: none; }
-.purchase-console > summary > span { display: inline-flex; align-items: center; gap: 7px; color: var(--gold-soft); font: 500 0.76rem/1.2 -apple-system, BlinkMacSystemFont, sans-serif; }
-.purchase-console > summary > strong { color: rgba(241, 231, 208, 0.5); font: 500 0.62rem/1.2 "JetBrains Mono", monospace; text-transform: uppercase; }
+.purchase-console > summary > span { display: inline-flex; align-items: center; gap: 7px; color: var(--spine-gold); font: 500 0.76rem/1.2 -apple-system, BlinkMacSystemFont, sans-serif; }
+.purchase-console > summary > strong { color: rgba(var(--on-spine-rgb), 0.5); font: 500 0.62rem/1.2 "JetBrains Mono", monospace; text-transform: uppercase; justify-self: end; text-align: right; }
 .purchase-console > summary > svg { transition: transform 160ms ease; }
 .purchase-console[open] > summary > svg { transform: rotate(180deg); }
 .purchase-console > summary:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 2px; border-radius: 10px; }
 .purchase-console-body { display: grid; gap: 8px; padding: 0 12px 12px; }
 .purchase-console-body > p { margin: 0; font-size: 0.78rem; }
 .purchase-console-body > .settings-hint { color: inherit; }
-.audible-sidebar { --audible-ink: #f1e7d0; --audible-muted: #c7bba5; --audible-border: rgba(217, 181, 116, .3); --audible-surface: rgba(217, 181, 116, .07); display: grid; gap: 8px; padding: 10px 0; border-top: 1px solid rgba(217, 181, 116, .22); border-bottom: 1px solid rgba(217, 181, 116, .22); }
+.audible-sidebar { --audible-ink: var(--on-spine); --audible-muted: rgba(var(--on-spine-rgb), 0.74); --audible-border: rgba(var(--spine-gold-rgb), .3); --audible-surface: rgba(var(--spine-gold-rgb), .07); display: grid; gap: 8px; padding: 10px 0; border-top: 1px solid rgba(var(--spine-gold-rgb), .22); border-bottom: 1px solid rgba(var(--spine-gold-rgb), .22); }
 .audible-sidebar-actions { display: flex; align-items: center; gap: 6px; }
 .audible-sidebar .audible-sidebar-actions > button { flex: none; padding: 8px 10px; border-radius: 6px; font-size: .76rem; }
 .audible-sidebar .audible-refresh-action { width: 44px; padding: 8px; }
 .audible-sidebar .audible-refresh-action > span { display: none; }
 .audible-connection-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 6px 0; }
 .audible-connection-copy { display: flex; align-items: center; gap: 9px; min-width: 0; }
-.audible-connection-copy > svg { flex: 0 0 auto; color: var(--gold-soft); }
+.audible-connection-copy > svg { flex: 0 0 auto; color: var(--spine-gold); }
 .audible-connection-copy strong { display: block; font-size: .8rem; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
 .audible-connection-copy small { display: block; margin-top: 3px; color: var(--audible-muted); font-size: .72rem; line-height: 1.4; }
 .purchase-console .audible-job { margin: 0; padding: 0; border: 0; background: transparent; }
@@ -17406,20 +17470,20 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
   gap: 8px;
   min-height: 44px;
   padding: 8px 10px;
-  border: 1px solid rgba(217, 181, 116, 0.22);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.22);
   border-radius: 9px;
-  background: rgba(217, 181, 116, 0.07);
-  color: var(--gold-soft);
+  background: rgba(var(--spine-gold-rgb), 0.07);
+  color: var(--spine-gold);
   font: 600 0.8rem/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: normal;
   text-transform: none;
 }
-.purchase-settings-link.purchase-settings-link:hover:not(:disabled) { background: rgba(217, 181, 116, 0.14); color: var(--gold-soft); }
+.purchase-settings-link.purchase-settings-link:hover:not(:disabled) { background: rgba(var(--spine-gold-rgb), 0.14); color: var(--spine-gold); }
 .purchase-provider-tag { display: inline-block; padding: 2px 5px; border: 1px solid currentColor; border-radius: 4px; font: 500 0.65rem/1.3 -apple-system, BlinkMacSystemFont, sans-serif; white-space: nowrap; }
 .purchase-control-label {
   display: block;
   margin: 0 0 6px;
-  color: rgba(241, 231, 208, 0.52);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: 600 0.64rem/1.2 "JetBrains Mono", monospace;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -17431,7 +17495,7 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 .purchase-provider-heading,
 .purchase-books-pane .libro-catalog-head h2 {
   margin: 0;
-  color: var(--paper);
+  color: var(--on-spine);
   font: 400 1.45rem/1.15 "Instrument Serif", serif;
 }
 
@@ -17449,19 +17513,19 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
   gap: 12px;
   min-width: 0;
   padding: 13px 4px;
-  border-top: 1px solid rgba(217, 181, 116, 0.14);
+  border-top: 1px solid rgba(var(--spine-gold-rgb), 0.14);
 }
 
 .purchase-book-list .purchase-book-row:last-child {
-  border-bottom: 1px solid rgba(217, 181, 116, 0.14);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.14);
 }
 
 .purchase-book-list :is(.libro-purchase-cover, .audible-cover) {
   width: 56px;
   aspect-ratio: 1;
-  border: 1px solid rgba(217, 181, 116, 0.18);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.18);
   border-radius: 8px;
-  background: rgba(217, 181, 116, 0.08);
+  background: rgba(var(--spine-gold-rgb), 0.08);
   box-shadow: none;
 }
 
@@ -17477,7 +17541,7 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
-  color: var(--catalog-ink, var(--paper));
+  color: var(--catalog-ink, var(--on-spine));
   font: 400 1.05rem/1.18 "Fraunces", serif;
 }
 
@@ -17485,7 +17549,7 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
   min-width: 0;
   margin: 0;
   overflow: hidden;
-  color: var(--catalog-muted, rgba(241, 231, 208, 0.48));
+  color: var(--catalog-muted, rgba(var(--on-spine-rgb), 0.48));
   font: 500 0.62rem/1.4 "JetBrains Mono", monospace;
   letter-spacing: 0.035em;
   text-overflow: ellipsis;
@@ -17520,7 +17584,7 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 
 /* "On server" opens the book, so it reads as a quiet action rather than a
    disabled one: the ink colour it inherits is meant for light paper. */
-.purchase-book-list .purchase-book-row > .local-marker { color: var(--gold-soft); }
+.purchase-book-list .purchase-book-row > .local-marker { color: var(--spine-gold); }
 
 .purchase-book-list--compact .purchase-book-row {
   grid-template-columns: 44px minmax(0, 1fr) 100px;
@@ -17960,7 +18024,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) .shelf-navigation button {
-  border-bottom: 1px solid rgba(217, 181, 116, 0.25);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.25);
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -18018,7 +18082,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   min-width: 0;
   margin: 0;
   padding: max(22px, calc(env(safe-area-inset-top) + 8px)) 20px 12px max(24px, env(safe-area-inset-left));
-  border-bottom: 1px solid rgba(217, 181, 116, 0.14);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.14);
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -18069,7 +18133,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .library-pane.purchase-browsing .purchase-tabs {
   gap: 4px;
   padding: 4px;
-  border-color: rgba(217, 181, 116, 0.18);
+  border-color: rgba(var(--spine-gold-rgb), 0.18);
   border-radius: 14px;
   background: rgba(0, 0, 0, 0.18);
 }
@@ -18120,7 +18184,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 4px 20px 20px max(24px, env(safe-area-inset-left));
-  border-top: 1px solid rgba(217, 181, 116, 0.1);
+  border-top: 1px solid rgba(var(--spine-gold-rgb), 0.1);
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -18156,7 +18220,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   align-items: center;
   margin: 0;
   padding: 0 4px;
-  border-bottom: 1px solid rgba(217, 181, 116, 0.14);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.14);
 }
 
 /* The provider heading already separates the first purchase from the title. */
@@ -18178,7 +18242,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   display: flex;
   align-items: center;
   padding: 0 4px;
-  border-bottom: 1px solid rgba(217, 181, 116, 0.14);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.14);
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -18286,7 +18350,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   min-height: 44px;
   padding: 0;
   background: none;
-  color: rgba(241, 231, 208, 0.52);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: 0.62rem "JetBrains Mono", monospace;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -18308,7 +18372,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .library-status-inline button.selected {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -18318,7 +18382,8 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .library-status-inline button:disabled {
-  opacity: 0.32;
+  opacity: 1;
+  color: rgba(var(--on-spine-rgb), 0.5);
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -18340,8 +18405,8 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .library-filter-toggle.status-engaged:not(.engaged, .open) {
-  border-color: rgba(217, 181, 116, 0.16);
-  color: rgba(241, 231, 208, 0.62);
+  border-color: rgba(var(--spine-gold-rgb), 0.16);
+  color: rgba(var(--on-spine-rgb), 0.62);
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -18377,7 +18442,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   column-gap: var(--leaf-gap);
   margin: 2px 0 4px;
   padding: 14px 0;
-  border-block: 1px solid rgba(217, 181, 116, 0.2);
+  border-block: 1px solid rgba(var(--spine-gold-rgb), 0.2);
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -18399,7 +18464,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-heading h2 {
-  color: rgba(241, 231, 208, 0.6);
+  color: rgba(var(--on-spine-rgb), 0.6);
   font: 0.65rem/1.5 "JetBrains Mono", monospace;
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -18439,7 +18504,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-up-next h3 {
   margin: 0 0 8px;
-  color: rgba(241, 231, 208, 0.6);
+  color: rgba(var(--on-spine-rgb), 0.6);
   font: 0.65rem/1.5 "JetBrains Mono", monospace;
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -18457,7 +18522,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   grid-row: 1;
   align-self: center;
   margin: 0;
-  color: rgba(241, 231, 208, 0.5);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: italic 1rem/1.35 "Instrument Serif", serif;
 }
 
@@ -18548,7 +18613,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   flex: 0 0 204px;
   scroll-snap-align: start;
   padding: 0 14px;
-  border-left: 1px solid rgba(217, 181, 116, 0.14);
+  border-left: 1px solid rgba(var(--spine-gold-rgb), 0.14);
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -18836,7 +18901,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid:has(.book-sort-group) > .book-leaf > .book-sort-run.is-sequence:has(.book-row:nth-child(7)) .book-sort-group-toggle > em::after {
   content: "›";
   margin-left: 7px;
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font-size: 0.8rem;
 }
 
@@ -19035,18 +19100,18 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   gap: 4px;
   width: calc(var(--letter) - 14px);
   padding-top: 8px;
-  border-top: 1px solid rgba(217, 181, 116, 0.5);
+  border-top: 1px solid rgba(var(--spine-gold-rgb), 0.5);
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered .book-letter > strong {
-  color: var(--paper);
+  color: var(--on-spine);
   font: 2.1rem/0.9 "Instrument Serif", serif;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered .book-letter > em {
-  color: rgba(241, 231, 208, 0.42);
+  color: rgba(var(--on-spine-rgb), 0.62);
   font: 0.55rem "JetBrains Mono", monospace;
   font-style: normal;
 }
@@ -19070,20 +19135,20 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered > .book-letter-index > button {
   display: grid;
   place-items: center;
-  color: rgba(241, 231, 208, 0.58);
+  color: rgba(var(--on-spine-rgb), 0.58);
   font: 0.6rem "JetBrains Mono", monospace;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered > .book-letter-index > button:disabled {
-  color: rgba(241, 231, 208, 0.18);
+  color: rgba(var(--on-spine-rgb), 0.18);
   /* A press on an empty letter still starts a drag along the strip. */
   pointer-events: none;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) .book-list.is-grid.is-lettered > .book-letter-index > button[aria-current] {
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font-weight: 700;
 }
 
@@ -19145,7 +19210,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .me
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   :is(.sleep-sheet, .details-sheet, .epub-reader.fullscreen .epub-sheet) {
   max-height: calc(100dvh - var(--recto-card-top) - 24px);
-  border-bottom: 1px solid rgba(217, 181, 116, 0.18);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.18);
   border-radius: 30px;
   box-shadow: 0 30px 80px -24px rgba(0, 0, 0, 0.72);
 }
@@ -20102,7 +20167,7 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .pr
 }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .profile-calendar header { margin-bottom: 6px; }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .profile-calendar h2 { font-size: 14px; }
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper :is(.calendar-weeks, .calendar-week, .calendar-weekdays) { gap: 3px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper :is(.calendar-weeks, .calendar-week, .calendar-week-starts, .calendar-weekdays) { gap: 3px; }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper :is(.calendar-cell, .calendar-weekdays span) { height: 11px; }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .calendar-footer { margin-top: 6px; }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .calendar-footer p { font-size: 10px; }
@@ -20190,7 +20255,7 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab
   gap: 8px;
   padding: 14px 12px;
   overflow: hidden;
-  border: 1px solid rgba(217, 181, 116, 0.2);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.2);
   border-radius: 22px;
   background: linear-gradient(155deg, var(--games-top), var(--games-low) 68%);
   box-shadow: 0 22px 48px -34px #000;
@@ -20277,7 +20342,7 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab
   gap: 10px;
   margin: 0;
   padding: 14px 12px 12px;
-  border: 1px solid rgba(217, 181, 116, 0.2);
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.2);
   border-radius: 22px;
   box-shadow: 0 22px 48px -34px #000;
 }
@@ -21146,7 +21211,7 @@ html:not(.native-app) .book-subjects span {
   html:not(.native-app) .ledger-upper .headline-secondary {
     grid-template-columns: repeat(4, minmax(0, 1fr));
     padding-top: 18px;
-    border-top: 1px solid rgba(241, 231, 208, 0.12);
+    border-top: 1px solid rgba(var(--on-spine-rgb), 0.12);
   }
 }
 
@@ -22080,7 +22145,7 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
 }
 
 .queue-row .continue-reading-progress {
-  color: rgba(241, 231, 208, 0.55);
+  color: rgba(var(--on-spine-rgb), 0.55);
 }
 
 .queue-actions {
@@ -22101,7 +22166,7 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
   border: 0;
   border-radius: 3px;
   background: transparent;
-  color: rgba(241, 231, 208, 0.55);
+  color: rgba(var(--on-spine-rgb), 0.55);
   transition: background 160ms ease, color 160ms ease;
 }
 
@@ -22121,7 +22186,7 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
 
 .queue-unavailable {
   margin: 10px 0 0;
-  color: rgba(241, 231, 208, 0.58);
+  color: rgba(var(--on-spine-rgb), 0.58);
   font: 0.8rem/1.45 "Fraunces", serif;
 }
 
@@ -22129,7 +22194,7 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
   margin: 0 0 16px;
   padding-left: 10px;
   border-left: 2px solid var(--gold-soft);
-  color: var(--gold-soft);
+  color: var(--spine-gold);
   font: italic 0.95rem/1.35 "Instrument Serif", serif;
   overflow-wrap: anywhere;
 }
@@ -22140,8 +22205,8 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
 
 @media (hover: hover) {
   .queue-actions button:not(:disabled):hover {
-    background: rgba(217, 181, 116, 0.1);
-    color: var(--paper);
+    background: rgba(var(--spine-gold-rgb), 0.1);
+    color: var(--on-spine);
   }
 
   .queue-actions .queue-remove:hover {
@@ -22150,7 +22215,7 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
 }
 
 .queue-actions button:not(:disabled):active {
-  background: rgba(217, 181, 116, 0.16);
+  background: rgba(var(--spine-gold-rgb), 0.16);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -22413,3 +22478,1173 @@ html .book-heading .book-cover-column > .large-cover { width: 100%; }
 }
 
 .desk-transport .play-pending { opacity: 0.6; }
+
+/* ===================== Light shelf =====================
+   In the light appearance the shelf, the games parlour, the mini player and
+   the player's sheets sit on paper like every other screen, so the app reads
+   as one book in either appearance. Their text and tints are drawn from the
+   --on-spine and --spine-gold tokens; here those become ink and a deeper gold
+   that holds its contrast on paper. Dark mode and the web shelf are untouched. */
+html.native-app.platform-ios:not(.dark-mode) .library-pane,
+html.native-app.platform-ios:not(.dark-mode) .mini-player,
+html.native-app.platform-ios:not(.dark-mode) .games-shell,
+html.native-app.platform-ios:not(.dark-mode) .sleep-sheet,
+html.native-app.platform-ios:not(.dark-mode) .ledger-dashboard .profile-headline {
+  --on-spine: var(--ink);
+  --on-spine-rgb: var(--ink-rgb);
+  --on-spine-bright-rgb: var(--ink-rgb);
+  --spine-gold: #7d5a1c;
+  --spine-gold-rgb: 125, 90, 28;
+  --spine-top: var(--paper);
+  --shelf-top: var(--paper);
+  --shelf-low: var(--paper);
+  --games-top: var(--paper);
+  --games-low: var(--paper-deep);
+  color-scheme: light;
+}
+
+html.native-app.platform-ios:not(.dark-mode) .native-shell > .library-pane,
+html.native-app.platform-ios:not(.dark-mode) .games-shell {
+  background: var(--paper);
+  background-image: var(--paper-wash);
+}
+
+html.native-app.platform-ios:not(.dark-mode) .mini-player {
+  background: rgba(var(--sheet-rgb), 0.92);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 18px 34px -20px rgba(var(--ink-rgb), 0.45);
+}
+
+html.native-app.platform-ios:not(.dark-mode) .sleep-sheet {
+  background:
+    radial-gradient(circle at 80% 0, rgba(var(--oxblood-rgb), 0.08), transparent 42%),
+    rgb(var(--sheet-rgb));
+  box-shadow: 0 -24px 60px -28px rgba(var(--ink-rgb), 0.45);
+}
+
+html.native-app.platform-ios:not(.dark-mode) .sleep-sheet .icon-button {
+  background: rgba(var(--ink-rgb), 0.05);
+}
+
+html.native-app.platform-ios:not(.dark-mode) .ledger-dashboard .profile-headline {
+  background: rgb(var(--lift-rgb));
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
+}
+
+/* UIKit reads these for the clock and the native tab bar's glass. */
+html.native-app.platform-ios:not(.dark-mode) .native-shell.tab-shelf,
+html.native-app.platform-ios:not(.dark-mode) .native-shell.tab-games {
+  --native-chrome: var(--paper);
+  --native-bar: var(--paper-bar);
+}
+
+/* Shelf rows: the status pill and availability badge were dark glass. */
+html.native-app.platform-ios:not(.dark-mode) .library-pane .book-text .book-progress {
+  background: rgba(var(--ink-rgb), 0.05);
+}
+
+html.native-app.platform-ios:not(.dark-mode) .library-pane .book-progress.inProgress {
+  background: rgba(var(--ink-rgb), 0.07);
+}
+
+html.native-app.platform-ios:not(.dark-mode) .library-pane .book-progress.finished em {
+  color: #2f5a3c;
+}
+
+html.native-app.platform-ios:not(.dark-mode) .library-pane .book-availability {
+  color: var(--ink-soft);
+  background: rgba(var(--lift-rgb), 0.92);
+  box-shadow: 0 4px 10px -6px rgba(var(--ink-rgb), 0.5);
+}
+
+html.native-app.platform-ios:not(.dark-mode) .library-pane .book-availability.has-device-copy {
+  color: #2f5a3c;
+  background: rgba(226, 238, 228, 0.95);
+}
+
+/* Get books: the account picker was a dark well on the light shelf. */
+html.native-app.platform-ios:not(.dark-mode) .library-pane .purchase-account-filter select {
+  background: rgba(var(--lift-rgb), 0.3);
+  color: var(--ink);
+  border-color: rgba(var(--spine-gold-rgb), 0.3);
+  color-scheme: light;
+}
+
+/* ===================== Phone shelf, compact =====================
+   A tighter title band so the collection starts higher on a phone. */
+@media (max-width: 700px) and (orientation: portrait) {
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane .pane-title {
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+  }
+
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane .continue-reading-book {
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 10px;
+    padding-block: 8px;
+  }
+
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane .continue-reading-book .cover-mark {
+    width: 36px;
+    height: 48px;
+  }
+
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane .continue-reading-copy {
+    gap: 2px;
+  }
+
+  /* Headings of the reading plan and the collection sit closer, so the first
+     library row is on screen above the mini player when the shelf opens. */
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane:not(.purchase-browsing) > .library-toolbar {
+    margin-bottom: 12px;
+  }
+
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane .continue-reading {
+    margin-bottom: 14px;
+  }
+
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane .continue-reading-heading {
+    margin-bottom: 8px;
+  }
+
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane .continue-reading-heading h2 {
+    font-size: 1.5rem;
+  }
+
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane .continue-reading-up-next h3 {
+    margin-top: 8px;
+    font-size: 1.2rem;
+  }
+
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane .continue-reading-library-heading {
+    padding-top: 12px;
+    margin-bottom: 4px;
+  }
+
+  /* "50 of 50 books" says nothing the sort row does not; the count returns
+     once a search or filter narrows the shelf. */
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane > .library-toolbar > .library-results-summary.is-unfiltered {
+    display: none;
+  }
+
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane > .library-toolbar > .shelf-navigation button {
+    min-height: 44px;
+    padding-block: 4px;
+  }
+}
+
+/* ===================== Native switches =====================
+   On/off settings read as iOS switches, trailing their label, instead of
+   web checkboxes. Lists where several items are picked keep checkboxes. */
+html.native-app :is(.audible-auto-import, .admin-all-access, .admin-sync-sweep-nightly > label) {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+html.native-app :is(.audible-auto-import, .admin-all-access, .admin-sync-sweep-nightly > label) > span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+html.native-app :is(.audible-auto-import, .admin-all-access, .admin-sync-sweep-nightly > label) input[type="checkbox"] {
+  -webkit-appearance: none;
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 51px;
+  height: 31px;
+  margin: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(var(--ink-rgb), 0.18);
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+html.native-app :is(.audible-auto-import, .admin-all-access, .admin-sync-sweep-nightly > label) input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.16), 0 1px 1px rgba(0, 0, 0, 0.12);
+  transition: transform 0.2s ease;
+}
+
+html.native-app :is(.audible-auto-import, .admin-all-access, .admin-sync-sweep-nightly > label) input[type="checkbox"]:checked {
+  background: var(--oxblood);
+}
+
+html.native-app :is(.audible-auto-import, .admin-all-access, .admin-sync-sweep-nightly > label) input[type="checkbox"]:checked::before {
+  transform: translateX(20px);
+}
+
+html.native-app :is(.audible-auto-import, .admin-all-access, .admin-sync-sweep-nightly > label) input[type="checkbox"]:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+html.native-app :is(.audible-auto-import, .admin-all-access, .admin-sync-sweep-nightly > label) input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.native-app :is(.audible-auto-import, .admin-all-access, .admin-sync-sweep-nightly > label) input[type="checkbox"],
+  html.native-app :is(.audible-auto-import, .admin-all-access, .admin-sync-sweep-nightly > label) input[type="checkbox"]::before {
+    transition: none;
+  }
+}
+
+/* The shelf's last rows clear the tab bar and the floating mini player. */
+html.native-app .native-shell.has-mini-player > .library-pane {
+  padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 40px);
+}
+
+/* The cover picker is one button that opens the photo picker; the browser's
+   file input and its "Choose File" caption stay underneath it. */
+html.native-app .metadata-cover-controls label {
+  position: relative;
+  justify-self: start;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  border-radius: 999px;
+  background: rgba(var(--lift-rgb), 0.9);
+  color: var(--ink);
+  font-weight: 600;
+  overflow: hidden;
+}
+
+html.native-app .metadata-edit-form .metadata-cover-controls label > input[type="file"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+html.native-app .metadata-cover-controls label:focus-within {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+/* ===================== Phone administration =====================
+   A child page of Settings: a plain back link where iOS puts one, a title
+   sized for a phone, and the sections as pills that wrap, so every section
+   is visible and the chosen one starts on the first screen. */
+@media (max-width: 700px) and (orientation: portrait) {
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-back {
+    margin: -6px 0 10px -6px;
+  }
+
+  /* The same back pill as a book page, so every child page leaves one way. */
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-back .download-btn {
+    width: auto;
+    min-height: 46px;
+    padding: 4px 15px 4px 5px;
+    gap: 10px;
+    border: 1px solid rgba(var(--oxblood-rgb), 0.2);
+    border-radius: 999px;
+    background: rgba(var(--lift-soft-rgb), 0.82);
+    box-shadow: 0 8px 20px -15px rgba(44, 24, 15, 0.72);
+    color: var(--oxblood-deep);
+    font: 560 0.95rem/1 "Fraunces", serif;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-head h1 {
+    font-size: 2.1rem;
+  }
+
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-head p {
+    font-size: 0.95rem;
+  }
+
+  /* One sideways-scrolling row instead of pills wrapping onto three lines. */
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-nav {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
+    margin: 14px 0 12px;
+    padding: 2px 0 6px;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    /* The fade says the row continues past the edge. */
+    mask-image: linear-gradient(90deg, #000 calc(100% - 36px), transparent);
+    scrollbar-width: none;
+    border: 0;
+    border-radius: 0;
+    background: none;
+  }
+
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-nav button {
+    flex: none;
+    scroll-snap-align: start;
+    min-height: 44px;
+    padding: 0 16px;
+    border: 1px solid rgba(var(--ink-rgb), 0.14);
+    border-radius: 999px;
+    background: rgba(var(--lift-rgb), 0.6);
+    color: var(--ink-soft);
+    font: 500 0.92rem/1 "Fraunces", serif;
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-nav button.selected {
+    box-shadow: none;
+    border-color: var(--oxblood);
+    background: var(--oxblood);
+    color: var(--on-oxblood);
+  }
+
+  /* The title and the section pills say what this page is; the totals are a
+     glance, small enough that Library operations starts on the first screen. */
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-head p {
+    display: none;
+  }
+
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-metrics {
+    gap: 8px;
+  }
+
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-metrics article {
+    gap: 2px;
+    padding: 10px 12px;
+  }
+
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-metrics strong {
+    font-size: 1.7rem;
+    line-height: 1.1;
+  }
+
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-metrics small {
+    font-size: 0.74rem;
+    line-height: 1.3;
+  }
+}
+
+/* Native pop-up buttons: a select reads as a tappable menu with a trailing
+   chevron rather than a bare text box. */
+html.native-app :is(.admin-libation-access, .admin-sync-sweep-nightly) select {
+  -webkit-appearance: none;
+  appearance: none;
+  min-height: 44px;
+  padding-right: 36px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1.5l5 5 5-5' fill='none' stroke='%238b2e1f' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 12px 8px;
+  font-size: 1rem;
+}
+
+html.native-app.platform-ios.dark-mode :is(.admin-libation-access, .admin-sync-sweep-nightly) select {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1.5l5 5 5-5' fill='none' stroke='%23d9b574' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+}
+
+/* ===================== Native type =====================
+   Text buttons read as words, in the book face at a size a thumb can aim
+   at, instead of tiny tracked capitals. The mono capitals stay for the small
+   labels that name a section, a little larger and less spaced. The round
+   book actions keep their own captions. */
+html.native-app .download-btn:not(.heading-actions .download-btn) {
+  font-family: "Fraunces", serif;
+  font-size: 0.95rem;
+  font-weight: 560;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html.native-app :is(.eyebrow, .section-label) {
+  font-size: 0.7rem;
+  letter-spacing: 0.16em;
+}
+
+html.native-app .metadata-edit-form .metadata-cover-controls label {
+  font: 560 0.95rem "Fraunces", serif;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html.native-app .details-sheet-actions button {
+  font: 560 0.92rem "Fraunces", serif;
+  letter-spacing: 0;
+}
+
+html.native-app .native-player-return,
+html.native-app .native-shell.tab-shelf.library-book-open .native-player-return {
+  font-family: "Fraunces", serif;
+  font-size: 0.95rem;
+  font-weight: 560;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* Shelf row metadata is read at arm's length on a phone: a size up, less
+   tracking, and runtime at the same strength as the status chip. */
+html.native-app .book-text .book-progress {
+  height: 21px;
+}
+
+html.native-app .book-progress em {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+}
+
+html.native-app .book-runtime-tag {
+  font-size: 0.68rem !important;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: rgba(var(--on-spine-rgb), 0.7) !important;
+}
+
+/* In the apps a row without a chip is unstarted, and the progress filter
+   finds those; only books being read or finished keep their chip. */
+html.native-app .library-pane .book-list.is-list .book-text .book-progress.notStarted {
+  display: none;
+}
+
+/* Player captions were 8px mono. The tool row names its buttons in the
+   reading face, and the skip captions gain a size. Short landscape keeps
+   its single compact row. */
+@media not ((orientation: landscape) and (max-height: 499px)) {
+  html.native-app .native-now-utility button,
+  html.native-app .native-shell > .player-pane.has-native-player.native-player-view-now.fit-playback:not(.has-reader) .native-now-utility button {
+    font: 500 0.74rem/1.1 "Fraunces", serif;
+    letter-spacing: 0;
+  }
+
+  html.native-app .native-now-transport > button:not(.native-now-play) span,
+  html.native-app .native-shell > .player-pane.has-native-player.native-player-view-now.fit-playback:not(.has-reader) .native-now-transport > button:not(.native-now-play) span {
+    font-size: 0.64rem;
+    letter-spacing: 0.06em;
+  }
+}
+
+/* Get books on a phone: the account picker labels itself. */
+@media (max-width: 700px) {
+  html.native-app .library-pane .purchase-account-filter .purchase-control-label {
+    display: none;
+  }
+}
+
+/* Chapter Match on a phone: the circle and square glyphs draw much smaller
+   than the others at one size, so each symbol is sized to read as the same
+   weight. The fold layouts keep their own tile sizing. */
+html.native-app:not([data-fold-active]) .match-piece { font-size: 21.6px; }
+html.native-app:not([data-fold-active]) .match-piece:is(.kind-1, .kind-3) { font-size: 28px; }
+
+/* A failed Libro.fm refresh offers the way back to its account settings. */
+.libro-catalog .libro-catalog-error:has(.libro-error-action) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.libro-catalog .libro-error-action {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--catalog-border);
+  border-radius: 999px;
+  background: var(--catalog-surface);
+  color: var(--catalog-ink);
+  font: 560 0.9rem "Fraunces", serif;
+}
+
+/* The apps' one "Add" button in the shelf header carries its word, so the
+   only unlabeled buttons left there are the bell and the reader's avatar. */
+html.native-app .native-shell > .library-pane .pane-actions > .add-books-button.add-books-button.add-books-button {
+  width: auto;
+  min-width: 44px;
+  flex: none;
+  gap: 5px;
+  padding: 0 14px 0 11px;
+  font: 560 0.92rem "Fraunces", serif;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html.native-app .add-books-menu [role="menuitem"]:disabled {
+  opacity: 0.5;
+}
+
+/* Settings → Display: the theme catalog behind one row. */
+.settings-themes {
+  width: 100%;
+  padding-top: 14px;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
+}
+
+.settings-themes > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.settings-themes > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-themes > summary > span {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-themes > summary small {
+  color: var(--ink-faded);
+  font: italic 0.85rem/1.35 "Fraunces", serif;
+}
+
+.settings-themes > summary > svg {
+  flex: none;
+  color: var(--ink-faded);
+  transition: transform 0.2s ease;
+}
+
+.settings-themes[open] > summary > svg {
+  transform: rotate(180deg);
+}
+
+.settings-themes > .settings-theme-samples {
+  margin-top: 12px;
+}
+
+/* First run in the apps: with nothing on the shelf there is nothing to
+   search, sort or count, so the two ways to start (connect a server, add
+   files) lead the screen. */
+html.native-app .library-pane.shelf-is-empty :is(.library-search-row, .library-controls, .library-results-summary) {
+  display: none;
+}
+
+html.native-app .connect-server-dismiss {
+  min-height: 44px;
+  font: 500 0.95rem "Fraunces", serif;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html.native-app .auth-card > .eyebrow {
+  color: var(--oxblood);
+}
+
+html.native-app .library-pane.shelf-is-empty .continue-reading-library-heading {
+  display: none;
+}
+
+/* The condensed display face drew a capital O like a zero in the avatar. */
+html.native-app .user-avatar {
+  font-family: "Fraunces", serif;
+  font-weight: 500;
+}
+
+/* The speed slider (Settings and the player's speed sheet): the current
+   value is the thing to read, so it gets the reading face at size. */
+html.native-app :is(.speed-slider-heading, .book-volume-heading) output {
+  font: 500 1.5rem/1 "Fraunces", serif;
+}
+
+html.native-app :is(.speed-slider-heading span, .speed-range-labels) {
+  font-size: 0.72rem;
+}
+
+html.native-app .speed-control > input[type="range"] {
+  height: 44px;
+}
+
+/* An empty filter stays readable; a dashed outline marks it unavailable. */
+html.native-app .facet-chip:disabled {
+  opacity: 1;
+  border-style: dashed;
+  color: rgba(var(--on-spine-rgb), 0.62);
+}
+
+/* Edit Book Info's close button was a faint ring on the sheet. */
+html.native-app .metadata-editor-card .modal-head .icon-button {
+  border-color: rgba(var(--ink-rgb), 0.22);
+  background: rgba(var(--ink-rgb), 0.06);
+  color: var(--ink);
+}
+
+/* Get books on a phone: the account picker and the Activity summary share
+   one row (Activity takes the full width when opened), and purchase rows
+   carry their author and narrator in the reading face, wrapping instead of
+   cutting off. */
+@media (max-width: 700px) {
+  html.native-app .library-pane.purchase-browsing .purchase-settings-pane {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  html.native-app .library-pane.purchase-browsing .purchase-settings-pane > :is(.purchase-account-filter, .purchase-console) {
+    flex: 1 1 140px;
+    min-width: 0;
+    margin: 0;
+  }
+
+  html.native-app .library-pane.purchase-browsing .purchase-settings-pane > .purchase-console[open] {
+    flex-basis: 100%;
+  }
+}
+
+html.native-app .purchase-book-list :is(.libro-purchase-copy p, .libro-purchase-copy small, .audible-copy > span) {
+  overflow: visible;
+  color: rgba(var(--on-spine-rgb), 0.74);
+  font: 400 0.8rem/1.35 "Fraunces", serif;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: normal;
+}
+
+html.native-app.platform-ios:not(.dark-mode) .library-pane .purchase-console {
+  background: rgba(var(--lift-rgb), 0.6);
+}
+
+/* Speed presets select in gold everywhere in the apps, as in the player's
+   speed sheet. */
+html.native-app .speed-presets button.selected {
+  color: var(--on-gold);
+  border-color: var(--gold-soft);
+  background: var(--gold-soft);
+}
+
+/* An empty status (Finished 0) stays readable; its count says why it is off. */
+html.native-app .shelf-status-row button:disabled {
+  opacity: 1;
+  color: rgba(var(--on-spine-rgb), 0.7);
+}
+
+/* Cover help leads with what to choose; the limits sit on their own quieter line. */
+#metadata-cover-help small {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.86em;
+  opacity: 0.78;
+}
+
+/* Week-start dates over the habits grid, one per column. */
+.calendar-week-starts {
+  display: flex;
+  gap: 3px;
+  color: var(--ink-faded);
+  font: 0.62rem "Fraunces", serif;
+  white-space: nowrap;
+}
+
+.calendar-week-starts span {
+  flex: 0 0 18px;
+  overflow: visible;
+}
+
+.ledger-dashboard .calendar-week-starts {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 5px;
+  font-size: 10px;
+}
+
+/* In the apps the Ledger speaks in the same serif as the shelf and player. */
+html.native-app .profile-page.ledger-dashboard {
+  font-family: "Fraunces", serif;
+}
+
+html.native-app .profile-page.ledger-dashboard :is(.profile-mono, .headline-value, .headline-secondary dd) {
+  font-family: "Fraunces", serif;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+html.native-app .profile-page.ledger-dashboard :is(.profile-calendar h2, .profile-recent h2, .achievements-heading h2) {
+  font-family: "Fraunces", serif;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* Store controls in the apps: the store tabs and the settings link share the
+   shelf's serif, and the account picker shows its chevron like Sort. */
+html.native-app .library-pane .purchase-tabs button,
+html.native-app .library-pane .purchase-settings-link {
+  font-family: "Fraunces", serif;
+  font-weight: 560;
+  letter-spacing: 0;
+}
+
+html.native-app .library-pane .purchase-account-filter select {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 38px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1.5l5 5 5-5' fill='none' stroke='%23d8b56c' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 12px 8px;
+}
+
+html.native-app.platform-ios:not(.dark-mode) .library-pane .purchase-account-filter select {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1.5l5 5 5-5' fill='none' stroke='%238b2e1f' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 12px 8px;
+}
+
+/* A sign-in problem reads as one: oxblood text and a rule on its edge. */
+html.native-app .auth-card .auth-error {
+  border-left: 3px solid var(--oxblood);
+  color: var(--oxblood-deep);
+  font-weight: 560;
+}
+
+html.native-app.dark-mode .auth-card .auth-error {
+  color: #f0b7a8;
+}
+
+/* One play colour in the apps: the player's oxblood also marks play on the
+   mini player and the shelf's listening cards. Gold stays for selection. */
+html.native-app .mini-actions .mini-play,
+html.native-app .mini-actions .mini-play:hover,
+html.native-app .continue-reading-play {
+  border-color: var(--oxblood);
+  background: linear-gradient(155deg, var(--oxblood), var(--oxblood-deep));
+  color: var(--on-oxblood);
+}
+
+html.native-app .mini-actions .mini-play .play-pending-ring {
+  border-top-color: var(--oxblood);
+  border-right-color: var(--oxblood);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.native-app .mini-actions .mini-play .play-pending-ring {
+    border-color: var(--oxblood);
+  }
+}
+
+/* Settings explanations are read, not glanced at: upright text in the apps,
+   with italic left to the empty-state lines. */
+html.native-app .settings-shell :is(.settings-hint, .settings-toggle-row small) {
+  font-style: normal;
+}
+
+/* Speed presets are tapped with a thumb in a moving car. */
+html.native-app .speed-presets button {
+  min-height: 44px;
+}
+
+/* Filters open on a phone: the mini player steps aside so the panel and its
+   results have the room; it returns with Done. */
+@media (max-width: 700px) {
+  html.native-app:not([data-fold-active]) .native-shell:has(> .library-pane .library-filters) > .mini-player {
+    display: none;
+  }
+}
+
+/* In light the store tabs and search are parchment fields like Sort, not the
+   dark-mode shade laid over paper. */
+html.native-app.platform-ios:not(.dark-mode) .library-pane .purchase-tabs,
+html.native-app.platform-ios:not(.dark-mode)[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .library-pane.purchase-browsing :is(.purchase-tabs, .library-search) {
+  border-color: rgba(var(--spine-gold-rgb), 0.3);
+  background: rgba(var(--lift-rgb), 0.3);
+}
+
+/* Two short glyphs read smaller than a two-word label at the same size, so
+   the speed value is set a step up to match the other tiles' weight. */
+html.native-app .native-now-utility .native-now-speed {
+  font-size: 1.05rem;
+  font-weight: 560;
+  line-height: 1;
+}
+
+/* The editor's scrim already keeps it beside the closed Duo's clock column,
+   so it need not stop below the clock like other sheets; that cap cut the
+   fields off above the actions. */
+html.native-app.side-rail .metadata-editor-card {
+  max-height: none;
+}
+
+/* Get books on a phone: the store's controls sit closer together, so the first
+   purchase starts nearer the top. Every control keeps a 38pt or larger target. */
+@media (max-width: 700px) and (orientation: portrait) {
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .purchase-console {
+    margin-top: 0;
+  }
+
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .purchase-console > summary {
+    min-height: 38px;
+    padding-block: 4px;
+  }
+
+  /* The narrow pill keeps its words; the status icon is the first thing to go. */
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .purchase-console > summary > span > svg {
+    display: none;
+  }
+
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .purchase-account-filter {
+    margin-bottom: 0;
+  }
+
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .libro-catalog > .libro-catalog-head:has(.purchase-settings-link) {
+    padding: 8px 0 4px;
+  }
+
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .libro-catalog-head h2 {
+    font-size: 1.6rem;
+  }
+
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .libro-catalog-head .purchase-settings-link {
+    min-height: 38px;
+  }
+
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .libro-catalog-summary {
+    padding: 2px 0 6px;
+  }
+}
+
+/* The unfolded Duo's content column is too narrow for accounts and the new
+   account form side by side: names, roles and Reset/Delete collided. The form
+   follows the list instead. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .admin-shell:not(.admin-overlay) .admin-user-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .admin-shell:not(.admin-overlay) .admin-create-user {
+  position: static;
+}
+
+/* Filter status labels: larger, less tracked, and brighter so counts read at a glance. */
+html.native-app .shelf-status-row button {
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+}
+
+html.native-app .shelf-status-row button:not(.selected, :disabled) {
+  color: rgba(var(--on-spine-rgb), 0.78);
+}
+
+html.native-app .shelf-status-row button em {
+  font-size: 0.68rem;
+  opacity: 0.85;
+}
+
+/* The phone mini player floats above UIKit's tab bar. A page-coloured fade
+   behind both keeps scrolled rows from showing through the gap between them. */
+@media (max-width: 700px) {
+  /* Without a mini player, the fade only covers the tab bar's own strip. */
+  html.native-app.uikit-tabs:not([data-fold-active]) .native-shell:not(.tab-reading)::after {
+    content: "";
+    position: fixed;
+    inset: auto 0 0;
+    /* Above the full-page shells (Settings, Ledger, Administration). */
+    z-index: 49;
+    height: calc(var(--tabs-h) + 60px);
+    background: linear-gradient(to bottom, transparent, var(--bottom-scrim, var(--paper)) 24px);
+    pointer-events: none;
+  }
+
+  html.native-app.uikit-tabs:not([data-fold-active]) .native-shell.has-mini-player:is(.tab-shelf, .tab-games):not(:has(> .library-pane .library-filters))::after {
+    content: "";
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 44;
+    /* Reaches up behind the mini player, which hides the fade itself. */
+    height: calc(var(--tabs-h) + 120px);
+    background: linear-gradient(to bottom, transparent, var(--bottom-scrim, var(--paper)) 30px);
+    pointer-events: none;
+  }
+
+  html.native-app.platform-ios.dark-mode .native-shell {
+    --bottom-scrim: var(--dark-bg);
+  }
+}
+
+/* Settings speed: the presets already show the range, so the end labels go. */
+html.native-app .settings-shell .speed-range-labels {
+  display: none;
+}
+
+html.native-app .settings-shell .speed-presets {
+  margin-top: 6px;
+}
+
+.settings-speed {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.settings-speed > .settings-field {
+  margin-top: 10px;
+}
+
+/* Phone store: a failed refresh is a short line with its action, not a block. */
+@media (max-width: 700px) and (orientation: portrait) {
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .libro-catalog .libro-catalog-error {
+    margin-block: 4px 6px;
+    padding: 6px 6px 6px 12px;
+    font: 400 0.92rem/1.35 "Fraunces", serif;
+  }
+
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .libro-catalog .libro-error-action {
+    padding: 0 12px;
+  }
+}
+
+/* Phone mini player: title and chapter say what is playing, so the kicker
+   goes and the bar takes less of the page. */
+@media (max-width: 700px) {
+  html.native-app:not([data-fold-active]) .native-shell:is(.tab-shelf, .tab-games) .mini-meta::before {
+    display: none;
+  }
+
+  html.native-app:not([data-fold-active]) .native-shell:is(.tab-shelf, .tab-games) .mini-player {
+    padding-block: 6px;
+  }
+}
+
+/* Phone store rows: tighter lines and a narrower action, so two purchases
+   fit above the mini player even with a notice showing. */
+@media (max-width: 700px) and (orientation: portrait) {
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .purchase-book-list--list .purchase-book-row {
+    padding-block: 10px;
+  }
+
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .purchase-book-list--list .libro-purchase-copy :is(p, small) {
+    margin-block: 0;
+    line-height: 1.3;
+  }
+
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .purchase-book-list--list .purchase-book-row > button {
+    padding-inline: 12px;
+    gap: 6px;
+  }
+}
+
+@media (max-width: 700px) and (orientation: portrait) {
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .purchase-book-list--list .libro-purchase-copy > small:last-of-type {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .libro-catalog-head:has(.purchase-settings-link) {
+    padding-top: 0;
+  }
+}
+
+@media (max-width: 700px) and (orientation: portrait) {
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .libro-catalog .libro-error-action {
+    min-height: 38px;
+  }
+
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .libro-catalog .libro-catalog-error {
+    padding-block: 3px;
+  }
+
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .libro-catalog-head:has(.purchase-settings-link) h2 {
+    font-size: 1.45rem;
+  }
+
+  html.native-app:not([data-fold-active]) .library-pane.purchase-browsing .purchase-book-list--list .purchase-book-row {
+    padding-block: 7px;
+  }
+}
+
+/* Small tracked labels clear 4.5:1: the darker gold on parchment, and
+   stronger muted text for status words and subject strips. */
+html.native-app.platform-ios:not(.dark-mode) .eyebrow {
+  color: #7d5a1c;
+}
+
+html.native-app .purchase-console > summary > strong {
+  color: rgba(var(--on-spine-rgb), 0.78);
+}
+
+html.native-app .book-subjects span {
+  color: var(--ink-soft);
+}
+
+/* The collapsed navigation bar of a pushed page (CompactNavBar): hidden on
+   wider layouts, and on phones until the page's own heading scrolls away. */
+.compact-navbar {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  html.native-app:not([data-fold-active]) .compact-navbar {
+    position: fixed;
+    inset: 0 0 auto;
+    z-index: 50;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    min-height: calc(env(safe-area-inset-top) + 44px);
+    padding: env(safe-area-inset-top) 8px 0;
+    border-bottom: 1px solid rgba(var(--ink-rgb), 0.1);
+    /* Solid: WebKit's backdrop blur skips composited covers and shows a pale block. */
+    background: rgb(var(--lift-rgb));
+    opacity: 0;
+    transform: translateY(-8px);
+    pointer-events: none;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+
+  html.native-app:not([data-fold-active]) .compact-navbar[data-shown] {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+
+  html.native-app:not([data-fold-active]) .compact-navbar > button {
+    justify-self: start;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-height: 44px;
+    padding: 0 10px 0 2px;
+    border: 0;
+    background: none;
+    color: var(--oxblood);
+    font: 500 1rem "Fraunces", serif;
+  }
+
+  html.native-app:not([data-fold-active]) .compact-navbar > strong {
+    max-width: 52vw;
+    overflow: hidden;
+    color: var(--ink);
+    font: 600 1rem "Fraunces", serif;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html.native-app:not([data-fold-active]) .compact-navbar {
+      transition: none;
+    }
+  }
+}
+
+/* Touch targets: every control in the apps answers a 44-point touch. Where
+   the drawn control is smaller to keep rows compact, an invisible margin
+   around it takes the touch instead. */
+/* The play button is already positioned, so only the others need it. */
+html.native-app :is(
+  .purchase-tabs button,
+  .purchase-console > summary,
+  .libro-catalog .libro-error-action,
+  .purchase-settings-link,
+  .purchase-book-row > button
+) {
+  position: relative;
+}
+
+html.native-app :is(
+  .continue-reading-play,
+  .purchase-tabs button,
+  .purchase-console > summary,
+  .libro-catalog .libro-error-action,
+  .purchase-settings-link,
+  .purchase-book-row > button
+)::after {
+  content: "";
+  position: absolute;
+  inset: min(0px, calc((100% - 44px) / 2));
+}
+
+html.native-app .view-toggle button,
+html.native-app .mini-cover-button {
+  min-width: 44px;
+}
+
+html.native-app.platform-ios.dark-mode .admin-current-badge {
+  color: #9fd3ac;
+  background: rgba(120, 190, 140, 0.14);
+}
+
+/* Accessibility text sizes (systemTextSize.ts): text grows up to 2x, so the
+   phone's one-line rows give way. The wordmark stays brand-sized, spelled-out
+   labels that have accessible names step aside, and the game board takes the
+   full width while the page scrolls instead of shrinking to fit. */
+html.native-app[data-text-large] .library-pane .pane-title h1 {
+  font-size: clamp(20px, 6vw, 28px);
+}
+
+html.native-app[data-text-large] .library-sort > span,
+html.native-app[data-text-large] .add-books-button > span,
+html.native-app[data-text-large] .transport-skip > small,
+html.native-app[data-text-large] :is(.native-now-chapter, .native-now-seek) > span {
+  display: none;
+}
+
+html.native-app[data-text-large] :is(.settings-head, .achievements-heading) {
+  flex-wrap: wrap;
+}
+
+html.native-app[data-text-large] .library-pane.purchase-browsing .purchase-settings-pane > :is(.purchase-account-filter, .purchase-console) {
+  flex-basis: 100%;
+}
+
+/* The mini player's seek numbers are drawn inside their icons, so both grow
+   together and the numbers keep a fixed size. */
+html.native-app[data-text-large] .mini-actions .mini-seek svg {
+  width: 24px;
+  height: 24px;
+}
+
+html.native-app[data-text-large] .mini-actions .mini-seek small {
+  font-size: 9px;
+}
+
+html.native-app[data-text-large] .games-shell {
+  overflow-y: auto;
+}
+
+html.native-app[data-text-large] .games-shell .game-card {
+  flex: none;
+}
+
+html.native-app[data-text-large] .games-shell :is(.match-game, .word-game) {
+  grid-template-rows: none;
+}
+
+html.native-app[data-text-large] .games-shell :is(.match-play-area, .match-board-frame, .word-board-frame) {
+  container-type: normal;
+  min-height: 0;
+}
+
+html.native-app[data-text-large] .match-board,
+html.native-app[data-text-large] .native-shell.has-mini-player .match-board {
+  width: 100%;
+}
+
+html.native-app[data-text-large] .word-board,
+html.native-app[data-text-large] .native-shell.has-mini-player .word-board {
+  width: min(100%, 300px);
+}

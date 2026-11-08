@@ -198,7 +198,7 @@ export function SpeedSheet({
         <div className="sleep-sheet-grabber" aria-hidden="true" />
         <header>
           <div>
-            <span className="eyebrow"><Gauge size={13} /> Cadence</span>
+            <span className="eyebrow"><Gauge size={13} /> Speed and volume</span>
             <h2 id="speed-sheet-title">Playback</h2>
           </div>
           <button type="button" className="icon-button" aria-label="Close" onClick={closeNativePlayerSheet}>
@@ -206,7 +206,7 @@ export function SpeedSheet({
           </button>
         </header>
         <p className="sleep-sheet-hint">Fine-tune the pace in 0.05× steps or jump to a familiar preset.</p>
-        <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary />
+        <PlaybackSpeedControl value={speed} onChange={updateSpeed} />
         {/* Noticing a book is too quiet happens mid-chapter, so the fix
             lives with the other thing a listener reaches for while the
             book is playing rather than on the book's own page. */}

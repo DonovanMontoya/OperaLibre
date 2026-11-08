@@ -3,6 +3,7 @@ import { BookOpenText, Grid3X3, RotateCcw, Sparkles } from "lucide-react";
 import { haptic } from "./native";
 import {
   MATCH_GLYPHS,
+  MATCH_GLYPH_NAMES,
   MATCH_KINDS,
   MATCH_SIZE,
   WORD_ATTEMPTS,
@@ -473,7 +474,7 @@ function ChapterMatch() {
           role="gridcell"
           className={classes}
           style={style}
-          aria-label={`Symbol at row ${rowIndex + 1}, column ${colIndex + 1}`}
+          aria-label={`${MATCH_GLYPH_NAMES[kind]}, row ${rowIndex + 1}, column ${colIndex + 1}`}
           aria-selected={active}
           aria-disabled={busy}
           key={`${boardEpoch}:${key}`}
