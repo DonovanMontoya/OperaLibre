@@ -1475,9 +1475,43 @@ html:not(.native-app) .web-shell > .player-pane {
   font: 400 1.5rem/1.2 "Instrument Serif", serif;
 }
 
-.continue-reading-heading > span {
-  color: var(--spine-gold);
+.continue-reading-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.continue-reading-toggle:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.continue-reading-toggle > span {
   font: 0.65rem "JetBrains Mono", monospace;
+}
+
+.continue-reading-chevron {
+  flex: none;
+  align-self: center;
+  color: rgba(var(--on-spine-rgb), 0.62);
+  transition: transform 160ms ease;
+}
+
+.continue-reading.is-collapsed .continue-reading-chevron {
+  transform: rotate(-90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .continue-reading-chevron {
+    transition: none;
+  }
 }
 
 .continue-reading-list {
@@ -22581,6 +22615,15 @@ html.native-app.platform-ios:not(.dark-mode) .library-pane .book-availability {
 html.native-app.platform-ios:not(.dark-mode) .library-pane .book-availability.has-device-copy {
   color: #2f5a3c;
   background: rgba(226, 238, 228, 0.95);
+}
+
+/* The badge's icon colors were picked for dark glass and vanish on the light pill. */
+html.native-app.platform-ios:not(.dark-mode) .library-pane .book-availability .device-availability-icon {
+  color: #2f5a3c;
+}
+
+html.native-app.platform-ios:not(.dark-mode) .library-pane .book-availability .offline-warning-icon {
+  color: #8a5a00;
 }
 
 /* Get books: the account picker was a dark well on the light shelf. */
