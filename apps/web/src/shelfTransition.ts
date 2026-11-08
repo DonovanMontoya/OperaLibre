@@ -12,7 +12,9 @@ let activeShelfTransition: ShelfViewTransition | null = null;
  *
  * The change applies immediately, with no motion, when reduced motion is on,
  * when WebKit has no view transitions, or when the spread is not the page on
- * screen, where the animation would play over an unrelated tab change.
+ * screen, where the animation would play over an unrelated tab change. That
+ * includes the full-screen reader: rotating an open Duo changes the spread
+ * behind it, and the animated halves would be drawn over the book.
  */
 export function runShelfLayoutTransition(
   root: HTMLElement,
@@ -28,7 +30,8 @@ export function runShelfLayoutTransition(
     && !!view
     && root.classList.contains("platform-ios")
     && !view.matchMedia("(prefers-reduced-motion: reduce)").matches
-    && !!document.querySelector(".native-shell:is(.tab-shelf, .tab-reading)");
+    && !!document.querySelector(".native-shell:is(.tab-shelf, .tab-reading)")
+    && !document.querySelector(".epub-reader.immersive");
   if (!shouldAnimate) {
     update();
     return;
