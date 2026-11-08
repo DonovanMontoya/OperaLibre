@@ -566,7 +566,21 @@ impl ProgressStore {
     }
 }
 
-/// Per-listener, per-book playback settings. Only volume gain today.
+/// Reads `volume_gain, manual, auto_volume` from the first three columns.
+fn volume_setting_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BookVolumeSetting> {
+    Ok(BookVolumeSetting {
+        // Clamped on the way out as well as the way in: a value stored by an
+        // older release, or edited by hand, must not reach a client as an
+        // eardrum-splitting multiplier.
+        manual_gain: (row.get::<_, i64>(1)? != 0)
+            .then(|| row.get(0).map(clamp_book_volume_gain))
+            .transpose()?,
+        auto_volume: row.get::<_, i64>(2)? != 0,
+    })
+}
+
+/// Per-listener, per-book playback settings: the listener's own volume, and
+/// whether the suggested gain may apply when they have none.
 #[derive(Debug)]
 pub(crate) struct BookSettingsStore {
     db: Database,
@@ -577,47 +591,51 @@ impl BookSettingsStore {
         Self { db }
     }
 
-    /// One book's gain for one listener, defaulting to unity.
-    pub(crate) async fn gain(&self, user_id: &str, book_id: &str) -> Result<f64, ApiError> {
+    /// One listener's settings for one book.
+    pub(crate) async fn get(
+        &self,
+        user_id: &str,
+        book_id: &str,
+    ) -> Result<BookVolumeSetting, ApiError> {
         let (user_id, book_id) = (user_id.to_string(), book_id.to_string());
         Ok(self
             .db
             .call(move |connection| {
                 connection
                     .query_row(
-                        "SELECT volume_gain FROM book_settings WHERE user_id = ?1 AND book_id = ?2",
+                        "SELECT volume_gain, manual, auto_volume FROM book_settings
+                         WHERE user_id = ?1 AND book_id = ?2",
                         params![user_id, book_id],
-                        |row| row.get::<_, f64>(0),
+                        volume_setting_from_row,
                     )
                     .optional()
             })
             .await?
-            // Clamped on the way out as well as the way in: a value stored by
-            // an older release, or edited by hand, must not reach a client as
-            // an eardrum-splitting multiplier.
-            .map(clamp_book_volume_gain)
-            .unwrap_or(BOOK_VOLUME_GAIN_DEFAULT))
+            .unwrap_or_default())
     }
 
-    /// Every gain one listener has set, keyed by book id.
+    /// Every book one listener has a setting for, keyed by book id.
     pub(crate) async fn list_for_user(
         &self,
         user_id: &str,
-    ) -> Result<HashMap<String, f64>, ApiError> {
+    ) -> Result<HashMap<String, BookVolumeSetting>, ApiError> {
         let user_id = user_id.to_string();
         self.db
             .call(move |connection| {
-                let mut statement = connection
-                    .prepare("SELECT book_id, volume_gain FROM book_settings WHERE user_id = ?1")?;
+                let mut statement = connection.prepare(
+                    "SELECT volume_gain, manual, auto_volume, book_id FROM book_settings
+                     WHERE user_id = ?1",
+                )?;
                 let rows = statement.query_map(params![user_id], |row| {
-                    Ok((row.get(0)?, clamp_book_volume_gain(row.get(1)?)))
+                    Ok((row.get(3)?, volume_setting_from_row(row)?))
                 })?;
                 rows.collect()
             })
             .await
     }
 
-    /// Set one book's gain for one listener.
+    /// Set one book's gain for one listener. Unity is stored like any other
+    /// level: "Original" chosen by hand overrides a suggested gain.
     pub(crate) async fn set_gain(
         &self,
         user_id: &str,
@@ -627,20 +645,44 @@ impl BookSettingsStore {
         let (user_id, book_id) = (user_id.to_string(), book_id.to_string());
         self.db
             .call(move |connection| {
-                if gain == BOOK_VOLUME_GAIN_DEFAULT {
-                    // Unity gain is the absence of a setting rather than a
-                    // stored one, so resetting a book leaves no row behind.
+                connection.execute(
+                    "INSERT INTO book_settings (user_id, book_id, volume_gain, manual)
+                     VALUES (?1, ?2, ?3, 1)
+                     ON CONFLICT (user_id, book_id) DO UPDATE SET
+                         volume_gain = excluded.volume_gain,
+                         manual = 1",
+                    params![user_id, book_id, gain],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Turn the suggested gain on or off for one listener's book. Turning it
+    /// on also clears their own level, since that would otherwise keep
+    /// winning; turning it off keeps any level they set.
+    pub(crate) async fn set_auto_volume(
+        &self,
+        user_id: &str,
+        book_id: &str,
+        enabled: bool,
+    ) -> Result<(), ApiError> {
+        let (user_id, book_id) = (user_id.to_string(), book_id.to_string());
+        self.db
+            .call(move |connection| {
+                if enabled {
+                    // Automatic with no level of their own is the default,
+                    // which is the absence of a row.
                     connection.execute(
                         "DELETE FROM book_settings WHERE user_id = ?1 AND book_id = ?2",
                         params![user_id, book_id],
                     )?;
                 } else {
                     connection.execute(
-                        "INSERT INTO book_settings (user_id, book_id, volume_gain)
-                         VALUES (?1, ?2, ?3)
-                         ON CONFLICT (user_id, book_id) DO UPDATE SET
-                             volume_gain = excluded.volume_gain",
-                        params![user_id, book_id, gain],
+                        "INSERT INTO book_settings (user_id, book_id, volume_gain, manual, auto_volume)
+                         VALUES (?1, ?2, ?3, 0, 0)
+                         ON CONFLICT (user_id, book_id) DO UPDATE SET auto_volume = 0",
+                        params![user_id, book_id, BOOK_VOLUME_GAIN_DEFAULT],
                     )?;
                 }
                 Ok(())

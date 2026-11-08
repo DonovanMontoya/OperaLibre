@@ -25,8 +25,10 @@ pub(crate) struct AppState {
     pub(crate) libation_config: LibationConfig,
     pub(crate) alignment_config: AlignmentConfig,
     /// ffmpeg/ffprobe, when they were found. `None` disables faststart
-    /// conversion entirely.
+    /// conversion and loudness analysis entirely.
     pub(crate) faststart_tools: Option<faststart::Tools>,
+    /// Loudness measurements per book, from the background analysis.
+    pub(crate) audio_analysis: Arc<AudioAnalysisStore>,
     pub(crate) update_manager: updates::UpdateManager,
     pub(crate) sync_dir: PathBuf,
     pub(crate) sync_schedule_lock: Arc<Mutex<()>>,
@@ -363,6 +365,10 @@ pub(crate) fn build_router(
             put(update_book_completion),
         )
         .route("/api/books/{book_id}/volume", put(update_book_volume))
+        .route(
+            "/api/books/{book_id}/auto-volume",
+            put(update_book_auto_volume),
+        )
         .route(
             "/api/books/{book_id}/tracks/{track_id}/stream",
             get(stream_track),
