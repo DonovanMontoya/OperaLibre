@@ -134,16 +134,24 @@ export function DisplaySettings({
           ))}
         </div>
       </div> : null}
-      {ios ? <div className="settings-toggle-row settings-appearance-row">
-        <span>
-          <strong>Themes</strong>
-          <small>Pick one for light and one for dark.</small>
-        </span>
+      {/* Themes are set once and rarely revisited, so the catalog folds
+          away behind a row naming the two in use. */}
+      {ios ? <details className="settings-themes">
+        <summary>
+          <span>
+            <strong>Themes</strong>
+            <small>
+              {LIGHT_THEMES.find((theme) => theme.id === lightTheme)?.label} for light,{" "}
+              {DARK_THEMES.find((theme) => theme.id === darkTheme)?.label} for dark
+            </small>
+          </span>
+          <ChevronDown size={16} aria-hidden="true" />
+        </summary>
         <div className="settings-theme-samples">
           <ThemeColumn label="Light" themes={LIGHT_THEMES} selected={lightTheme} select={updateLightTheme} />
           <ThemeColumn label="Dark" themes={DARK_THEMES} selected={darkTheme} select={updateDarkTheme} />
         </div>
-      </div> : null}
+      </details> : null}
       {rotationLockAvailable ? <div className="settings-toggle-row">
         <span>
           <strong>Rotation lock</strong>
@@ -376,7 +384,7 @@ export function DeviceLibrarySettings({
 }) {
   return (
     <section className="settings-card">
-      <span className="section-label"><FolderOpen size={13} /> On this device</span>
+      <span className="section-label"><FolderOpen size={13} /> Add files</span>
       <button type="button" className="download-btn" disabled={deviceImport !== null} onClick={() => void importFromDevice()}>
         {deviceImport ? <LoaderCircle size={13} className="spin-icon" /> : <Plus size={13} />}
         <span>{deviceImport ? `Importing ${deviceImport.completed}/${deviceImport.total || "…"}` : "Add audiobook files"}</span>
@@ -424,7 +432,7 @@ export function ServerDownloadSettings({
 }) {
   return (
     <section className="settings-card">
-      <span className="section-label"><Download size={13} /> On device</span>
+      <span className="section-label"><Download size={13} /> Downloads</span>
       {demoMode ? (
         <>
           <p className="settings-hint">The Alice demo audio, ebook, and sentence timing map are included on this device.</p>
@@ -571,9 +579,8 @@ export function ConnectionSettings({
       {!demoMode && !localMode ? <div className="server-aliases">
         <span className="settings-label">Address aliases</span>
         <p className="settings-hint">
-          Save other routes to this server, such as LAN, Tailscale, or a forwarded address.
-          Each address keeps its own sign-in: sign in at one once, and the app can switch to it
-          whenever the others are out of reach.
+          Other addresses for this server, such as Tailscale. Sign in at each once, and the app
+          switches to one when the others are out of reach.
         </p>
         {[
           { id: "primary", name: "Original address", url: getServerIdentityUrl() },

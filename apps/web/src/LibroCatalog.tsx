@@ -177,7 +177,14 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
   const loadingLibrary = !!refreshJob && active(refreshJob);
   const feedback = <>
     {error || pollError ? <p className="libro-catalog-error" role="alert">{error ?? pollError}</p> : null}
-    {account?.connected && refreshJob?.status === "failed" ? <p className="libro-catalog-error" role="alert">{refreshJob.error ?? "Library refresh failed. Try reconnecting."}</p> : null}
+    {account?.connected && refreshJob?.status === "failed" ? <p className="libro-catalog-error" role="alert">
+      {/* Beside its Reconnect action the catalog keeps the notice to one line;
+          the account settings it opens show the full reason. */}
+      {mode === "catalog" && onOpenSettings
+        ? <span>Libro.fm refresh failed.<span className="sr-only"> {refreshJob.error}</span></span>
+        : <span>{refreshJob.error ?? "Library refresh failed. Try reconnecting."}</span>}
+      {mode === "catalog" && onOpenSettings ? <button type="button" className="libro-error-action" onClick={onOpenSettings}>Reconnect <ChevronRight size={14} /></button> : null}
+    </p> : null}
   </>;
   const refreshButton = <button type="button" className="libro-refresh-action" aria-label="Refresh all accounts" title="Refresh all accounts" disabled={!!busy || loadingLibrary} aria-busy={loadingLibrary || busy === "refresh"} onClick={() => void act("refresh", backend.refresh)}>{loadingLibrary || busy === "refresh" ? <LoaderCircle size={15} className="spin-icon" /> : <RefreshCcw size={15} />}<span>Refresh all accounts</span></button>;
   const managementContent = <div className="libro-management">

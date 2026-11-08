@@ -18,6 +18,11 @@ export function formatTime(value: number | null | undefined) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+/** "1 reader", "2 readers". */
+export function countLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
 export function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
 }
