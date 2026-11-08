@@ -3,7 +3,7 @@ import { Headphones } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getServerStorageKey, mediaUrl } from "./api";
 import { coverRetryDelay, coverRetrySignal } from "./coverRetry";
-import { getOfflineCoverUrl, releaseOfflineMediaUrl } from "./offline";
+import { cacheShelfCover, getOfflineCoverUrl, releaseOfflineMediaUrl } from "./offline";
 import type { Book, LibationBook } from "./types";
 
 export function DownloadRing({ fraction }: { fraction: number | null }) {
@@ -100,6 +100,8 @@ export function CoverArt({ book, size }: { book: Book; size: "small" | "large" }
   const fallback = local?.fallback;
   const coverSrc = primary && !failed.includes(primary) ? primary
     : fallback && !failed.includes(fallback) ? fallback : null;
+  // Only once the local lookup has answered, so a stored cover is not fetched again.
+  const remote = local && !local.current && coverSrc === primary ? coverSrc : null;
   if (coverSrc) {
     return (
       <img
@@ -109,6 +111,7 @@ export function CoverArt({ book, size }: { book: Book; size: "small" | "large" }
         loading={size === "small" ? "lazy" : "eager"}
         decoding="async"
         fetchPriority={size === "large" ? "high" : "auto"}
+        onLoad={remote ? () => void cacheShelfCover(book, remote) : undefined}
         onError={() => markFailed(coverSrc)}
       />
     );
