@@ -15,7 +15,8 @@ const mocks: Record<string, string> = {
     export const Directory = { Data: "DATA" };
     export const Filesystem = {
       mkdir: async () => {},
-      stat: async ({path}) => { if (!state.files.has(path)) throw new Error('missing'); },
+      stat: async ({path}) => { if (!state.files.has(path)) throw new Error('missing'); return {type:'file', size:state.files.get(path).length}; },
+      deleteFile: async ({path}) => { state.files.delete(path); },
       getUri: async ({path}) => ({uri:'file://' + path}),
       writeFile: async ({path,data}) => { if (state.failWrites) throw new Error('full'); state.files.set(path,data); },
       readFile: async ({path}) => { if (!state.files.has(path)) throw new Error('missing'); return {data:state.files.get(path)}; },
@@ -130,3 +131,30 @@ for (const boundary of ["server", "user"] as const) {
     assert.equal([...files.keys()].some(path => path.endsWith(".json")), false);
   });
 }
+
+test("a shelf cover is kept on the device and replaced when its revision changes", async () => {
+  files.clear();
+  state.server = "server-a";
+  const realFetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = (async () => {
+    fetches += 1;
+    return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } });
+  }) as typeof fetch;
+  try {
+    const book: Book = { ...library(1)[0], source: "server", coverArtUrl: "/api/books/b/cover?v=one", coverArtContentType: "image/png" };
+    assert.equal(await offline.getOfflineCoverUrl(book, false), null);
+    await offline.cacheShelfCover(book, "https://server/cover?v=one&token=a");
+    const first = await offline.getOfflineCoverUrl(book, false);
+    assert.match(first ?? "", /cover-cache\/server-a\/.*-one\.png$/);
+    // A new session token is the same cover; nothing is fetched again.
+    await offline.cacheShelfCover(book, "https://server/cover?v=one&token=b");
+    assert.equal(fetches, 1);
+    const replaced = { ...book, coverArtUrl: "/api/books/b/cover?v=two" };
+    await offline.cacheShelfCover(replaced, "https://server/cover?v=two&token=b");
+    assert.match(await offline.getOfflineCoverUrl(replaced, false) ?? "", /-two\.png$/);
+    assert.equal(await offline.getOfflineCoverUrl(book, false), null, "the earlier revision is removed");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

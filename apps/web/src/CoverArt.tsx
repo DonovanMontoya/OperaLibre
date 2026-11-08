@@ -3,7 +3,7 @@ import { Headphones } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getServerStorageKey, mediaUrl } from "./api";
 import { coverRetryDelay, coverRetrySignal } from "./coverRetry";
-import { getOfflineCoverUrl, releaseOfflineMediaUrl } from "./offline";
+import { cacheShelfCover, getOfflineCoverUrl, releaseOfflineMediaUrl } from "./offline";
 import type { Book, LibationBook } from "./types";
 
 export function DownloadRing({ fraction }: { fraction: number | null }) {
@@ -100,6 +100,14 @@ export function CoverArt({ book, size }: { book: Book; size: "small" | "large" }
   const fallback = local?.fallback;
   const coverSrc = primary && !failed.includes(primary) ? primary
     : fallback && !failed.includes(fallback) ? fallback : null;
+  // A cover can finish loading before the local lookup answers (it is often in
+  // the HTTP cache), so the load is remembered and the copy is kept once both
+  // are known, and only when nothing local was found.
+  const [loaded, setLoaded] = useState<string | null>(null);
+  const remote = local && !local.current && coverSrc === primary ? coverSrc : null;
+  useEffect(() => {
+    if (remote && loaded === remote) void cacheShelfCover(book, remote);
+  }, [book, remote, loaded]);
   if (coverSrc) {
     return (
       <img
@@ -109,6 +117,7 @@ export function CoverArt({ book, size }: { book: Book; size: "small" | "large" }
         loading={size === "small" ? "lazy" : "eager"}
         decoding="async"
         fetchPriority={size === "large" ? "high" : "auto"}
+        onLoad={() => setLoaded(coverSrc)}
         onError={() => markFailed(coverSrc)}
       />
     );
