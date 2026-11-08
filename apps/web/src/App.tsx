@@ -31,8 +31,10 @@ import {
 import {
   BOOK_GAIN_DEFAULT,
   createBookGainSync,
-  mergeServerBookGains
+  mergeServerBookGains,
+  normalizeBookGain
 } from "./bookVolume";
+import { type BookVolumeState, withAutoVolume } from "./autoVolume";
 import { PlaybackGainChain, streamCanBeBoosted, webAudioBoostSupported } from "./playbackGain";
 import { STREAM_LOAD_FAILED, streamFailureMessage } from "./streamFailure";
 import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
@@ -56,6 +58,7 @@ import {
   pinActiveServerId,
   reconnectUsingServerAliases,
   playbackReportingSession,
+  setBookAutoVolume,
   setBookVolume,
   setStoredMediaToken,
   setStoredToken,
@@ -1771,6 +1774,64 @@ function MainApp({
     // land now; a no-op whenever nothing is owed.
     gainSyncRef.current?.retry();
   }
+
+  // Applies one book's volume state to both the book and the gain mirror the
+  // players read. The guard keeps a library payload fetched before this
+  // change from putting the old gain back.
+  function applyBookVolumeState(bookId: string, state: BookVolumeState) {
+    setBooks((current) =>
+      current.map((book) => (book.id === bookId ? { ...book, ...state } : book))
+    );
+    const gain = normalizeBookGain(state.volumeGain);
+    localGainWritesRef.current.set(bookId, gain);
+    setBookGains((existing) => {
+      if ((existing[bookId] ?? BOOK_GAIN_DEFAULT) === gain) return existing;
+      const next = { ...existing };
+      if (gain === BOOK_GAIN_DEFAULT) delete next[bookId];
+      else next[bookId] = gain;
+      writeStoredBookGains(currentUser.id, next);
+      return next;
+    });
+    if (bookId === playbackBookId) engageGainChain(audioRef.current, gain);
+  }
+
+  // The switch answers at once with the level the server will choose, then
+  // takes the server's answer, or goes back if the server could not be reached.
+  async function updateAutoVolume(book: Book, enabled: boolean) {
+    const previous: BookVolumeState = {
+      volumeGain: book.volumeGain ?? BOOK_GAIN_DEFAULT,
+      volumeGainSource: book.volumeGainSource ?? "default",
+      autoVolume: book.autoVolume ?? true
+    };
+    applyBookVolumeState(book.id, withAutoVolume(book, enabled));
+    try {
+      const updated = await setBookAutoVolume(book.id, enabled);
+      if (updated) {
+        applyBookVolumeState(book.id, {
+          volumeGain: updated.volumeGain ?? BOOK_GAIN_DEFAULT,
+          volumeGainSource: updated.volumeGainSource ?? "default",
+          autoVolume: updated.autoVolume ?? enabled
+        });
+      }
+    } catch {
+      applyBookVolumeState(book.id, previous);
+      setPlaybackError("The automatic level could not be changed. Check the connection and try again.");
+    }
+  }
+
+  // Moving the slider makes the level the listener's own, which the server
+  // records the same way; the notice follows at once rather than on the next
+  // library refresh.
+  function adjustBookGain(book: Book, db: number) {
+    updateBookGain(book, db);
+    if (book.volumeGainSource !== undefined && book.volumeGainSource !== "manual") {
+      setBooks((current) =>
+        current.map((candidate) =>
+          candidate.id === book.id ? { ...candidate, volumeGainSource: "manual" } : candidate
+        )
+      );
+    }
+  }
   useNowPlaying({
     activeChapter,
     activeTrackIndex,
@@ -2549,7 +2610,8 @@ function MainApp({
           playbackGain={playbackGain}
           setNativePlayerSheet={setNativePlayerSheet}
           speed={speed}
-          updateBookGain={updateBookGain}
+          updateAutoVolume={(book, enabled) => void updateAutoVolume(book, enabled)}
+          updateBookGain={adjustBookGain}
           updateSpeed={updateSpeed}
         />
       ) : null}

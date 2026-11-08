@@ -61,6 +61,33 @@ export type Book = {
    * servers released before per-book volume; all of those mean unity.
    */
   volumeGain?: number;
+  /**
+   * Where `volumeGain` came from: the listener's own level, the suggested gain
+   * from the server's loudness analysis, or neither. Absent wherever
+   * `volumeGain` is, and on servers released before loudness analysis.
+   */
+  volumeGainSource?: VolumeGainSource;
+  /** The listener's switch for the suggested gain on this book. */
+  autoVolume?: boolean;
+  /** Present once the server has measured the book's current audio. */
+  audioAnalysis?: AudioAnalysis;
+};
+
+export type VolumeGainSource = "default" | "manual" | "auto";
+
+export type AudioFlag = "quiet" | "inconsistent" | "lopsided";
+
+export type AudioAnalysis = {
+  integratedLufs: number;
+  truePeakDbtp: number;
+  /** Loudest minus quietest track; absent for single-track books. */
+  trackSpreadLu?: number;
+  /** Absent for mono files. 60 means one channel is silent. */
+  channelImbalanceDb?: number;
+  louderChannel?: "left" | "right";
+  flags: AudioFlag[];
+  /** Linear multiplier toward the speech target; 1 when nothing is needed. */
+  suggestedGain: number;
 };
 
 export type BookTag = {
