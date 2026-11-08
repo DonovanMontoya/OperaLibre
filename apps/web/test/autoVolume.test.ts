@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   audioIssues,
   autoVolumeStatus,
+  createKeyedQueue,
   describeAutoVolume,
   resolveBookGain,
   withAutoVolume
@@ -111,4 +112,42 @@ test("channel and track problems are reported, not corrected", () => {
     audioIssues({ ...QUIET, flags: ["lopsided"], channelImbalanceDb: 4.4, louderChannel: "right" }),
     ["The right channel is 4 dB louder."]
   );
+});
+
+/**
+ * Switching automatic on and then moving the slider must reach the server in
+ * that order, even when the first request is slow, or the switch would delete
+ * the newer level.
+ */
+test("volume writes for one book reach the server in the order they were made", async () => {
+  const run = createKeyedQueue();
+  const order: string[] = [];
+  let releaseSwitch!: () => void;
+  const slowSwitch = run("book-1", () => new Promise<void>((resolve) => {
+    releaseSwitch = () => {
+      order.push("auto-volume");
+      resolve();
+    };
+  }));
+  const manual = run("book-1", async () => {
+    order.push("volume");
+  });
+  const otherBook = run("book-2", async () => {
+    order.push("other book");
+  });
+  await otherBook;
+  assert.deepEqual(order, ["other book"]);
+  releaseSwitch();
+  await Promise.all([slowSwitch, manual]);
+  assert.deepEqual(order, ["other book", "auto-volume", "volume"]);
+});
+
+test("a failed volume write does not hold up the next one", async () => {
+  const run = createKeyedQueue();
+  const failed = run("book-1", async () => {
+    throw new Error("offline");
+  });
+  const next = run("book-1", async () => "sent");
+  await assert.rejects(failed, /offline/);
+  assert.equal(await next, "sent");
 });

@@ -31,10 +31,11 @@ import {
 import {
   BOOK_GAIN_DEFAULT,
   createBookGainSync,
+  bookGainFromDb,
   mergeServerBookGains,
   normalizeBookGain
 } from "./bookVolume";
-import { type BookVolumeState, withAutoVolume } from "./autoVolume";
+import { type BookVolumeState, createKeyedQueue, withAutoVolume } from "./autoVolume";
 import { PlaybackGainChain, streamCanBeBoosted, webAudioBoostSupported } from "./playbackGain";
 import { STREAM_LOAD_FAILED, streamFailureMessage } from "./streamFailure";
 import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
@@ -704,9 +705,13 @@ function MainApp({
   // Serializes and coalesces the writes behind the gain slider, which reports
   // every step of a drag, and owns the release of the guard above.
   const gainSyncRef = useRef<ReturnType<typeof createBookGainSync> | null>(null);
+  // Orders every volume write for a book, manual or automatic, and counts the
+  // listener's changes so only the newest one's answer is applied.
+  const volumeQueueRef = useRef(createKeyedQueue());
+  const volumeChangesRef = useRef(new Map<string, number>());
   if (!gainSyncRef.current) {
     gainSyncRef.current = createBookGainSync(
-      setBookVolume,
+      (bookId, gain) => volumeQueueRef.current(bookId, () => setBookVolume(bookId, gain)),
       localGainWritesRef.current,
       unsyncedBookGainStore(currentUser.id)
     );
@@ -1795,18 +1800,30 @@ function MainApp({
     if (bookId === playbackBookId) engageGainChain(audioRef.current, gain);
   }
 
+  function noteVolumeChange(bookId: string) {
+    const change = (volumeChangesRef.current.get(bookId) ?? 0) + 1;
+    volumeChangesRef.current.set(bookId, change);
+    return change;
+  }
+
   // The switch answers at once with the level the server will choose, then
-  // takes the server's answer, or goes back if the server could not be reached.
+  // takes the server's answer, or goes back if the server could not be
+  // reached. Either is skipped when the listener has changed the book again
+  // since: their newer choice stands.
   async function updateAutoVolume(book: Book, enabled: boolean) {
+    const change = noteVolumeChange(book.id);
     const previous: BookVolumeState = {
-      volumeGain: book.volumeGain ?? BOOK_GAIN_DEFAULT,
+      // The mirror, not the book: it holds a slider move the server has not
+      // echoed yet.
+      volumeGain: bookGains[book.id] ?? BOOK_GAIN_DEFAULT,
       volumeGainSource: book.volumeGainSource ?? "default",
       autoVolume: book.autoVolume ?? true
     };
     applyBookVolumeState(book.id, withAutoVolume(book, enabled));
+    const isLatest = () => volumeChangesRef.current.get(book.id) === change;
     try {
-      const updated = await setBookAutoVolume(book.id, enabled);
-      if (updated) {
+      const updated = await volumeQueueRef.current(book.id, () => setBookAutoVolume(book.id, enabled));
+      if (updated && isLatest()) {
         applyBookVolumeState(book.id, {
           volumeGain: updated.volumeGain ?? BOOK_GAIN_DEFAULT,
           volumeGainSource: updated.volumeGainSource ?? "default",
@@ -1814,20 +1831,25 @@ function MainApp({
         });
       }
     } catch {
+      if (!isLatest()) return;
       applyBookVolumeState(book.id, previous);
       setPlaybackError("The automatic level could not be changed. Check the connection and try again.");
     }
   }
 
   // Moving the slider makes the level the listener's own, which the server
-  // records the same way; the notice follows at once rather than on the next
+  // records the same way; the book follows at once rather than on the next
   // library refresh.
   function adjustBookGain(book: Book, db: number) {
+    noteVolumeChange(book.id);
     updateBookGain(book, db);
-    if (book.volumeGainSource !== undefined && book.volumeGainSource !== "manual") {
+    if (book.volumeGainSource !== undefined) {
+      const volumeGain = bookGainFromDb(db);
       setBooks((current) =>
         current.map((candidate) =>
-          candidate.id === book.id ? { ...candidate, volumeGainSource: "manual" } : candidate
+          candidate.id === book.id
+            ? { ...candidate, volumeGain, volumeGainSource: "manual" }
+            : candidate
         )
       );
     }

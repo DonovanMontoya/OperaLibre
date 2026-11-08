@@ -89,3 +89,21 @@ export function audioIssues(analysis: AudioAnalysis | undefined): string[] {
   }
   return issues;
 }
+
+/**
+ * Runs tasks one at a time per key, in the order they were asked for. A
+ * book's manual level and its automatic switch go through the same queue, so
+ * an older request can never land on the server after a newer one.
+ */
+export function createKeyedQueue() {
+  const tails = new Map<string, Promise<unknown>>();
+  return function run<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const result = (tails.get(key) ?? Promise.resolve()).then(task, task);
+    const tail = result.catch(() => undefined);
+    tails.set(key, tail);
+    void tail.then(() => {
+      if (tails.get(key) === tail) tails.delete(key);
+    });
+    return result;
+  };
+}
