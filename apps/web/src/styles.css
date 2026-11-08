@@ -22617,6 +22617,15 @@ html.native-app.platform-ios:not(.dark-mode) .library-pane .book-availability.ha
   background: rgba(226, 238, 228, 0.95);
 }
 
+/* The badge's icon colors were picked for dark glass and vanish on the light pill. */
+html.native-app.platform-ios:not(.dark-mode) .library-pane .book-availability .device-availability-icon {
+  color: #2f5a3c;
+}
+
+html.native-app.platform-ios:not(.dark-mode) .library-pane .book-availability .offline-warning-icon {
+  color: #8a5a00;
+}
+
 /* Get books: the account picker was a dark well on the light shelf. */
 html.native-app.platform-ios:not(.dark-mode) .library-pane .purchase-account-filter select {
   background: rgba(var(--lift-rgb), 0.3);
