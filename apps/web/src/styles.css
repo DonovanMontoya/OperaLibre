@@ -22999,6 +22999,8 @@ html.native-app .native-shell > .library-pane .pane-actions > .add-books-button.
   flex: none;
   gap: 5px;
   padding: 0 14px 0 11px;
+  /* The round icon buttons' 50% would draw this wider one as an oval. */
+  border-radius: 999px;
   font: 560 0.92rem "Fraunces", serif;
   letter-spacing: 0;
   text-transform: none;
