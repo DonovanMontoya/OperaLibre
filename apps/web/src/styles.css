@@ -13767,8 +13767,24 @@ html.native-app.platform-ios.dark-mode[data-dark-theme] .games-shell {
   background: linear-gradient(155deg, var(--games-top), var(--games-low) 68%);
 }
 
-html.native-app.platform-ios.dark-mode[data-dark-theme] .pull-indicator {
+html.native-app.platform-ios.dark-mode[data-dark-theme] .pull-indicator,
+html.native-app.platform-ios.dark-mode[data-dark-theme] .native-shell:is(.tab-shelf, .tab-reading).shelf-player .shelf-reveal-button {
   background: rgb(var(--sheet-rgb));
+}
+
+/* The speed, volume and sleep timer sheets. */
+html.native-app.platform-ios.dark-mode[data-dark-theme] .sleep-sheet {
+  background:
+    radial-gradient(circle at 80% 0, rgba(var(--oxblood-rgb), 0.2), transparent 42%),
+    linear-gradient(180deg, rgb(var(--sheet-rgb)), rgb(var(--sheet-deep-rgb)) 72%);
+}
+
+html.native-app.platform-ios.dark-mode[data-dark-theme] .details-sheet-grabber {
+  background: rgba(var(--on-spine-rgb), 0.3);
+}
+
+html.native-app.platform-ios.dark-mode[data-dark-theme] .job-output {
+  background: rgba(var(--field-rgb), 0.48);
 }
 
 html.native-app.platform-ios.dark-mode[data-dark-theme] .details-sheet-hero {
@@ -18549,14 +18565,14 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li .cover-mark {
-  width: 60px;
-  height: 80px;
+  width: 68px;
+  height: 68px;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li img.cover-mark {
-  height: auto;
-  max-height: 80px;
+  height: 68px;
+  max-height: none;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -18632,14 +18648,14 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li .cover-mark {
-  width: 46px;
-  height: 62px;
+  width: 52px;
+  height: 52px;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li img.cover-mark {
-  height: auto;
-  max-height: 62px;
+  height: 52px;
+  max-height: none;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -18708,14 +18724,14 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li .cover-mark {
-  width: 34px;
-  height: 45px;
+  width: 40px;
+  height: 40px;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li img.cover-mark {
-  height: auto;
-  max-height: 45px;
+  height: 40px;
+  max-height: none;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -22586,8 +22602,8 @@ html.native-app.platform-ios:not(.dark-mode) .library-pane .purchase-account-fil
   }
 
   html.native-app:not([data-fold-active]) .native-shell > .library-pane .continue-reading-book .cover-mark {
-    width: 36px;
-    height: 48px;
+    width: 44px;
+    height: 44px;
   }
 
   html.native-app:not([data-fold-active]) .native-shell > .library-pane .continue-reading-copy {
@@ -23358,8 +23374,9 @@ html.native-app .shelf-status-row button em {
 /* The phone mini player floats above UIKit's tab bar. A page-coloured fade
    behind both keeps scrolled rows from showing through the gap between them. */
 @media (max-width: 700px) {
-  /* Without a mini player, the fade only covers the tab bar's own strip. */
-  html.native-app.uikit-tabs:not([data-fold-active]) .native-shell:not(.tab-reading)::after {
+  /* Without a mini player, the fade only covers the tab bar's own strip. The
+     side rail puts the bar and mini player beside the page, so it has none. */
+  html.native-app.uikit-tabs:not([data-fold-active], .side-rail) .native-shell:not(.tab-reading)::after {
     content: "";
     position: fixed;
     inset: auto 0 0;
@@ -23370,7 +23387,7 @@ html.native-app .shelf-status-row button em {
     pointer-events: none;
   }
 
-  html.native-app.uikit-tabs:not([data-fold-active]) .native-shell.has-mini-player:is(.tab-shelf, .tab-games):not(:has(> .library-pane .library-filters))::after {
+  html.native-app.uikit-tabs:not([data-fold-active], .side-rail) .native-shell.has-mini-player:is(.tab-shelf, .tab-games):not(:has(> .library-pane .library-filters))::after {
     content: "";
     position: fixed;
     inset: auto 0 0;
@@ -23647,4 +23664,11 @@ html.native-app[data-text-large] .native-shell.has-mini-player .match-board {
 html.native-app[data-text-large] .word-board,
 html.native-app[data-text-large] .native-shell.has-mini-player .word-board {
   width: min(100%, 300px);
+}
+
+/* Audiobook art is square: the apps' listening and Up next rows draw it in a
+   square frame, filled edge to edge, instead of letterboxing it in a spine. */
+html.native-app .continue-reading-book img.cover-mark {
+  aspect-ratio: 1;
+  object-fit: cover;
 }
