@@ -100,8 +100,14 @@ export function CoverArt({ book, size }: { book: Book; size: "small" | "large" }
   const fallback = local?.fallback;
   const coverSrc = primary && !failed.includes(primary) ? primary
     : fallback && !failed.includes(fallback) ? fallback : null;
-  // Only once the local lookup has answered, so a stored cover is not fetched again.
+  // A cover can finish loading before the local lookup answers (it is often in
+  // the HTTP cache), so the load is remembered and the copy is kept once both
+  // are known, and only when nothing local was found.
+  const [loaded, setLoaded] = useState<string | null>(null);
   const remote = local && !local.current && coverSrc === primary ? coverSrc : null;
+  useEffect(() => {
+    if (remote && loaded === remote) void cacheShelfCover(book, remote);
+  }, [book, remote, loaded]);
   if (coverSrc) {
     return (
       <img
@@ -111,7 +117,7 @@ export function CoverArt({ book, size }: { book: Book; size: "small" | "large" }
         loading={size === "small" ? "lazy" : "eager"}
         decoding="async"
         fetchPriority={size === "large" ? "high" : "auto"}
-        onLoad={remote ? () => void cacheShelfCover(book, remote) : undefined}
+        onLoad={() => setLoaded(coverSrc)}
         onError={() => markFailed(coverSrc)}
       />
     );
