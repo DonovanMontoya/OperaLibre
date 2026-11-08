@@ -23616,10 +23616,19 @@ html.native-app[data-text-large] .library-pane .pane-title h1 {
 }
 
 html.native-app[data-text-large] .library-sort > span,
-html.native-app[data-text-large] .add-books-button > span,
 html.native-app[data-text-large] .transport-skip > small,
 html.native-app[data-text-large] :is(.native-now-chapter, .native-now-seek) > span {
   display: none;
+}
+
+/* "Add" is the button's only name, so it leaves the layout but stays readable. */
+html.native-app[data-text-large] .add-books-button > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 html.native-app[data-text-large] :is(.settings-head, .achievements-heading) {

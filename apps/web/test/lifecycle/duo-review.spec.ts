@@ -1068,6 +1068,17 @@ test('cancelling the device picker stays silent and leaves the shelf usable', as
   await expect(page.locator('.library-pane').getByRole('alert')).toHaveCount(0);
 });
 
+test('at large system text sizes the Add button drops its word but keeps its name', async ({ page }) => {
+  await openShell(page, true);
+  await page.evaluate(() => document.documentElement.setAttribute('data-text-large', ''));
+  const action = page.getByRole('button', { name: 'Add', exact: true });
+  await expect(action).toBeVisible();
+  const word = action.locator('span');
+  expect(await word.evaluate(span => span.getBoundingClientRect().width)).toBeLessThanOrEqual(1);
+  await action.click();
+  await expect(page.getByRole('menuitem', { name: 'Add files to this device', exact: true })).toBeVisible();
+});
+
 
 test('a shelf warning opens book details and clears after retrying only missing files', async ({ page, context }) => {
   const books = library(2);
