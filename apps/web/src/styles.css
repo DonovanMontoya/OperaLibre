@@ -13623,6 +13623,9 @@ html.native-app.platform-ios.dark-mode[data-dark-theme="true-black"] {
    stays near-white there. */
 html.native-app.platform-ios:not(.dark-mode)[data-light-theme] {
   --on-ink: var(--paper);
+  /* The Games parlour stays dark like the Shelf and takes its tint. */
+  --games-top: var(--shelf-top);
+  --games-low: var(--spine-deep);
 }
 
 html.native-app.platform-ios:not(.dark-mode)[data-light-theme] .native-shell.tab-ledger {
@@ -13763,7 +13766,8 @@ html.native-app.platform-ios.dark-mode[data-dark-theme] .book-list .book-row.act
   background: rgb(var(--lift-rgb));
 }
 
-html.native-app.platform-ios.dark-mode[data-dark-theme] .games-shell {
+html.native-app.platform-ios.dark-mode[data-dark-theme] .games-shell,
+html.native-app.platform-ios:not(.dark-mode)[data-light-theme] .games-shell {
   background: linear-gradient(155deg, var(--games-top), var(--games-low) 68%);
 }
 

@@ -158,12 +158,15 @@ export function applyDeviceFold(root: HTMLElement, state: DeviceFoldState): void
   // second web snapshot animation there competes with the system transition;
   // matched geometry is reserved for poses on the same inner display.
   const staysOnInnerDisplay = previous.posture !== "closed" && layoutState.posture !== "closed";
+  // The full-screen reader stays put while the page behind it changes. The
+  // animated snapshots of that page would be drawn over the book.
   const shouldAnimate = !!document
     && !!view
     && root.classList?.contains("platform-ios")
     && !reducedMotion
     && staysOnInnerDisplay
-    && isFoldTransitionChange(previous, layoutState);
+    && isFoldTransitionChange(previous, layoutState)
+    && !document.querySelector(".epub-reader.immersive");
 
   if (!shouldAnimate) {
     publishDeviceFold(root, layoutState);
