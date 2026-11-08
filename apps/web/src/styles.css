@@ -1475,9 +1475,43 @@ html:not(.native-app) .web-shell > .player-pane {
   font: 400 1.5rem/1.2 "Instrument Serif", serif;
 }
 
-.continue-reading-heading > span {
-  color: var(--spine-gold);
+.continue-reading-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.continue-reading-toggle:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.continue-reading-toggle > span {
   font: 0.65rem "JetBrains Mono", monospace;
+}
+
+.continue-reading-chevron {
+  flex: none;
+  align-self: center;
+  color: rgba(var(--on-spine-rgb), 0.62);
+  transition: transform 160ms ease;
+}
+
+.continue-reading.is-collapsed .continue-reading-chevron {
+  transform: rotate(-90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .continue-reading-chevron {
+    transition: none;
+  }
 }
 
 .continue-reading-list {
