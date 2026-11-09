@@ -32,7 +32,7 @@ tokio = { version = "1.45", features = ["fs", "io-util", "macros", "net", "proce
 tokio-util = { version = "0.7", features = ["io"] }
 rayon = "1.11"
 # Session timestamps use checked u64/SQLite INTEGER conversions.
-rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint"] }
 # Outbound TLS keeps rustls on ring with the bundled Mozilla roots; see
 # `http_client_builder`.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "stream"] }
