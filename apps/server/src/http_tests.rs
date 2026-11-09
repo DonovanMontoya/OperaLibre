@@ -353,6 +353,128 @@ async fn deleting_user_removes_libro_credentials_under_the_account_guard() {
     );
 }
 
+#[tokio::test]
+async fn deleted_user_activity_is_removed_from_cache_database_and_backup() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let deleted = server.add_reader(&owner, "deleted-reader").await;
+    let survivor = server.add_reader(&owner, "surviving-reader").await;
+    let deleted_auth = resolve_session(&server.state, &deleted).await.unwrap();
+    let survivor_auth = resolve_session(&server.state, &survivor).await.unwrap();
+    record_activity(&server.state, &deleted_auth.id, 7200.0, 0).await;
+    record_activity(&server.state, &survivor_auth.id, 3600.0, 0).await;
+    let before = server.get("/api/profile/stats", &survivor).await;
+    assert_eq!(before.status, StatusCode::OK);
+    assert_eq!(before.json()["totalHoursRead"], 1.0);
+    let survivor_days = server.state.activity.read().await.by_user[&survivor_auth.id].clone();
+
+    let deletion = server
+        .send_json(
+            "DELETE",
+            &format!("/api/users/{}", deleted_auth.id),
+            &owner,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(deletion.status, StatusCode::OK, "{}", deletion.text());
+    assert_eq!(
+        server.get("/api/profile/stats", &deleted).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let cached = server.state.activity.read().await.clone();
+    assert!(!cached.by_user.contains_key(&deleted_auth.id));
+    assert_eq!(cached.by_user[&survivor_auth.id], survivor_days);
+    let stored = server
+        .state
+        .database
+        .call(|connection| {
+            read_activity_rows(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+    assert!(!stored.by_user.contains_key(&deleted_auth.id));
+    assert_eq!(stored.by_user[&survivor_auth.id], survivor_days);
+    let backup = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(backup.status, StatusCode::OK, "{}", backup.text());
+    let activity = &backup.json()["data"]["activity"];
+    assert!(activity.get(&deleted_auth.id).is_none());
+    assert_eq!(
+        activity[&survivor_auth.id],
+        serde_json::json!(survivor_days)
+    );
+    let after = server.get("/api/profile/stats", &survivor).await;
+    assert_eq!(after.status, StatusCode::OK);
+    assert_eq!(after.json(), before.json());
+}
+
+#[tokio::test]
+async fn deleted_user_activity_stays_absent_after_late_progress_bookkeeping() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "late-reader").await;
+    // Middleware gives an admitted request this owned snapshot, which can
+    // outlive the account while the request waits to record its checkpoint.
+    let auth = resolve_session(&server.state, &reader).await.unwrap();
+    let book = server.state.library.read().await.books[0].clone();
+    let previous = fresh_progress(&book, &book.tracks[0], None, unix_now_millis() - 1000);
+    let mut saved = previous.clone();
+    saved.position_seconds = 1.0;
+    saved.book_position_seconds = 1.0;
+    saved.updated_at = unix_now_millis().to_string();
+    assert_eq!(
+        plausible_listened_delta(Some(&previous), &saved, false),
+        1.0
+    );
+
+    let deletion = server
+        .send_json(
+            "DELETE",
+            &format!("/api/users/{}", auth.id),
+            &owner,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(deletion.status, StatusCode::OK, "{}", deletion.text());
+    record_progress_bookkeeping(
+        &server.state,
+        &auth,
+        &book,
+        &saved,
+        Some(&previous),
+        ProgressBookkeeping {
+            intentional_seek: false,
+            tz_offset_minutes: Some(0),
+            speed: None,
+            client: None,
+            completion_source: None,
+        },
+    )
+    .await;
+    assert!(
+        !server
+            .state
+            .activity
+            .read()
+            .await
+            .by_user
+            .contains_key(&auth.id)
+    );
+    let stored = server
+        .state
+        .database
+        .call(|connection| {
+            read_activity_rows(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+    assert!(!stored.by_user.contains_key(&auth.id));
+    let backup = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(backup.status, StatusCode::OK, "{}", backup.text());
+    assert!(backup.json()["data"]["activity"].get(&auth.id).is_none());
+}
+
 /// A booted server with a temporary data directory and a fixture library.
 struct TestServer {
     router: Router,
@@ -431,7 +553,7 @@ impl TestServer {
                 auto_refresh_hours: None,
                 reader_refreshes_per_hour: DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR,
             },
-            alignment_config: AlignmentConfig { cli_path: None },
+            alignment_config: AlignmentConfig::Managed,
             faststart_tools: None,
             update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
             sync_dir: data_dir.join("sync"),
@@ -469,6 +591,7 @@ impl TestServer {
             )),
             open_sessions: Arc::new(Mutex::new(OpenSessions::default())),
             shutdown: tokio::sync::broadcast::channel(1).0,
+            update_trial: Arc::new(UpdateTrial::none()),
             works: Arc::new(WorksStore::new(
                 database.clone(),
                 StoreShape::Document(WORKS_DOCUMENT),
@@ -3152,6 +3275,8 @@ async fn untrusted_origins_cannot_use_cors_or_make_cookie_authenticated_changes(
     for origin in [
         "https://evil.example",
         "https://localhost.evil.example",
+        // No shipped app loads from here; any local site on port 80 could.
+        "http://localhost",
         "https://localhost:4444",
         "https://127.0.0.1",
         "null",
@@ -3292,7 +3417,6 @@ async fn a_cookie_change_from_an_official_app_origin_is_allowed() {
 
     for origin in [
         "capacitor://localhost",
-        "http://localhost",
         "https://localhost",
         "http://127.0.0.1:49201",
     ] {
@@ -5622,6 +5746,144 @@ async fn paged_books_keep_progress_gains_and_sharing_and_ignore_inaccessible_cur
 }
 
 #[tokio::test]
+async fn path_runtime_owner_toggle_gates_jobs_schedules_and_sentence_following() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "path-reader").await;
+    let admin = server.add_reader(&owner, "path-admin").await;
+    let admin_user = server.get("/api/auth/me", &admin).await.json();
+    let role = server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{}/role", admin_user["id"].as_str().unwrap()),
+            &owner,
+            serde_json::json!({"isAdmin":true,"isOwner":false}),
+        )
+        .await;
+    assert_eq!(role.status, StatusCode::OK, "{}", role.text());
+    let (book_id, track_id) = server.first_book_and_track(&owner).await;
+    save_position(
+        &server,
+        &reader,
+        &book_id,
+        &track_id,
+        42.0,
+        serde_json::json!({}),
+    )
+    .await;
+    {
+        let mut library = server.state.library.write().await;
+        library.books[0].reading_file = Some(ReadingFile {
+            id: "epub".into(),
+            file_name: "book.epub".into(),
+            extension: "epub".into(),
+            content_type: "application/epub+zip".into(),
+            url: "/readalong".into(),
+        });
+    }
+    fs::create_dir_all(&server.state.sync_dir).await.unwrap();
+    let map = server.state.sync_dir.join(format!("{book_id}.sync.json"));
+    fs::write(&map, b"existing sentence timings").await.unwrap();
+    let before = server.get("/api/books", &reader).await.json();
+    let cli = server._root.path().join("echogarden");
+    fs::write(&cli, b"fixture").await.unwrap();
+    server.state.alignment_config = AlignmentConfig::Path(cli);
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    let status_uri = "/api/experimental-features/readalong-sync";
+    let toggle_uri = "/api/experimental-features/readalong-sync/enabled";
+    let schedule_uri = format!("/api/sync-schedules/{book_id}");
+    let schedule = serde_json::json!({"runAt": unix_now_millis() + 3_600_000});
+    for token in [&reader, &admin] {
+        assert_eq!(
+            server
+                .send_json(
+                    "PUT",
+                    toggle_uri,
+                    token,
+                    serde_json::json!({"enabled":false})
+                )
+                .await
+                .status,
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(server.get(status_uri, &owner).await.json()["enabled"], true);
+    assert_eq!(
+        server
+            .send_json("PUT", &schedule_uri, &owner, schedule.clone())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        server
+            .send_json(
+                "PUT",
+                toggle_uri,
+                &owner,
+                serde_json::json!({"enabled":false})
+            )
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let status = server.get(status_uri, &admin).await.json();
+    assert_eq!(status["enabled"], false);
+    assert_eq!(status["canToggle"], true);
+    assert_eq!(
+        server.get("/api/alignment/status", &reader).await.json(),
+        serde_json::json!({"enabled":false,"cliPath":null})
+    );
+    for (method, uri, body) in [
+        (
+            "POST",
+            format!("/api/books/{book_id}/sync/generate"),
+            serde_json::json!({}),
+        ),
+        ("PUT", schedule_uri.clone(), schedule.clone()),
+        ("POST", "/api/sync-sweep/run".into(), serde_json::json!({})),
+    ] {
+        let response = server.send_json(method, &uri, &owner, body).await;
+        assert_eq!(
+            response.status,
+            StatusCode::BAD_REQUEST,
+            "{uri}: {}",
+            response.text()
+        );
+    }
+    assert!(server.state.jobs.read().await.is_empty());
+    assert_eq!(
+        server.get("/api/sync-schedules", &owner).await.json()[0]["status"],
+        "scheduled"
+    );
+    assert_eq!(
+        server
+            .send_json(
+                "PUT",
+                toggle_uri,
+                &owner,
+                serde_json::json!({"enabled":true})
+            )
+            .await
+            .json()["enabled"],
+        true
+    );
+    assert_eq!(
+        server.get("/api/alignment/status", &reader).await.json()["enabled"],
+        true
+    );
+    assert_eq!(
+        server
+            .send_json("PUT", &schedule_uri, &owner, schedule)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(fs::read(map).await.unwrap(), b"existing sentence timings");
+    assert_eq!(server.get("/api/books", &reader).await.json(), before);
+}
+
+#[tokio::test]
 async fn readers_can_check_whether_sentence_following_is_enabled() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;
@@ -5943,7 +6205,7 @@ async fn sync_schedules_persist_replace_cancel_and_validate() {
     // never executed because all requests below target future times.
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     server.router = build_router(server.state.clone(), None, &[]).unwrap();
     let saved = server.send_json("PUT", &uri, &owner, request).await;
     assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
@@ -6038,7 +6300,7 @@ async fn due_sync_schedule_joins_existing_job_once_and_records_completion() {
     let (book_id, _) = server.first_book_and_track(&owner).await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     {
         let mut library = server.state.library.write().await;
         library.books[0].reading_file = Some(ReadingFile {
@@ -6684,7 +6946,303 @@ async fn successful_login_keeps_the_address_throttle() {
         "the address counter survives the sign-in"
     );
     assert!(!attempts.contains_key(&mallory.account));
-    assert!(!attempts.contains_key(&mallory.username));
+    // Clearing the username counter would hand everyone guessing at the name
+    // a fresh allowance whenever its owner signs in.
+    assert!(attempts.contains_key(&mallory.username));
+}
+
+async fn sign_in_from(
+    server: &TestServer,
+    address: std::net::IpAddr,
+    username: &str,
+    password: &str,
+) -> Result<(super::User, String), super::ApiError> {
+    super::authenticate_and_open_session(
+        &server.state,
+        SocketAddr::new(address, 40_000),
+        &HeaderMap::new(),
+        super::LoginRequest {
+            username: username.to_string(),
+            password: password.to_string(),
+        },
+    )
+    .await
+}
+
+/// An oversized password is only timed against the dummy hash. Its first
+/// characters must not sign in, even when they are the account's password.
+#[tokio::test]
+async fn an_oversized_password_is_refused_even_when_its_prefix_is_correct() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let password = "p".repeat(super::MAX_PASSWORD_CHARS);
+    let created = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({"username": "longpass", "password": password, "isAdmin": false}),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let address = std::net::IpAddr::from([127, 0, 0, 1]);
+
+    let error = sign_in_from(&server, address, "longpass", &format!("{password}x"))
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+    let (user, _) = sign_in_from(&server, address, "longpass", &password)
+        .await
+        .unwrap();
+    assert_eq!(user.username, "longpass");
+}
+
+/// A reader account with a generated password, for sign-in tests.
+async fn reader_with_generated_password(server: &TestServer, username: &str) -> String {
+    let owner = server.setup_owner().await;
+    let password = format!("test-{}", super::mint_identity_id());
+    let created = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({"username": username, "password": password, "isAdmin": false}),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    password
+}
+
+/// Guessing spread across many addresses holds each of them to one guess a
+/// window, but cannot keep the account's owner out: a device that has not
+/// failed against the name signs in with the right password.
+#[tokio::test]
+async fn spread_guessing_cannot_lock_the_owner_out() {
+    let server = TestServer::start(0).await;
+    let password = reader_with_generated_password(&server, "target").await;
+    let attacker = |host: u32| {
+        std::net::IpAddr::V4(std::net::Ipv4Addr::from(
+            u32::from(std::net::Ipv4Addr::new(10, 0, 0, 0)) + host,
+        ))
+    };
+    // Charged the way sign-in admission charges a wrong guess. Fifty real
+    // password checks can outlast the lockout window in a debug build.
+    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        let keys = super::LoginThrottleKeys::new(attacker(host), "target");
+        assert!(super::record_login_failures(&server.state, keys.all()).await);
+    }
+
+    // An address that has guessed is refused before its password is checked,
+    // even when this guess would have been right.
+    let error = sign_in_from(&server, attacker(1), "target", &password)
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+
+    let owner_device = std::net::IpAddr::from([192, 0, 2, 44]);
+    let (user, _) = sign_in_from(&server, owner_device, "target", &password)
+        .await
+        .expect("the owner signs in from a device that has not failed");
+    assert_eq!(user.username, "target");
+
+    // The owner signing in does not reopen the name to the guessers.
+    let error = sign_in_from(&server, attacker(2), "target", &super::mint_identity_id())
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// Signing in often must not count toward the limit that marks a name as
+/// under attack, or an owner's own successes would slow their next typo.
+#[tokio::test]
+async fn successful_sign_ins_do_not_count_against_the_name() {
+    let server = TestServer::start(0).await;
+    let password = reader_with_generated_password(&server, "target").await;
+    let device = std::net::IpAddr::from([192, 0, 2, 44]);
+    for _ in 0..3 {
+        sign_in_from(&server, device, "target", &password)
+            .await
+            .expect("the owner signs in");
+    }
+    let attempts = server.state.login_attempts.lock().await;
+    let failures = |key: &String| attempts.get(key).map_or(0, |throttle| throttle.failures);
+    let keys = super::LoginThrottleKeys::new(device, "target");
+    assert_eq!(failures(&keys.username), 0);
+    assert_eq!(failures(&keys.ip), 0);
+}
+
+/// A sign-in still checking its password when the name's counter is evicted
+/// must not take a charge back from the counter other failures rebuilt.
+#[tokio::test]
+async fn a_late_refund_leaves_a_rebuilt_counter_alone() {
+    let server = TestServer::start(0).await;
+    let device = std::net::IpAddr::from([192, 0, 2, 44]);
+    let keys = super::LoginThrottleKeys::new(device, "target");
+    assert!(super::record_login_failures(&server.state, keys.all()).await);
+    let charged = {
+        let mut attempts = server.state.login_attempts.lock().await;
+        let charged = super::charged_runs(&attempts, [&keys.ip, &keys.username]);
+        attempts.remove(&keys.username);
+        charged
+    };
+    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        let attacker = std::net::IpAddr::from(std::net::Ipv4Addr::from(0x0a00_0000 + host));
+        let attacker = super::LoginThrottleKeys::new(attacker, "target");
+        assert!(super::record_login_failures(&server.state, attacker.all()).await);
+    }
+
+    let mut attempts = server.state.login_attempts.lock().await;
+    super::refund_login_charge(&mut attempts, &charged);
+    let failures = |key: &String| attempts.get(key).map_or(0, |throttle| throttle.failures);
+    assert_eq!(failures(&keys.username), super::LOGIN_ACCOUNT_MAX_FAILURES);
+    assert_eq!(
+        failures(&keys.ip),
+        0,
+        "the device's own counter is still refunded"
+    );
+}
+
+/// A flood of made-up names that fills the throttle map must not turn into a
+/// lockout for everyone else.
+#[tokio::test]
+async fn a_full_login_throttle_map_still_admits_a_correct_password() {
+    let server = TestServer::start(0).await;
+    let password = reader_with_generated_password(&server, "target").await;
+    let now = super::unix_now_seconds();
+    {
+        let mut attempts = server.state.login_attempts.lock().await;
+        for index in 0..super::LOGIN_THROTTLE_MAX_ENTRIES {
+            attempts.insert(
+                format!("user:flood-{index}"),
+                super::LoginThrottle {
+                    failures: 1,
+                    last_failure: now,
+                    run: 0,
+                },
+            );
+        }
+    }
+
+    let address = std::net::IpAddr::from([192, 0, 2, 44]);
+    let error = sign_in_from(&server, address, "target", &super::mint_identity_id())
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+    let other = std::net::IpAddr::from([192, 0, 2, 45]);
+    sign_in_from(&server, other, "target", &password)
+        .await
+        .expect("a full map makes room for a new sign-in");
+    assert!(server.state.login_attempts.lock().await.len() <= super::LOGIN_THROTTLE_MAX_ENTRIES);
+}
+
+/// Under a username attack, one failure is enough to hold an address off, so
+/// that single-failure entry must survive a full map. Otherwise newer one-off
+/// guesses would push it out and hand the guesser a fresh try.
+#[tokio::test]
+async fn a_full_login_throttle_map_keeps_holding_guessers_off_an_attacked_name() {
+    let server = TestServer::start(0).await;
+    let password = reader_with_generated_password(&server, "target").await;
+    let attacker = |host: u32| {
+        std::net::IpAddr::V4(std::net::Ipv4Addr::from(
+            u32::from(std::net::Ipv4Addr::new(10, 0, 0, 0)) + host,
+        ))
+    };
+    // Charged the way sign-in admission charges a wrong guess. Fifty real
+    // password checks can outlast the lockout window in a debug build.
+    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        let keys = super::LoginThrottleKeys::new(attacker(host), "target");
+        assert!(super::record_login_failures(&server.state, keys.all()).await);
+    }
+
+    // Make the guessers' entries the oldest single failures, then fill the
+    // map with newer ones.
+    let now = super::unix_now_seconds();
+    {
+        let mut attempts = server.state.login_attempts.lock().await;
+        for throttle in attempts.values_mut() {
+            throttle.last_failure = now - 1;
+        }
+        for index in attempts.len()..super::LOGIN_THROTTLE_MAX_ENTRIES {
+            attempts.insert(
+                format!("user:flood-{index}"),
+                super::LoginThrottle {
+                    failures: 1,
+                    last_failure: now,
+                    run: 0,
+                },
+            );
+        }
+    }
+
+    // Enough new addresses to evict every guesser entry if any could go.
+    for host in 1..=40u8 {
+        let newcomer = std::net::IpAddr::from([192, 0, 2, host]);
+        let keys = super::LoginThrottleKeys::new(newcomer, &format!("someone-{host}"));
+        assert!(super::record_login_failures(&server.state, keys.all()).await);
+    }
+
+    let attempts = server.state.login_attempts.lock().await;
+    assert!(attempts.len() <= super::LOGIN_THROTTLE_MAX_ENTRIES);
+    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        let keys = super::LoginThrottleKeys::new(attacker(host), "target");
+        assert!(
+            keys.is_locked(&attempts, now),
+            "address {host} may guess again"
+        );
+    }
+    drop(attempts);
+    let error = sign_in_from(&server, attacker(1), "target", &password)
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// Devices that share an address prefix are still separate devices: one
+/// mistyping its way into a lock does not keep another out. On a public IPv6
+/// network the per-address counter covers the /64, so a host rotating through
+/// its own addresses still meets it.
+#[tokio::test]
+async fn devices_sharing_a_prefix_do_not_share_a_sign_in_lock() {
+    let server = TestServer::start(0).await;
+    let password = reader_with_generated_password(&server, "target").await;
+    let ipv6 = |text: &str| text.parse::<std::net::IpAddr>().unwrap();
+    for (guesser, device) in [
+        ("fe80::1", "fe80::2"),
+        // Tailscale hands out unique local addresses under fd7a:115c:a1e0::/48.
+        ("fd7a:115c:a1e0::1", "fd7a:115c:a1e0::2"),
+        ("2001:db8:1:2::1", "2001:db8:1:2::2"),
+    ] {
+        for _ in 0..super::LOGIN_MAX_FAILURES {
+            let error = sign_in_from(&server, ipv6(guesser), "target", &super::mint_identity_id())
+                .await
+                .unwrap_err();
+            assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+        }
+        let error = sign_in_from(&server, ipv6(guesser), "target", &password)
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS, "{guesser}");
+        sign_in_from(&server, ipv6(device), "target", &password)
+            .await
+            .unwrap_or_else(|_| panic!("{device} is refused after {guesser} locked itself"));
+    }
+
+    // One wrong guess from each of many addresses in one public /64 locks
+    // that /64, and only that /64.
+    for host in 1..=super::LOGIN_IP_MAX_FAILURES {
+        let address = ipv6(&format!("2001:db8:9:9::{host:x}"));
+        let error = sign_in_from(&server, address, "target", &super::mint_identity_id())
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+    }
+    let error = sign_in_from(&server, ipv6("2001:db8:9:9::ffff"), "target", &password)
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+    sign_in_from(&server, ipv6("2001:db8:9:a::1"), "target", &password)
+        .await
+        .expect("a neighbouring /64 is unaffected");
 }
 
 #[tokio::test]
@@ -6770,7 +7328,7 @@ async fn sync_queue_restores_ids_order_and_results_and_retries_interrupted_books
     assert!(server.state.jobs.read().await[&first].resume_pending);
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     // Recovery revalidates inputs: neither a removed book nor a missing EPUB
     // disappears silently, and failures retain their original job IDs.
     crate::sync::resume_queue(&server.state).await;
@@ -6781,6 +7339,294 @@ async fn sync_queue_restores_ids_order_and_results_and_retries_interrupted_books
     crate::sync::restore_queue(&server.state).await.unwrap();
     assert_eq!(server.state.jobs.read().await[&first].status, "failed");
     assert!(!server.state.jobs.read().await[&first].resume_pending);
+}
+
+#[tokio::test]
+async fn recovery_retries_when_the_runtime_is_disabled_after_its_availability_check() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let cli = server._root.path().join("echogarden");
+    fs::write(&cli, b"fixture").await.unwrap();
+    server.state.alignment_config = AlignmentConfig::Path(cli);
+    {
+        let mut library = server.state.library.write().await;
+        library.books[0].reading_file = Some(ReadingFile {
+            id: "epub".into(),
+            file_name: "book.epub".into(),
+            extension: "epub".into(),
+            content_type: "application/epub+zip".into(),
+            url: "/readalong".into(),
+        });
+        library
+            .reading_paths
+            .insert("epub".into(), server._root.path().join("missing.epub"));
+    }
+    let (id, _) = create_queued_job(&server.state, "sync-generate", Some(book_id)).await;
+    let (paused, _) =
+        create_queued_job(&server.state, "sync-generate", Some("paused-book".into())).await;
+    let (invalid, _) =
+        create_queued_job(&server.state, "sync-generate", Some("removed-book".into())).await;
+    {
+        let mut jobs = server.state.jobs.write().await;
+        jobs.get_mut(&paused).unwrap().status = "paused".into();
+        jobs.get_mut(&paused).unwrap().pause_requested = true;
+    }
+    crate::sync::save_queue(&server.state, &*server.state.jobs.read().await)
+        .await
+        .unwrap();
+    server.state.jobs = Arc::default();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+
+    // Stop at recovery's availability/dispatch boundary, then complete the
+    // owner's disable before dispatch takes its lifecycle read lock.
+    let pending = server
+        .state
+        .jobs
+        .read()
+        .await
+        .values()
+        .filter(|job| job.resume_pending)
+        .cloned()
+        .collect();
+    assert!(
+        server
+            .state
+            .update_manager
+            .sync_addon_runtime(&server.state.alignment_config)
+            .await
+            .is_some()
+    );
+    server
+        .state
+        .update_manager
+        .set_sync_addon_enabled(false, &server.state.alignment_config)
+        .await
+        .unwrap();
+    crate::sync::resume_pending_jobs(&server.state, pending).await;
+    {
+        let jobs = server.state.jobs.read().await;
+        assert_eq!(jobs[&id].status, "queued");
+        assert!(jobs[&id].resume_pending);
+        assert!(jobs[&invalid].resume_pending);
+        assert_eq!(jobs[&paused].status, "paused");
+        assert!(!jobs[&paused].resume_pending);
+    }
+    server.state.jobs = Arc::default();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    assert!(server.state.jobs.read().await[&id].resume_pending);
+    server
+        .state
+        .update_manager
+        .set_sync_addon_enabled(true, &server.state.alignment_config)
+        .await
+        .unwrap();
+    let slot = server
+        .state
+        .update_manager
+        .sync_slots
+        .acquire()
+        .await
+        .unwrap();
+    crate::sync::resume_queue(&server.state).await;
+    {
+        let jobs = server.state.jobs.read().await;
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(jobs[&id].status, "queued");
+        assert!(!jobs[&id].resume_pending);
+        assert_eq!(jobs[&invalid].status, "failed");
+        assert!(!jobs[&invalid].resume_pending);
+        assert_eq!(jobs[&paused].status, "paused");
+        assert!(!jobs[&paused].resume_pending);
+    }
+    let finished = server.state.update_manager.sync_queue_changed.notified();
+    tokio::pin!(finished);
+    finished.as_mut().enable();
+    drop(slot);
+    // Missing input files still produce a real failure once work resumes.
+    tokio::time::timeout(Duration::from_secs(5), finished)
+        .await
+        .unwrap();
+    let jobs = server.state.jobs.read().await;
+    assert_eq!(jobs[&id].status, "failed");
+    assert!(jobs[&id].running_at.is_some());
+}
+
+/// Puts `server` into an update trial with `token`, serving a web app too.
+fn start_update_trial(server: &mut TestServer, token: &str) -> std::path::PathBuf {
+    let web = server._root.path().join("web");
+    std::fs::create_dir_all(&web).unwrap();
+    std::fs::write(web.join("index.html"), "<!doctype html><title>app</title>").unwrap();
+    server.state.update_trial = Arc::new(UpdateTrial::with_token(Some(token.to_string())));
+    server.router = build_router(server.state.clone(), Some(&web), &[]).unwrap();
+    web
+}
+
+fn commit_request(token: Option<&str>, peer: [u8; 4]) -> Request<Body> {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(super::UPDATE_TRIAL_COMMIT_PATH);
+    if let Some(token) = token {
+        request = request.header(super::UPDATE_TRIAL_HEADER, token);
+    }
+    let mut request = request.body(Body::empty()).unwrap();
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(SocketAddr::from((peer, 51234))));
+    request
+}
+
+async fn send_raw(server: &TestServer, request: Request<Body>) -> StatusCode {
+    server
+        .router
+        .clone()
+        .oneshot(request)
+        .await
+        .unwrap()
+        .status()
+}
+
+/// Until the updater commits a trial nothing a client sends is acknowledged,
+/// sign-in included, while the health check and the web app's files answer.
+#[tokio::test]
+async fn an_update_trial_refuses_every_dynamic_route_until_committed() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    start_update_trial(&mut server, "trial-token");
+    let get = |uri: &str| {
+        Request::builder()
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    for request in [
+        get("/api/books"),
+        get("/api/auth/me"),
+        get("/abs/api/libraries"),
+        get("/api/opds"),
+        Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"username":"owner","password":"owner-password-1234"}"#,
+            ))
+            .unwrap(),
+        Request::builder()
+            .method("POST")
+            .uri("/abs/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"username":"owner","password":"owner-password-1234"}"#,
+            ))
+            .unwrap(),
+    ] {
+        let uri = request.uri().to_string();
+        let response = server.send(request).await;
+        assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+        assert!(
+            response.headers.contains_key(header::RETRY_AFTER),
+            "{uri} must say when to retry"
+        );
+    }
+    assert_eq!(server.send(get("/api/health")).await.status, StatusCode::OK);
+    let page = server.send(get("/")).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text().contains("<title>app</title>"));
+
+    // Only the updater, on loopback with the token, can commit.
+    assert_eq!(
+        send_raw(&server, commit_request(None, [127, 0, 0, 1])).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send_raw(&server, commit_request(Some("guess"), [127, 0, 0, 1])).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send_raw(
+            &server,
+            commit_request(Some("trial-token"), [192, 168, 1, 20])
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        server.send(get("/api/books")).await.status,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    assert_eq!(
+        send_raw(&server, commit_request(Some("trial-token"), [127, 0, 0, 1])).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(server.send(get("/api/books")).await.status, StatusCode::OK);
+    // A repeated commit, say after a lost response, still succeeds.
+    assert_eq!(
+        send_raw(&server, commit_request(Some("trial-token"), [127, 0, 0, 1])).await,
+        StatusCode::NO_CONTENT
+    );
+}
+
+/// Without a trial the commit route does not exist, so an updater can tell
+/// a build that predates trials from one that refused it.
+#[tokio::test]
+async fn the_commit_route_is_absent_outside_an_update_trial() {
+    let server = TestServer::start(0).await;
+    assert_eq!(
+        send_raw(&server, commit_request(Some("anything"), [127, 0, 0, 1])).await,
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// The read-along queue lives outside the snapshot a rollback restores, so a
+/// trial leaves it alone and restores it as part of the commit, before any
+/// request could persist a queue over it.
+#[tokio::test]
+async fn an_update_trial_restores_the_read_along_queue_at_commit() {
+    let mut server = TestServer::start(0).await;
+    let queue = server.state.database_path.with_file_name("sync-jobs.json");
+    std::fs::write(&queue, b"not json").unwrap();
+    server.state.jobs = Arc::new(RwLock::new(HashMap::new()));
+    start_update_trial(&mut server, "trial-token");
+    assert!(queue.exists(), "a trial must not touch the queue");
+
+    assert_eq!(
+        send_raw(&server, commit_request(Some("trial-token"), [127, 0, 0, 1])).await,
+        StatusCode::NO_CONTENT
+    );
+    assert!(!queue.exists());
+    assert_eq!(
+        std::fs::read(queue.with_extension("json.unreadable")).unwrap(),
+        b"not json"
+    );
+}
+
+/// Work that persists outside the snapshot waits for the commit.
+#[tokio::test]
+async fn deferred_startup_work_waits_for_the_commit() {
+    let trial = Arc::new(UpdateTrial::with_token(Some("trial-token".to_string())));
+    let waiting = tokio::spawn({
+        let trial = trial.clone();
+        async move { trial.wait_for_commit().await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!waiting.is_finished());
+
+    let mut server = TestServer::start(0).await;
+    server.state.update_trial = trial.clone();
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    assert_eq!(
+        send_raw(&server, commit_request(Some("trial-token"), [127, 0, 0, 1])).await,
+        StatusCode::NO_CONTENT
+    );
+    tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("committing releases deferred work")
+        .unwrap();
+    UpdateTrial::none().wait_for_commit().await;
 }
 
 #[tokio::test]
@@ -6823,7 +7669,7 @@ async fn accepted_sync_queue_is_durable_and_deduplicated_before_work_starts() {
     let (book_id, _) = server.first_book_and_track(&owner).await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     let _slot = server
         .state
         .update_manager
@@ -6862,7 +7708,7 @@ async fn nightly_sync_limits_batches_and_includes_outdated_maps() {
     let owner = server.setup_owner().await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     {
         let mut library = server.state.library.write().await;
         for book in &mut library.books {
@@ -6920,7 +7766,7 @@ async fn full_sync_accepts_a_durable_batch_or_none_when_storage_fails() {
     let owner = server.setup_owner().await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     server.router = build_router(server.state.clone(), None, &[]).unwrap();
     {
         let mut library = server.state.library.write().await;
@@ -6976,7 +7822,7 @@ async fn update_before_batch_dispatch_preserves_every_accepted_job() {
     let mut server = TestServer::start(3).await;
     let cli = server._root.path().join("sync-cli");
     fs::write(&cli, "fixture").await.unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     let book_ids = server
         .state
         .library
@@ -7027,7 +7873,7 @@ async fn recovered_sync_starts_work_once_under_its_original_id() {
     let (book_id, _) = server.first_book_and_track(&owner).await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     {
         let mut library = server.state.library.write().await;
         library.books[0].reading_file = Some(ReadingFile {
@@ -7227,6 +8073,76 @@ async fn cover_upload_persists_rescans_restarts_metadata_edits_and_restores_orig
     assert_eq!(server.get(&url, &owner).await.status, StatusCode::NOT_FOUND);
     rescan_library(&server.state).await.unwrap();
     assert!(server.get(&format!("/api/books/{id}"), &owner).await.json()["coverArtUrl"].is_null());
+}
+
+/// Reopening the app must show covers from the device's cache without waiting
+/// on the server. A URL under the current revision may be kept; anything else
+/// is revalidated, so a replaced cover never sticks.
+#[tokio::test]
+async fn only_current_cover_revisions_are_cacheable_without_revalidation() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (id, _) = server.first_book_and_track(&owner).await;
+    let upload = server
+        .upload_cover(&id, &owner, "first.png", &cover_fixture([10, 20, 30]))
+        .await;
+    assert_eq!(upload.status, StatusCode::OK, "{}", upload.text());
+    let url = upload.json()["coverArtUrl"].as_str().unwrap().to_string();
+    let immutable = VERSIONED_COVER_CACHE_CONTROL;
+
+    let versioned = server.get(&url, &owner).await;
+    assert_eq!(versioned.status, StatusCode::OK);
+    assert_eq!(versioned.header(header::CACHE_CONTROL), immutable);
+    // The media token rides beside the revision on app image requests.
+    let with_token = server.get(&format!("{url}&token=ignored"), &owner).await;
+    assert_eq!(with_token.header(header::CACHE_CONTROL), immutable);
+    let revalidated = server
+        .send(
+            Request::builder()
+                .uri(&url)
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::IF_NONE_MATCH, versioned.header(header::ETAG))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(revalidated.status, StatusCode::NOT_MODIFIED);
+    assert_eq!(revalidated.header(header::CACHE_CONTROL), immutable);
+
+    let unversioned = format!("/api/books/{id}/cover");
+    for path in [
+        unversioned.clone(),
+        format!("{unversioned}?v="),
+        format!("{unversioned}?v=other"),
+        format!("{unversioned}?token=x"),
+    ] {
+        let response = server.get(&path, &owner).await;
+        assert_eq!(response.status, StatusCode::OK, "{path}");
+        assert_eq!(
+            response.header(header::CACHE_CONTROL),
+            COVER_CACHE_CONTROL,
+            "{path}"
+        );
+    }
+
+    let replacement = server
+        .upload_cover(&id, &owner, "next.png", &cover_fixture([0, 200, 30]))
+        .await;
+    assert_eq!(replacement.status, StatusCode::OK);
+    let stale = server.get(&url, &owner).await;
+    assert_eq!(stale.status, StatusCode::OK);
+    assert_eq!(stale.header(header::CACHE_CONTROL), COVER_CACHE_CONTROL);
+    let current = replacement.json()["coverArtUrl"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        server
+            .get(&current, &owner)
+            .await
+            .header(header::CACHE_CONTROL),
+        immutable
+    );
 }
 
 #[tokio::test]
@@ -7817,7 +8733,7 @@ exec sleep 60
     fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
         .await
         .unwrap();
-    server.state.alignment_config.cli_path = Some(cli.clone());
+    server.state.alignment_config = AlignmentConfig::Manual(cli.clone());
     let Json(created) = crate::sync::enqueue_sync_map(server.state.clone(), book_id)
         .await
         .unwrap();
@@ -7919,7 +8835,7 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
     fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
         .await
         .unwrap();
-    server.state.alignment_config.cli_path = Some(cli.clone());
+    server.state.alignment_config = AlignmentConfig::Manual(cli.clone());
     let Json(created) = crate::sync::enqueue_sync_map(server.state.clone(), book_id.clone())
         .await
         .unwrap();
@@ -8532,7 +9448,7 @@ async fn chapter_reruns_need_a_current_generated_map_and_survive_restarts() {
     }
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     server.router = build_router(server.state.clone(), None, &[]).unwrap();
     // Keep accepted jobs queued rather than running the fixture.
     let _slot = server

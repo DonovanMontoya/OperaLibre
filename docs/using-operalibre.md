@@ -40,7 +40,7 @@ Safari and other WebKit web players currently allow reductions only because rout
 You can add books in either of these ways:
 
 1. **Copy files into the library folder.** Put them in the folder chosen as `library_root`, then choose **Rescan library** from the administrator controls. Follow [Library Layout](library-layout.md) for the expected folder and filename patterns.
-2. **Upload through the app.** An administrator can choose **Upload audiobook** in the library header, enter the book name, select one audio file (such as an M4B) or every track for a multi-file book, then upload. The app puts it in a new library folder and rescans automatically.
+2. **Upload through the app.** An administrator can choose **Upload audiobook** in the library header (in the phone and tablet apps, **Add** then **Upload to the server**), enter the book name, select one audio file (such as an M4B) or every track for a multi-file book, then upload. The app puts it in a new library folder and rescans automatically.
 
 Uploads accept the audio types listed in [Library Layout](library-layout.md#supported-audio-formats). Cover art initially comes from the artwork embedded in the audio files' tags. An administrator can open **Edit Info**, choose a JPEG, PNG, or WebP cover, and **Save Info** to replace it for everyone with access to the book. Images must be at most 8 MiB, 16 million pixels, and 8192 pixels per side; OperaLibre saves a resized copy without changing the audio. **Restore original cover** returns to the embedded artwork, or the placeholder if there is none.
 
@@ -132,13 +132,13 @@ Open it from the new home-screen icon afterward. The web app offers the same lib
 
 ### Listen from this device
 
-In the native iPhone, iPad, or Android app, choose **Listen from this device** on the connection screen, then use the shelf's **Add audiobook from device** button to select audio files. Files are copied into the app's private storage; no server or account is needed. Select all tracks of a multi-file book together. You can also add device books while connected to a server; they stay on the device and are not uploaded automatically.
+In the native iPhone, iPad, or Android app, choose **Listen from this device** on the connection screen, then tap **Add** on the shelf and choose **Add files to this device**. Files are copied into the app's private storage; no server or account is needed. Select all tracks of a multi-file book together. You can also add device books while connected to a server; they stay on the device and are not uploaded automatically.
 
 Open an imported book's details and choose **More → Add EPUB** to pair an unencrypted ebook up to 64 MiB for offline reading. This preserves the audio and listening position. Chapter sync is available; generating a sentence map requires an OperaLibre server. Removing a device book deletes its imported audio and EPUB while keeping listening progress; your original files are left in place.
 
 ### Download server books for offline use
 
-In the native iPhone, iPad, and Android apps, open a book's details and choose **Download**. The app saves its audio, cover, companions, and available sync map. The button then reads **On device**: the audio is saved on this phone or tablet. Adding a purchase to your server does not save it on your device. Before disconnecting, check **Audio**, **Ebook**, and **Sentence sync** on the book’s details or under **Settings → On device**. Audio can finish even if an ebook, cover, companion, or sync map could not be saved. **Retry missing files** fetches those files without downloading the audio again or changing your listening position. Canceling a retry keeps your existing download. Downloads and cached server shelves belong to the selected server account; imported device books are separate.
+In the native iPhone, iPad, and Android apps, open a book's details and choose **Download**. The app saves its audio, cover, companions, and available sync map. The button then reads **On device**: the audio is saved on this phone or tablet. Adding a purchase to your server does not save it on your device. Before disconnecting, check **Audio**, **Ebook**, and **Sentence sync** on the book’s details or under **Settings → Downloads**. Audio can finish even if an ebook, cover, companion, or sync map could not be saved. **Retry missing files** fetches those files without downloading the audio again or changing your listening position. Canceling a retry keeps your existing download. Downloads and cached server shelves belong to the selected server account; imported device books are separate.
 
 Files marked **ready** remain available without reaching the server, including after restarting the app. An ebook needs an EPUB; sentence sync needs both the EPUB and a sentence timing map. **Not provided** or **not supported** means the book does not offer that feature, rather than a failed download. Progress is kept locally and reconciled when the server becomes reachable again. Tap **On device** on a downloaded book to confirm removing the device copy; the server's book and your listening progress remain. Removing the book currently open in the player stops playback. The browser and home-screen web app do not create this offline library.
 
@@ -155,7 +155,7 @@ The repository also includes a native iPhone and iPad app with background spoken
 
 The app supports HTTP for private home-network and Tailscale-style addresses. Use HTTPS for a public server.
 
-On a wide iPad window, **Shelf** shows the collection across the available width, while **Reading** shows the shelf beside the player or selected book details. Starting playback or opening details brings back Reading. Narrow iPad windows use a single pane, and the ebook opens in its own full-screen reader. The app keeps the active tab in step as you resize or rotate.
+On a wide iPad window, **Shelf** shows the collection across the available width, while **Listening** shows the shelf beside the player or selected book details. Starting playback or opening details brings back Listening. Narrow iPad windows use a single pane, and the ebook opens in its own full-screen reader. The app keeps the active tab in step as you resize or rotate.
 
 To reach the same server from more than one network, save its other addresses under **Settings → Connection → Address aliases**. Each address keeps its own sign-in: the first time you use one, tap **Sign in** beside it and enter your password. After that the app moves between your signed-in addresses by itself whenever one stops answering. Signing out signs you out of all of them.
 
@@ -360,7 +360,9 @@ The installed iPhone and Android apps include a **Games** tab. **Word Grid** is 
 
 ## Light and dark themes
 
-The iPhone and iPad apps can turn dark with your device or stay light or dark all the time; choose under **Settings → Display → Appearance**. **Themes**, just below it, sets how each appearance looks, with the light themes (**Parchment**, **Linen**, **Sage**, **Harbor**, **Pure White**) beside the dark ones (**Warm**, **Graphite**, **Midnight**, **Reading Room**, **True Black**). Each choice is remembered on the device and applies only while the app is in that appearance, so with **System** you can pick one of each. The Shelf and Games stay dark in either appearance, and the Shelf takes on a dark shade of whichever theme is showing.
+The iPhone and iPad apps can turn dark with your device or stay light or dark all the time; choose under **Settings → Display → Appearance**. **Themes**, just below it, sets how each appearance looks, with the light themes (**Parchment**, **Linen**, **Sage**, **Harbor**, **Pure White**) beside the dark ones (**Warm**, **Graphite**, **Midnight**, **Reading Room**, **True Black**). Each choice is remembered on the device and applies only while the app is in that appearance, so with **System** you can pick one of each. The Shelf and Games follow the appearance like every other screen.
+
+The iPhone and iPad apps also follow the text size set in iOS (**Settings → Display & Brightness → Text Size**, or **Accessibility → Display & Text Size → Larger Text** for the largest sizes). The ebook reader keeps its own text size under **Aa**.
 
 ## Check for application updates
 
@@ -385,3 +387,5 @@ Audiobookshelf is not yet a supported server connection in these apps. OperaLibr
 ## macOS app
 
 The macOS app is a small native window around the web app. From the repository root, run `./script/build_and_run.sh`, then enter the address of a running OperaLibre or Jellyfin server on its first screen. It remembers the address and sign-in token between launches. Start the OperaLibre server separately with `npm run dev:server` while developing, or use the production server command in [Getting Started](getting-started.md#keep-it-running-recommended-after-you-have-tried-it).
+
+**OperaLibre → Check for Updates…** installs the latest signed web app. If a newly installed version fails to start, the app goes back to the version it was running before (or the one it shipped with). A version that fails to load, or that still shows nothing after loading on two separate launches, is not offered again until a fixed or newer release is published.

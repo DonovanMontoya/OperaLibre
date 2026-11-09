@@ -56,6 +56,7 @@ import type { ChapterSegment } from "./chapters";
 import type { Book, Chapter, SharedProgress, Track } from "./types";
 import type { DeviceNotice } from "./ConfirmDialogs";
 import type { NativeTab } from "./nativeTabs";
+import { CompactNavBar } from "./CompactNavBar";
 import type { NativePlayerSheet } from "./PlayerSheets";
 import type { DeviceDownloadActivity } from "./SettingsCards";
 import { OfflineBookReadiness } from "./OfflineBookReadiness";
@@ -611,6 +612,9 @@ export function PlayerPane({
       onTouchEnd={finishBookDetailsBackSwipe}
       onTouchCancel={() => { bookDetailsSwipeStartRef.current = null; }}
     >
+      {native && nativeTab === "shelf" && nativePlayerView === "details" && selectedBook ? (
+        <CompactNavBar scroller={playerPaneRef} threshold={90} title={selectedBook.title} backLabel="Library" onBack={returnToLibrary} />
+      ) : null}
       <button
         type="button"
         className="library-open-btn"
@@ -639,8 +643,12 @@ export function PlayerPane({
                 </div>
 
                 <div className="native-now-copy">
+                  {/* Many books name chapters only by number; the kicker then
+                      says nothing the title below does not. */}
                   <span className="native-now-kicker">
-                    {activeChapter ? `Chapter ${activeChapter.chapterNumber}` : "Now playing"}
+                    {activeChapter && activeChapter.title.trim().toLowerCase() !== `chapter ${activeChapter.chapterNumber}`
+                      ? `Chapter ${activeChapter.chapterNumber}`
+                      : "Now playing"}
                   </span>
                   <h2>{activeChapter?.title ?? currentTrack.title}</h2>
                   <p>{playbackBook.title}</p>
@@ -742,7 +750,7 @@ export function PlayerPane({
                     type="button"
                     onClick={() => openNativePlayerSheet("speed")}
                   >
-                    <Gauge size={16} /> {speed}×
+                    <Gauge size={16} /> <span className="native-now-speed">{speed}×</span>
                   </button>
                   <button type="button" onClick={() => {
                     setSleepCustomOpen(false);
@@ -940,68 +948,68 @@ export function PlayerPane({
               <h2 data-length={titleLengthClass(selectedBook.title)}>
                 <span>{selectedBook.title}</span>
               </h2>
-              {!native || !isViewingPlayingBook ? (
-                <div className="book-quick-start">
+              {/* The playing book's page leads back to the player too, so every book
+                  page has one clear listening action. */}
+              <div className="book-quick-start">
+                <button
+                  type="button"
+                  className="book-quick-play"
+                  aria-label={isViewingPlayingBook ? "Return to Now Playing" : `Play ${selectedBook.title}`}
+                  onClick={() => {
+                    if (isViewingPlayingBook) scrollToPlayer();
+                    else void playSelectedBook(selectedBook);
+                  }}
+                >
+                  <span className="book-quick-play-icon">
+                    {isViewingPlayingBook ? <Headphones size={20} /> : <Play size={20} fill="currentColor" />}
+                  </span>
+                  <span className="book-quick-play-copy">
+                    <strong>
+                      {isViewingPlayingBook
+                        ? "Return to Now Playing"
+                        : selectedBook.progress?.status === "inProgress"
+                        ? "Resume this book"
+                        : selectedBook.progress?.status === "finished"
+                          ? "Read it again"
+                          : "Begin this reading"}
+                    </strong>
+                    <small>
+                      {selectedBook.progress?.status === "inProgress"
+                        && formatDurationLabel(selectedBook.progress.remainingSeconds)
+                        ? `${formatDurationLabel(selectedBook.progress.remainingSeconds)} left`
+                        : formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ?? "Start from the beginning"}
+                    </small>
+                  </span>
+                </button>
+                {/* A book in progress is already in Up Next. */}
+                {selectedBook.progress?.status !== "inProgress" ? (
                   <button
                     type="button"
-                    className="book-quick-play"
-                    aria-label={isViewingPlayingBook ? "Return to Now Playing" : `Play ${selectedBook.title}`}
+                    className="book-quick-return book-quick-queue"
+                    aria-pressed={selectedBookQueued}
+                    aria-label={selectedBookQueued ? `Remove ${selectedBook.title} from Up Next` : `Add ${selectedBook.title} to Up Next`}
                     onClick={() => {
-                      if (isViewingPlayingBook) scrollToPlayer();
-                      else void playSelectedBook(selectedBook);
+                      haptic("light");
+                      setQueueSaveFailed(!saveQueueIds(selectedBookQueued
+                        ? queueIds.filter(id => id !== selectedBook.id)
+                        : [...queueIds, selectedBook.id]));
                     }}
                   >
-                    <span className="book-quick-play-icon">
-                      {isViewingPlayingBook ? <Headphones size={20} /> : <Play size={20} fill="currentColor" />}
-                    </span>
-                    <span className="book-quick-play-copy">
-                      <strong>
-                        {isViewingPlayingBook
-                          ? "Return to Now Playing"
-                          : selectedBook.progress?.status === "inProgress"
-                          ? "Resume this book"
-                          : selectedBook.progress?.status === "finished"
-                            ? "Read it again"
-                            : "Begin this reading"}
-                      </strong>
-                      <small>
-                        {selectedBook.progress?.status === "inProgress"
-                          && formatDurationLabel(selectedBook.progress.remainingSeconds)
-                          ? `${formatDurationLabel(selectedBook.progress.remainingSeconds)} left`
-                          : formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ?? "Start from the beginning"}
-                      </small>
-                    </span>
+                    {selectedBookQueued ? <Check size={14} /> : <Plus size={14} />}
+                    <span>{selectedBookQueued ? "In Up Next" : "Add to Up Next"}</span>
+                    {selectedBookQueued ? <X className="book-quick-queue-remove" size={14} aria-hidden="true" /> : null}
                   </button>
-                  {/* A book in progress is already in Up Next. */}
-                  {selectedBook.progress?.status !== "inProgress" ? (
-                    <button
-                      type="button"
-                      className="book-quick-return book-quick-queue"
-                      aria-pressed={selectedBookQueued}
-                      aria-label={selectedBookQueued ? `Remove ${selectedBook.title} from Up Next` : `Add ${selectedBook.title} to Up Next`}
-                      onClick={() => {
-                        haptic("light");
-                        setQueueSaveFailed(!saveQueueIds(selectedBookQueued
-                          ? queueIds.filter(id => id !== selectedBook.id)
-                          : [...queueIds, selectedBook.id]));
-                      }}
-                    >
-                      {selectedBookQueued ? <Check size={14} /> : <Plus size={14} />}
-                      <span>{selectedBookQueued ? "In Up Next" : "Add to Up Next"}</span>
-                      {selectedBookQueued ? <X className="book-quick-queue-remove" size={14} aria-hidden="true" /> : null}
-                    </button>
-                  ) : null}
-                  {queueSaveFailed ? (
-                    <span className="download-status" role="alert">Up Next could not be saved. Check available device storage and try again.</span>
-                  ) : null}
-                  {playbackBook && playbackBook.id !== selectedBook.id ? (
-                    <button type="button" className="book-quick-return book-quick-now-playing" onClick={scrollToPlayer}>
-                      <Headphones size={14} />
-                      <span>Now playing <em>{playbackBook.title}</em></span>
-                    </button>
-                  ) : null}
-                </div>
-              ) : null}
+                ) : null}
+                {queueSaveFailed ? (
+                  <span className="download-status" role="alert">Up Next could not be saved. Check available device storage and try again.</span>
+                ) : null}
+                {playbackBook && playbackBook.id !== selectedBook.id ? (
+                  <button type="button" className="book-quick-return book-quick-now-playing" onClick={scrollToPlayer}>
+                    <Headphones size={14} />
+                    <span>Now playing <em>{playbackBook.title}</em></span>
+                  </button>
+                ) : null}
+              </div>
               <BookCredits
                 key={selectedBook.id}
                 author={selectedBook.author}

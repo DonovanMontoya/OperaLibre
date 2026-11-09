@@ -3,6 +3,7 @@ import { Haptics, ImpactStyle } from "@capacitor/haptics";
 import { StatusBar, Style } from "@capacitor/status-bar";
 import type { AppearanceMode } from "./appearance";
 import { installDeviceFold } from "./deviceFold";
+import { followSystemTextSize } from "./systemTextSize";
 
 /**
  * Native-only ergonomics for the Capacitor Android and iOS builds. Everything here is a
@@ -89,6 +90,7 @@ export function markNativePlatform(): void {
   root.classList.add(`platform-${Capacitor.getPlatform()}`);
   installNativeViewportSync(root);
   installDeviceFold(root);
+  if (Capacitor.getPlatform() === "ios") followSystemTextSize(root);
 
   // Native apps don't pinch-zoom their chrome. Locking the viewport here
   // (rather than in index.html) keeps zoom available on the web build.

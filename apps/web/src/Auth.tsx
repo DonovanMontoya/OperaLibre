@@ -200,6 +200,20 @@ export function AuthGate({
     event.preventDefault();
     setError(null);
 
+    // The apps skip the browser's validation bubbles (a web control in a
+    // native screen) and say what is missing in the form's own error line.
+    if (nativeApp) {
+      const missing = !username.trim() ? "Enter your username."
+        : !password ? "Enter your password."
+          : mode === "setup" && password.length < 12 ? "Use a password of at least 12 characters."
+            : mode === "setup" && setupTokenRequired && !setupToken ? "Enter the one-time setup token."
+              : null;
+      if (missing) {
+        setError(missing);
+        return;
+      }
+    }
+
     if (mode === "setup" && password !== confirm) {
       setError("Passwords do not match.");
       return;
@@ -228,7 +242,7 @@ export function AuthGate({
 
   return (
     <main className="auth-shell">
-      <form className="auth-card" onSubmit={submit}>
+      <form className="auth-card" onSubmit={submit} noValidate={nativeApp}>
         <span className="eyebrow">
           {isSetup ? <ShieldCheck size={13} /> : <LogIn size={13} />}{" "}
           {isSetup ? "First-run setup" : isJellyfin ? "Jellyfin sign in" : "Sign in"}
@@ -301,7 +315,7 @@ export function AuthGate({
           </>
         ) : null}
 
-        {error ? <p className="auth-error">{error}</p> : null}
+        {error ? <p className="auth-error" role="alert">{error}</p> : null}
 
         <button type="submit" className="auth-submit" disabled={busy || (isSetup && setupLocalOnly)}>
           {busy ? "Working…" : isSetup ? "Create owner" : "Sign in"}

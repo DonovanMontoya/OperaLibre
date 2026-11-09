@@ -107,3 +107,35 @@ let kept = try JSONSerialization.jsonObject(with: defaults.data(forKey: "operali
 precondition(kept["future"] as? [String: String] == ["title": "from another version"])
 precondition(manager.mutateJobs { $0["control"]!.state } == "queued")
 print("PASS unreadable job is preserved with the readable jobs")
+// A server file that finishes after its job was cancelled or replaced is not
+// moved into place, and its temporary file is removed.
+let track = root.appendingPathComponent("server-track")
+func serverInfo(attempt: String) -> StoredBackgroundTask {
+    StoredBackgroundTask(jobId: "server", attemptId: attempt, source: "https://books.example/api/books/1/tracks/0/stream?token=t", allowedOrigin: "https://books.example:443", allowedBasePath: "", destination: track.absoluteString, label: "track", required: true)
+}
+func seedServer(attempt: String) {
+    manager.mutateJobs { jobs in
+        jobs["server"] = StoredBackgroundJob(title: "server fixture", attemptId: attempt, state: "running", total: 1, requiredTotal: 1, completed: 0, completedRequired: 0, handledTaskIds: [], errors: [], files: [serverInfo(attempt: attempt)])
+    }
+}
+func finishServer(_ info: StoredBackgroundTask) -> (published: Bool, incoming: URL) {
+    let incoming = root.appendingPathComponent("incoming-" + UUID().uuidString)
+    try! Data([1, 2]).write(to: incoming)
+    do { try manager.publishServerFile(info, location: incoming); return (true, incoming) } catch { return (false, incoming) }
+}
+seedServer(attempt: "live")
+precondition(finishServer(serverInfo(attempt: "live")).published)
+precondition(FileManager.default.fileExists(atPath: track.path))
+let cancelled = DispatchSemaphore(value: 0)
+manager.cancel(jobId: "server") { cancelled.signal() }
+precondition(cancelled.wait(timeout: .now() + 5) == .success)
+precondition(!FileManager.default.fileExists(atPath: track.path))
+let late = finishServer(serverInfo(attempt: "live"))
+precondition(!late.published && !FileManager.default.fileExists(atPath: track.path))
+precondition(!FileManager.default.fileExists(atPath: late.incoming.path))
+seedServer(attempt: "retry")
+let stale = finishServer(serverInfo(attempt: "live"))
+precondition(!stale.published && !FileManager.default.fileExists(atPath: track.path))
+precondition(!FileManager.default.fileExists(atPath: stale.incoming.path))
+precondition(finishServer(serverInfo(attempt: "retry")).published)
+print("PASS server file finishing after cancel or replacement is discarded")

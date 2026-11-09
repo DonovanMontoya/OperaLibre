@@ -1156,8 +1156,14 @@ pub(crate) fn decide_abs_progress_write(
         let Some((track, track_position)) = track_at_book_position(book, book_position) else {
             return ProgressDecision::Keep;
         };
-        let intentional_rewind =
-            abs_write_is_intentional_rewind(previous, book_position, last_update, now_millis);
+        // Legacy rows may store only a track offset; compare whole-book positions.
+        let enriched_previous = previous.map(|previous| enrich_progress(book, previous));
+        let intentional_rewind = abs_write_is_intentional_rewind(
+            enriched_previous.as_ref(),
+            book_position,
+            last_update,
+            now_millis,
+        );
         let checkpoint = ProgressUpdate {
             track_id: track.id.clone(),
             position_seconds: track_position,
@@ -1237,9 +1243,10 @@ pub(crate) async fn abs_cover(
     state: State<AppState>,
     auth: Extension<AuthUser>,
     item_id: Path<String>,
+    query: RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    get_cover_art(state, auth, item_id, headers).await
+    get_cover_art(state, auth, item_id, query, headers).await
 }
 
 /// Which track a whole-book position lands in, and how far into it. `None`

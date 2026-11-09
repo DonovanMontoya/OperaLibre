@@ -199,17 +199,14 @@ export function renderUserMenu({
           }}
         />
       ) : null}
-      {capabilities.administration ? (
+      {/* The apps keep Administration in one place, inside Settings. */}
+      {capabilities.administration && !native ? (
         <button
           type="button"
           role="menuitem"
           onClick={() => {
             setUserMenuOpen(false);
-            if (native) {
-              openNativeTab("admin");
-            } else {
-              setUsersModalOpen(true);
-            }
+            setUsersModalOpen(true);
           }}
         >
           <UserCog size={16} /> Administration

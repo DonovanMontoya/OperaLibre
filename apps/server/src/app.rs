@@ -56,6 +56,8 @@ pub(crate) struct AppState {
     /// A server-owned stop request, used when an in-process update needs the
     /// same graceful drain path as a signal-driven shutdown.
     pub(crate) shutdown: broadcast::Sender<()>,
+    /// Whether this start is an update the updater has not committed yet.
+    pub(crate) update_trial: Arc<UpdateTrial>,
     /// The work identity index above individual audio-file editions.
     pub(crate) works: Arc<WorksStore>,
     pub(crate) libation_requests: Arc<LibationRequests>,
@@ -114,6 +116,7 @@ pub(crate) fn build_router(
         .route("/api/auth/status", get(auth_status))
         .route("/api/auth/setup", post(setup_admin))
         .route("/api/auth/login", post(login))
+        .route(UPDATE_TRIAL_COMMIT_PATH, post(commit_update_trial))
         // Audiobookshelf clients validate the server before presenting their
         // login form, and ping it again when checking a saved connection.
         .route("/abs/status", get(abs_status))
@@ -512,12 +515,18 @@ pub(crate) fn build_router(
     #[cfg(not(test))]
     let protected_share_routes = Router::new();
 
+    // Added before the web app's static files, which stay open during an
+    // update trial so a reloaded page can load and wait for the API.
     let mut app = public_routes
         .merge(public_share_routes)
         .merge(protected_share_routes)
         .merge(protected_routes)
         .merge(long_running_routes)
-        .merge(agent_routes);
+        .merge(agent_routes)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            update_trial_gate,
+        ));
     if let Some(dist_dir) = web_dist_dir {
         if dist_dir.join("index.html").is_file() {
             tracing::info!("serving web app from {}", dist_dir.display());
@@ -703,10 +712,15 @@ pub(crate) async fn set_update_channel(
 }
 
 pub(crate) async fn install_update(
-    State(state): State<AppState>,
+    // Read through `.0` rather than a `State(state)` pattern: CodeQL's Axum
+    // model treats handler arguments as request input and only stops at the
+    // field read, so the pattern reported the startup data directory as
+    // user-controlled (github/codeql#22466).
+    state: State<AppState>,
     _: OwnerUser,
     request: Option<Json<updates::UpdateInstallRequest>>,
 ) -> Result<Json<updates::UpdateInstallStarted>, ApiError> {
+    let state = state.0;
     let started = prepare_update_handoff(&state.backup_lock, async {
         state
             .update_manager
@@ -780,7 +794,7 @@ pub(crate) async fn readalong_sync_addon_status(
 ) -> Result<Json<updates::SyncAddonStatus>, ApiError> {
     state
         .update_manager
-        .check_sync_addon(query.refresh, state.alignment_config.cli_path.as_deref())
+        .check_sync_addon(query.refresh, &state.alignment_config)
         .await
         .map(Json)
         .map_err(|error| ApiError::bad_gateway(format!("Could not check the sync add-on: {error}")))
@@ -812,7 +826,7 @@ pub(crate) async fn set_readalong_sync_addon_enabled(
 ) -> Result<Json<updates::SyncAddonStatus>, ApiError> {
     state
         .update_manager
-        .set_sync_addon_enabled(input.enabled)
+        .set_sync_addon_enabled(input.enabled, &state.alignment_config)
         .await
         .map(Json)
         .map_err(|error| {

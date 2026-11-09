@@ -524,7 +524,7 @@ impl TestServer {
                 auto_refresh_hours: None,
                 reader_refreshes_per_hour: DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR,
             },
-            alignment_config: AlignmentConfig { cli_path: None },
+            alignment_config: AlignmentConfig::Managed,
             faststart_tools: None,
             update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
             sync_dir: data_dir.join("sync"),
@@ -562,6 +562,7 @@ impl TestServer {
             )),
             open_sessions: Arc::new(Mutex::new(OpenSessions::default())),
             shutdown: tokio::sync::broadcast::channel(1).0,
+            update_trial: Arc::new(UpdateTrial::none()),
             works: Arc::new(WorksStore::new(
                 database.clone(),
                 StoreShape::Document(WORKS_DOCUMENT),

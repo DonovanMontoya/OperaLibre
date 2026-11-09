@@ -738,14 +738,13 @@ impl webrtc::peer_connection::PeerConnectionEventHandler for RecipientHandler {
         tokio::spawn(async move {
             while let Some(event) = channel.poll().await {
                 match event {
-                    webrtc::data_channel::DataChannelEvent::OnMessage(message) => {
+                    webrtc::data_channel::DataChannelEvent::OnMessage(message)
                         if frames
                             .send((channel.clone(), message.is_string, message.data.to_vec()))
                             .await
-                            .is_err()
-                        {
-                            break;
-                        }
+                            .is_err() =>
+                    {
+                        break;
                     }
                     webrtc::data_channel::DataChannelEvent::OnClose => break,
                     _ => {}

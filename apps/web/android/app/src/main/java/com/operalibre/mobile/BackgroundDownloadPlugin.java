@@ -17,6 +17,8 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.util.concurrent.TimeUnit;
 import java.util.UUID;
 
@@ -33,8 +35,26 @@ public class BackgroundDownloadPlugin extends Plugin {
             call.reject("A job ID, title, and at least one file are required.");
             return;
         }
+        boolean libro = "libro".equals(call.getString("provider"));
+        DownloadSourcePolicy server = DownloadSourcePolicy.forServer(call.getString("serverOrigin"));
+        if (!libro && server == null) {
+            call.reject("The server address for the download is not valid.");
+            return;
+        }
 
         try {
+            for (int index = 0; index < files.length(); index++) {
+                URL source;
+                try {
+                    source = new URL(files.getJSONObject(index).getString("url"));
+                } catch (MalformedURLException invalid) {
+                    source = null;
+                }
+                if (libro ? source == null || !LibroDevicePlugin.allowedDownload(source) : !server.allows(source)) {
+                    call.reject("A download file is not from the connected server.");
+                    return;
+                }
+            }
             synchronized (BackgroundDownloadStore.class) {
                 JSONObject existing = BackgroundDownloadStore.load(getContext(), jobId);
                 if (existing != null) {
@@ -53,8 +73,9 @@ public class BackgroundDownloadPlugin extends Plugin {
                 }
                 JSONObject job = new JSONObject()
                     .put("attemptId", UUID.randomUUID().toString())
-                    .put("provider", "libro".equals(call.getString("provider")) ? "libro" : "server")
+                    .put("provider", libro ? "libro" : "server")
                     .put("title", title)
+                    .put("serverOrigin", libro ? "" : server.serverAddress())
                     .put("state", "queued")
                     .put("files", files)
                     .put("completedFiles", 0)

@@ -1,5 +1,8 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+#[path = "../../shared/update_backups.rs"]
+mod update_backups;
+
 use std::{
     env,
     fs::{self, OpenOptions},
@@ -88,7 +91,7 @@ fn run() -> Result<(), String> {
         return stop_server(&root);
     }
 
-    if start_server(&root, true)? == StartOutcome::StillStarting {
+    if start_server(&root, true, None)? == StartOutcome::StillStarting {
         let port = configured_port(&root.join("server.config")).unwrap_or(4920);
         show_message(&format!(
             "OperaLibre is still starting. Scanning a large library can take a while; open http://localhost:{port} once it finishes, or check {} for details.",
@@ -163,7 +166,14 @@ fn is_stop_launcher() -> bool {
         || env::args().any(|argument| argument == "--stop")
 }
 
-fn start_server(root: &Path, open_when_ready: bool) -> Result<StartOutcome, String> {
+/// Starts the server and waits for it. `trial_token` marks a build the
+/// updater has just installed: it refuses requests until committed with that
+/// token (see `commit_update_trial`).
+fn start_server(
+    root: &Path,
+    open_when_ready: bool,
+    trial_token: Option<&str>,
+) -> Result<StartOutcome, String> {
     fs::create_dir_all(root.join("audiobooks"))
         .map_err(|error| format!("Could not create the audiobooks folder: {error}"))?;
     let data_dir = data_dir(root);
@@ -171,7 +181,7 @@ fn start_server(root: &Path, open_when_ready: bool) -> Result<StartOutcome, Stri
         .map_err(|error| format!("Could not create the data folder: {error}"))?;
     secure_directory(&data_dir)?;
 
-    let port = configured_port(&root.join("server.config")).unwrap_or(4920);
+    let port = server_port(root);
     let log_path = data_dir.join("server.log");
 
     // A server already up, or still coming up from an earlier start, is
@@ -212,6 +222,10 @@ fn start_server(root: &Path, open_when_ready: bool) -> Result<StartOutcome, Stri
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
+    match trial_token {
+        Some(token) => command.env(UPDATE_TRIAL_ENV, token),
+        None => command.env_remove(UPDATE_TRIAL_ENV),
+    };
 
     #[cfg(unix)]
     command.process_group(0);
@@ -411,6 +425,8 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     let package_root = PathBuf::from(package_root);
     let install_root = PathBuf::from(install_root);
     validate_update_paths(&package_root, &install_root)?;
+    // Before the running server is waited out, so failing here leaves it up.
+    let trial_token = update_trial_token()?;
     wait_for_server_exit(server_pid, port)?;
 
     let backup_root = data_dir(&install_root).join("update-backups").join(
@@ -424,8 +440,19 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     let install_server = install_root.join(server_name);
     let install_web = install_root.join("web");
     let install_version = install_root.join("VERSION.txt");
-    if let Err(staging_error) = stage_installed_files(&install_root, &backup_root, includes_web) {
-        let restart = start_server(&install_root, false).and_then(require_ready_start);
+    let data_snapshot = backup_root.join("data");
+    let preparation = update_backups::create_generation(&backup_root)
+        .map_err(|error| format!("Could not create {}: {error}", backup_root.display()))
+        .and_then(|()| {
+            let result = prepare_update(&install_root, &backup_root, includes_web);
+            if result.is_err() {
+                // Only clean up a snapshot made by this transaction.
+                let _ = fs::remove_dir_all(&data_snapshot);
+            }
+            result
+        });
+    if let Err(staging_error) = preparation {
+        let restart = start_server(&install_root, false, None).and_then(require_ready_start);
         return Err(match restart {
             Ok(()) => format!(
                 "Could not prepare the update; the previous server was restarted: {staging_error}"
@@ -437,7 +464,7 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
         });
     }
 
-    let install_result = (|| {
+    let install_result = (|| -> Result<(), String> {
         move_required(&package_root.join(server_name), &install_server)?;
         if includes_web {
             move_required(&package_root.join("web"), &install_web)?;
@@ -450,7 +477,17 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
         set_executable(&install_server)?;
         // An update is successful only after its first catalogue is published;
         // a failed or indefinitely withheld scan must restore the old build.
-        require_ready_start(start_server(&install_root, false)?)
+        // Until the commit below the new build acknowledges nothing, so a
+        // rollback up to that point discards no client's change.
+        require_ready_start(start_server(&install_root, false, Some(&trial_token))?)?;
+        match commit_update_trial(server_port(&install_root), &trial_token)? {
+            TrialCommit::Committed => {}
+            TrialCommit::Unsupported => append_log(
+                &install_root,
+                "this build predates update trials; changes made while it was starting are not protected by a rollback",
+            ),
+        }
+        Ok(())
     })();
 
     if let Err(update_error) = install_result {
@@ -466,6 +503,15 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
         };
     }
 
+    let _ = fs::remove_dir_all(&data_snapshot);
+    let _ = fs::remove_file(backup_root.join(RESTORE_PENDING));
+    let _ = fs::remove_dir(backup_root.join(FAILED_DATA_PARTIAL));
+    if let Err(error) = update_backups::complete_and_prune(&backup_root) {
+        append_log(
+            &install_root,
+            &format!("could not finish pruning update backups: {error}"),
+        );
+    }
     Ok(())
 }
 
@@ -650,6 +696,13 @@ fn stage_installed_files(
 ) -> Result<(), String> {
     fs::create_dir_all(backup_root)
         .map_err(|error| format!("Could not create {}: {error}", backup_root.display()))?;
+    // Recorded before anything moves, so failing here leaves the installation
+    // as it was. Rollback then removes the new build's VERSION.txt rather
+    // than keeping it.
+    if !install_root.join("VERSION.txt").exists() {
+        fs::write(backup_root.join(NO_VERSION_MARKER), b"")
+            .map_err(|error| format!("Could not record the missing VERSION.txt: {error}"))?;
+    }
     let mut moved = Vec::new();
     for name in [server_binary_name(), "web", "VERSION.txt"] {
         if name == "web" && !includes_web {
@@ -687,29 +740,380 @@ fn stage_installed_files(
     Ok(())
 }
 
+/// Everything rollback needs, in place before the new build is moved in.
+/// Without the data snapshot and its restore copies a failed start could leave
+/// nothing the previous build can open, or no space to put it back, so a
+/// failure here stops the update before anything is swapped.
+fn prepare_update(
+    install_root: &Path,
+    backup_root: &Path,
+    includes_web: bool,
+) -> Result<(), String> {
+    snapshot_data(&data_dir(install_root), &backup_root.join("data"))
+        .and_then(|()| prepare_rollback_records(backup_root))
+        .and_then(|()| stage_installed_files(install_root, backup_root, includes_web))
+}
+
+const RESTORE_REQUIRED: &str = "restore-required";
+const RESTORE_PENDING: &str = "restore-pending";
+const FAILED_DATA: &str = "failed-data";
+const FAILED_DATA_PARTIAL: &str = "failed-data.partial";
+
+/// Rollback may run on a disk the failed build filled, so what it records is
+/// made now: the folder that keeps the failed build's data, and the marker
+/// that a rename turns into `restore-required`.
+fn prepare_rollback_records(backup_root: &Path) -> Result<(), String> {
+    let partial = backup_root.join(FAILED_DATA_PARTIAL);
+    fs::create_dir_all(&partial)
+        .map_err(|error| format!("Could not create {}: {error}", partial.display()))?;
+    let pending = backup_root.join(RESTORE_PENDING);
+    fs::write(&pending, b"")
+        .map_err(|error| format!("Could not create {}: {error}", pending.display()))?;
+    sync_file(&pending)?;
+    sync_directory(backup_root);
+    Ok(())
+}
+
+/// The data half of a rollback, with the failed server stopped. Only putting
+/// the snapshot back can fail it: keeping the failed build's data and
+/// recording the decision are worth having, never worth leaving the
+/// installation down for. `restore-required` is recorded after the failed
+/// data is kept and before the snapshot goes back, so it also marks the point
+/// past which the live files may be the snapshot's: a rollback that finds it
+/// restores again and never adds those files to what was kept.
+fn roll_back_data(install_root: &Path, data: &Path, backup_root: &Path) -> Result<(), String> {
+    let marker = backup_root.join(RESTORE_REQUIRED);
+    let kept = if marker.is_file() {
+        "left the failed build's data as an earlier rollback kept it".to_string()
+    } else {
+        let kept = match preserve_failed_data(data, backup_root) {
+            Ok(kept) => format!("kept the failed build's data in {}", kept.display()),
+            Err(error) => format!("could not keep the failed build's data: {error}"),
+        };
+        if let Err(error) = fs::rename(backup_root.join(RESTORE_PENDING), &marker)
+            .or_else(|_| fs::write(&marker, b""))
+        {
+            append_log(
+                install_root,
+                &format!("could not record the data restore ({error}); restoring anyway"),
+            );
+        }
+        sync_directory(backup_root);
+        kept
+    };
+    restore_data(data, &backup_root.join("data"))?;
+    append_log(
+        install_root,
+        &format!(
+            "the failed update had upgraded the data; restored the copy taken before it and {kept}"
+        ),
+    );
+    Ok(())
+}
+
 fn rollback_update(
     install_root: &Path,
     backup_root: &Path,
     includes_web: bool,
 ) -> Result<(), String> {
     let server_name = server_binary_name();
-    let _ = stop_server(install_root);
-    remove_if_exists(&install_root.join(server_name))?;
-    remove_if_exists(&install_root.join("VERSION.txt"))?;
-    move_required(
+    let stopped = stop_server(install_root);
+    let data = data_dir(install_root);
+    let snapshot = backup_root.join("data");
+    // Decided once: after a restore the formats match the snapshot again, so a
+    // rollback run a second time (the previous build failed to start after
+    // the first) still restores instead of keeping that build's leftovers.
+    let restore_marker = backup_root.join(RESTORE_REQUIRED);
+    if restore_marker.is_file() || data_was_upgraded(&data, &snapshot) {
+        // Files replaced under a server that is still running would keep
+        // receiving its writes after the previous build had started.
+        stopped?;
+        roll_back_data(install_root, &data, backup_root)?;
+    }
+    let backup_version = backup_root.join("VERSION.txt");
+    if backup_version.exists() {
+        restore_backed_up(&backup_version, &install_root.join("VERSION.txt"))?;
+    } else if backup_root.join(NO_VERSION_MARKER).exists() {
+        remove_if_exists(&install_root.join("VERSION.txt"))?;
+    }
+    restore_backed_up(
         &backup_root.join(server_name),
         &install_root.join(server_name),
     )?;
     if includes_web {
-        remove_if_exists(&install_root.join("web"))?;
-        move_required(&backup_root.join("web"), &install_root.join("web"))?;
+        restore_backed_up(&backup_root.join("web"), &install_root.join("web"))?;
     }
-    move_if_exists(
-        &backup_root.join("VERSION.txt"),
-        &install_root.join("VERSION.txt"),
-    )?;
     set_executable(&install_root.join(server_name))?;
-    require_ready_start(start_server(install_root, false)?)
+    require_ready_start(start_server(install_root, false, None)?)?;
+    let _ = fs::remove_dir_all(snapshot);
+    let _ = fs::remove_file(restore_marker);
+    let _ = fs::remove_file(backup_root.join(RESTORE_PENDING));
+    let _ = fs::remove_dir(backup_root.join(FAILED_DATA_PARTIAL));
+    Ok(())
+}
+
+/// Puts back one file or folder the update moved aside. A backup already
+/// gone was put back by an earlier run of this rollback, so the installed
+/// copy is kept rather than deleted.
+/// Left in the backup by an installation that had no VERSION.txt.
+const NO_VERSION_MARKER: &str = "no-version";
+
+fn restore_backed_up(backup: &Path, installed: &Path) -> Result<(), String> {
+    if !backup.exists() {
+        return if installed.exists() {
+            Ok(())
+        } else {
+            Err(format!("The update is missing {}.", backup.display()))
+        };
+    }
+    remove_if_exists(installed)?;
+    move_required(backup, installed)
+}
+
+/// Keeps the failed build's data beside the snapshot before the snapshot is
+/// put back, for an owner to recover anything from by hand. The database and
+/// identities are hard-linked, so the restore can still replace each live
+/// file with a single rename and there is never a moment without one; the
+/// write-ahead log and shared memory, which the restore removes anyway, are
+/// moved with them so the database stays readable on its own. A volume
+/// without hard links gets moves instead. Collected under `.partial` and
+/// renamed when complete, so an interrupted run resumes: until then no
+/// restore has begun, every live file is still the failed build's, and a
+/// file already kept is never replaced.
+fn preserve_failed_data(data: &Path, backup_root: &Path) -> Result<PathBuf, String> {
+    let kept = backup_root.join(FAILED_DATA);
+    if kept.is_dir() {
+        return Ok(kept);
+    }
+    let partial = backup_root.join(FAILED_DATA_PARTIAL);
+    fs::create_dir_all(&partial)
+        .map_err(|error| format!("Could not create {}: {error}", partial.display()))?;
+    let wal = format!("{DATABASE}-wal");
+    let shm = format!("{DATABASE}-shm");
+    for name in [DATABASE, IDENTITIES, wal.as_str(), shm.as_str()] {
+        let live = data.join(name);
+        let copy = partial.join(name);
+        if !live.exists() || copy.exists() {
+            continue;
+        }
+        let linked =
+            (name == DATABASE || name == IDENTITIES) && fs::hard_link(&live, &copy).is_ok();
+        if !linked {
+            fs::rename(&live, &copy).map_err(|error| {
+                format!(
+                    "Could not keep {} in {}: {error}",
+                    live.display(),
+                    partial.display()
+                )
+            })?;
+        }
+    }
+    sync_directory(&partial);
+    sync_directory(data);
+    fs::rename(&partial, &kept)
+        .map_err(|error| format!("Could not finish keeping the failed build's data: {error}"))?;
+    sync_directory(backup_root);
+    Ok(kept)
+}
+
+/// State the server upgrades in place and an older build then refuses: the
+/// database by its `schema_version`, the library identities by `version`.
+const DATABASE: &str = "operalibre.db";
+const IDENTITIES: &str = "library-identities.json";
+
+/// Copies of the snapshot that rollback renames over the live files. The new
+/// build may use up the free disk space, so they are made before it runs and
+/// rollback copies nothing. They sit in the snapshot folder, never beside the
+/// live files, and the snapshot itself stays whole for another try.
+fn restore_copies(snapshot: &Path) -> PathBuf {
+    snapshot.join("restore")
+}
+
+/// Copies the state an update may upgrade into `snapshot`, with its restore
+/// copies. The server has stopped by now; `VACUUM INTO` still yields a
+/// consistent copy if it left a write-ahead log behind, which copying the file
+/// would not.
+fn snapshot_data(data: &Path, snapshot: &Path) -> Result<(), String> {
+    let prepared = restore_copies(snapshot);
+    let result = (|| {
+        fs::create_dir_all(snapshot)
+            .map_err(|error| format!("Could not create {}: {error}", snapshot.display()))?;
+        let database = data.join(DATABASE);
+        if database.is_file() {
+            let copy = snapshot.join(DATABASE);
+            let target = copy
+                .to_str()
+                .ok_or_else(|| format!("{} is not a valid path.", copy.display()))?;
+            open_database(&database)?
+                .execute("VACUUM INTO ?1", [target])
+                .map_err(|error| format!("Could not copy the database: {error}"))?;
+            secure_file(&copy)?;
+            sync_file(&copy)?;
+            // A copy that cannot be read back is no copy to roll back to.
+            schema_version(&copy)?;
+        }
+        let identities = data.join(IDENTITIES);
+        if identities.is_file() {
+            let copy = snapshot.join(IDENTITIES);
+            fs::copy(&identities, &copy)
+                .map_err(|error| format!("Could not copy {IDENTITIES}: {error}"))?;
+            secure_file(&copy)?;
+            sync_file(&copy)?;
+        }
+        fs::create_dir_all(&prepared)
+            .map_err(|error| format!("Could not create {}: {error}", prepared.display()))?;
+        for name in [DATABASE, IDENTITIES] {
+            let saved = snapshot.join(name);
+            if saved.is_file() {
+                let copy = prepared.join(name);
+                fs::copy(&saved, &copy)
+                    .map_err(|error| format!("Could not prepare {name} for rollback: {error}"))?;
+                secure_file(&copy)?;
+                sync_file(&copy)?;
+            }
+        }
+        // The new build may migrate the database as soon as it starts, so the
+        // folders leading to the copies must be on disk before then too.
+        for directory in prepared
+            .ancestors()
+            .take_while(|directory| directory.starts_with(snapshot) || directory.starts_with(data))
+        {
+            sync_directory(directory);
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(snapshot);
+    }
+    result
+}
+
+/// Whether the failed build raised a format the snapshot was taken at. Only
+/// then is the snapshot restored: otherwise the previous build reads the data
+/// as it is, including listening progress saved while the new build ran.
+fn data_was_upgraded(data: &Path, snapshot: &Path) -> bool {
+    // A readable snapshot against current data that is newer or unreadable.
+    let raised = |before: Result<i64, String>, after: Result<i64, String>| match (before, after) {
+        (Ok(before), Ok(after)) => after > before,
+        (Ok(_), Err(_)) => true,
+        (Err(_), _) => false,
+    };
+    let saved_database = snapshot.join(DATABASE);
+    let saved_identities = snapshot.join(IDENTITIES);
+    (saved_database.is_file()
+        && raised(
+            schema_version(&saved_database),
+            schema_version(&data.join(DATABASE)),
+        ))
+        || (saved_identities.is_file()
+            && raised(
+                identity_version(&saved_identities),
+                identity_version(&data.join(IDENTITIES)),
+            ))
+}
+
+/// Puts the whole snapshot back, so the database and identities stay a pair.
+/// The snapshot is only read: until the previous build has started it is the
+/// one copy that build can open, and a restore that stops partway must be
+/// able to run again.
+fn restore_data(data: &Path, snapshot: &Path) -> Result<(), String> {
+    let names: Vec<&str> = [DATABASE, IDENTITIES]
+        .into_iter()
+        .filter(|name| snapshot.join(name).is_file())
+        .collect();
+    let prepared = restore_copies(snapshot);
+    // Each file lands with one rename on one volume, so the live file is
+    // either the old one or the new one.
+    let mut copied = Vec::new();
+    let result = (|| {
+        let mut sources = Vec::new();
+        for name in &names {
+            let ready = prepared.join(name);
+            if ready.is_file() {
+                sources.push(ready);
+                continue;
+            }
+            // No prepared copy left (an earlier restore used it): copy the
+            // snapshot beside the live file. Only this needs free space.
+            let copy = data.join(format!("{name}.restoring"));
+            copied.push(copy.clone());
+            fs::copy(snapshot.join(name), &copy)
+                .map_err(|error| format!("Could not copy back {name}: {error}"))?;
+            secure_file(&copy)?;
+            sync_file(&copy)?;
+            sources.push(copy);
+        }
+        for (name, source) in names.iter().zip(&sources) {
+            if *name == DATABASE {
+                // The failed build's write-ahead log belongs to its database;
+                // replayed onto the restored one it would corrupt it.
+                remove_if_exists(&data.join(format!("{DATABASE}-wal")))?;
+                remove_if_exists(&data.join(format!("{DATABASE}-shm")))?;
+            }
+            move_required(source, &data.join(name))?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        for copy in &copied {
+            let _ = fs::remove_file(copy);
+        }
+    }
+    sync_directory(data);
+    result
+}
+
+fn open_database(path: &Path) -> Result<rusqlite::Connection, String> {
+    // Without SQLITE_OPEN_CREATE a missing file is an error, not a new empty
+    // database; without SQLITE_OPEN_URI the VACUUM INTO target is a plain path.
+    rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|error| format!("Could not open {}: {error}", path.display()))
+}
+
+fn schema_version(database: &Path) -> Result<i64, String> {
+    open_database(database)?
+        .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+        .map_err(|error| {
+            format!(
+                "Could not read the schema of {}: {error}",
+                database.display()
+            )
+        })
+}
+
+/// The identities `version` the server reads; files without one are format 0.
+fn identity_version(path: &Path) -> Result<i64, String> {
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+    // SQLite's JSON functions spare the launcher a JSON parser.
+    rusqlite::Connection::open_in_memory()
+        .and_then(|connection| {
+            connection.query_row(
+                "SELECT coalesce(json_extract(?1, '$.version'), 0)",
+                [contents],
+                |row| row.get(0),
+            )
+        })
+        .map_err(|error| format!("Could not read the format of {}: {error}", path.display()))
+}
+
+fn sync_file(path: &Path) -> Result<(), String> {
+    // Windows flushes only handles opened for writing.
+    OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| format!("Could not save {}: {error}", path.display()))
+}
+
+/// Best effort: makes the renames in `path` survive a power cut.
+fn sync_directory(path: &Path) {
+    #[cfg(unix)]
+    if let Ok(directory) = fs::File::open(path) {
+        let _ = directory.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 fn require_ready_start(outcome: StartOutcome) -> Result<(), String> {
@@ -963,6 +1367,65 @@ fn unquote_config_value(value: &str) -> String {
     value.to_string()
 }
 
+/// The variable and header the server reads for an update trial.
+const UPDATE_TRIAL_ENV: &str = "OPERALIBRE_UPDATE_TRIAL";
+const UPDATE_TRIAL_HEADER: &str = "X-OperaLibre-Update-Trial";
+
+fn server_port(root: &Path) -> u16 {
+    configured_port(&root.join("server.config")).unwrap_or(4920)
+}
+
+/// Unguessable, so no other local process or web page can commit a trial.
+fn update_trial_token() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| format!("Could not create the update token: {error}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TrialCommit {
+    Committed,
+    /// The build predates update trials: it never refused requests.
+    Unsupported,
+}
+
+/// Commits the trial so the new build starts accepting changes. Anything but
+/// a clear answer counts as a failed start and rolls the update back; the
+/// build may then have been committed and accepted a change in the moment
+/// before it went away, which the rollback discards.
+fn commit_update_trial(port: u16, token: &str) -> Result<TrialCommit, String> {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
+        .map_err(|error| format!("Could not reach the new server to commit it: {error}"))?;
+    // The commit restores the read-along queue first, which reads one file.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
+    let request = format!(
+        "POST /api/update-trial/commit HTTP/1.1\r\nHost: localhost\r\n{UPDATE_TRIAL_HEADER}: {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("Could not commit the new server: {error}"))?;
+    let mut response = Vec::with_capacity(512);
+    let _ = stream.take(16 * 1024).read_to_end(&mut response);
+    parse_commit_response(&response)
+}
+
+fn parse_commit_response(response: &[u8]) -> Result<TrialCommit, String> {
+    let response = String::from_utf8_lossy(response);
+    let status = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("");
+    match status {
+        "204" => Ok(TrialCommit::Committed),
+        "404" => Ok(TrialCommit::Unsupported),
+        "" => Err("The new server closed the connection before committing.".to_string()),
+        status => Err(format!("The new server refused the commit ({status}).")),
+    }
+}
+
 fn server_readiness(port: u16) -> ServerReadiness {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
@@ -1116,7 +1579,28 @@ mod tests {
             "keep web"
         );
         assert!(!backup.join("VERSION.txt").exists());
+        assert!(backup.join(super::NO_VERSION_MARKER).is_file());
         assert!(!backup.join("web").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failing_to_record_a_missing_version_moves_nothing() {
+        let root = scratch("staging-no-version-marker");
+        let install = root.join("install");
+        let backup = root.join("backup");
+        std::fs::create_dir_all(install.join("web")).unwrap();
+        std::fs::write(install.join(super::server_binary_name()), "old server").unwrap();
+        // The marker cannot be written where a folder already sits.
+        std::fs::create_dir_all(backup.join(super::NO_VERSION_MARKER)).unwrap();
+
+        assert!(super::stage_installed_files(&install, &backup, true).is_err());
+        assert_eq!(
+            std::fs::read_to_string(install.join(super::server_binary_name())).unwrap(),
+            "old server"
+        );
+        assert!(install.join("web").is_dir());
+        assert!(!backup.join(super::server_binary_name()).exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1225,6 +1709,514 @@ mod tests {
         );
         drop(old);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "operalibre-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn pruning_preserves_current_generation_for_rollback() {
+        let root = scratch("pruning-rollback");
+        let backups = root.join("data/update-backups");
+        fs::create_dir_all(root.join("web")).unwrap();
+        fs::write(root.join("server.config"), "data_dir = data\n").unwrap();
+        fs::write(root.join(super::server_binary_name()), "previous server").unwrap();
+        fs::write(root.join("web/index.html"), "previous web").unwrap();
+        fs::write(root.join("VERSION.txt"), "1.0.0").unwrap();
+        let connection = seed_data(&root.join("data"), 4, r#"{"version":1}"#);
+        drop(connection);
+        for name in ["1", "2"] {
+            let backup = backups.join(name);
+            super::update_backups::create_generation(&backup).unwrap();
+            fs::write(backup.join(super::server_binary_name()), "older server").unwrap();
+            super::update_backups::complete_and_prune(&backup).unwrap();
+        }
+        let current = backups.join("3");
+        super::update_backups::create_generation(&current).unwrap();
+        super::prepare_update(&root, &current, true).unwrap();
+        let frontend = backups.join("4-frontend");
+        super::update_backups::create_generation(&frontend).unwrap();
+        fs::write(frontend.join("web"), "previous frontend").unwrap();
+        super::update_backups::complete_and_prune(&frontend).unwrap();
+        assert!(!backups.join("1").exists());
+        assert!(backups.join("2").is_dir());
+        assert!(current.join("data/operalibre.db").is_file());
+        let data = root.join("data");
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute_batch("UPDATE schema_version SET version = 5; INSERT INTO progress VALUES ('failed-build', 60);")
+            .unwrap();
+        fs::write(data.join("library-identities.json"), r#"{"version":2}"#).unwrap();
+        assert!(super::data_was_upgraded(&data, &current.join("data")));
+        super::roll_back_data(&root, &data, &current).unwrap();
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        assert_eq!(progress_books(&data), ["before-update"]);
+        assert_eq!(
+            fs::read_to_string(data.join("library-identities.json")).unwrap(),
+            r#"{"version":1}"#
+        );
+        assert_eq!(
+            super::schema_version(&current.join("failed-data/operalibre.db")),
+            Ok(5)
+        );
+        for name in [super::server_binary_name(), "web", "VERSION.txt"] {
+            super::restore_backed_up(&current.join(name), &root.join(name)).unwrap();
+        }
+        assert_eq!(
+            fs::read_to_string(root.join(super::server_binary_name())).unwrap(),
+            "previous server"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("web/index.html")).unwrap(),
+            "previous web"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("VERSION.txt")).unwrap(),
+            "1.0.0"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A data folder shaped like the server's: a WAL database at `schema` with
+    /// one progress row, and identities at `identities`.
+    fn seed_data(data: &Path, schema: i64, identities: &str) -> rusqlite::Connection {
+        fs::create_dir_all(data).unwrap();
+        let connection = rusqlite::Connection::open(data.join("operalibre.db")).unwrap();
+        connection
+            .execute_batch(&format!(
+                "PRAGMA journal_mode = WAL;
+                 CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version VALUES ({schema});
+                 CREATE TABLE progress (book TEXT PRIMARY KEY, seconds REAL NOT NULL);
+                 INSERT INTO progress VALUES ('before-update', 120);"
+            ))
+            .unwrap();
+        fs::write(data.join("library-identities.json"), identities).unwrap();
+        connection
+    }
+
+    fn progress_books(data: &Path) -> Vec<String> {
+        let connection = rusqlite::Connection::open(data.join("operalibre.db")).unwrap();
+        let mut statement = connection
+            .prepare("SELECT book FROM progress ORDER BY book")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn rollback_restores_data_a_failed_build_upgraded() {
+        let root = scratch("data-upgraded");
+        let data = root.join("data");
+        let snapshot = root.join("snapshot");
+        // Held open so the snapshot is taken with a live write-ahead log.
+        let live = seed_data(&data, 4, "{\"version\":1,\"books\":[]}");
+        live.execute_batch(
+            "PRAGMA wal_autocheckpoint = 0; INSERT INTO progress VALUES ('in-wal', 30);",
+        )
+        .unwrap();
+        super::snapshot_data(&data, &snapshot).unwrap();
+        live.execute_batch(
+            "UPDATE schema_version SET version = 5; INSERT INTO progress VALUES ('new-build', 60);",
+        )
+        .unwrap();
+        drop(live);
+        fs::write(data.join("library-identities.json"), "{\"version\":2}").unwrap();
+
+        assert!(super::data_was_upgraded(&data, &snapshot));
+        super::restore_data(&data, &snapshot).unwrap();
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        assert_eq!(progress_books(&data), ["before-update", "in-wal"]);
+        assert_eq!(
+            fs::read_to_string(data.join("library-identities.json")).unwrap(),
+            "{\"version\":1,\"books\":[]}"
+        );
+        assert!(!super::data_was_upgraded(&data, &snapshot));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_restore_that_stops_partway_keeps_the_snapshot_for_another_try() {
+        let root = scratch("data-partial-restore");
+        let data = root.join("data");
+        let snapshot = root.join("snapshot");
+        drop(seed_data(&data, 4, "{\"version\":1}"));
+        super::snapshot_data(&data, &snapshot).unwrap();
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute("UPDATE schema_version SET version = 5", [])
+            .unwrap();
+        // The database goes back, then the identities cannot be replaced.
+        let identities = data.join("library-identities.json");
+        fs::remove_file(&identities).unwrap();
+        fs::create_dir_all(identities.join("blocked")).unwrap();
+        assert!(super::restore_data(&data, &snapshot).is_err());
+        assert_eq!(
+            super::schema_version(&snapshot.join("operalibre.db")),
+            Ok(4)
+        );
+        assert_eq!(
+            fs::read_to_string(snapshot.join("library-identities.json")).unwrap(),
+            "{\"version\":1}"
+        );
+        assert!(!data.join("library-identities.json.restoring").exists());
+        assert!(
+            super::restore_copies(&snapshot)
+                .join("library-identities.json")
+                .is_file()
+        );
+
+        // Restarting the failed build would migrate the restored database again.
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute("UPDATE schema_version SET version = 5", [])
+            .unwrap();
+        fs::remove_dir_all(&identities).unwrap();
+        fs::write(&identities, "{\"version\":2}").unwrap();
+        assert!(super::data_was_upgraded(&data, &snapshot));
+        super::restore_data(&data, &snapshot).unwrap();
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        assert_eq!(super::identity_version(&identities), Ok(1));
+        assert_eq!(progress_books(&data), ["before-update"]);
+        assert!(snapshot.join("operalibre.db").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Rollback can run on a disk the failed build filled. What it records
+    /// is prepared before the new build runs, and failing to record it never
+    /// stops the snapshot going back.
+    #[test]
+    fn the_data_goes_back_even_when_nothing_else_can_be_recorded() {
+        let root = scratch("data-rollback-records");
+        let data = root.join("data");
+        let backup = root.join("backup");
+        drop(seed_data(&data, 4, "{\"version\":1}"));
+        super::snapshot_data(&data, &backup.join("data")).unwrap();
+        super::prepare_rollback_records(&backup).unwrap();
+        assert!(backup.join(super::FAILED_DATA_PARTIAL).is_dir());
+        assert!(backup.join(super::RESTORE_PENDING).is_file());
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute("UPDATE schema_version SET version = 5", [])
+            .unwrap();
+
+        // Neither the marker nor the kept folder can land.
+        fs::remove_file(backup.join(super::RESTORE_PENDING)).unwrap();
+        fs::create_dir_all(backup.join(super::RESTORE_REQUIRED).join("blocked")).unwrap();
+        fs::write(backup.join(super::FAILED_DATA), b"blocked").unwrap();
+        super::roll_back_data(&root, &data, &backup).unwrap();
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A rollback run again, after the previous build failed to start on the
+    /// restored data, must not top up what was kept with the restored files.
+    #[test]
+    fn a_second_rollback_never_mixes_restored_files_into_the_kept_data() {
+        let root = scratch("data-rollback-twice");
+        let data = root.join("data");
+        let backup = root.join("backup");
+        drop(seed_data(&data, 4, "{\"version\":1}"));
+        super::snapshot_data(&data, &backup.join("data")).unwrap();
+        super::prepare_rollback_records(&backup).unwrap();
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute("UPDATE schema_version SET version = 5", [])
+            .unwrap();
+        fs::write(data.join("library-identities.json"), "{\"version\":2}").unwrap();
+        // Keeping the failed data cannot finish.
+        let partial = backup.join(super::FAILED_DATA_PARTIAL);
+        fs::write(backup.join(super::FAILED_DATA), b"blocked").unwrap();
+        super::roll_back_data(&root, &data, &backup).unwrap();
+        assert_eq!(
+            super::identity_version(&data.join("library-identities.json")),
+            Ok(1)
+        );
+        assert!(backup.join(super::RESTORE_REQUIRED).is_file());
+
+        // The previous build starts, writes a log, and fails readiness.
+        fs::write(data.join("operalibre.db-wal"), b"previous build wal").unwrap();
+        fs::remove_file(backup.join(super::FAILED_DATA)).unwrap();
+        super::roll_back_data(&root, &data, &backup).unwrap();
+        assert_eq!(
+            super::identity_version(&partial.join("library-identities.json")),
+            Ok(2)
+        );
+        assert!(!partial.join("operalibre.db-wal").exists());
+        assert!(!backup.join(super::FAILED_DATA).exists());
+        assert_eq!(super::schema_version(&partial.join("operalibre.db")), Ok(5));
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        assert!(!data.join("operalibre.db-wal").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_rollback_records_its_restore_with_a_rename() {
+        let root = scratch("data-rollback-marker");
+        let data = root.join("data");
+        let backup = root.join("backup");
+        drop(seed_data(&data, 4, "{\"version\":1}"));
+        super::snapshot_data(&data, &backup.join("data")).unwrap();
+        super::prepare_rollback_records(&backup).unwrap();
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute("UPDATE schema_version SET version = 5", [])
+            .unwrap();
+
+        super::roll_back_data(&root, &data, &backup).unwrap();
+        assert!(backup.join(super::RESTORE_REQUIRED).is_file());
+        assert!(!backup.join(super::RESTORE_PENDING).exists());
+        assert!(
+            backup
+                .join(super::FAILED_DATA)
+                .join("operalibre.db")
+                .is_file()
+        );
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_failed_builds_data_is_kept_before_the_snapshot_goes_back() {
+        let root = scratch("data-failed-kept");
+        let data = root.join("data");
+        let backup = root.join("backup");
+        let snapshot = backup.join("data");
+        drop(seed_data(&data, 4, "{\"version\":1}"));
+        super::snapshot_data(&data, &snapshot).unwrap();
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute_batch(
+                "UPDATE schema_version SET version = 5; INSERT INTO progress VALUES ('new-build', 60);",
+            )
+            .unwrap();
+        fs::write(data.join("library-identities.json"), "{\"version\":2}").unwrap();
+        // Left behind by a build that stopped without checkpointing.
+        fs::write(data.join("operalibre.db-wal"), b"failed build wal").unwrap();
+        fs::write(data.join("operalibre.db-shm"), b"failed build shm").unwrap();
+
+        let kept = super::preserve_failed_data(&data, &backup).unwrap();
+        assert_eq!(kept, backup.join("failed-data"));
+        assert!(!backup.join("failed-data.partial").exists());
+        // Its log and shared memory moved with it, so nothing is replayed onto
+        // the restored database.
+        assert!(!data.join("operalibre.db-wal").exists());
+        assert!(!data.join("operalibre.db-shm").exists());
+        assert_eq!(
+            fs::read(kept.join("operalibre.db-wal")).unwrap(),
+            b"failed build wal"
+        );
+        super::restore_data(&data, &snapshot).unwrap();
+
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        assert_eq!(progress_books(&data), ["before-update"]);
+        fs::remove_file(kept.join("operalibre.db-wal")).unwrap();
+        fs::remove_file(kept.join("operalibre.db-shm")).unwrap();
+        assert_eq!(super::schema_version(&kept.join("operalibre.db")), Ok(5));
+        assert_eq!(progress_books(&kept), ["before-update", "new-build"]);
+        assert_eq!(
+            super::identity_version(&kept.join("library-identities.json")),
+            Ok(2)
+        );
+        // A second run finds it kept and leaves it alone.
+        assert_eq!(super::preserve_failed_data(&data, &backup).unwrap(), kept);
+        assert_eq!(super::schema_version(&kept.join("operalibre.db")), Ok(5));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn keeping_the_failed_data_resumes_after_an_interruption() {
+        let root = scratch("data-failed-resume");
+        let data = root.join("data");
+        let backup = root.join("backup");
+        drop(seed_data(&data, 5, "{\"version\":2}"));
+        fs::write(data.join("operalibre.db-wal"), b"failed build wal").unwrap();
+        // Stopped after the database was kept and before the log moved.
+        let partial = backup.join("failed-data.partial");
+        fs::create_dir_all(&partial).unwrap();
+        fs::hard_link(data.join("operalibre.db"), partial.join("operalibre.db")).unwrap();
+
+        let kept = super::preserve_failed_data(&data, &backup).unwrap();
+        assert!(!partial.exists());
+        assert_eq!(
+            fs::read(kept.join("operalibre.db-wal")).unwrap(),
+            b"failed build wal"
+        );
+        fs::remove_file(kept.join("operalibre.db-wal")).unwrap();
+        assert_eq!(super::schema_version(&kept.join("operalibre.db")), Ok(5));
+        assert!(kept.join("library-identities.json").is_file());
+        // The live files the restore replaces are still there.
+        assert!(data.join("operalibre.db").is_file());
+        assert!(data.join("library-identities.json").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn putting_back_a_backup_twice_keeps_what_the_first_run_restored() {
+        let root = scratch("restore-backed-up");
+        fs::create_dir_all(&root).unwrap();
+        let backup = root.join("backup-server");
+        let installed = root.join("server");
+        fs::write(&backup, "previous build").unwrap();
+        fs::write(&installed, "failed build").unwrap();
+
+        super::restore_backed_up(&backup, &installed).unwrap();
+        assert_eq!(fs::read_to_string(&installed).unwrap(), "previous build");
+        // The previous build failed to start and the rollback runs again.
+        super::restore_backed_up(&backup, &installed).unwrap();
+        assert_eq!(fs::read_to_string(&installed).unwrap(), "previous build");
+        fs::remove_file(&installed).unwrap();
+        assert!(super::restore_backed_up(&backup, &installed).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_a_clear_commit_answer_counts() {
+        use super::{TrialCommit, parse_commit_response};
+        assert_eq!(
+            parse_commit_response(b"HTTP/1.1 204 No Content\r\n\r\n"),
+            Ok(TrialCommit::Committed)
+        );
+        assert_eq!(
+            parse_commit_response(b"HTTP/1.1 404 Not Found\r\n\r\n{}"),
+            Ok(TrialCommit::Unsupported)
+        );
+        assert!(parse_commit_response(b"HTTP/1.1 403 Forbidden\r\n\r\n").is_err());
+        assert!(parse_commit_response(b"HTTP/1.1 500 Internal Server Error\r\n\r\n").is_err());
+        assert!(parse_commit_response(b"").is_err());
+    }
+
+    #[test]
+    fn update_trial_tokens_are_long_and_fresh() {
+        let first = super::update_trial_token().unwrap();
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, super::update_trial_token().unwrap());
+    }
+
+    #[test]
+    fn rollback_restores_from_copies_prepared_before_the_swap() {
+        let root = scratch("data-prepared-restore");
+        let data = root.join("data");
+        let snapshot = root.join("snapshot");
+        drop(seed_data(&data, 4, "{\"version\":1}"));
+        super::snapshot_data(&data, &snapshot).unwrap();
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute("UPDATE schema_version SET version = 5", [])
+            .unwrap();
+        fs::write(data.join("library-identities.json"), "{\"version\":2}").unwrap();
+        // Rollback-time copies fail, as they would on a disk the failed build
+        // filled; the prepared copies need only renames.
+        for name in ["operalibre.db", "library-identities.json"] {
+            fs::create_dir_all(data.join(format!("{name}.restoring")).join("blocked")).unwrap();
+        }
+        super::restore_data(&data, &snapshot).unwrap();
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        assert_eq!(
+            super::identity_version(&data.join("library-identities.json")),
+            Ok(1)
+        );
+        assert_eq!(progress_books(&data), ["before-update"]);
+
+        // Once used, a later restore copies from the snapshot, which is whole.
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute("UPDATE schema_version SET version = 5", [])
+            .unwrap();
+        assert!(super::restore_data(&data, &snapshot).is_err());
+        for name in ["operalibre.db", "library-identities.json"] {
+            fs::remove_dir_all(data.join(format!("{name}.restoring"))).unwrap();
+        }
+        super::restore_data(&data, &snapshot).unwrap();
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        assert!(!data.join("operalibre.db.restoring").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_failure_preparing_restore_copies_stops_the_update_before_the_swap() {
+        let install = scratch("data-prepare-failure");
+        let backup = install.join("data/update-backups/1");
+        fs::create_dir_all(&install).unwrap();
+        fs::write(install.join("server.config"), "data_dir = data\n").unwrap();
+        fs::write(install.join(super::server_binary_name()), "old server").unwrap();
+        fs::write(install.join("VERSION.txt"), "old version").unwrap();
+        drop(seed_data(&install.join("data"), 4, "{\"version\":1}"));
+        // The snapshot can be written but its restore copies cannot.
+        fs::create_dir_all(backup.join("data")).unwrap();
+        fs::write(super::restore_copies(&backup.join("data")), "occupied").unwrap();
+
+        assert!(super::prepare_update(&install, &backup, false).is_err());
+        assert_eq!(
+            fs::read_to_string(install.join(super::server_binary_name())).unwrap(),
+            "old server"
+        );
+        assert_eq!(
+            fs::read_to_string(install.join("VERSION.txt")).unwrap(),
+            "old version"
+        );
+        assert!(!backup.join(super::server_binary_name()).exists());
+        assert!(!backup.join("data").exists());
+        assert_eq!(
+            super::schema_version(&install.join("data/operalibre.db")),
+            Ok(4)
+        );
+        fs::remove_dir_all(install).unwrap();
+    }
+
+    #[test]
+    fn rollback_keeps_data_the_previous_build_still_reads() {
+        let root = scratch("data-compatible");
+        let data = root.join("data");
+        let snapshot = root.join("snapshot");
+        drop(seed_data(&data, 4, "{\"books\":[]}"));
+        super::snapshot_data(&data, &snapshot).unwrap();
+        // Progress saved while the new build was up must survive the rollback.
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute("INSERT INTO progress VALUES ('new-build', 60)", [])
+            .unwrap();
+        assert!(!super::data_was_upgraded(&data, &snapshot));
+
+        // Pre-versioned identities rewritten in the versioned format count as
+        // an upgrade, and so does a database the launcher cannot read.
+        fs::write(data.join("library-identities.json"), "{\"version\":1}").unwrap();
+        assert!(super::data_was_upgraded(&data, &snapshot));
+        fs::write(data.join("library-identities.json"), "{\"books\":[]}").unwrap();
+        fs::write(data.join("operalibre.db"), "not a database").unwrap();
+        assert!(super::data_was_upgraded(&data, &snapshot));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_snapshot_leaves_nothing_to_roll_back_to() {
+        let root = scratch("data-snapshot-failure");
+        let data = root.join("data");
+        let snapshot = root.join("snapshot");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("library-identities.json"), "{}").unwrap();
+        fs::write(data.join("operalibre.db"), "not a database").unwrap();
+        assert!(super::snapshot_data(&data, &snapshot).is_err());
+        assert!(!snapshot.exists());
+        assert!(!super::data_was_upgraded(&data, &snapshot));
+
+        // An installation that has no database yet still snapshots.
+        fs::remove_file(data.join("operalibre.db")).unwrap();
+        super::snapshot_data(&data, &snapshot).unwrap();
+        assert!(!data.join("operalibre.db").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     use super::{

@@ -84,7 +84,7 @@ export function ProgressSharingCard({
               <strong>Announce when I finish</strong>
               <small>
                 Adds “{user.username} finished …” to the shared feed. Your progress stays
-                visible either way — this is only about the announcement.
+                visible either way; this only controls the announcement.
               </small>
             </span>
             <button

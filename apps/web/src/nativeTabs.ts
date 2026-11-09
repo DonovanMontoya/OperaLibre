@@ -45,7 +45,7 @@ export function longHexColor(value: string): string | undefined {
 export function nativeTabItems(games: boolean, ledger: boolean, alerts: number): NativeTabItem[] {
   return [
     { id: "shelf", title: "Shelf", symbol: "books.vertical", ...(alerts > 0 ? { badge: String(alerts) } : {}) },
-    { id: "reading", title: "Reading", symbol: "headphones" },
+    { id: "reading", title: "Listening", symbol: "headphones" },
     ...(games ? [{ id: "games" as const, title: "Games", symbol: "gamecontroller" }] : []),
     ...(ledger ? [{ id: "ledger" as const, title: "Ledger", symbol: "list.bullet.rectangle" }] : []),
     { id: "settings", title: "Settings", symbol: "gearshape" }
@@ -55,7 +55,7 @@ export function nativeTabItems(games: boolean, ledger: boolean, alerts: number):
 /**
  * The tab the listener is on. An iPad wide enough for the spread shows the
  * collection and the player together under either route, so there Shelf means
- * the collection alone and Reading means the spread, whichever route the page
+ * the collection alone and Listening means the spread, whichever route the page
  * was opened through.
  */
 export function spreadTab(tab: NativeTab, spread: boolean, layout: ShelfLayout): NativeTab {

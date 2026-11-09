@@ -1255,9 +1255,16 @@ export function EpubReadalong({
         });
 
         // Keep touch from scrolling the chapter document itself; navigation
-        // is by page turn only.
+        // is by page turn only. The chapter is its own document, so it needs
+        // its own text-size-adjust: without it iOS enlarges the text in
+        // landscape, reflowing the page under the narration highlight.
         const readerLockRules = {
-          html: { "touch-action": "none !important", "overscroll-behavior": "none !important" }
+          html: {
+            "touch-action": "none !important",
+            "overscroll-behavior": "none !important",
+            "-webkit-text-size-adjust": "100% !important",
+            "text-size-adjust": "100% !important"
+          }
         };
         // One stylesheet for every look; the colours come from custom
         // properties set per theme (see applyReaderThemeColors).

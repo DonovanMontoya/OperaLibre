@@ -66,6 +66,17 @@ function measuringSinceLabel(value: string | null) {
   return parsed.toLocaleDateString(undefined, { month: "short", year: "numeric" });
 }
 
+// Each column of the habits grid is a week; its first day anchors it in time.
+// The month is named on the first column and wherever a new month begins.
+function weekStartLabel(week: StreakDay[], previous: StreakDay[] | undefined) {
+  const start = week[0] ? new Date(`${week[0].date}T00:00:00`) : null;
+  if (!start || Number.isNaN(start.getTime())) return "";
+  const prior = previous?.[0] ? new Date(`${previous[0].date}T00:00:00`) : null;
+  return prior && prior.getMonth() === start.getMonth()
+    ? String(start.getDate())
+    : start.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 export function ProfilePage({
   user,
   books,
@@ -211,10 +222,19 @@ export function ProfilePage({
           <section className="profile-headline">
             <div className="headline-primary">
               <span className="headline-value">
-                {hours.whole}
-                <span className="headline-unit">
-                  h{hours.minutes > 0 ? ` ${hours.minutes}m` : ""}
-                </span>
+                {hours.whole !== "0" || hours.minutes === 0 ? (
+                  <>
+                    {hours.whole}
+                    <span className="headline-unit">
+                      h{hours.minutes > 0 ? ` ${hours.minutes}m` : ""}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    {hours.minutes}
+                    <span className="headline-unit">m</span>
+                  </>
+                )}
               </span>
               <span className="headline-label">
                 {offlineSource === "device"
@@ -274,6 +294,10 @@ export function ProfilePage({
               <span>Last 8 weeks</span>
             </header>
             <div className="calendar-grid">
+              <span aria-hidden="true" />
+              <div className="calendar-week-starts" aria-hidden="true">
+                {weeks.map((week, index) => <span key={index}>{weekStartLabel(week, weeks[index - 1])}</span>)}
+              </div>
               <div className="calendar-weekdays" aria-hidden="true">
                 <span>M</span>
                 <span>T</span>

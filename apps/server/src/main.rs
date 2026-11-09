@@ -10,7 +10,7 @@ use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use axum::{
     Extension, Json, Router,
     body::Body,
-    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, RawQuery, Request, State},
     http::{
         HeaderMap, HeaderValue, Method, StatusCode,
         header::{
@@ -128,8 +128,11 @@ mod sync_schedule;
 mod test_alloc;
 #[cfg(test)]
 mod unit_tests;
+#[path = "../../shared/update_backups.rs"]
+mod update_backups;
 mod update_channel;
 mod update_manifest;
+mod update_trial;
 mod updates;
 mod upload;
 mod util;
@@ -166,6 +169,7 @@ use scan_input::*;
 use share::*;
 use storage::*;
 use sync::*;
+use update_trial::*;
 use upload::*;
 use util::*;
 use works::*;
@@ -236,9 +240,13 @@ async fn main() -> anyhow::Result<()> {
     // Auto-update eligibility checks compare this marker against the running
     // process, so record it even when the release launcher did not start us
     // (server-only packages start via start.sh / start.cmd).
-    sync::restore_queue(&state)
-        .await
-        .map_err(|error| anyhow::anyhow!(error.message))?;
+    // An update trial restores the read-along queue when it is committed,
+    // since the queue lives outside the data snapshot a rollback restores.
+    if !state.update_trial.is_trial() {
+        sync::restore_queue(&state)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+    }
     record_server_pid(&config.data_dir)?;
     sweep_leftover_transfers(&config);
 
@@ -249,14 +257,21 @@ async fn main() -> anyhow::Result<()> {
     // until the scan lands. A scan that fails is logged, not fatal: the task
     // retries it on a backoff, and any other trigger's rescan counts too.
     start_startup_scan(state.clone()).await;
-    libation_recovery::recover(state.clone());
-    // Keep gift activation behind the same compile-time production gate as
-    // its routes. Even a manually copied configuration cannot cause egress.
-    share_setup::start_boot_recovery(state.clone(), cfg!(test));
-    schedule_automatic_libation_refresh(state.clone());
-    schedule_libro_imports(state.clone());
-    schedule_reading_session_sweeper(state.clone());
-    sync_schedule::start(state.clone());
+    // The scan writes only the database and library identities, which the
+    // update snapshot covers. Work that persists anywhere else waits until an
+    // update trial is committed; without a trial it starts at once.
+    let deferred = state.clone();
+    tokio::spawn(async move {
+        deferred.update_trial.wait_for_commit().await;
+        libation_recovery::recover(deferred.clone());
+        // Keep gift activation behind the same compile-time production gate as
+        // its routes. Even a manually copied configuration cannot cause egress.
+        share_setup::start_boot_recovery(deferred.clone(), cfg!(test));
+        schedule_automatic_libation_refresh(deferred.clone());
+        schedule_libro_imports(deferred.clone());
+        schedule_reading_session_sweeper(deferred.clone());
+        sync_schedule::start(deferred);
+    });
 
     let (shutdown_reason_sender, shutdown_reason) = tokio::sync::oneshot::channel();
     let shutdown = state.shutdown.subscribe();
@@ -658,6 +673,7 @@ fn build_app_state(
         )),
         open_sessions: Arc::new(Mutex::new(OpenSessions::default())),
         shutdown,
+        update_trial: Arc::new(UpdateTrial::from_env()),
         works: Arc::new(WorksStore::new(
             database.clone(),
             StoreShape::Document(WORKS_DOCUMENT),

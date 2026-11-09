@@ -100,7 +100,7 @@ export function MetadataEditorDialog({ books, editor }: {
                     event.currentTarget.value = "";
                   }} />
               </label>
-              <p id="metadata-cover-help">JPEG, PNG, or WebP, up to 8 MiB and 16 million pixels (8192 pixels per side).</p>
+              <p id="metadata-cover-help">A JPEG, PNG, or WebP image. <small>Up to 8 MiB, 16 megapixels, and 8192 pixels per side.</small></p>
               {metadataBook.hasCoverOverride && !coverRemoval ? (
                 <button type="button" onClick={removeCover} disabled={metadataSaving}>Restore original cover</button>
               ) : null}

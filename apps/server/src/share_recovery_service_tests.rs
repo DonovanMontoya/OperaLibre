@@ -110,14 +110,13 @@ impl PeerConnectionEventHandler for Recipient {
         tokio::spawn(async move {
             while let Some(event) = channel.poll().await {
                 match event {
-                    DataChannelEvent::OnMessage(message) => {
+                    DataChannelEvent::OnMessage(message)
                         if frames
                             .send((channel.clone(), message.is_string, message.data.to_vec()))
                             .await
-                            .is_err()
-                        {
-                            break;
-                        }
+                            .is_err() =>
+                    {
+                        break;
                     }
                     DataChannelEvent::OnClose => break,
                     _ => {}

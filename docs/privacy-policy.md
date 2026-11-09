@@ -6,7 +6,7 @@ nav_order: 10
 # OperaLibre Privacy Policy
 
 **Effective date:** July 18, 2026  
-**Last updated:** October 29, 2026
+**Last updated:** November 9, 2026
 
 OperaLibre is an audiobook player that can use audio files stored on your device or connect to an OperaLibre or Jellyfin server chosen by you. This Privacy Policy explains how the OperaLibre application (the **“App”**) handles information.
 
@@ -135,7 +135,6 @@ The App sends information only as needed to services you choose or that are requ
 - **Your selected OperaLibre or Jellyfin server.** Information described above is sent directly to that server for app functionality.
 - **Your chosen assistant.** If you connect one, the selected assistant and its provider can receive the information permitted by your token, as described under Optional assistant access. Their own practices govern processing and retention of received copies.
 - **Apple.** Apple may process App Store, download, purchase, diagnostic, or device information independently under Apple’s own privacy policies. The developer does not control information Apple processes independently.
-- **Google Fonts.** Current versions of the App may request font files from Google when network access is available. Those requests may reveal standard network information, including your IP address, to Google. Google processes that information under its own privacy terms.
 
 The App does not integrate third-party advertising networks, data brokers, or behavioral analytics services. The developer does not sell or rent personal information.
 
