@@ -2434,4 +2434,33 @@ mod tests {
         .unwrap();
         assert!(extract_tar_gz(&archive, &root.path().join("big"), 1024).is_err());
     }
+
+    #[test]
+    fn zip_packages_cannot_escape_staging() {
+        use std::io::Write;
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("package.zip");
+        let output = root.path().join("staging").join("out");
+        let write_zip = |name: &str| {
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(b"x").unwrap();
+            zip.finish().unwrap();
+        };
+        for name in ["../escape", "../../escape", "pkg/../../escape"] {
+            write_zip(name);
+            assert!(
+                super::extract_zip(&archive, &output, 1024).is_err(),
+                "{name}"
+            );
+        }
+        assert!(!root.path().join("escape").exists());
+        assert!(!root.path().join("staging").join("escape").exists());
+
+        // A leading slash is dropped, so the entry still lands inside staging.
+        write_zip("/absolute");
+        super::extract_zip(&archive, &output, 1024).unwrap();
+        assert_eq!(std::fs::read(output.join("absolute")).unwrap(), b"x");
+    }
 }
