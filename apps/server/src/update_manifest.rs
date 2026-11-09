@@ -688,4 +688,44 @@ mod tests {
         }
         assert!(is_single_folder_name("operalibre-1.2.3-combined-linux-x64"));
     }
+
+    /// The version names the staging folder and the root is joined under it,
+    /// so a package that would point either one outside staging is not offered.
+    #[test]
+    fn packages_that_would_escape_staging_are_not_offered() {
+        let manifest_with = |version: &str, root: &str| {
+            let package = serde_json::json!({
+                "component": "server", "platform": "linux-x64", "version": version,
+                "url": "https://example.com/server.tar.gz", "sha256": "c".repeat(64),
+                "size": 1024, "format": "tar.gz", "root": root,
+            });
+            unsigned_manifest(
+                &serde_json::json!({
+                    "type": "manifest", "schema": 1, "version": "2.0.0",
+                    "releaseUrl": "https://example.com/release", "packages": [package],
+                })
+                .to_string(),
+            )
+        };
+        assert!(
+            manifest_with("2.0.0", "operalibre-2.0.0")
+                .package("server", Some("linux-x64"), None)
+                .is_some()
+        );
+        for (version, root) in [
+            ("2.0.0", "../../bin"),
+            ("2.0.0", "/usr/bin"),
+            ("2.0.0", "C:\\Windows"),
+            ("2.0.0", ".."),
+            ("2.0.0/../../../bin", "operalibre-2.0.0"),
+            ("2.0.0;rm -rf ~", "operalibre-2.0.0"),
+        ] {
+            assert!(
+                manifest_with(version, root)
+                    .package("server", Some("linux-x64"), None)
+                    .is_none(),
+                "{version} {root}"
+            );
+        }
+    }
 }

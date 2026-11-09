@@ -662,10 +662,15 @@ pub(crate) async fn set_update_channel(
 }
 
 pub(crate) async fn install_update(
-    State(state): State<AppState>,
+    // Read through `.0` rather than a `State(state)` pattern: CodeQL's Axum
+    // model treats handler arguments as request input and only stops at the
+    // field read, so the pattern reported the startup data directory as
+    // user-controlled (github/codeql#22466).
+    state: State<AppState>,
     _: OwnerUser,
     request: Option<Json<updates::UpdateInstallRequest>>,
 ) -> Result<Json<updates::UpdateInstallStarted>, ApiError> {
+    let state = state.0;
     let started = prepare_update_handoff(&state.backup_lock, async {
         state
             .update_manager
