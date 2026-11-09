@@ -9,7 +9,7 @@ license-file = "../../LICENSE.md"
 [dependencies]
 # Snapshots the database before an update swaps the server, so a rollback can
 # hand the previous build data it still reads. Same version as the server's.
-rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
 # The token that lets only this updater commit the build it installed. Same
 # version the server already pulls in through rand.
 getrandom = "0.4.3"
