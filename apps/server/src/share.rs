@@ -848,10 +848,13 @@ fn selection_inventory(
 }
 
 pub(crate) async fn gift_inventory(
-    State(state): State<AppState>,
+    // `.0` instead of a `State(state)` pattern keeps CodeQL from treating the
+    // data directory as request input; see `install_update`.
+    state: State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Path(book_id): Path<String>,
 ) -> Result<Json<ShareInventory>, ApiError> {
+    let state = state.0;
     require_book_access(&auth, &book_id)?;
     let library = state.library.read().await;
     Ok(Json(
@@ -1118,10 +1121,11 @@ pub(crate) async fn create_selected_share_for_user(
 }
 
 pub(crate) async fn create_selected_share(
-    State(state): State<AppState>,
+    state: State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Json(input): Json<CreateSelectedShareRequest>,
 ) -> Result<Json<ShareLinkResponse>, ApiError> {
+    let state = state.0;
     Ok(Json(
         create_selected_share_for_user(&state, &auth, input).await?,
     ))
@@ -1435,10 +1439,11 @@ fn omit_cover_if_preview_exceeds_payload_limit(
 }
 
 pub(crate) async fn create_share(
-    State(state): State<AppState>,
+    state: State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Json(input): Json<CreateShareRequest>,
 ) -> Result<Json<ShareLinkResponse>, ApiError> {
+    let state = state.0;
     let _gate = INVITATION_GATE.lock().await;
     require_book_access(&auth, &input.manifest.book_id)?;
     let now = share_now()?;
@@ -1537,9 +1542,10 @@ pub(crate) async fn create_share(
 }
 
 pub(crate) async fn share_preview(
-    State(state): State<AppState>,
+    state: State<AppState>,
     Path(token): Path<String>,
 ) -> Result<Json<ShareManifest>, ApiError> {
+    let state = state.0;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| ApiError::internal("System clock is before Unix epoch."))?
@@ -1554,10 +1560,11 @@ pub(crate) async fn share_preview(
 }
 
 pub(crate) async fn revoke_share(
-    State(state): State<AppState>,
+    state: State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Path(token): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    let state = state.0;
     // Admit before detaching: an abandoned HTTP waiter cannot leave a committed
     // database revocation without cancellation, or queue unbounded workers.
     let gate = INVITATION_GATE.lock().await;
@@ -1695,10 +1702,11 @@ pub(crate) struct RetryBrokerRevocationsResponse {
 /// Owner-only experimental setup action. The supplied origin is used only to
 /// match previously persisted targets, never to fetch an arbitrary stored URL.
 pub(crate) async fn retry_owner_broker_revocations(
-    State(state): State<AppState>,
+    state: State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Json(input): Json<RetryBrokerRevocationsRequest>,
 ) -> Result<Json<RetryBrokerRevocationsResponse>, ApiError> {
+    let state = state.0;
     require_owner(&auth)?;
     if input.owner_secret.is_empty() || input.owner_secret.len() > 1024 {
         return Err(ApiError::bad_request("Invalid broker credential."));
@@ -2275,9 +2283,10 @@ pub(crate) use recovery::{
 /// preview. This is intentionally a one-way bearer route; it never creates a
 /// recipient account or exposes the sender's session.
 pub(crate) async fn share_download(
-    State(state): State<AppState>,
+    state: State<AppState>,
     Path(token): Path<String>,
 ) -> Result<Response, ApiError> {
+    let state = state.0;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| ApiError::internal("System clock is before Unix epoch."))?

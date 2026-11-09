@@ -92,21 +92,25 @@ async fn load(state: &AppState) -> Result<Option<StoredConfiguration>, ApiError>
 }
 
 pub(crate) async fn get_configuration(
-    State(state): State<AppState>,
+    // `.0` instead of a `State(state)` pattern keeps CodeQL from treating the
+    // data directory as request input; see `install_update`.
+    state: State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<GiftSharingConfiguration>, ApiError> {
+    let state = state.0;
     require_owner(&auth)?;
     let _gate = SETUP_GATE.lock().await;
     Ok(Json(snapshot(load(&state).await?.as_ref())?))
 }
 
 pub(crate) async fn put_configuration(
-    State(state): State<AppState>,
+    state: State<AppState>,
     Extension(auth): Extension<AuthUser>,
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     headers: HeaderMap,
     input: Result<Json<ConfigureGiftSharing>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<GiftSharingConfiguration>, ApiError> {
+    let state = state.0;
     require_owner(&auth)?;
     let Json(input) =
         input.map_err(|_| ApiError::bad_request("Invalid gift configuration request."))?;
@@ -208,9 +212,10 @@ pub(crate) async fn put_configuration(
 }
 
 pub(crate) async fn delete_configuration(
-    State(state): State<AppState>,
+    state: State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<StatusCode, ApiError> {
+    let state = state.0;
     require_owner(&auth)?;
     let _gate = SETUP_GATE.lock().await;
     crate::share::ensure_no_pending_broker_rooms(&state).await?;
@@ -225,9 +230,10 @@ pub(crate) async fn delete_configuration(
 }
 
 pub(crate) async fn retry_configured_cleanup(
-    State(state): State<AppState>,
+    state: State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<crate::share::RetryBrokerRevocationsResponse>, ApiError> {
+    let state = state.0;
     require_owner(&auth)?;
     let _gate = SETUP_GATE.lock().await;
     let config = load(&state)
@@ -243,9 +249,10 @@ pub(crate) async fn retry_configured_cleanup(
 }
 
 pub(crate) async fn recover_configured_senders(
-    State(state): State<AppState>,
+    state: State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<crate::share::SenderRecoveryReport>, ApiError> {
+    let state = state.0;
     require_owner(&auth)?;
     let _gate = SETUP_GATE.lock().await;
     let config = load(&state)
@@ -302,10 +309,11 @@ pub(crate) struct AbandonRetainedGifts {
 }
 
 pub(crate) async fn abandon_configured_senders(
-    State(state): State<AppState>,
+    state: State<AppState>,
     Extension(auth): Extension<AuthUser>,
     input: Result<Json<AbandonRetainedGifts>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let state = state.0;
     require_owner(&auth)?;
     if !cfg!(test) {
         return Err(ApiError::service_unavailable(
@@ -417,10 +425,11 @@ where
 /// owner opt-in. Setup mutation and sender registration share a gate so that
 /// changing credentials cannot orphan a concurrent room reservation.
 pub(crate) async fn create_configured_share(
-    State(state): State<AppState>,
+    state: State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Json(input): Json<crate::share::CreateSelectedShareRequest>,
 ) -> Result<Json<CreatedGift>, ApiError> {
+    let state = state.0;
     if !cfg!(test) {
         return Err(ApiError::service_unavailable(
             "Production gift sharing remains disabled.",
