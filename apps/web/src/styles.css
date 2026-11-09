@@ -23925,15 +23925,18 @@ html:not(.native-app) .user-menu {
   overscroll-behavior: contain;
 }
 
-/* Long forms keep Save and Cancel pinned to the bottom of the dialog. */
-html:not(.native-app) .modal-card > .metadata-edit-actions {
-  position: sticky;
-  bottom: -1.75rem;
-  z-index: 1;
-  margin: 0 -1.5rem -1.75rem;
-  padding: 0.85rem 1.5rem 1rem;
-  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
-  background: rgba(var(--sheet-rgb), 0.98);
+/* In a short window a long form keeps Save and Cancel pinned to the bottom
+   of the dialog; taller windows show them after the last field. */
+@media (max-height: 520px) {
+  html:not(.native-app) .modal-card > .metadata-edit-actions {
+    position: sticky;
+    bottom: -1.75rem;
+    z-index: 1;
+    margin: 0 -1.5rem -1.75rem;
+    padding: 0.85rem 1.5rem 1rem;
+    border-top: 1px solid rgba(var(--ink-rgb), 0.1);
+    background: rgba(var(--sheet-rgb), 0.98);
+  }
 }
 
 html:not(.native-app) .metadata-edit-actions button {
@@ -24289,10 +24292,6 @@ html:not(.native-app) .library-pane .libro-connection-row {
   padding: 8px 0;
 }
 
-html:not(.native-app) .library-pane :is(.audible-sidebar-actions, .libro-sidebar-actions) :is(button, .quiet-button) {
-  min-height: 36px;
-}
-
 html:not(.native-app) .library-pane :is(.purchase-account-filter, .libro-account-filter) {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -24301,9 +24300,17 @@ html:not(.native-app) .library-pane :is(.purchase-account-filter, .libro-account
   margin-bottom: 8px;
 }
 
-html:not(.native-app) .library-pane .purchase-account-filter select {
-  min-height: 36px;
-  padding-block: 6px;
+/* Store buttons keep their full touch height except in a short window,
+   where the first purchases need the room. */
+@media (max-height: 520px) {
+  html:not(.native-app) .library-pane :is(.audible-sidebar-actions, .libro-sidebar-actions) :is(button, .quiet-button) {
+    min-height: 36px;
+  }
+
+  html:not(.native-app) .library-pane .purchase-account-filter select {
+    min-height: 36px;
+    padding-block: 6px;
+  }
 }
 
 /* The account menu never runs below a short window. */
@@ -24484,7 +24491,7 @@ html:not(.native-app) .library-pane .shelf-empty-state > span {
 }
 
 html:not(.native-app) .library-pane .shelf-empty-state .library-clear-filters {
-  min-height: 36px;
+  min-height: 44px;
   padding: 0 14px;
   border: 1px solid rgba(var(--spine-gold-rgb), 0.4);
   border-radius: 999px;
