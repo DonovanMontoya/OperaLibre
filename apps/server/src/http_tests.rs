@@ -6273,6 +6273,34 @@ async fn sign_in_from(
     .await
 }
 
+/// An oversized password is only timed against the dummy hash. Its first
+/// characters must not sign in, even when they are the account's password.
+#[tokio::test]
+async fn an_oversized_password_is_refused_even_when_its_prefix_is_correct() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let password = "p".repeat(super::MAX_PASSWORD_CHARS);
+    let created = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({"username": "longpass", "password": password, "isAdmin": false}),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let address = std::net::IpAddr::from([127, 0, 0, 1]);
+
+    let error = sign_in_from(&server, address, "longpass", &format!("{password}x"))
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+    let (user, _) = sign_in_from(&server, address, "longpass", &password)
+        .await
+        .unwrap();
+    assert_eq!(user.username, "longpass");
+}
+
 /// A reader account with a generated password, for sign-in tests.
 async fn reader_with_generated_password(server: &TestServer, username: &str) -> String {
     let owner = server.setup_owner().await;

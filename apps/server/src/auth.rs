@@ -970,7 +970,11 @@ pub(crate) async fn authenticate_and_open_session(
     };
 
     if payload.password.chars().count() > MAX_PASSWORD_CHARS {
-        let _ = verify_dummy_password_async(state, "oversized-password".to_string()).await?;
+        // Burn a verification's worth of time on a bounded prefix, checked
+        // against the dummy hash only, so an oversized guess can neither run
+        // Argon2 over the whole input nor sign in with its first characters.
+        let prefix = payload.password.chars().take(MAX_PASSWORD_CHARS).collect();
+        let _ = verify_dummy_password_async(state, prefix).await?;
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
 
