@@ -24244,15 +24244,19 @@ html:not(.native-app) :is(.audible-management-dialog, .libro-management-dialog) 
   font: 400 1.75rem/1.1 "Instrument Serif", serif;
 }
 
+/* Becoming available switches straight to the filled button; fading in
+   from the disabled outline left it briefly unreadable. Hover still fades. */
 html:not(.native-app) .audible-management .audible-primary-action {
   border-color: var(--oxblood);
   background: var(--oxblood);
   color: var(--on-oxblood);
+  transition: transform 0.2s ease;
 }
 
 html:not(.native-app) .audible-management .audible-primary-action:not(:disabled):hover {
   background: var(--oxblood-deep);
   color: var(--on-oxblood);
+  transition: background 0.2s ease, transform 0.2s ease;
 }
 
 /* A tablet's admin sections fit on one row without wrapping their labels. */
