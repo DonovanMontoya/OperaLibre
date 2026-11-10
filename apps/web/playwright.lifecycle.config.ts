@@ -3,7 +3,7 @@ import { defineConfig } from '@playwright/test';
 // Specs that start the real server from ./server need the debug server binary
 // and a production web build. Every other spec runs against a Vite fixture
 // server, so a new spec lands in the browser project unless it is listed here.
-const serverSpecs = ['playback.spec.ts', 'reading-queue.spec.ts', 'book-preview.spec.ts'];
+const serverSpecs = ['playback.spec.ts', 'reading-queue.spec.ts', 'book-preview.spec.ts', 'layout.spec.ts'];
 
 export default defineConfig({
   testDir: './test/lifecycle',

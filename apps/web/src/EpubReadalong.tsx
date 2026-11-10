@@ -1282,6 +1282,11 @@ export function EpubReadalong({
             "-webkit-hyphens": "auto",
             hyphens: "auto"
           },
+          // Every EPUB built by Project Gutenberg's ebookmaker letterboxes
+          // its cover in a grey box; let the page colour show instead.
+          ".x-ebookmaker-cover": {
+            background: "transparent !important"
+          },
           p: {
             "margin-bottom": "1.15em !important",
             "text-align": "left !important",
