@@ -525,6 +525,9 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
 /// start within the same second. Take the next free number so the retry gets
 /// its own generation and still sorts after the one it follows.
 fn create_backup_generation(backups: &Path, mut timestamp: u64) -> std::io::Result<PathBuf> {
+    // Outside the loop: a file in place of the folder also reports
+    // AlreadyExists, and must fail the update rather than retry forever.
+    fs::create_dir_all(backups)?;
     loop {
         let backup = backups.join(timestamp.to_string());
         match update_backups::create_generation(&backup) {
@@ -1755,6 +1758,9 @@ mod tests {
             "kept for recovery"
         );
         assert_eq!(fs::read_dir(&retry).unwrap().count(), 0);
+        let file = root.join("not-a-folder");
+        fs::write(&file, "").unwrap();
+        assert!(super::create_backup_generation(&file, 100).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
