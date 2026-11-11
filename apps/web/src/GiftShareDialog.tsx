@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Gift, X } from "lucide-react";
+import { AudioLines, BookOpen, Gift, Headphones, ImageIcon, Tag, X, type LucideIcon } from "lucide-react";
 import { captureGiftOwnerSetupGuard as captureGiftServerGuard, createSelectedBookGift, getBookGiftInventory } from "./api";
 import { useModalFocus } from "./useModalFocus";
-import { alignmentGiftSelection, defaultGiftSelection, giftAssetDisabledReason, giftSelectionSummary, giftSizeLabel, parseCreatedGift, parseGiftInventory, selectedGiftRequest, type CreatedGift, type GiftInventory, type SelectedGiftRequest, type SenderCreatedGift } from "./giftSelectionModel";
+import { alignmentGiftSelection, defaultGiftSelection, giftAssetDisabledReason, giftSelectionSummary, giftSizeLabel, parseCreatedGift, parseGiftInventory, selectedGiftRequest, type CreatedGift, type GiftInventory, type GiftInventoryAsset, type SelectedGiftRequest, type SenderCreatedGift } from "./giftSelectionModel";
 import "./giftShare.css";
 
 // The server routes and native recipient path remain experimental. Do not turn
@@ -15,6 +15,21 @@ export type GiftSenderApi = {
   create(input: SelectedGiftRequest, signal: AbortSignal): Promise<SenderCreatedGift>;
 };
 const senderApi: GiftSenderApi = { captureGuard: captureGiftServerGuard, inventory: getBookGiftInventory, create: createSelectedBookGift };
+
+// Readers choose parts of a book, not files; the file name stays as a hint.
+const ASSET_NAMES: Record<GiftInventoryAsset["kind"], [string, LucideIcon]> = {
+  metadata: ["Book details", Tag],
+  ebook: ["Ebook", BookOpen],
+  cover: ["Cover art", ImageIcon],
+  audio: ["Audiobook", Headphones],
+  alignment: ["Follow-along timing", AudioLines]
+};
+
+function expiryLabel(seconds: number) {
+  const at = new Date(seconds * 1000);
+  const sameDay = at.toDateString() === new Date().toDateString();
+  return at.toLocaleString([], sameDay ? { hour: "numeric", minute: "2-digit" } : { weekday: "short", hour: "numeric", minute: "2-digit" });
+}
 
 export function GiftShareAction({ bookId, enabled, alignmentReady = false, api = senderApi }: { bookId: string; enabled: boolean; alignmentReady?: boolean; api?: GiftSenderApi }) {
   const [open, setOpen] = useState(false);
@@ -48,11 +63,11 @@ export function GiftShareDialog({ bookId, api, alignmentReady = false, onClose }
     controller.current?.abort(); attempt.current++;
     creating.current = false;
     setPhase("ready");
-    setError("Stopped waiting. A gift may already have been created on the server and may remain valid until expiry. Stopping does not revoke it; no link was confirmed. Retrying can create extra invitations and reach the server's invitation quota.");
+    setError("Stopped waiting. The server may have created the gift anyway, and it would stay valid until it expires. Stopping does not revoke it. Trying again can create another invitation.");
   };
   const dismiss = () => {
     if (phase === "creating") stopCreation();
-    else if (revocation === "pending") { controller.current?.abort(); setRevocation("idle"); setError("Stopped waiting for revocation. The original server may already have revoked the gift; the outcome is unconfirmed. Retry this original-server revocation action before assuming the link is still valid."); }
+    else if (revocation === "pending") { controller.current?.abort(); setRevocation("idle"); setError("Stopped waiting for revocation. The server may have revoked the gift already. Revoke again to be sure."); }
     else { controller.current?.abort(); onClose(); }
   };
   const dialogRef = useModalFocus<HTMLFormElement>(dismiss);
@@ -67,13 +82,13 @@ export function GiftShareDialog({ bookId, api, alignmentReady = false, onClose }
       if (active.signal.aborted || sequence !== attempt.current) return;
       const parsed = parseGiftInventory(value, bookId);
       setInventory(parsed); setSelected(defaultGiftSelection(parsed)); setPhase("ready");
-    }).catch(() => { if (!active.signal.aborted && sequence === attempt.current) { setPhase("load-error"); setError("Gift inventory is unavailable. This needs a supported, authorized OperaLibre server with the experimental routes. No link was created."); } }).finally(() => requests.delete(active));
+    }).catch(() => { if (!active.signal.aborted && sequence === attempt.current) { setPhase("load-error"); setError("Gift inventory is unavailable. This server may not support gifts, or your account may not be allowed to send them. No link was created."); } }).finally(() => requests.delete(active));
     return () => { for (const request of requests) request.abort(); requests.clear(); };
   }, [api, bookId, reload]);
 
   async function create() {
     if (!inventory || phase !== "ready" || creating.current) return;
-    if (!sameServer.current?.()) { setError("The connected server or sign-in changed. Reopen this gift dialog before sending a personal message or creating a link."); return; }
+    if (!sameServer.current?.()) { setError("The connected server or sign-in changed. Close this and open it again before creating a link."); return; }
     let input: SelectedGiftRequest;
     try { input = selectedGiftRequest(inventory, selected, message, expiry, { alignmentReady }); }
     catch (failure) { setError(failure instanceof Error ? failure.message : "Check the selected contents."); return; }
@@ -94,7 +109,7 @@ export function GiftShareDialog({ bookId, api, alignmentReady = false, onClose }
     } catch {
       if (!active.signal.aborted && sequence === attempt.current) {
         setPhase("ready");
-        setError("Gift creation could not be confirmed. The server may be unavailable, sharing may be disabled or unconfigured, or the request may have timed out. A submitted invitation may still exist until expiry. No link will be invented; check server state before retrying.");
+        setError("Gift creation could not be confirmed. The server may be offline, or gifts may not be set up on it. An invitation might still exist until it expires, so check before trying again.");
       }
     } finally { pending.current.delete(active); if (sequence === attempt.current) creating.current = false; }
   }
@@ -106,54 +121,96 @@ export function GiftShareDialog({ bookId, api, alignmentReady = false, onClose }
     setRevocation("pending"); setError(""); setStatus("");
     try {
       await revokeGift.current(active.signal);
-      if (!active.signal.aborted) { setRevocation("done"); setStatus("Revocation confirmed by the original server. Downloaded or offline copies cannot be recalled; in-flight bytes may already have arrived and remote broker cleanup may still be pending."); }
-    } catch { if (!active.signal.aborted) { setRevocation("idle"); setError("Revocation could not be confirmed by the original server. It may be offline, or the original sign-in may no longer authorize this request. No management token was sent to a newly selected server. Retry this action before assuming the gift is still valid."); } }
+      if (!active.signal.aborted) { setRevocation("done"); setStatus("Gift revoked. The link no longer opens. Downloaded or offline copies cannot be recalled."); }
+    } catch { if (!active.signal.aborted) { setRevocation("idle"); setError("Revocation could not be confirmed by the original server. It may be offline, or your sign-in there may have expired. Try again before assuming the link has stopped working."); } }
     finally { pending.current.delete(active); creating.current = false; }
   }
 
+  const busy = phase === "creating" || revocation === "pending";
+  const audioCount = inventory?.assets.filter(asset => asset.kind === "audio").length ?? 0;
   return <div className="gift-share-scrim">
     <form ref={dialogRef} tabIndex={-1} className="gift-share-dialog" role="dialog" aria-modal="true" aria-labelledby="gift-share-title" onSubmit={event => { event.preventDefault(); void create(); }}>
-      <header><h2 id="gift-share-title">{created ? "Your gift link" : "Share a book gift"}</h2><button type="button" aria-label={phase === "creating" || revocation === "pending" ? "Stop waiting for gift operation" : "Close gift sharing"} onClick={dismiss}><X size={18} aria-hidden="true" /></button></header>
-      <p>Experimental, disabled in normal production builds. Only the server can authorize the contents and return a configured gift link.</p>
-      {phase === "loading" ? <p role="status">Loading available contents from your server…</p> : null}
-      {error ? <p role="alert">{error}</p> : null}
-      {phase === "load-error" ? <button type="button" onClick={() => setReload(value => value + 1)}>Reload contents</button> : null}
-      {inventory && !created ? <>
-        <h3>{inventory.title}</h3>
-        <p>Select a lightweight ebook gift, or opt in to available audio. Metadata is always included. Unselected files are not requested for this gift.</p>
-        <fieldset disabled={phase === "creating"}><legend>Included contents</legend>
-          {inventory.assets.map((asset, index) => {
-            const reason = giftAssetDisabledReason(asset, alignmentReady);
-            const descriptionId = `gift-asset-reason-${index}`;
-            return <div className="gift-share-asset" key={asset.id}>
-              <label><input type="checkbox" checked={selected.includes(asset.id)} disabled={asset.kind === "metadata" || !!reason} aria-describedby={reason || asset.kind === "metadata" ? descriptionId : undefined} onChange={event => {
-                const checked = event.currentTarget.checked;
-                if (checked && asset.kind === "alignment") {
-                  try { const plan = alignmentGiftSelection(inventory, asset.id, selected, { alignmentReady }); if (plan.disabledReason) throw new Error(plan.disabledReason); setSelected(plan.selectedAssetIds); }
-                  catch (failure) { setError(failure instanceof Error ? failure.message : "Alignment dependencies are unavailable."); }
-                } else setSelected(current => checked ? [...current, asset.id] : current.filter(id => id !== asset.id));
-              }} /><span>{asset.fileName} <small>{asset.kind} · {giftSizeLabel(asset.sizeBytes)}</small></span></label>
-              {asset.kind === "alignment" ? <small>Selecting this map requires the matching EPUB and all {inventory.assets.filter(item => item.kind === "audio").length} audio files. Partial-audio maps are not supported.</small> : null}
-              {reason || asset.kind === "metadata" ? <small id={descriptionId}>{reason ?? "Required metadata; it cannot be removed."}</small> : null}
-            </div>;
-          })}
-        </fieldset>
-        {summary ? <section aria-label="Selected gift contents" aria-live="polite"><p>Included formats: {summary.formats.join(", ") || "None"}</p><p>Selected asset size: {giftSizeLabel(summary.sizeBytes)} · Server limit: {giftSizeLabel(inventory.maxBytes)}. Archive overhead may differ.</p>{summary.errors.length ? <ul>{summary.errors.map(problem => <li key={problem}>{problem}</li>)}</ul> : null}</section> : null}
-        <fieldset disabled={phase === "creating"}>
-          <label>Personal message (optional)<textarea value={message} maxLength={4000} rows={4} aria-describedby="gift-message-help" onChange={event => setMessage(event.currentTarget.value)} /></label>
-          <small id="gift-message-help">{messageLength}/1000 characters. Plain text on the private gift card, not the public landing page or Discord preview.</small>
-          {messageLength > 1000 ? <p role="alert">Shorten the message to 1000 characters or fewer.</p> : null}
-          <label>Link expiry<select value={expiry} onChange={event => setExpiry(Number(event.currentTarget.value))}><option value={300}>5 minutes</option><option value={900}>15 minutes</option></select></label>
-        </fieldset>
-        <p>Share only books you have permission to share. No DRM removal is provided. Unsupported or unavailable formats remain disabled by the server inventory; this is not a guarantee of DRM detection.</p>
-        <button type="submit" disabled={phase !== "ready" || !!summary?.errors.length || messageLength > 1000}>{phase === "creating" ? "Creating gift…" : "Create gift link"}</button>
-      </> : null}
-      {created ? <section aria-label="Created gift link"><p>The server returned this private gift link. Anyone receiving it can access its scoped gift; keep it private.</p><label>Private gift URL<textarea readOnly rows={4} value={created.giftUrl} onFocus={event => event.currentTarget.select()} /></label><p>Expires: {new Date(created.expiresAt * 1000).toLocaleString()}</p><button type="button" disabled={revocation !== "idle"} onClick={() => {
-        if (!navigator.clipboard?.writeText) { setStatus("Select and copy the private gift URL manually."); return; }
-        void navigator.clipboard.writeText(created.giftUrl).then(() => setStatus("Gift link copied. Paste it into your private Discord conversation.")).catch(() => setStatus("Could not copy. Select the private gift URL and copy it manually."));
-      }}>Copy gift link</button><p>Revocation uses the original sender server and original sign-in, even if you change the selected server. It cannot recall a recipient's downloaded copy.</p><button type="button" disabled={!revokeGift.current || revocation !== "idle"} onClick={() => void revoke()}>{revocation === "pending" ? "Revoking gift…" : revocation === "done" ? "Gift revoked" : "Revoke gift"}</button>{!revokeGift.current ? <p>This legacy response did not provide a bound revocation action.</p> : null}</section> : null}
-      {status ? <p role="status">{status}</p> : null}
-      <footer><button type="button" onClick={dismiss}>{phase === "creating" || revocation === "pending" ? "Stop waiting" : created ? "Done" : "Cancel"}</button></footer>
+      <header className="gift-share-head">
+        <h2 id="gift-share-title">{created ? "Your gift link" : "Give this book"}</h2>
+        <button type="button" className="gift-share-close" aria-label={busy ? "Stop waiting for gift operation" : "Close gift sharing"} onClick={dismiss}><X size={20} aria-hidden="true" /></button>
+      </header>
+      <div className="gift-share-body">
+        {phase === "loading" ? <p className="gift-share-quiet" role="status">Checking what this book can include…</p> : null}
+        {phase === "load-error" ? <button type="button" className="gift-share-secondary" onClick={() => setReload(value => value + 1)}>Reload contents</button> : null}
+        {inventory && !created ? <>
+          <div className="gift-share-book">
+            <span className="gift-share-book-mark" aria-hidden="true"><Gift size={22} /></span>
+            <div><h3>{inventory.title}</h3><p>Choose what to send. They keep their own copy on their device.</p></div>
+          </div>
+          <fieldset className="gift-share-group" disabled={phase === "creating"}>
+            <legend>What to include</legend>
+            <ul className="gift-share-assets">
+              {inventory.assets.map((asset, index) => {
+                const reason = giftAssetDisabledReason(asset, alignmentReady);
+                const descriptionId = `gift-asset-reason-${index}`;
+                const [name, Icon] = ASSET_NAMES[asset.kind];
+                const note = reason ?? (asset.kind === "metadata" ? "Title, author and chapters. Always included." : asset.kind === "alignment" ? `Adds the ebook and ${audioCount === 1 ? "the audiobook" : `all ${audioCount} audio files`} so the text can follow the narration.` : null);
+                const locked = asset.kind === "metadata" || !!reason;
+                return <li className="gift-share-asset" data-locked={locked || undefined} key={asset.id}>
+                  <label>
+                    <input type="checkbox" checked={selected.includes(asset.id)} disabled={locked} aria-describedby={note ? descriptionId : undefined} onChange={event => {
+                      const checked = event.currentTarget.checked;
+                      if (checked && asset.kind === "alignment") {
+                        try { const plan = alignmentGiftSelection(inventory, asset.id, selected, { alignmentReady }); if (plan.disabledReason) throw new Error(plan.disabledReason); setSelected(plan.selectedAssetIds); }
+                        catch (failure) { setError(failure instanceof Error ? failure.message : "Alignment dependencies are unavailable."); }
+                      } else setSelected(current => checked ? [...current, asset.id] : current.filter(id => id !== asset.id));
+                    }} />
+                    <Icon className="gift-share-asset-icon" size={18} aria-hidden="true" />
+                    <span className="gift-share-asset-name"><strong>{name}</strong><small>{asset.fileName}</small></span>
+                    <span className="gift-share-asset-size">{giftSizeLabel(asset.sizeBytes)}</span>
+                  </label>
+                  {note ? <p className="gift-share-asset-note" id={descriptionId}>{note}</p> : null}
+                </li>;
+              })}
+            </ul>
+          </fieldset>
+          <fieldset className="gift-share-group" disabled={phase === "creating"}>
+            <label className="gift-share-note-label" htmlFor="gift-share-note">Personal message (optional)</label>
+            <textarea id="gift-share-note" className="gift-share-note" value={message} maxLength={4000} rows={4} placeholder="Write something for the inside cover" aria-describedby="gift-message-help" onChange={event => setMessage(event.currentTarget.value)} />
+            <small id="gift-message-help" className="gift-share-quiet" data-over={messageLength > 1000 || undefined}>{messageLength}/1000. Only the person who opens the gift sees this.</small>
+            {messageLength > 1000 ? <p role="alert" className="gift-share-alert">Shorten the message to 1000 characters or fewer.</p> : null}
+          </fieldset>
+          <fieldset className="gift-share-group" disabled={phase === "creating"}>
+            <legend>Link works for</legend>
+            <div className="gift-share-segments">
+              {[300, 900].map(seconds => <label key={seconds}><input type="radio" name="gift-expiry" value={seconds} checked={expiry === seconds} onChange={() => setExpiry(seconds)} /><span>{seconds / 60} minutes</span></label>)}
+            </div>
+          </fieldset>
+          <p className="gift-share-quiet">Share only books you have permission to share. No DRM removal is provided. Protected files are left out when the server recognizes them, but this is not a guarantee of DRM detection. Gifts are experimental and only work in test builds.</p>
+        </> : null}
+        {created ? <section className="gift-share-created" aria-label="Created gift link">
+          <p>Send this in a private message. Anyone with the link can open the gift until <strong>{expiryLabel(created.expiresAt)}</strong>.</p>
+          <label className="gift-share-link-label" htmlFor="gift-share-link">Private gift URL</label>
+          <textarea id="gift-share-link" className="gift-share-link" readOnly rows={3} value={created.giftUrl} onFocus={event => event.currentTarget.select()} />
+          <button type="button" className="gift-share-primary" disabled={revocation !== "idle"} onClick={() => {
+            if (!navigator.clipboard?.writeText) { setStatus("Select the link above and copy it."); return; }
+            void navigator.clipboard.writeText(created.giftUrl).then(() => setStatus("Link copied. Paste it into a private message.")).catch(() => setStatus("Could not copy. Select the link above and copy it."));
+          }}>Copy gift link</button>
+          <div className="gift-share-revoke">
+            <p>Changed your mind? Revoking stops the link from opening. A copy someone already accepted stays with them.</p>
+            <button type="button" className="gift-share-secondary gift-share-danger" disabled={!revokeGift.current || revocation !== "idle"} onClick={() => void revoke()}>{revocation === "pending" ? "Revoking gift…" : revocation === "done" ? "Gift revoked" : "Revoke gift"}</button>
+            {!revokeGift.current ? <p className="gift-share-quiet">This server can't revoke gifts. The link stops working when it expires.</p> : null}
+          </div>
+        </section> : null}
+        {error ? <p role="alert" className="gift-share-alert">{error}</p> : null}
+        {status ? <p role="status" className="gift-share-status">{status}</p> : null}
+      </div>
+      <footer className="gift-share-foot">
+        {inventory && !created && summary ? <div className="gift-share-total" aria-live="polite" aria-label="Selected gift contents">
+          <span>Gift size: {giftSizeLabel(summary.sizeBytes)}</span>
+          <small>Up to {giftSizeLabel(inventory.maxBytes)}</small>
+          {summary.errors.length ? <ul className="gift-share-problems">{summary.errors.map(problem => <li key={problem}>{problem}</li>)}</ul> : null}
+        </div> : null}
+        <div className="gift-share-actions">
+          <button type="button" className="gift-share-secondary" onClick={dismiss}>{busy ? "Stop waiting" : created ? "Done" : "Cancel"}</button>
+          {inventory && !created ? <button type="submit" className="gift-share-primary" disabled={phase !== "ready" || !!summary?.errors.length || messageLength > 1000}>{phase === "creating" ? "Creating gift…" : "Create gift link"}</button> : null}
+        </div>
+      </footer>
     </form>
   </div>;
 }

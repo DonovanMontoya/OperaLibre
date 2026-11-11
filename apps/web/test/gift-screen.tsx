@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { GiftScreen, GiftScreenError, type GiftPreview } from "../src/GiftScreen";
+import "../src/styles.css";
 import "../src/giftScreen.css";
 
 declare global { interface Window { giftAcceptCount: number } }

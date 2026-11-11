@@ -73,7 +73,7 @@ test("disabled sender makes no request; opt-in selection uses actual typed API a
     assert.equal(await f.page.getByRole("checkbox", { name: /audio.m4b/ }).isChecked(), false);
     assert.equal(await f.page.getByRole("checkbox", { name: /sync.json/ }).isDisabled(), true);
     assert.equal(await f.page.getByRole("checkbox", { name: /protected.epub/ }).isDisabled(), true);
-    await f.page.getByText(/Selected asset size: 130 B/).waitFor();
+    await f.page.getByText(/Gift size: 130 B/).waitFor();
     if (process.env.OPERALIBRE_GIFT_SCREENSHOT_DIR) {
       await mkdir(process.env.OPERALIBRE_GIFT_SCREENSHOT_DIR, { recursive: true });
       await f.page.screenshot({ path: path.join(process.env.OPERALIBRE_GIFT_SCREENSHOT_DIR, "gift-sender-selection-mobile.png"), fullPage: true });

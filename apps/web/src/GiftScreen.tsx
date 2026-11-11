@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { Gift, ShoppingBag } from "lucide-react";
 
 export type GiftPreview = {
   sender: string;
@@ -16,7 +15,7 @@ export type GiftFailure = "expired" | "revoked" | "offline" | "unsupported" | "u
 export class GiftScreenError extends Error {
   constructor(public readonly reason: GiftFailure) { super(reason); }
 }
-type Phase = "loading" | "wrapped" | "revealed" | "accepting" | "accepted" | "declined" | "error";
+type Phase = "loading" | "wrapped" | "opening" | "revealed" | "accepting" | "accepted" | "declined" | "error";
 
 function failureMessage(reason: GiftFailure) {
   switch (reason) {
@@ -37,6 +36,15 @@ function friendlySize(bytes: number | null) {
 function safeCover(url: string | null) {
   return url && (url.startsWith("blob:") || /^data:image\/(?:png|jpeg|webp);base64,/i.test(url)) ? url : null;
 }
+
+function BookFace({ preview, className }: { preview: GiftPreview; className: string }) {
+  const cover = safeCover(preview.coverUrl);
+  if (cover) return <img className={className} src={cover} alt={`Cover of ${preview.title}`} />;
+  // No cover in the preview: a cloth binding stamped with the title.
+  return <div className={`${className} gift-cloth`} aria-hidden="true"><span>{preview.title}</span>{preview.author ? <small>{preview.author}</small> : null}</div>;
+}
+
+const prefersReducedMotion = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /** Presentation only. The caller must fetch a lightweight preview and must not
  * download assets until `accept` is called. No server account is required here. */
@@ -62,6 +70,18 @@ export function GiftScreen({ loadPreview, accept, onClose }: {
     });
     return () => { controller.abort(); request.current?.abort(); };
   }, [loadPreview, retry]);
+  // The unwrap animation ends the opening phase; this only covers a browser
+  // that never fires animationend (hidden tab, animation disabled by CSS).
+  useEffect(() => {
+    if (phase !== "opening") return;
+    const timer = window.setTimeout(() => setPhase(current => current === "opening" ? "revealed" : current), 1400);
+    return () => window.clearTimeout(timer);
+  }, [phase]);
+
+  function unwrap() {
+    if (phase !== "wrapped") return;
+    setPhase(prefersReducedMotion() ? "revealed" : "opening");
+  }
 
   async function acceptGift() {
     if (accepting.current || phase !== "revealed") return;
@@ -78,21 +98,31 @@ export function GiftScreen({ loadPreview, accept, onClose }: {
   }
 
   return <main className="gift-screen" aria-labelledby="gift-heading">
-    {phase === "loading" ? <div role="status">Opening your gift…</div> : null}
-    {phase === "error" ? <section role="alert"><h1 id="gift-heading">Gift unavailable</h1><p>{failureMessage(reason)}</p><div className="gift-actions"><button type="button" onClick={() => setRetry(value => value + 1)}>Try again</button><button type="button" onClick={onClose}>Close</button></div></section> : null}
-    {phase === "wrapped" && preview ? <section className="gift-wrapped"><h1 id="gift-heading">{preview.sender} sent you a book</h1><p>A little something just for you.</p><button type="button" className="gift-bag" onClick={() => setPhase("revealed")} aria-label="Unwrap your book gift"><ShoppingBag size={88} aria-hidden="true" /><Gift size={32} aria-hidden="true" /></button><p>Tap the bag to unwrap your gift</p><button type="button" className="gift-skip" onClick={() => setPhase("revealed")}>Skip animation</button></section> : null}
+    {phase === "loading" ? <div className="gift-loading" role="status">Opening your gift…</div> : null}
+    {phase === "error" ? <section className="gift-plain" role="alert"><h1 id="gift-heading">Gift unavailable</h1><p>{failureMessage(reason)}</p><div className="gift-actions"><button type="button" className="gift-primary" onClick={() => setRetry(value => value + 1)}>Try again</button><button type="button" className="gift-secondary" onClick={onClose}>Close</button></div></section> : null}
+    {(phase === "wrapped" || phase === "opening") && preview ? <section className="gift-wrapped">
+      <h1 id="gift-heading">{preview.sender} sent you a book</h1>
+      <button type="button" className="gift-parcel" data-opening={phase === "opening" || undefined} disabled={phase === "opening"} onClick={unwrap} aria-label="Unwrap your book gift">
+        {phase === "opening" ? <BookFace preview={preview} className="gift-parcel-book" /> : null}
+        <span className="gift-wrap gift-wrap-left" aria-hidden="true" />
+        <span className="gift-wrap gift-wrap-right" aria-hidden="true" onAnimationEnd={() => setPhase(current => current === "opening" ? "revealed" : current)} />
+        <span className="gift-tag" aria-hidden="true">From {preview.sender}</span>
+      </button>
+      <p className="gift-hint">Tap to unwrap</p>
+      <button type="button" className="gift-skip" onClick={() => setPhase("revealed")}>Skip animation</button>
+    </section> : null}
     {(phase === "revealed" || phase === "accepting") && preview ? <section className="gift-reveal" aria-busy={phase === "accepting"}>
-      <p className="gift-eyebrow">A book from {preview.sender}</p>
-      {safeCover(preview.coverUrl) ? <img className="gift-cover" src={safeCover(preview.coverUrl)!} alt={`Cover of ${preview.title}`} /> : <div className="gift-cover gift-cover-placeholder" aria-hidden="true"><Gift size={48} /></div>}
+      <p className="gift-from">A gift from {preview.sender}</p>
+      <BookFace preview={preview} className="gift-cover" />
       <h1 id="gift-heading">{preview.title}</h1>
       {preview.author ? <p className="gift-author">by {preview.author}</p> : null}
-      {preview.message ? <blockquote className="gift-message"><p>{preview.message}</p><footer>— {preview.sender}</footer></blockquote> : null}
+      {preview.message ? <figure className="gift-inscription"><blockquote><p>{preview.message}</p></blockquote><figcaption>{preview.sender}</figcaption></figure> : null}
       {preview.summary ? <p className="gift-summary">{preview.summary}</p> : null}
-      <p><strong>Included:</strong> {preview.formats.length ? preview.formats.join(", ") : "Book"} · {friendlySize(preview.sizeBytes)}</p>
-      <div className="gift-actions"><button type="button" disabled={phase === "accepting"} onClick={() => void acceptGift()}>{phase === "accepting" ? "Adding book…" : "Accept book"}</button><button type="button" disabled={phase === "accepting"} onClick={() => setPhase("declined")}>Decline</button></div>
-      {phase === "accepting" ? <p role="status">Downloading your book to this device…</p> : <p>The book downloads only after you accept.</p>}
+      <p className="gift-contents">Includes {preview.formats.length ? preview.formats.join(", ") : "the book"}. {friendlySize(preview.sizeBytes)}.</p>
+      <div className="gift-actions"><button type="button" className="gift-primary" disabled={phase === "accepting"} onClick={() => void acceptGift()}>{phase === "accepting" ? "Adding book…" : "Accept book"}</button><button type="button" className="gift-secondary" disabled={phase === "accepting"} onClick={() => setPhase("declined")}>Decline</button></div>
+      {phase === "accepting" ? <p className="gift-fineprint" role="status">Downloading your book to this device…</p> : <p className="gift-fineprint">Nothing downloads until you accept.</p>}
     </section> : null}
-    {phase === "accepted" ? <section role="status"><h1 id="gift-heading">Your book is in your library</h1><button type="button" onClick={onClose}>Done</button></section> : null}
-    {phase === "declined" ? <section><h1 id="gift-heading">Gift declined</h1><p>No book files were downloaded.</p><button type="button" onClick={onClose}>Done</button></section> : null}
+    {phase === "accepted" && preview ? <section className="gift-plain" role="status"><BookFace preview={preview} className="gift-cover gift-cover-small" /><h1 id="gift-heading">Your book is in your library</h1><p>{preview.title} is saved on this device.</p><div className="gift-actions"><button type="button" className="gift-primary" onClick={onClose}>Done</button></div></section> : null}
+    {phase === "declined" ? <section className="gift-plain"><h1 id="gift-heading">Gift declined</h1><p>No book files were downloaded.</p><div className="gift-actions"><button type="button" className="gift-secondary" onClick={onClose}>Done</button></div></section> : null}
   </main>;
 }
