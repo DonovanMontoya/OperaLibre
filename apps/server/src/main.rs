@@ -95,6 +95,32 @@ mod progress;
 mod reading;
 mod reading_log;
 mod scan_input;
+mod share;
+mod share_alignment;
+#[allow(dead_code)]
+mod share_broker;
+#[allow(dead_code)]
+mod share_connectivity;
+#[allow(dead_code)]
+mod share_cover_preview;
+#[allow(dead_code)]
+mod share_metadata;
+#[allow(dead_code)]
+mod share_peer_proof;
+#[cfg(test)]
+mod share_peer_tests;
+#[allow(dead_code)]
+mod share_preview_crypto;
+#[allow(dead_code)]
+mod share_sender;
+#[allow(dead_code)]
+mod share_sender_recovery;
+#[allow(dead_code)]
+mod share_service;
+#[allow(dead_code)]
+mod share_setup;
+#[allow(dead_code)]
+mod share_transfer;
 mod storage;
 mod sync;
 mod sync_report;
@@ -141,6 +167,8 @@ use progress::*;
 use reading::*;
 use reading_log::*;
 use scan_input::*;
+#[cfg(test)]
+use share::*;
 use storage::*;
 use sync::*;
 use update_trial::*;
@@ -243,6 +271,9 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         deferred.update_trial.wait_for_commit().await;
         libation_recovery::recover(deferred.clone());
+        // Keep gift activation behind the same compile-time production gate as
+        // its routes. Even a manually copied configuration cannot cause egress.
+        share_setup::start_boot_recovery(deferred.clone(), cfg!(test));
         schedule_automatic_libation_refresh(deferred.clone());
         schedule_libro_imports(deferred.clone());
         schedule_reading_session_sweeper(deferred.clone());
