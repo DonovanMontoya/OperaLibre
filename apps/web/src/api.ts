@@ -1090,6 +1090,21 @@ export async function setBookVolume(bookId: string, volumeGain: number): Promise
   }
 }
 
+/**
+ * Switch the server's suggested gain on or off for one book. Turning it on
+ * also clears the listener's own level for the book. Returns the updated book,
+ * or null on backends with no loudness analysis.
+ */
+export async function setBookAutoVolume(bookId: string, enabled: boolean): Promise<Book | null> {
+  if (isDemoMode() || isLocalMode() || getServerType() === "jellyfin") {
+    return null;
+  }
+  return request<Book>(`/api/books/${encodeURIComponent(bookId)}/auto-volume`, {
+    method: "PUT",
+    body: JSON.stringify({ enabled })
+  });
+}
+
 export async function rescanLibrary() {
   if (getServerType() === "jellyfin") {
     return getBooks();

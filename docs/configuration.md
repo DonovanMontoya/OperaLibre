@@ -156,9 +156,11 @@ Owners of managed release installations can install and enable the generator und
 
 MP4-family files written without a leading `moov` index start playing slowly over a network. Administrators can remux them in place from **Administration → Downloaded books**; the control needs ffmpeg, and uses ffprobe to verify each converted file before it replaces the original. Leave both blank to search `PATH`; without ffmpeg the control simply reports itself unavailable.
 
+The same ffmpeg measures each book's loudness in the background after a scan, so badly mastered books can play at a corrected level. It reads a few minutes of each book at low priority and never changes the files. Without ffmpeg this is skipped.
+
 | Key | Default | Description |
 | --- | --- | --- |
-| `ffmpeg_path` | *(empty)* | Path to the ffmpeg binary used for faststart conversion. |
+| `ffmpeg_path` | *(empty)* | Path to the ffmpeg binary used for faststart conversion and loudness analysis. |
 | `ffprobe_path` | *(empty)* | Path to the ffprobe binary used to verify converted files. |
 
 ## Environment variables

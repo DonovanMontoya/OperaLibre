@@ -86,6 +86,7 @@ mod libation_setup;
 mod library;
 mod libro;
 mod libro_account;
+mod loudness;
 mod media;
 mod metadata_input;
 mod migrate;
@@ -131,6 +132,7 @@ use libation_setup::*;
 use library::*;
 use libro::*;
 use libro_account::*;
+use loudness::*;
 use media::*;
 use metadata_input::*;
 use migrate::*;
@@ -185,6 +187,11 @@ async fn main() -> anyhow::Result<()> {
         libation_accounts_root,
         server_id,
     )?;
+    // Derived data: a cache that fails to load only means books are measured
+    // again, never that the server stays down.
+    if let Err(error) = state.audio_analysis.load().await {
+        tracing::warn!("could not load loudness analyses: {}", error.message);
+    }
 
     let app = build_router(
         state.clone(),
@@ -602,6 +609,7 @@ fn build_app_state(
             config.ffmpeg_path.clone(),
             config.ffprobe_path.clone(),
         ),
+        audio_analysis: Arc::new(AudioAnalysisStore::new(database.clone())),
         update_manager: updates::UpdateManager::new(
             config.data_dir.clone(),
             config.web_dist_dir.clone(),

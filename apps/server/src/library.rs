@@ -367,8 +367,20 @@ pub(crate) struct Book {
     pub(crate) shared_progress: Vec<SharedProgress>,
     /// The viewer's own playback gain for this book, as a linear multiplier of
     /// the file's level. Books are mastered at wildly different loudnesses, so
-    /// this is per book rather than a single device volume.
+    /// this is per book rather than a single device volume. This is the gain
+    /// to play at: the viewer's own level, or else the suggested gain from
+    /// the loudness analysis unless they switched it off.
     pub(crate) volume_gain: f64,
+    pub(crate) volume_gain_source: VolumeGainSource,
+    /// The viewer's switch for the suggested gain on this book.
+    pub(crate) auto_volume: bool,
+    /// Present once the book's current audio has been measured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) audio_analysis: Option<AudioAnalysis>,
+    /// The scan's content fingerprint for the book's audio, which an analysis
+    /// must match to apply. Server-side only.
+    #[serde(skip)]
+    pub(crate) audio_fingerprint: String,
 }
 
 /// A user-defined grouping that may order a book independently of its formal
@@ -2147,6 +2159,7 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
             let PreparedGroup {
                 group_key,
                 grouped_files,
+                book_fingerprint,
                 ..
             } = group;
             let (book_id, track_ids) = resolved[position].clone();
@@ -2280,6 +2293,10 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
                 progress: None,
                 shared_progress: Vec::new(),
                 volume_gain: BOOK_VOLUME_GAIN_DEFAULT,
+                volume_gain_source: VolumeGainSource::Default,
+                auto_volume: true,
+                audio_analysis: None,
+                audio_fingerprint: book_fingerprint,
             };
             if let Some(metadata_override) = metadata_overrides.books.get(&book_id) {
                 apply_book_metadata_override(&mut book, metadata_override);
@@ -2478,6 +2495,7 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
     // Only now is the published library done with these.
     remove_stale_covers(&stale_covers);
     sync_report::schedule_backfill(state);
+    schedule_analysis(state);
     Ok(())
 }
 

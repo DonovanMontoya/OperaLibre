@@ -103,6 +103,30 @@ pub(crate) fn default_book_volume_gain() -> f64 {
     BOOK_VOLUME_GAIN_DEFAULT
 }
 
+/// One listener's volume settings for one book, as stored.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct BookVolumeSetting {
+    /// The level they set themselves, if they did. Always wins.
+    pub(crate) manual_gain: Option<f64>,
+    /// Whether the suggested gain applies when they have no level of their own.
+    pub(crate) auto_volume: bool,
+}
+
+impl Default for BookVolumeSetting {
+    fn default() -> Self {
+        Self {
+            manual_gain: None,
+            auto_volume: true,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AutoVolumeUpdate {
+    pub(crate) enabled: bool,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BookVolumeUpdate {
@@ -230,6 +254,23 @@ pub(crate) async fn update_book_volume(
         .set_gain(&auth.id, &book_id, gain)
         .await?;
 
+    Ok(Json(book_with_progress(&state, &auth, book).await?))
+}
+
+/// Switch the suggested gain on or off for the caller's copy of one book.
+/// Like the volume itself this is the listener's own preference.
+pub(crate) async fn update_book_auto_volume(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(book_id): Path<String>,
+    Json(payload): Json<AutoVolumeUpdate>,
+) -> Result<Json<Book>, ApiError> {
+    require_book_access(&auth, &book_id)?;
+    let book = state.library.read().await.book(&book_id)?.clone();
+    state
+        .book_settings
+        .set_auto_volume(&auth.id, &book_id, payload.enabled)
+        .await?;
     Ok(Json(book_with_progress(&state, &auth, book).await?))
 }
 
@@ -747,7 +788,8 @@ pub(crate) async fn enrich_books_with_progress(
 
 pub(crate) struct ProgressEnrichment {
     user_id: String,
-    own_gains: HashMap<String, f64>,
+    own_gains: HashMap<String, BookVolumeSetting>,
+    analyses: HashMap<String, AudioAnalysis>,
     sharers: Vec<(String, String)>,
     saved_progress: HashMap<String, Progress>,
     finished_works: FinishedWorks,
@@ -762,6 +804,7 @@ impl ProgressEnrichment {
             return Ok(Self {
                 user_id: auth.id.clone(),
                 own_gains: HashMap::new(),
+                analyses: HashMap::new(),
                 sharers: Vec::new(),
                 saved_progress: HashMap::new(),
                 finished_works: FinishedWorks::default(),
@@ -770,11 +813,19 @@ impl ProgressEnrichment {
         let own_gains = if let [book] = books {
             HashMap::from([(
                 book.id.clone(),
-                state.book_settings.gain(&auth.id, &book.id).await?,
+                state.book_settings.get(&auth.id, &book.id).await?,
             )])
         } else {
             state.book_settings.list_for_user(&auth.id).await?
         };
+        let analyses = state
+            .audio_analysis
+            .current_for(
+                books
+                    .iter()
+                    .map(|book| (book.id.as_str(), book.audio_fingerprint.as_str())),
+            )
+            .await;
         let sharers = progress_sharers(state, auth).await;
         let user_ids: HashSet<String> = sharers
             .iter()
@@ -795,6 +846,7 @@ impl ProgressEnrichment {
         Ok(Self {
             user_id: auth.id.clone(),
             own_gains,
+            analyses,
             sharers,
             saved_progress,
             finished_works,
@@ -813,11 +865,16 @@ impl ProgressEnrichment {
             &self.sharers,
             &self.finished_works,
         );
-        book.volume_gain = self
-            .own_gains
-            .get(&book.id)
-            .copied()
-            .unwrap_or(BOOK_VOLUME_GAIN_DEFAULT);
+        let setting = self.own_gains.get(&book.id).copied().unwrap_or_default();
+        book.audio_analysis = self.analyses.get(&book.id).cloned();
+        (book.volume_gain, book.volume_gain_source) = resolve_volume_gain(
+            setting.manual_gain,
+            setting.auto_volume,
+            book.audio_analysis
+                .as_ref()
+                .map(|analysis| analysis.suggested_gain),
+        );
+        book.auto_volume = setting.auto_volume;
         book
     }
 
@@ -1336,6 +1393,7 @@ mod catalogue_preparation_tests {
         let enrichment = ProgressEnrichment {
             user_id: "reader".into(),
             own_gains: HashMap::new(),
+            analyses: HashMap::new(),
             sharers: Vec::new(),
             saved_progress: HashMap::new(),
             finished_works: FinishedWorks::default(),
@@ -1378,6 +1436,10 @@ mod catalogue_preparation_tests {
             progress: None,
             shared_progress: Vec::new(),
             volume_gain: BOOK_VOLUME_GAIN_DEFAULT,
+            volume_gain_source: VolumeGainSource::Default,
+            auto_volume: true,
+            audio_analysis: None,
+            audio_fingerprint: String::new(),
         };
         let (result, allocated) =
             crate::test_alloc::allocated_bytes(|| enrichment.apply_catalogue(&book));

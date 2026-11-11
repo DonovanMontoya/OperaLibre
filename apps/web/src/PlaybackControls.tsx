@@ -18,6 +18,8 @@ import {
   formatBookGainDb
 } from "./bookVolume";
 import { haptic, selectionHaptic } from "./native";
+import { audioIssues, autoVolumeStatus, describeAutoVolume } from "./autoVolume";
+import type { Book } from "./types";
 
 const SPEED_WHEEL_SPACING_PX = 48;
 
@@ -413,5 +415,52 @@ export function ScrubSlider({
       onKeyUp={commit}
       onBlur={commit}
     />
+  );
+}
+
+/**
+ * Says when the server's loudness analysis is changing how a book plays, with
+ * a switch to turn that off for this book, and lists mastering problems it
+ * found. Renders nothing for a book that was never measured or needs nothing.
+ */
+export function AutoVolumeNotice({
+  book,
+  onToggle
+}: {
+  book: Book;
+  onToggle: (enabled: boolean) => void;
+}) {
+  const status = autoVolumeStatus(book);
+  const issues = audioIssues(book.audioAnalysis);
+  const description = describeAutoVolume(status);
+  if (!description && issues.length === 0) return null;
+  const enabled = status.kind === "adjusted";
+  return (
+    <div className="auto-volume-notice">
+      {description ? (
+        <div className="settings-toggle-row">
+          <span>
+            <strong>{enabled ? "Audio adjusted" : "Automatic level"}</strong>
+            <small>{description}</small>
+          </span>
+          <button
+            type="button"
+            className="settings-switch"
+            role="switch"
+            aria-checked={enabled}
+            aria-label="Automatic level for this book"
+            onClick={() => {
+              haptic("light");
+              onToggle(!enabled);
+            }}
+          >
+            <span aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+      {issues.map((issue) => (
+        <span key={issue} className="book-volume-hint">{issue}</span>
+      ))}
+    </div>
   );
 }
