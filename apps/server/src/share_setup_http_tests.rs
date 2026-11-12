@@ -575,8 +575,24 @@ async fn turning_gifts_off_stops_startup_recovery_and_requests_already_admitted(
     assert!(matches!(created, Err(error) if error.status == StatusCode::NOT_FOUND));
     let recovered = crate::share_setup::recover_configured_senders(
         State(server.state.clone()),
-        Extension(auth),
+        Extension(auth.clone()),
     )
     .await;
     assert!(matches!(recovered, Err(error) if error.status == StatusCode::NOT_FOUND));
+    // Broker cleanup and abandonment wait on the same gate.
+    let cleanup = crate::share_setup::retry_configured_cleanup(
+        State(server.state.clone()),
+        Extension(auth.clone()),
+    )
+    .await;
+    assert!(matches!(cleanup, Err(error) if error.status == StatusCode::NOT_FOUND));
+    let abandoned = crate::share_setup::abandon_configured_senders(
+        State(server.state.clone()),
+        Extension(auth),
+        Ok(Json(
+            serde_json::from_value(serde_json::json!({"confirmAbandon":true})).unwrap(),
+        )),
+    )
+    .await;
+    assert!(matches!(abandoned, Err(error) if error.status == StatusCode::NOT_FOUND));
 }

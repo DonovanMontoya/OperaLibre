@@ -54,6 +54,8 @@ test("an import interrupted mid-extraction keeps its archive until it has been r
   f.importing("gift-a__________");
   f.advance(60);
   await f.tracker.sweep();
+  // Closing the gift screen after a failed extraction must not remove it either.
+  await f.tracker.finish("gift-a__________");
   assert.deepEqual(f.cleaned, []);
   f.importing(null);
   await f.tracker.sweep();

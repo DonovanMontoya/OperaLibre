@@ -21,6 +21,8 @@ export function createStagedGiftTracker(storage: () => Store, cleanup: (giftId: 
   };
   /** Removes the staged archive. A failure keeps the note, so a later sweep tries again. */
   async function finish(giftId: string) {
+    // An import interrupted mid-extraction still reads its archive when it is recovered.
+    if (importPending(giftId)) return;
     try { await cleanup(giftId); } catch { return; }
     const staged = read();
     delete staged[giftId];
@@ -33,8 +35,6 @@ export function createStagedGiftTracker(storage: () => Store, cleanup: (giftId: 
     /** Clears downloads whose gift can no longer be resumed. */
     async sweep() {
       for (const [giftId, at] of Object.entries(read())) {
-        // An import interrupted mid-extraction still reads its archive when it is recovered.
-        if (importPending(giftId)) continue;
         if (typeof at !== "number" || now() - at >= KEEP_MS) await finish(giftId);
       }
     }

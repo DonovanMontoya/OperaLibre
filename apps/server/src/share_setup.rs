@@ -350,6 +350,7 @@ pub(crate) async fn retry_configured_cleanup(
     let state = state.0;
     require_owner(&auth)?;
     let _gate = SETUP_GATE.lock().await;
+    ensure_experiment(&state).await?;
     let config = load(&state)
         .await?
         .ok_or_else(|| ApiError::service_unavailable("No gift broker is configured."))?;
@@ -439,6 +440,7 @@ pub(crate) async fn abandon_configured_senders(
         ));
     }
     let _gate = SETUP_GATE.lock().await;
+    ensure_experiment(&state).await?;
     let config = load(&state)
         .await?
         .ok_or_else(|| ApiError::service_unavailable("No gift broker is configured."))?;
