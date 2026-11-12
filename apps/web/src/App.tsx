@@ -2380,6 +2380,7 @@ function MainApp({
         closeReadalong={closeReadalong}
         completionError={completionError}
         completionPendingBookId={completionPendingBookId}
+        continueReadingBook={continueReadingBook}
         currentTrack={currentTrack}
         demoMode={demoMode}
         descriptionCanExpand={descriptionCanExpand}
