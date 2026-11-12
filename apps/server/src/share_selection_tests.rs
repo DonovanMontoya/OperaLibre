@@ -610,6 +610,7 @@ impl TestServer {
         };
 
         rescan_library(&state).await.unwrap();
+        crate::share_setup::enable_experiment_for_test(&state).await;
 
         let library_root = state.library_root.clone();
         Self {

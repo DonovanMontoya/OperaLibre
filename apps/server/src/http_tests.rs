@@ -639,6 +639,9 @@ impl TestServer {
         };
 
         rescan_library(&state).await.unwrap();
+        // The gift suites exercise an experiment the owner has turned on;
+        // `book_gifts_stay_off_until_the_owner_turns_them_on` covers off.
+        crate::share_setup::enable_experiment_for_test(&state).await;
 
         let library_root = state.library_root.clone();
         Self {

@@ -135,9 +135,9 @@ test("unsupported native lookup fails to normal app without logging private URL"
   assert.equal(ready, 1);
 });
 
-test("production gift gate stays false; native registration adds no HTTPS association", async () => {
+test("gift links open only in the apps, behind the device's receiving switch; native registration adds no HTTPS association", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
-  assert.match(app, /const EXPERIMENTAL_GIFT_LINKS_ENABLED = false;/);
+  assert.match(app, /<GiftAppBoundary enabled=\{Capacitor\.isNativePlatform\(\)\} native=\{Capacitor\.isNativePlatform\(\)\} transport=\{experimentalGiftTransport\} receiving=\{deviceGiftReceiving\}>/);
   const manifest = await readFile(new URL("../android/app/src/main/AndroidManifest.xml", import.meta.url), "utf8");
   assert.match(manifest, /android:scheme="operalibre" android:host="gift"/);
   assert.doesNotMatch(manifest, /android:autoVerify|android:scheme="https"/);

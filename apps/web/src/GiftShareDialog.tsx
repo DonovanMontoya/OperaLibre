@@ -1,14 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AudioLines, BookOpen, Gift, Headphones, ImageIcon, Tag, X, type LucideIcon } from "lucide-react";
-import { captureGiftOwnerSetupGuard as captureGiftServerGuard, createSelectedBookGift, getBookGiftInventory } from "./api";
+import { captureGiftOwnerSetupGuard as captureGiftServerGuard, createSelectedBookGift, getBookGiftInventory, getBookGiftsStatus } from "./api";
 import { useModalFocus } from "./useModalFocus";
 import { alignmentGiftSelection, defaultGiftSelection, giftAssetDisabledReason, giftSelectionSummary, giftSizeLabel, parseCreatedGift, parseGiftInventory, selectedGiftRequest, type CreatedGift, type GiftInventory, type GiftInventoryAsset, type SelectedGiftRequest, type SenderCreatedGift } from "./giftSelectionModel";
 import "./giftShare.css";
 
-// The server routes and native recipient path remain experimental. Do not turn
-// this into a runtime switch or infer availability from an inventory response.
-export const EXPERIMENTAL_GIFT_SENDER_ENABLED = false;
+/** Whether to offer gifting here: the server's owner has turned the experiment
+ * on, set up a broker, and allowed this account to send. */
+export function useBookGiftSending(eligible: boolean): boolean {
+  const [canSend, setCanSend] = useState(false);
+  useEffect(() => {
+    if (!eligible) { setCanSend(false); return; }
+    let active = true;
+    void getBookGiftsStatus().then(status => { if (active) setCanSend(status.canSend); });
+    return () => { active = false; };
+  }, [eligible]);
+  return eligible && canSend;
+}
 export type GiftSenderApi = {
   captureGuard?: () => () => boolean;
   inventory(bookId: string, signal: AbortSignal): Promise<GiftInventory>;

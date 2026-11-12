@@ -25,4 +25,8 @@ const transport: GiftTransport = {
 declare global { interface Window { nativeGiftTest: { metrics: typeof metrics; finish(url?: string): void; open(url: string): void } } }
 window.nativeGiftTest = { metrics, finish(url) { resolveLaunch(url ? { url } : undefined); }, open(url) { listener?.({ url }); } };
 function Fallback() { useEffect(() => { metrics.fallbackMounts++; }, []); return <h1>Server onboarding fallback</h1>; }
-createRoot(document.getElementById("root")!).render(<GiftAppBoundary enabled={new URLSearchParams(location.search).get("enabled") === "1"} native transport={transport} loadApp={loadApp}><Fallback /></GiftAppBoundary>);
+const query = new URLSearchParams(location.search);
+// `?receiving=off` starts with the device's receiving switch off, as a new install does.
+let receivingOn = false;
+const receiving = query.get("receiving") === "off" ? { enabled: () => receivingOn, set(value: boolean) { receivingOn = value; } } : undefined;
+createRoot(document.getElementById("root")!).render(<GiftAppBoundary enabled={query.get("enabled") === "1"} native transport={transport} loadApp={loadApp} receiving={receiving}><Fallback /></GiftAppBoundary>);

@@ -184,6 +184,7 @@ import { useAudioElement } from "./useAudioElement";
 import { usePlaybackRestore } from "./usePlaybackRestore";
 import { useAudioSource } from "./useAudioSource";
 import { GiftAppBoundary } from "./GiftAppBoundary";
+import { deviceGiftReceiving } from "./giftReceiving";
 import { createPersistentGiftTransport } from "./giftPersistentTransport";
 import { fetchVerifiedGiftPreview } from "./giftPreviewSource";
 import { loadOptionalNativeGiftRecoveryState, compareAndSwapNativeGiftRecoveryState } from "./giftNativeRecovery";
@@ -235,16 +236,15 @@ function initialAuthState(): AuthState {
     : { phase: "loading" };
 }
 
-// Keep the route inaccessible until the transport, native imports, and platform
-// association are reviewed and verified. This is not an admin setting yet.
-const EXPERIMENTAL_GIFT_LINKS_ENABLED = false;
+// Gift links open only in the phone apps, which can store the book, and only
+// after the device's owner turns receiving on.
 const experimentalGiftTransport = createPersistentGiftTransport(fetchVerifiedGiftPreview, {
   storage: { loadOptional: loadOptionalNativeGiftRecoveryState, compareAndSwap: compareAndSwapNativeGiftRecoveryState },
   stages: { create: createNativeGiftStaging, recover: recoverNativeGiftStaging }
 });
 
 export default function App() {
-  return <GiftAppBoundary enabled={EXPERIMENTAL_GIFT_LINKS_ENABLED} native={Capacitor.isNativePlatform()} transport={experimentalGiftTransport}>
+  return <GiftAppBoundary enabled={Capacitor.isNativePlatform()} native={Capacitor.isNativePlatform()} transport={experimentalGiftTransport} receiving={deviceGiftReceiving}>
     <AuthenticatedApp />
   </GiftAppBoundary>;
 }

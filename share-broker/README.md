@@ -1,7 +1,13 @@
-# OperaLibre owner relay contract
+# OperaLibre gift broker
 
-This directory documents the owner-deployed signaling boundary. It is not a
-deployed service and contains no credentials.
+The Cloudflare Worker that introduces a sending server to a recipient's app for
+[book gifts](../docs/book-gifts.md). That guide covers deploying and using it.
+Each owner deploys their own copy; this directory contains no credentials.
+
+Book gifts are an experiment the server owner turns on under Administration →
+Experiments. The rest of this file is the design record written while the
+feature was being built. Where it says a gate is closed or a route is
+unavailable in released builds, it describes that earlier state.
 
 The sender's OperaLibre server remains the content authority. The experimental
 broker stores room membership, bounded signaling and an encrypted preview; it

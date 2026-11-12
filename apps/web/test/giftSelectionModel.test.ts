@@ -107,19 +107,22 @@ test("a gift link is accepted only when actually returned by the server", () => 
   for (const value of [{}, { token: "not-a-link" }, { ...gift, giftUrl: "http://owner.example/gift#private" }, { ...gift, giftUrl: "https://owner.example/gift?secret=x#private" }, { ...gift, giftUrl: "https://user:secret@owner.example/gift#private" }, { ...gift, giftUrl: "javascript:alert(1)" }, { ...gift, giftUrl: "https://owner.example/gift" }, { ...gift, expiresAt: -1 }]) assert.throws(() => parseCreatedGift(value));
 });
 
-test("production action is explicitly off and API requests use the agreed selection-only routes", async () => {
+test("the gift action follows the server's experiment and API requests use the agreed selection-only routes", async () => {
   const component = await readFile(new URL("../src/GiftShareDialog.tsx", import.meta.url), "utf8");
-  assert.match(component, /EXPERIMENTAL_GIFT_SENDER_ENABLED = false/);
+  assert.match(component, /getBookGiftsStatus\(\)\.then\(status => \{ if \(active\) setCanSend\(status\.canSend\); \}\)/);
   assert.doesNotMatch(component, /localStorage|sessionStorage|console\.|navigator\.share|createExperimentalGiftLink/);
   assert.match(component, /Share only books you have permission to share/);
   assert.match(component, /No DRM removal is provided/);
   assert.match(component, /not a guarantee of DRM detection/);
   const pane = await readFile(new URL("../src/PlayerPane.tsx", import.meta.url), "utf8");
-  assert.match(pane, /EXPERIMENTAL_GIFT_SENDER_ENABLED && import\.meta\.env\.DEV && import\.meta\.env\.VITE_EXPERIMENTAL_GIFT_BROKER === "true"/);
-  assert.match(pane, /!demoMode && !localMode && selectedBook\.source !== "device"/);
+  assert.match(pane, /useBookGiftSending\(isOperaLibre && !demoMode && !localMode\)/);
+  assert.match(pane, /enabled=\{giftSending && selectedBook\.source !== "device"\}/);
   const api = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
   assert.ok(api.includes("/api/books/${encodeURIComponent(bookId)}/gift-inventory"));
   assert.ok(api.includes('requestAt<unknown>(originalBase, originalToken, "/api/shares/selected"'));
   assert.match(api, /requestAt<void>\(originalBase, originalToken, `\/api\/shares\//);
   assert.match(api, /ignoreUnauthorized: true/);
+  // Off, or a server without gifts, hides the action instead of failing.
+  assert.ok(api.includes('request<unknown>("/api/experimental-features/book-gifts", { redirect: "error", ignoreUnauthorized: true })'));
+  assert.match(api, /return BOOK_GIFTS_OFF;/);
 });

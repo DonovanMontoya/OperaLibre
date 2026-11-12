@@ -474,8 +474,9 @@ pub(crate) fn build_router(
     );
     let cors = CorsLayer::new().allow_origin(AllowOrigin::list(origins));
 
-    #[cfg(test)]
-    let protected_share_routes = Router::new()
+    // The book gifts experiment. Its switch is always reachable; everything
+    // else answers 404 until the owner turns it on.
+    let gift_routes = Router::new()
         .route(
             "/api/books/{book_id}/gift-inventory",
             get(crate::share::gift_inventory),
@@ -502,18 +503,31 @@ pub(crate) fn build_router(
             "/api/admin/shares/config/abandon",
             post(crate::share_setup::abandon_configured_senders),
         )
-        .route("/api/shares", post(create_share))
-        .route("/api/shares/{token}", delete(revoke_share))
+        .route("/api/shares/{token}", delete(crate::share::revoke_share));
+    // The earlier direct-download prototype, and cleanup against a broker
+    // named in the request, stay out of released servers.
+    #[cfg(test)]
+    let gift_routes = gift_routes.route("/api/shares", post(create_share)).route(
+        "/api/admin/shares/revocations/retry",
+        post(retry_owner_broker_revocations),
+    );
+    let protected_share_routes = gift_routes
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::share_setup::require_experiment,
+        ))
         .route(
-            "/api/admin/shares/revocations/retry",
-            post(retry_owner_broker_revocations),
+            "/api/experimental-features/book-gifts",
+            get(crate::share_setup::book_gifts_experiment),
+        )
+        .route(
+            "/api/experimental-features/book-gifts/enabled",
+            put(crate::share_setup::set_book_gifts_enabled),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
         ));
-    #[cfg(not(test))]
-    let protected_share_routes = Router::new();
 
     // Added before the web app's static files, which stay open during an
     // update trial so a reloaded page can load and wait for the API.

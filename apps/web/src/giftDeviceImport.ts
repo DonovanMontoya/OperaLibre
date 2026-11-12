@@ -13,11 +13,11 @@ type JournalStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 const IMPORT_JOURNAL = "operalibre.giftExtractionJournal.v1";
 const nativeGift = registerPlugin<NativeGiftPlugin>("GiftImport");
 const activeImports = new WeakSet<JournalStorage>();
-// Standalone entry/import remain disabled pending platform delivery validation.
-const GIFT_IMPORT_ENABLED = false;
 export { GIFT_ALIGNMENT_IMPORT_ENABLED } from "./giftMetadata.ts";
 
-function buildImportBase(giftId: string, assets: NativeGiftAsset[], metadata: GiftMetadata): Book {
+/** Everything the import itself checks before extracting, so a gift this
+ * device cannot import is refused before any of it is downloaded. */
+export function buildImportBase(giftId: string, assets: NativeGiftAsset[], metadata: GiftMetadata): Book {
   const alignment = assets.filter(asset => asset.kind === "alignment");
   if (assets.length > 256 || alignment.length > 1 || (alignment.length > 0 && assets.filter(asset => asset.kind === "metadata").length !== 1)) throw new Error("Invalid gift alignment dependencies.");
   if (!GIFT_ALIGNMENT_IMPORT_ENABLED && assets.some(asset => asset.kind === "alignment")) throw new Error("Read-along gift import is not available yet.");
@@ -146,13 +146,12 @@ export async function stageGiftImport(storage: JournalStorage, giftId: string, a
   });
 }
 
-/** Unreachable while disabled; requires verified metadata and a native staged ZIP. */
+/** Requires verified metadata and a native staged ZIP. */
 export async function importNativeGift(giftId: string, assets: NativeGiftAsset[], metadata: GiftMetadata): Promise<"imported" | "duplicate"> {
-  if (!GIFT_IMPORT_ENABLED) throw new Error("Gift import is not enabled.");
   return stageGiftImport(localStorage, giftId, assets, metadata, input => nativeGift.extract(input));
 }
 
+/** Finishes an import the app was closed in the middle of. */
 export async function recoverNativeGiftImport(): Promise<void> {
-  if (!GIFT_IMPORT_ENABLED) return;
   await recoverGiftExtraction(localStorage, input => nativeGift.extract(input));
 }

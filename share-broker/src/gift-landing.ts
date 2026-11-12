@@ -54,7 +54,7 @@ function giftLandingClient(buildLinks: typeof buildGiftLandingLinks) {
       if (status) status.textContent = "This gift link is incomplete or invalid. Ask the sender for the original private link.";
       return;
     }
-    if (status) status.textContent = "Your private gift details stay in this link. This page does not request the book or its preview.";
+    if (status) status.textContent = "This page never sees the book or who sent it. Those details stay inside your private link.";
     if (original) {
       original.setAttribute("href", links.originalUrl);
       original.removeAttribute("hidden");
@@ -83,7 +83,7 @@ function giftLandingClient(buildLinks: typeof buildGiftLandingLinks) {
 
 // Pass the helper explicitly: module bundlers may rename exported bindings.
 const SCRIPT = `"use strict";\n(${giftLandingClient.toString()})(${buildGiftLandingLinks.toString()});`;
-const STYLE = `:root{color-scheme:light dark;font-family:system-ui,sans-serif;line-height:1.6}body{margin:0;padding:2rem 1rem}main{max-width:36rem;margin:auto}h1{line-height:1.2}a{color:inherit;text-underline-offset:.2em}a,button{touch-action:manipulation}li{margin:.7rem 0}button{font:inherit;padding:.65rem 1rem;border:1px solid currentColor;border-radius:.5rem;background:transparent;color:inherit}button:disabled{opacity:.7}a:focus-visible,button:focus-visible{outline:3px solid #ad6d23;outline-offset:4px}.gift{font-size:3rem;margin:0}small{display:block}[hidden]{display:none!important}`;
+const STYLE = `:root{color-scheme:light dark;--paper:#f1e7d0;--ink:#1a1410;--faded:#6b5a4c;--accent:#8b2e1f;--on-accent:#f1e7d0;--line:rgba(26,20,16,.16)}@media (prefers-color-scheme:dark){:root{--paper:#17120f;--ink:#efe4cf;--faded:#b3a48f;--accent:#c9684f;--on-accent:#17120f;--line:rgba(239,228,207,.2)}}body{margin:0;padding:3rem 1.25rem;background:var(--paper);color:var(--ink);font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;line-height:1.55}main{max-width:30rem;margin:auto}h1{margin:1.5rem 0 .5rem;font-size:2rem;line-height:1.15}h2{margin:2.5rem 0 .5rem;font-size:1.1rem}p{margin:.75rem 0}a{color:inherit;text-underline-offset:.2em}a,button{touch-action:manipulation}ul{padding-left:1.2rem}li{margin:.6rem 0}.parcel{width:4.5rem;height:6.75rem;border-radius:3px 5px 5px 3px;background:linear-gradient(transparent 58%,#a97b2f 58%,#d9b574 60%,#d9b574 67%,#a97b2f 69%,transparent 69%),linear-gradient(90deg,transparent 44%,#a97b2f 44%,#d9b574 47%,#d9b574 53%,#a97b2f 56%,transparent 56%),#6e2418;box-shadow:0 1rem 2rem -.75rem rgba(40,14,8,.5)}#open-app{display:block;margin:1.5rem 0 .5rem;padding:.95rem 1.25rem;border-radius:14px;background:var(--accent);color:var(--on-accent);font-weight:600;font-size:1.05rem;text-align:center;text-decoration:none}button{font:inherit;padding:.7rem 1rem;border:1px solid var(--line);border-radius:12px;background:transparent;color:inherit}.quiet,#open-help{color:var(--faded);font-size:.9rem}.note{margin-top:2.5rem;padding-top:1rem;border-top:1px solid var(--line)}a:focus-visible,button:focus-visible{outline:3px solid var(--accent);outline-offset:4px}[hidden]{display:none!important}`;
 
 const HTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -91,21 +91,21 @@ const HTML = `<!doctype html>
 <title>A book gift · OperaLibre</title><meta name="description" content="Open a private book gift in OperaLibre.">
 <meta property="og:type" content="website"><meta property="og:title" content="A book gift · OperaLibre"><meta property="og:description" content="Open a private book gift in OperaLibre.">
 <style>${STYLE}</style></head><body><main>
-<p class="gift" aria-hidden="true">🎁</p><h1>A book gift for you</h1>
-<p>Use OperaLibre to unwrap your gift. No sender, personal message or book details are shown on this landing page.</p>
-<p id="gift-status" role="status" aria-live="polite">Keep this private link so you can return to your gift after installation.</p>
-<h2>Already installed?</h2><p><a id="open-app" hidden aria-describedby="open-help" rel="noreferrer" referrerpolicy="no-referrer">Open in OperaLibre</a></p>
-<p id="open-help">Tap to ask your browser to open the installed app. Use a trusted OperaLibre build with experimental book gifts enabled; otherwise the app may open without showing the gift. This owner-hosted HTTPS domain is not automatically associated with the app. If opening is unavailable, install a compatible build and return to this private link.</p>
-<p>Custom app links are not verified HTTPS links. Another installed app could register the same scheme and receive the private gift link. Continue only if your device opens the trusted OperaLibre app; cancel an unexpected app or chooser.</p>
+<div class="parcel" aria-hidden="true"></div><h1>Someone sent you a book</h1>
+<p>Open it in the OperaLibre app to see who it is from and unwrap it. You do not need an account.</p>
+<p><a id="open-app" hidden aria-describedby="open-help" rel="noreferrer" referrerpolicy="no-referrer">Open in OperaLibre</a></p>
+<p id="open-help">Book gifts are experimental, so the app asks before it opens your first one.</p>
+<p id="gift-status" class="quiet" role="status" aria-live="polite">Keep this private link so you can return to your gift after installation.</p>
 <h2>Need the app?</h2><ul>
 <li><a href="${GIFT_INSTALL_DESTINATIONS.iphone}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">iPhone and iPad: OperaLibre on the App Store</a></li>
-<li><a href="${GIFT_INSTALL_DESTINATIONS.beta}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Check iPhone beta availability in TestFlight</a></li>
-<li><a href="${GIFT_INSTALL_DESTINATIONS.releases}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Android and other platforms: official releases and available builds</a></li>
-</ul><p>The installed build must support book gifts; an install alone does not enable this experimental feature. Current store releases may not support it yet. Android release APKs may be unsigned developer artifacts, not ready-to-install apps. If no compatible build is listed for your platform, ask the sender to wait for one.</p>
-<p>After installing, return to the original gift link in Discord or your message. Installation does not automatically restore the gift. Keep this tab open, or copy the link privately.</p>
+<li><a href="${GIFT_INSTALL_DESTINATIONS.beta}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Newer iPhone builds in TestFlight</a></li>
+<li><a href="${GIFT_INSTALL_DESTINATIONS.releases}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Android and other platforms: official releases</a></li>
+</ul>
+<p class="quiet">Gifts need a recent build, and they expire quickly. Installation does not automatically restore the gift: come back to this link afterwards, or copy it now.</p>
 <p><a id="original-gift" hidden rel="noreferrer" referrerpolicy="no-referrer">Return to your original gift link</a></p>
 <button id="copy-gift" type="button" hidden>Copy private gift link</button>
-<noscript><p>JavaScript is required to validate the private part of this link. Keep the original message and return to it after installation; the download links above work without JavaScript.</p></noscript>
+<p class="quiet note">Custom app links are not verified HTTPS links. Another installed app could register the same scheme and receive this private link. Continue only if your device opens OperaLibre, and cancel an unexpected app or chooser.</p>
+<noscript><p>JavaScript is required to check the private part of this link. Keep the original message and return to it after installation; the download links above work without JavaScript.</p></noscript>
 </main><script>${SCRIPT}</script></body></html>`;
 
 async function cspHash(value: string): Promise<string> {

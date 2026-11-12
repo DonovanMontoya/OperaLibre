@@ -1,4 +1,5 @@
-//! Experimental outbound broker client. No production route instantiates it.
+//! Outbound client for the owner's gift broker. Used only while the book
+//! gifts experiment is on.
 use crate::*;
 
 const MAX_RESPONSE: usize = 160 * 1024;

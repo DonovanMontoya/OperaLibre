@@ -130,6 +130,11 @@ The archive includes accounts, permissions, progress, per-book settings, reading
 | `DELETE` | `/api/experimental-features/readalong-sync` | Disable the managed add-on and move its installed files into recoverable update storage. Existing sync maps are retained. Owner only. |
 | `GET` | `/api/experimental-features/agent-access` | Whether [agent access](#agent-access-mcp) is on, and how many agents are connected by how many users: `{ enabled, assistants, listeners }`. Admin only. |
 | `PUT` | `/api/experimental-features/agent-access/enabled` | Turn agent access on or off with `{ "enabled": bool }`. Owner only. Turning it off keeps connected agents' tokens but refuses them until it is turned back on. |
+| `GET` | `/api/experimental-features/book-gifts` | Whether [book gifts](book-gifts.md) are on and whether the caller may send one: `{ enabled, configured, canSend }`. Signed-in users. |
+| `PUT` | `/api/experimental-features/book-gifts/enabled` | Turn book gifts on or off with `{ "enabled": bool }`. Owner only. Turning them off stops transfers in progress and keeps the saved broker settings. Not available on Windows servers. |
+| `GET` | `/api/books/{book_id}/gift-inventory` | The files of a book the caller may gift, with sizes and the default selection. Returns 404 while book gifts are off, as do the other gift routes. |
+| `POST` | `/api/shares/selected` | Create a gift from `{ bookId, selectedAssetIds, personalMessage?, expiresInSeconds? }`. Returns `{ giftUrl, expiresAt, managementToken }`. The owner, or a reader when the owner allows it. |
+| `DELETE` | `/api/shares/{managementToken}` | Revoke a gift that has not been received. |
 | `GET` | `/api/books/{book_id}/download` | Zip download of all the book's files. Subject to `max_book_download_gib` and `max_concurrent_book_downloads`. |
 | `DELETE` | `/api/books/{book_id}/download` | Delete the server's local copy. Admin only; Libation catalog state, progress, metadata overrides, and access grants are retained for later redownload. |
 | `GET` | `/api/books/{book_id}/progress` | Playback progress for the current user and book. |

@@ -87,16 +87,12 @@ test("setup control actions are explicit, HTTPS-guarded and never persist browse
   assert.ok(component.indexOf('secret.current.value = ""') < component.indexOf('void run("save"'));
   assert.ok(component.indexOf('turnSecret.current.value = ""', component.indexOf("function save(")) < component.indexOf('void run("save"'));
   assert.match(component, /onSubmit=\{save\} autoComplete="off" noValidate/);
-  assert.match(component, /SQLite database and its backups/);
-  assert.match(component, /does not revoke external provider credentials/);
-  assert.match(component, /cancel provider billing/);
-  assert.match(component, /Cloudflare Realtime TURN API credential minting is not implemented/);
-  assert.match(component, /off by default; does not enable production sharing/);
-  assert.match(component, /Pending broker rooms can block save\/delete \(409\)/);
-  assert.match(component, /trusted HTTPS reverse proxy on loopback and server proxy deployment mode/);
+  // Nothing renders, and nothing is requested, on an insecure connection.
+  assert.match(component, /useEffect\(\(\) => \{ if \(secure\) void load\.current\("load"\); \}, \[secure\]\)/);
+  assert.match(component, /if \(!secure\) return <section/);
   const css = await readFile(new URL("../src/giftOwnerSetup.css", import.meta.url), "utf8");
   assert.match(component, /className="gift-owner-configuration"/);
-  assert.match(css, /min-height:44px/);
+  assert.match(css, /min-height: 44px/);
   assert.match(css, /focus-visible/);
   const api = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
   for (const name of ["getGiftOwnerConfiguration", "saveGiftOwnerConfiguration", "deleteGiftOwnerConfiguration", "cleanupConfiguredGiftBroker"]) assert.match(api, new RegExp(`function ${name}\\([^]*?requireGiftSetupTransport\\(\\)`));

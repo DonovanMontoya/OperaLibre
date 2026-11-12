@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildGiftDeviceBook, importNativeGift, recoverGiftExtraction, stageGiftImport } from "../src/giftDeviceImport.ts";
+import { buildGiftDeviceBook, buildImportBase, recoverGiftExtraction, stageGiftImport } from "../src/giftDeviceImport.ts";
+import { parseGiftMetadata } from "../src/giftMetadata.ts";
 
 const id = "gift____________";
 const ebook = { name: "book.epub", size: 10, sha256: "a".repeat(64), kind: "ebook" as const };
@@ -18,8 +19,18 @@ test("invalid paths and unsupported alignment fail closed", () => {
   assert.throws(() => buildGiftDeviceBook(id, [ebook, { ...ebook, name: "map.json", kind: "alignment" }], { title: "Gift" }), /not available/);
 });
 
-test("native import remains gated", async () => {
-  await assert.rejects(importNativeGift(id, [ebook], { title: "Gift" }), /not enabled/);
+test("a read-along gift passes the check made before downloading, as it does the import", () => {
+  const assets = [
+    ebook,
+    { name: "one.mp3", size: 10, sha256: "b".repeat(64), kind: "audio" as const },
+    { name: "metadata.json", size: 20, sha256: "c".repeat(64), kind: "metadata" as const },
+    { name: "alignment.sync.json", size: 30, sha256: "d".repeat(64), kind: "alignment" as const },
+  ];
+  const metadata = parseGiftMetadata({ version: 1, title: "Gift", tracks: [{ fileName: "one.mp3", index: 0, title: "One", durationSeconds: 10, chapters: [] }],
+    alignment: { assetName: "alignment.sync.json", ebookAssetName: "book.epub", audioAssetNames: ["one.mp3"], timeline: "book", precision: "sentence" } }, assets);
+  assert.equal(buildImportBase(id, assets, metadata).tracks.length, 1);
+  // The map is only trusted alongside the metadata that describes it.
+  assert.throws(() => buildImportBase(id, assets.filter(asset => asset.kind !== "metadata"), metadata), /alignment dependencies/);
 });
 
 test("file commit before index survives interruption and retries verification", async () => {

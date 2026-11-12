@@ -63,3 +63,36 @@ test("disabled gift gate performs no native lookup and rejects query URI injecti
     assert.equal(await page.evaluate(() => window.nativeGiftTest.metrics.previews), 0);
   } finally { await browser.close(); }
 });
+
+test("a gift link contacts nothing until this device turns receiving on, and a later gift keeps the app running", { timeout: 15000 }, async () => {
+  const browser = await chromium.launch({ executablePath: process.env.OPERALIBRE_TEST_CHROMIUM || undefined, headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" });
+    await page.goto(`${base}?enabled=1&receiving=off`);
+    await page.waitForFunction(() => window.nativeGiftTest.metrics.launches === 1);
+    await page.evaluate(() => window.nativeGiftTest.finish());
+    await page.getByRole("heading", { name: "Server onboarding fallback" }).waitFor();
+    await page.evaluate(uri => window.nativeGiftTest.open(uri), uri);
+    await page.getByRole("heading", { name: "Someone sent you a book" }).waitFor();
+    assert.match(await page.locator("main").innerText(), /owner\.example/);
+    assert.equal(await page.evaluate(() => window.nativeGiftTest.metrics.previews), 0);
+    if (process.env.OPERALIBRE_GIFT_SCREENSHOT_DIR) {
+      await mkdir(process.env.OPERALIBRE_GIFT_SCREENSHOT_DIR, { recursive: true });
+      await page.screenshot({ path: path.join(process.env.OPERALIBRE_GIFT_SCREENSHOT_DIR, "gift-receiving-off-mobile.png"), fullPage: true });
+    }
+    await page.getByRole("button", { name: "Not now" }).click();
+    await page.getByRole("heading", { name: "Server onboarding fallback" }).waitFor();
+    assert.equal(await page.evaluate(() => window.nativeGiftTest.metrics.previews), 0);
+    await page.evaluate(uri => window.nativeGiftTest.open(uri), uri);
+    await page.getByRole("button", { name: "Turn on gifts and open" }).click();
+    await page.getByRole("heading", { name: "Alex sent you a book" }).waitFor();
+    assert.equal(await page.evaluate(() => window.nativeGiftTest.metrics.previews), 1);
+    // The app under the gift was never unmounted, so what it was doing carries on.
+    assert.equal(await page.evaluate(() => window.nativeGiftTest.metrics.fallbackMounts), 1);
+    await page.getByRole("button", { name: "Skip animation" }).click();
+    await page.getByRole("button", { name: "Decline" }).click();
+    await page.getByRole("button", { name: "Done" }).click();
+    await page.getByRole("heading", { name: "Server onboarding fallback" }).waitFor();
+    assert.equal(await page.evaluate(() => window.nativeGiftTest.metrics.fallbackMounts), 1);
+  } finally { await browser.close(); }
+});

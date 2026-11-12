@@ -2,6 +2,7 @@ import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BehaviorSection } from "./BehaviorSection";
 import { BookPreviewSetting } from "./BookPreviewSetting";
 import { ContinueReadingSetting } from "./ContinueReadingSetting";
+import { GiftReceivingSetting } from "./GiftReceivingSetting";
 import { DeviceImportNotice } from "./DeviceImportNotice";
 import {
   ChevronDown,
@@ -316,6 +317,7 @@ export function BehaviorSettings({
       <BehaviorSection>
         <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
         {bookPreviewsAvailable ? <BookPreviewSetting enabled={bookPreviewsEnabled} onToggle={toggleBookPreviewsEnabled} /> : null}
+        <GiftReceivingSetting />
         <div className="settings-toggle-row">
           <span>
             <strong>Games tab</strong>

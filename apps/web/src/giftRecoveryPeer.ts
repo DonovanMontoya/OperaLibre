@@ -2,6 +2,7 @@ import { openRecipientRecoverySignaling, type RecipientRecoveryProtocol, type Re
 
 const MAX_FRAME = 64 * 1024 + 21;
 const MAX_QUEUED = 256 * 1024;
+const GATHER_WAIT_MS = 2500;
 const unavailable = () => new Error("Recovery peer unavailable.");
 
 function pause(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -21,6 +22,7 @@ export function createExperimentalRecoveryPeer(options: RecipientRecoverySignali
   iceServers?: RTCIceServer[];
   iceTransportPolicy?: RTCIceTransportPolicy;
   peer?: (configuration: RTCConfiguration) => RTCPeerConnection;
+  gatherWaitMs?: number;
 }): RecipientRecoveryProtocol {
   return { async open(link, binding, outerSignal) {
     link = { ...link }; binding = Object.freeze({ ...binding });
@@ -82,7 +84,12 @@ export function createExperimentalRecoveryPeer(options: RecipientRecoverySignali
       }
       await connection.setRemoteDescription(JSON.parse(offer)); live();
       await connection.setLocalDescription(await connection.createAnswer()); live();
-      while (connection.iceGatheringState !== "complete") await pause(50, controller.signal);
+      // Gathering can outlast the connection attempt, for example while a STUN
+      // server goes unanswered on one interface. After a short wait, answer
+      // with the addresses found so far; the sender learns any other working
+      // address from the connection checks themselves.
+      const gatherUntil = Date.now() + (options.gatherWaitMs ?? GATHER_WAIT_MS);
+      while (connection.iceGatheringState !== "complete" && !(Date.now() >= gatherUntil && connection.localDescription?.sdp.includes("a=candidate:"))) await pause(50, controller.signal);
       const answer = JSON.stringify(connection.localDescription);
       if (!answer) throw unavailable();
       await signaling.answer(answer); live();

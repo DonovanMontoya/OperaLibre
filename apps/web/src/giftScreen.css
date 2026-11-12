@@ -17,6 +17,8 @@
   text-align: center;
 }
 html.native-app.platform-ios.dark-mode .gift-screen { background: var(--dark-bg, #17120f); }
+/* A gift that arrives while the app is in use covers it, open readers and sheets included. */
+.gift-layer { position: fixed; inset: 0; z-index: 2147483000; overflow-y: auto; }
 .gift-screen section { width: 100%; max-width: 26rem; }
 .gift-screen h1 {
   margin: 0;

@@ -38,6 +38,7 @@ async fn gift_boot_process_child() -> anyhow::Result<()> {
         accounts,
         identity,
     )?;
+    crate::share_setup::enable_experiment_for_test(&state).await;
     println!("GIFT_BOOT_PHASE state-ready");
     let app = build_router(state.clone(), None, &[])?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

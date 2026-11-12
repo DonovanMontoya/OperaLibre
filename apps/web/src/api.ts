@@ -662,11 +662,13 @@ export async function saveGiftOwnerConfiguration(input: GiftOwnerConfigurationRe
   requireGiftSetupTransport();
   if (input.ownerControlsBroker !== true) throw new ApiError("Confirm that you control this broker before saving credentials.", 400);
   const body = giftOwnerConfigurationPayload(input);
+  forgetBookGiftsStatus();
   return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config", { method: "PUT", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }));
 }
 
 export async function deleteGiftOwnerConfiguration(signal?: AbortSignal) {
   requireGiftSetupTransport();
+  forgetBookGiftsStatus();
   await request<void>("/api/admin/shares/config", { method: "DELETE", signal, redirect: "error", ignoreUnauthorized: true });
 }
 
@@ -689,17 +691,42 @@ export async function abandonConfiguredGiftSenders(signal?: AbortSignal) {
   return { abandoned: result.abandoned, completed: result.completed, pending: result.pending };
 }
 
-export async function retryGiftBrokerRevocations(brokerOrigin: string, ownerSecret: string) {
+/** Whether the server's book gifts experiment is on, and whether this
+ * account may send. A server that predates gifts answers 404, which reads as off. */
+export type BookGiftsStatus = { enabled: boolean; configured: boolean; canSend: boolean };
+const BOOK_GIFTS_OFF: BookGiftsStatus = { enabled: false, configured: false, canSend: false };
+let bookGiftsStatus: { key: string; value: Promise<BookGiftsStatus> } | null = null;
+
+function parseBookGiftsStatus(value: unknown): BookGiftsStatus {
+  const status = value as Partial<BookGiftsStatus> | null;
+  if (!status || typeof status.enabled !== "boolean" || typeof status.configured !== "boolean" || typeof status.canSend !== "boolean") throw new ApiError("Book gifts could not be checked.", 502);
+  return { enabled: status.enabled, configured: status.configured, canSend: status.canSend };
+}
+
+/** Asked once per server and sign-in; saving gift settings asks again. */
+export function getBookGiftsStatus(): Promise<BookGiftsStatus> {
+  if (getServerType() !== "operalibre") return Promise.resolve(BOOK_GIFTS_OFF);
+  const key = `${currentApiBase()}\n${getStoredToken() ?? ""}`;
+  if (bookGiftsStatus?.key === key) return bookGiftsStatus.value;
+  const value = request<unknown>("/api/experimental-features/book-gifts", { redirect: "error", ignoreUnauthorized: true })
+    .then(parseBookGiftsStatus)
+    .catch((error: unknown) => {
+      // Off on an older server. Anything else may be a dropped connection, so ask again next time.
+      if (!(error instanceof ApiError && error.status === 404) && bookGiftsStatus?.value === value) bookGiftsStatus = null;
+      return BOOK_GIFTS_OFF;
+    });
+  bookGiftsStatus = { key, value };
+  return value;
+}
+
+function forgetBookGiftsStatus() {
+  bookGiftsStatus = null;
+}
+
+export async function setBookGiftsEnabled(enabled: boolean) {
   requireOperaLibreServer();
-  const base = currentApiBase();
-  if (typeof window === "undefined" || !giftBrokerTransportSecure(base, window.location.href, window.isSecureContext === true, import.meta.env.DEV)) {
-    throw new Error("Secure HTTPS transport is required.");
-  }
-  return requestAt<{ completed: number; pending: number }>(base, getStoredToken(), "/api/admin/shares/revocations/retry", {
-    method: "POST",
-    redirect: "error",
-    body: JSON.stringify({ brokerOrigin, ownerSecret })
-  }, 120_000);
+  forgetBookGiftsStatus();
+  return parseBookGiftsStatus(await request<unknown>("/api/experimental-features/book-gifts/enabled", { method: "PUT", redirect: "error", body: JSON.stringify({ enabled }) }));
 }
 
 async function requestAt<T>(

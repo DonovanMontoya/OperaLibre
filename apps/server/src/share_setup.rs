@@ -1,10 +1,113 @@
-//! Owner-only experimental configuration. No production route mounts these
-//! handlers. Credentials stay in the private server database (and its backups),
+//! The book gifts experiment: its owner switch and owner-only configuration.
+//! Every gift route sits behind the switch, which is off until the owner turns
+//! it on. Credentials stay in the private server database (and its backups),
 //! never in a settings response, a shared URL, or a recipient preview.
 use crate::*;
 
 const DOCUMENT: &str = "share-owner-configuration-v1";
+const EXPERIMENT_DOCUMENT: &str = "book-gifts-experiment-v1";
 static SETUP_GATE: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+#[derive(Serialize, Deserialize)]
+struct StoredExperiment {
+    enabled: bool,
+}
+
+/// Off unless the owner has turned the experiment on. An unreadable record
+/// counts as off, so a damaged database cannot start sharing.
+pub(crate) async fn experiment_enabled(state: &AppState) -> bool {
+    state
+        .database
+        .call(|db| read_document(db, EXPERIMENT_DOCUMENT))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|payload| serde_json::from_str::<StoredExperiment>(&payload).ok())
+        .is_some_and(|experiment| experiment.enabled)
+}
+
+#[cfg(test)]
+pub(crate) async fn enable_experiment_for_test(state: &AppState) {
+    state
+        .database
+        .transaction(|db| write_document(db, EXPERIMENT_DOCUMENT, r#"{"enabled":true}"#))
+        .await
+        .unwrap();
+}
+
+/// Guards every gift route. The app hides its gift controls on this 404, as
+/// it does for a server that predates gifts.
+pub(crate) async fn require_experiment(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> Response {
+    if experiment_enabled(&state).await {
+        next.run(request).await
+    } else {
+        ApiError::not_found("Book gifts are not turned on for this server.").into_response()
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BookGiftsStatus {
+    enabled: bool,
+    /// The owner has saved a broker, so gifts can be created.
+    configured: bool,
+    /// Whether this account may send: the owner, or a reader the owner allowed.
+    can_send: bool,
+}
+
+async fn experiment_status(state: &AppState, auth: &AuthUser) -> BookGiftsStatus {
+    let enabled = experiment_enabled(state).await;
+    let config = if enabled {
+        load(state).await.ok().flatten()
+    } else {
+        None
+    };
+    BookGiftsStatus {
+        enabled,
+        configured: config.is_some(),
+        can_send: config.is_some_and(|config| auth.is_owner || config.allow_readers),
+    }
+}
+
+pub(crate) async fn book_gifts_experiment(
+    state: State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Json<BookGiftsStatus> {
+    Json(experiment_status(&state.0, &auth).await)
+}
+
+pub(crate) async fn set_book_gifts_enabled(
+    state: State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(input): Json<ExperimentalFeatureEnabled>,
+) -> Result<Json<BookGiftsStatus>, ApiError> {
+    let state = state.0;
+    require_owner(&auth)?;
+    if input.enabled && !cfg!(unix) {
+        return Err(ApiError::bad_request(
+            "Book gifts are not available on Windows servers yet.",
+        ));
+    }
+    let _gate = SETUP_GATE.lock().await;
+    let payload = serde_json::to_string(&StoredExperiment {
+        enabled: input.enabled,
+    })
+    .map_err(|_| ApiError::internal("Cannot save the book gifts setting."))?;
+    state
+        .database
+        .transaction(move |db| write_document(db, EXPERIMENT_DOCUMENT, &payload))
+        .await?;
+    if !input.enabled {
+        // Stop transfers in flight. Links already sent stay revocable and
+        // expire on their own; they work again only if this is turned back on.
+        crate::share::pause_sender_runtime(&state).await;
+    }
+    Ok(Json(experiment_status(&state, &auth).await))
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -267,7 +370,7 @@ pub(crate) async fn recover_configured_senders(
         .map_err(|_| ApiError::service_unavailable("Gift broker configuration is invalid."))?;
     Ok(Json(
         crate::share::recover_saved_senders(
-            cfg!(test),
+            true,
             &state,
             &broker,
             &config.owner_secret,
@@ -315,11 +418,6 @@ pub(crate) async fn abandon_configured_senders(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let state = state.0;
     require_owner(&auth)?;
-    if !cfg!(test) {
-        return Err(ApiError::service_unavailable(
-            "Production gift management remains disabled.",
-        ));
-    }
     let Json(input) = input.map_err(|_| {
         ApiError::bad_request("Explicit retained-gift abandonment confirmation is required.")
     })?;
@@ -430,11 +528,6 @@ pub(crate) async fn create_configured_share(
     Json(input): Json<crate::share::CreateSelectedShareRequest>,
 ) -> Result<Json<CreatedGift>, ApiError> {
     let state = state.0;
-    if !cfg!(test) {
-        return Err(ApiError::service_unavailable(
-            "Production gift sharing remains disabled.",
-        ));
-    }
     // Waiters are still cancellable HTTP requests. Admit only one owned
     // background creation instead of detaching an unbounded queue of payloads.
     let gate: tokio::sync::MutexGuard<'static, ()> = SETUP_GATE.lock().await;
@@ -480,7 +573,7 @@ async fn create_owned(
         return Err(ApiError::conflict("Gift preparation was cancelled."));
     }
     let session = match crate::share::start_invitation_sender_with_recovery(
-        cfg!(test),
+        true,
         &state,
         &auth,
         &invitation.token,

@@ -1,7 +1,7 @@
 import type { GiftLink, GiftTransport } from "./ExperimentalGiftRoute";
 import { GiftScreenError } from "./GiftScreen";
 import { giftBrokerOrigin } from "./giftBrokerOrigin.ts";
-import { buildGiftDeviceBook } from "./giftDeviceImport.ts";
+import { buildImportBase } from "./giftDeviceImport.ts";
 import type { GiftChunkSink } from "./giftChunkReceiver.ts";
 import type { GiftStagedPrefix } from "./giftNativeStaging.ts";
 import { createExperimentalRecoveryPeer } from "./giftRecoveryPeer.ts";
@@ -82,7 +82,7 @@ export function createPersistentGiftTransport(verifiedPreview: VerifiedPreviewSo
       const key = identity(link);
       if (!cached || cached.identity !== key || JSON.stringify(details) !== JSON.stringify(cached.details) || signal.aborted) throw new GiftScreenError("unavailable");
       const trusted = structuredClone(cached.details), descriptor = { giftId: trusted.giftId, ...trusted.transfer };
-      try { buildGiftDeviceBook(trusted.giftId, trusted.assets, trusted.metadata); }
+      try { buildImportBase(trusted.giftId, trusted.assets, trusted.metadata); }
       catch { throw new GiftScreenError("unsupported"); }
       if (descriptor.expiresAt <= Math.floor(Date.now() / 1000)) throw new GiftScreenError("expired");
       const deadline = Math.min(descriptor.expiresAt * 1000, Date.now() + 30_000);

@@ -431,3 +431,102 @@ async fn invalid_gift_setup_never_reflects_or_overwrites_credentials() {
     assert_eq!(corrupt.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(!corrupt.text().contains("corrupt private record"));
 }
+
+#[tokio::test]
+async fn book_gifts_stay_off_until_the_owner_turns_them_on() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "gift-reader").await;
+    let (book, _) = server.first_book_and_track(&owner).await;
+    let switch = "/api/experimental-features/book-gifts";
+    let inventory = format!("/api/books/{book}/gift-inventory");
+    // A new server has no saved switch at all.
+    server
+        .state
+        .database
+        .transaction(|db| {
+            db.execute(
+                "DELETE FROM documents WHERE name = 'book-gifts-experiment-v1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(!crate::share_setup::experiment_enabled(&server.state).await);
+    assert_eq!(
+        server.get(switch, &reader).await.json(),
+        serde_json::json!({"enabled":false,"configured":false,"canSend":false})
+    );
+    for (method, path) in [
+        ("GET", inventory.as_str()),
+        ("GET", ROUTE),
+        ("POST", "/api/shares/selected"),
+        ("POST", "/api/admin/shares/config/recover"),
+        ("DELETE", "/api/shares/0123456789abcdef0123456789abcdef"),
+    ] {
+        let response = server
+            .send_json(method, path, &owner, serde_json::json!({}))
+            .await;
+        assert_eq!(response.status, StatusCode::NOT_FOUND, "{method} {path}");
+    }
+
+    let enable = serde_json::json!({"enabled":true});
+    assert_eq!(
+        server
+            .send_json("PUT", &format!("{switch}/enabled"), &reader, enable.clone())
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let on = server
+        .send_json("PUT", &format!("{switch}/enabled"), &owner, enable)
+        .await;
+    assert_eq!(on.status, StatusCode::OK);
+    // On, but nobody can send until the owner saves a broker.
+    assert_eq!(
+        on.json(),
+        serde_json::json!({"enabled":true,"configured":false,"canSend":false})
+    );
+    assert_eq!(server.get(&inventory, &owner).await.status, StatusCode::OK);
+    assert_eq!(server.get(ROUTE, &owner).await.status, StatusCode::OK);
+
+    let off = server
+        .send_json(
+            "PUT",
+            &format!("{switch}/enabled"),
+            &owner,
+            serde_json::json!({"enabled":false}),
+        )
+        .await;
+    assert_eq!(off.json()["enabled"], false);
+    assert_eq!(
+        server.get(&inventory, &owner).await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn book_gift_senders_are_the_owner_and_readers_the_owner_allowed() {
+    let mut server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "gift-reader").await;
+    server.state.deployment_mode = DeploymentMode::Proxy;
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    let switch = "/api/experimental-features/book-gifts";
+    let broker = |allow: bool| serde_json::json!({"brokerOrigin":"https://broker.example","ownerSecret":"owner-supplied-status-secret-0123456789","allowReaders":allow,"ownerControlsBroker":true});
+    assert_eq!(
+        put(&server, &owner, broker(false), true).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        server.get(switch, &owner).await.json(),
+        serde_json::json!({"enabled":true,"configured":true,"canSend":true})
+    );
+    assert_eq!(server.get(switch, &reader).await.json()["canSend"], false);
+    assert_eq!(
+        put(&server, &owner, broker(true), true).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(server.get(switch, &reader).await.json()["canSend"], true);
+}

@@ -46,9 +46,10 @@ async function fixture(mode = "good") {
   }
   const channel = new Channel();
   class Peer extends EventTarget {
-    iceGatheringState = "complete"; localDescription: unknown;
+    // iOS can sit in "gathering" for longer than the connection attempt lasts.
+    iceGatheringState = mode.startsWith("slow-gather") ? "gathering" : "complete"; localDescription: unknown;
     async setRemoteDescription() { applied++; }
-    async createAnswer() { return { type: "answer", sdp: "fixture" }; }
+    async createAnswer() { return { type: "answer", sdp: mode === "slow-gather" ? "v=0\r\na=candidate:1 1 udp 1 192.0.2.1 9 typ host\r\n" : "fixture" }; }
     async setLocalDescription(value: unknown) { this.localDescription = value; }
     close() { closed = true; }
     deliver() {
@@ -65,6 +66,7 @@ async function fixture(mode = "good") {
   const peer = new Peer();
   const protocol = createExperimentalRecoveryPeer({
     peer: () => peer as unknown as RTCPeerConnection,
+    gatherWaitMs: 20,
     async load() { return structuredClone(stored); },
     async compareAndSwap(_id, previous, next) { assert.deepEqual(previous, stored); stored = structuredClone(next); return true; },
     async successor() { return successor; },
@@ -100,7 +102,7 @@ async function fixture(mode = "good") {
     async append(_id, bytes) { if (mode === "slow-write") { entered(); await writeReady; } staged = Uint8Array.from([...staged, ...bytes]); },
     async verifyArchive({ size, sha256 }) { if (staged.length !== size || hash(staged) !== sha256) throw new Error("digest mismatch"); verified = true; }
   }, () => true);
-  return { run: () => receiveRecoveredGift(link, descriptor, controller.signal, staging.recover, protocol), staged: () => staged, applied: () => applied, verified: () => verified, closed: () => closed, receipt: () => receipt, acknowledgements: () => acknowledgements, appending, release };
+  return { cancel: () => controller.abort(), run: () => receiveRecoveredGift(link, descriptor, controller.signal, staging.recover, protocol), staged: () => staged, applied: () => applied, verified: () => verified, closed: () => closed, receipt: () => receipt, acknowledgements: () => acknowledgements, appending, release };
 }
 
 test("recovery peer verifies resumed bytes and confirms native receipt over the authenticated connection", async () => {
@@ -128,4 +130,16 @@ test("recovery rejects invalid channels, queue abuse, bad digest and receipt fai
     const f = await fixture(mode); await assert.rejects(f.run(), undefined, mode);
     assert.equal(f.closed(), true); assert.equal(f.receipt(), mode.includes("receipt"));
   }
+});
+
+test("an answer goes out with the addresses found so far when gathering never finishes", async () => {
+  const f = await fixture("slow-gather"); await f.run();
+  assert.equal(f.verified(), true); assert.equal(f.receipt(), true);
+});
+
+test("an answer with no address at all is never sent", async () => {
+  const f = await fixture("slow-gather-empty"), receiving = f.run();
+  const outcome = await Promise.race([receiving.then(() => "sent", () => "failed"), new Promise(resolve => setTimeout(() => resolve("waiting"), 150))]);
+  assert.equal(outcome, "waiting"); assert.equal(f.receipt(), false);
+  f.cancel(); await assert.rejects(receiving);
 });

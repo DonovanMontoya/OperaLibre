@@ -216,7 +216,7 @@ enum GiftArchiveExtractor {
               asset.name != ".", asset.name != "..", asset.name.utf8.count <= 255,
               !asset.name.contains("/"), !asset.name.contains("\\"),
               asset.name.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }),
-              directory.resolvingSymlinksInPath().standardizedFileURL == directory.standardizedFileURL else { throw Failure.invalid }
+              directory.resolvingSymlinksInPath().standardizedFileURL.path == directory.standardizedFileURL.path else { throw Failure.invalid }
         var parent = stat(), openedParent = stat()
         guard lstat(directory.path, &parent) == 0, (parent.st_mode & S_IFMT) == S_IFDIR else { throw Failure.invalid }
         let directoryFD = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
@@ -240,19 +240,19 @@ enum GiftArchiveExtractor {
               fstat(fd, &after) == 0, after.st_size == before.st_size,
               lstat(directory.path, &current) == 0, current.st_dev == parent.st_dev,
               current.st_ino == parent.st_ino, (current.st_mode & S_IFMT) == S_IFDIR,
-              directory.resolvingSymlinksInPath().standardizedFileURL == directory.standardizedFileURL,
+              directory.resolvingSymlinksInPath().standardizedFileURL.path == directory.standardizedFileURL.path,
               let json = String(data: bytes, encoding: .utf8) else { throw Failure.integrity }
         return json
     }
 
     private static func verifyCommitted(_ directory: URL, expected: [String: Asset]) throws {
         let fm = FileManager.default
-        guard directory.resolvingSymlinksInPath().standardizedFileURL == directory.standardizedFileURL else { throw Failure.invalid }
+        guard directory.resolvingSymlinksInPath().standardizedFileURL.path == directory.standardizedFileURL.path else { throw Failure.invalid }
         let files = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard files.count == expected.count else { throw Failure.integrity }
         for file in files {
             guard let asset = expected[file.lastPathComponent],
-                  file.resolvingSymlinksInPath().standardizedFileURL == file.standardizedFileURL else { throw Failure.invalid }
+                  file.resolvingSymlinksInPath().standardizedFileURL.path == file.standardizedFileURL.path else { throw Failure.invalid }
             let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
             guard values.isRegularFile == true, values.isSymbolicLink != true,
                   let size = values.fileSize, size >= 0, UInt64(size) == asset.size else { throw Failure.integrity }
@@ -299,10 +299,10 @@ enum GiftRecoveryStore {
         let fm = FileManager.default
         let data = try fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true).resolvingSymlinksInPath().standardizedFileURL
         var parent = data.appendingPathComponent("gift-incoming", isDirectory: true).standardizedFileURL
-        guard parent.resolvingSymlinksInPath().standardizedFileURL == parent else { throw Failure.unavailable }
+        guard parent.resolvingSymlinksInPath().standardizedFileURL.path == parent.path else { throw Failure.unavailable }
         try fm.createDirectory(at: parent, withIntermediateDirectories: true)
         var isDirectory: ObjCBool = false
-        guard parent.resolvingSymlinksInPath().standardizedFileURL == parent,
+        guard parent.resolvingSymlinksInPath().standardizedFileURL.path == parent.path,
               fm.fileExists(atPath: parent.path, isDirectory: &isDirectory), isDirectory.boolValue else { throw Failure.unavailable }
         // The staged archives and their bearer sidecars must never enter device
         // backups. Locked-device protection applies to the directory and files.
@@ -530,11 +530,11 @@ enum GiftStagingStore {
         let fm = FileManager.default
         let data = try fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true).resolvingSymlinksInPath().standardizedFileURL
         var parent = data.appendingPathComponent("gift-incoming", isDirectory: true).standardizedFileURL
-        guard parent.resolvingSymlinksInPath().standardizedFileURL == parent else { throw Failure.unavailable }
+        guard parent.resolvingSymlinksInPath().standardizedFileURL.path == parent.path else { throw Failure.unavailable }
         try fm.createDirectory(at: parent, withIntermediateDirectories: true)
         var identity = stat()
         guard lstat(parent.path, &identity) == 0, (identity.st_mode & S_IFMT) == S_IFDIR,
-              parent.resolvingSymlinksInPath().standardizedFileURL == parent else { throw Failure.unavailable }
+              parent.resolvingSymlinksInPath().standardizedFileURL.path == parent.path else { throw Failure.unavailable }
         var values = URLResourceValues(); values.isExcludedFromBackup = true
         try parent.setResourceValues(values)
         try fm.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: parent.path)
@@ -591,7 +591,7 @@ enum GiftStagingStore {
         var directory = stat(), path = stat()
         guard lstat(parent.path, &directory) == 0, (directory.st_mode & S_IFMT) == S_IFDIR,
               directory.st_dev == session.guardFile.identity.st_dev, directory.st_ino == session.guardFile.identity.st_ino,
-              parent.resolvingSymlinksInPath().standardizedFileURL == parent else { throw Failure.unavailable }
+              parent.resolvingSymlinksInPath().standardizedFileURL.path == parent.path else { throw Failure.unavailable }
         let actual = try regular(session.handle.fileDescriptor, maximum: session.maximum)
         guard lstat(parent.appendingPathComponent(session.giftID + ".zip").path, &path) == 0,
               (path.st_mode & S_IFMT) == S_IFREG, path.st_nlink == 1, path.st_dev == actual.st_dev, path.st_ino == actual.st_ino,
@@ -804,10 +804,10 @@ public final class GiftImportPlugin: CAPPlugin, CAPBridgedPlugin {
                 let result = try GiftStagingStore.withInactive(giftID: id) { incoming in
                     let fm = FileManager.default
                     let source = incoming.appendingPathComponent(id + ".zip").standardizedFileURL
-                    guard source.resolvingSymlinksInPath() == source else { throw GiftArchiveExtractor.Failure.invalid }
+                    guard source.resolvingSymlinksInPath().path == source.path else { throw GiftArchiveExtractor.Failure.invalid }
                     let root = incoming.deletingLastPathComponent().appendingPathComponent("device-library", isDirectory: true)
                     try fm.createDirectory(at: root, withIntermediateDirectories: true)
-                    guard root.resolvingSymlinksInPath().standardizedFileURL == root.standardizedFileURL else { throw GiftArchiveExtractor.Failure.unavailable }
+                    guard root.resolvingSymlinksInPath().standardizedFileURL.path == root.standardizedFileURL.path else { throw GiftArchiveExtractor.Failure.unavailable }
                     let committed = try GiftArchiveExtractor.extract(archiveURL: source, privateRoot: root, giftID: id, assets: assets)
                     try GiftStagingStore.syncCommitted(committed)
                     let json = try metadata.map { try GiftArchiveExtractor.readMetadata(committed, asset: $0) }

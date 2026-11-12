@@ -1,38 +1,31 @@
-import { type FormEvent, useRef, useState } from "react";
-import { isGiftBrokerTransportSecure, retryGiftBrokerRevocations } from "./api";
-import { ExperimentSection } from "./ExperimentSection";
-import { giftBrokerOrigin } from "./giftBrokerOrigin";
-import { giftBrokerReadiness } from "./giftBrokerReadiness";
-import { GiftReadinessSteps } from "./GiftReadinessSteps";
+import { useEffect, useState } from "react";
+import { Check, FlaskConical, LoaderCircle } from "lucide-react";
+import { getBookGiftsStatus, isGiftBrokerTransportSecure, setBookGiftsEnabled, type BookGiftsStatus } from "./api";
 import { GiftOwnerConfiguration } from "./GiftOwnerConfiguration";
 
-export function GiftBrokerExperiment() {
-  const secretRef = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
-  const [brokerInput, setBrokerInput] = useState("");
-  const [ownerConfirmed, setOwnerConfirmed] = useState(false);
-  const secure = isGiftBrokerTransportSecure();
-  const steps = giftBrokerReadiness({ transportSecure: secure, brokerInput, ownerConfirmed });
+const GUIDE = "https://donovanmontoya.github.io/OperaLibre/book-gifts.html";
 
-  async function retry(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (busy || !isGiftBrokerTransportSecure()) return;
-    const form = event.currentTarget;
-    const origin = giftBrokerOrigin(String(new FormData(form).get("brokerOrigin") ?? ""));
-    const secret = secretRef.current?.value ?? "";
-    if (!origin || !secret || secret.length > 1024) {
-      setMessage("Enter an HTTPS origin and an owner secret of up to 1024 characters.");
-      return;
-    }
-    if (secretRef.current) secretRef.current.value = "";
+/** The owner's switch for book gifts, and the broker setup behind it. */
+export function BookGiftsExperiment() {
+  const [status, setStatus] = useState<BookGiftsStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getBookGiftsStatus().then(loaded => { if (!cancelled) setStatus(loaded); });
+    return () => { cancelled = true; };
+  }, []);
+
+  async function toggle() {
+    if (!status || busy) return;
+    if (status.enabled && !window.confirm("Turn off book gifts?\n\nGifts being sent stop, and links you have already shared stop working until this is turned back on.")) return;
     setBusy(true);
-    setMessage("");
+    setError(null);
     try {
-      const result = await retryGiftBrokerRevocations(origin, secret);
-      setMessage(`Cleanup completed: ${result.completed}; still pending: ${result.pending}.`);
-    } catch {
-      setMessage("Cleanup could not be confirmed. The endpoint may be unavailable or the request may have timed out; some cleanup may still have happened.");
+      setStatus(await setBookGiftsEnabled(!status.enabled));
+    } catch (failure) {
+      setError(failure instanceof Error && failure.message ? failure.message : "Could not change book gifts.");
     } finally {
       setBusy(false);
     }
@@ -40,30 +33,40 @@ export function GiftBrokerExperiment() {
 
   return (
     <article>
-      <div className="admin-software-version-head"><div><span>Book gift owner setup</span><strong>Experimental, not operational</strong></div><span className="admin-experimental-badge">Test only</span></div>
-      <p>Plan an optional broker on infrastructure and a provider account you control. You are responsible for its credentials, costs and operation, not every OperaLibre installation. There is no centralized hosting or billing.</p>
-      <p>This development-only guide does not enable sharing or deploy anything. Editing these guide fields performs no network requests. Manual cleanup and the separate saved-setup controls require explicit actions.</p>
-      <form className="admin-sync-schedule-form" onSubmit={(event) => void retry(event)} autoComplete="off">
-        <label>Broker HTTPS origin<input name="brokerOrigin" type="url" value={brokerInput} onChange={event => { setBrokerInput(event.currentTarget.value); setOwnerConfirmed(false); setMessage(""); }} placeholder="https://broker.example" maxLength={2048} required disabled={busy} /></label>
-        <label className="admin-all-access"><input type="checkbox" style={{ width: "auto", minHeight: 0, flexShrink: 0 }} checked={ownerConfirmed} onChange={event => setOwnerConfirmed(event.currentTarget.checked)} disabled={busy} /><span>I control and trust this broker. This is my statement, not a verified ownership check.</span></label>
-        <p role="status">{steps.find(step => step.id === "broker")!.label}. Sharing remains disabled regardless of these local checks.</p>
-        <ExperimentSection title="Guided readiness and remaining blockers">
-          <GiftReadinessSteps steps={steps} />
-        </ExperimentSection>
-        <ExperimentSection title="Retry pending cleanup">
-          <p>This test-only action sends the entered origin and owner secret to your connected OperaLibre server to retry its queued revocations. That server contacts the owner-controlled broker. It does not configure the broker or test gift transfer.</p>
-          <p>The secret is used for this request only, is never saved or logged by this form, and is cleared when a valid cleanup request is submitted. Only enter it for a broker you own and trust.</p>
-          {!secure ? <p role="status">Cleanup is unavailable: open the app over HTTPS and connect directly to the server over HTTPS. HTTP connections, including Tailscale HTTP, and development proxy connections are not accepted.</p> : null}
-          <fieldset disabled={busy || !secure}>
-            <label>Broker owner secret<input ref={secretRef} type="password" autoComplete="new-password" maxLength={1024} required /></label>
-            <div><button type="submit">{busy ? "Retrying…" : "Retry cleanup"}</button></div>
-          </fieldset>
-          {message ? <p role="status">{message}</p> : null}
-        </ExperimentSection>
-      </form>
-      <ExperimentSection title="Optional saved setup (experimental server routes)">
-        <GiftOwnerConfiguration secure={secure} />
-      </ExperimentSection>
+      <div className="admin-software-version-head">
+        <div>
+          <span>Book gifts</span>
+          <strong>{status === null ? "Checking…" : !status.enabled ? "Off" : status.configured ? "On" : "On, needs setup"}</strong>
+        </div>
+        {status?.enabled ? (
+          <span className="admin-current-badge"><Check size={12} /> Enabled</span>
+        ) : (
+          <span className="admin-experimental-badge">Optional</span>
+        )}
+      </div>
+      <p>
+        Send a book to someone as a one-time link. They open it in the OperaLibre app, unwrap it,
+        and keep their own copy, with no account on this server. The book goes straight from this
+        server to their device, so nothing needs to be port forwarded. A small broker that you
+        run yourself introduces the two; it never sees the book.
+      </p>
+      <p className="admin-experiment-detail">
+        Needs a one-time setup. <a href={GUIDE} target="_blank" rel="noreferrer" style={{ color: "inherit" }}>Read the setup guide</a>.
+        Only share books you have the right to share.
+      </p>
+      {error ? <p className="admin-experiment-detail" role="alert">{error}</p> : null}
+      <div className="admin-update-actions">
+        <button type="button" className={status?.enabled ? "quiet-button" : undefined} disabled={status === null || busy} onClick={() => void toggle()}>
+          {busy ? <LoaderCircle size={15} className="spin-icon" /> : <FlaskConical size={15} />}
+          {status?.enabled ? "Disable" : "Enable"}
+        </button>
+      </div>
+      {status?.enabled ? (
+        <GiftOwnerConfiguration
+          secure={isGiftBrokerTransportSecure()}
+          onChanged={() => void getBookGiftsStatus().then(setStatus)}
+        />
+      ) : null}
     </article>
   );
 }

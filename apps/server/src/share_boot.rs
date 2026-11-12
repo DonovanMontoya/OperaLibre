@@ -1,5 +1,5 @@
-//! Opt-in startup supervision for retained gifts. The released binary passes
-//! false, so configuration alone cannot activate the experimental transport.
+//! Opt-in startup supervision for retained gifts. The caller passes the
+//! owner's experiment switch, so saved settings alone cannot start a transfer.
 use super::*;
 
 const BOOT_LIFETIME: Duration = Duration::from_secs(900);
@@ -13,7 +13,7 @@ pub(crate) fn start_boot_recovery(
 }
 
 /// Observe completion without polling the private file-backed index and
-/// competing with its OS write lock. This never activates a released binary.
+/// competing with its OS write lock.
 #[cfg(test)]
 pub(crate) fn observe_boot_recovery(
     state: AppState,

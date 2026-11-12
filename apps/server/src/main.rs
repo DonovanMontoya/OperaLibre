@@ -264,9 +264,10 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         deferred.update_trial.wait_for_commit().await;
         libation_recovery::recover(deferred.clone());
-        // Keep gift activation behind the same compile-time production gate as
-        // its routes. Even a manually copied configuration cannot cause egress.
-        share_setup::start_boot_recovery(deferred.clone(), cfg!(test));
+        // Gift recovery follows the owner's experiment switch, like the gift
+        // routes: saved broker settings alone never cause egress.
+        let gifts_enabled = share_setup::experiment_enabled(&deferred).await;
+        share_setup::start_boot_recovery(deferred.clone(), gifts_enabled);
         schedule_automatic_libation_refresh(deferred.clone());
         schedule_libro_imports(deferred.clone());
         schedule_reading_session_sweeper(deferred.clone());
