@@ -117,12 +117,16 @@ Depending on the permissions you grant, the assistant can receive:
 - library titles, authors, series, and descriptions;
 - your current books and listening progress;
 - your listening history, including session dates and times, books, duration, playback speed and client type, finished books, statistics, and achievements;
-- book text up to the sentence you have reached, where a follow-along map is available; and
+- book text up to the sentence you have reached, where a follow-along map or a chapter-notes transcript is available, and chapter notes for the chapters you have reached; and
 - with the separate permission to get books, information about books you own on Audible or Libro.fm and the ability to request or start adding them to your server, subject to your account's access rules.
 
 These permissions support features such as recommendations and recaps. The assistant cannot change your listening progress or access other readers' activity. Information it retrieves leaves your server and goes to the assistant you connect, including the company operating it if you use a hosted service. OperaLibre does not choose that recipient for you. Review the recipient's privacy, processing, retention, and deletion terms before sharing access; it may retain retrieved information in conversation history, logs, or other storage under its own policies.
 
 You can remove an assistant in Settings (or the account menu's assistant controls on the web) to revoke its token and prevent subsequent authenticated requests with that token. Revocation does not recall information already retrieved, cancel a request already authorized, or delete copies held by the assistant or its provider. Deleting server data likewise does not delete those external copies. Use the recipient's own controls or contact it to request deletion. An owner can disable assistant access for the server; this stops access while disabled, but does not revoke existing tokens.
+
+### Optional chapter notes
+
+An OperaLibre server owner can enable optional chapter notes and choose a language model to write them, either a hosted provider such as Anthropic or an endpoint the owner runs. When an administrator makes notes for a book, that book's text or a transcript of its narration is sent from the server to the chosen model, under that provider's own terms. The book's title and author are included; your account, listening progress, and history are not. Transcripts are made on the server itself. Notes and transcripts are kept in the server's data directory until an administrator removes them.
 
 ### On a Jellyfin server
 

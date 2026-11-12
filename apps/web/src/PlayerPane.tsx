@@ -1,6 +1,7 @@
 import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BookPreviewBar, type PreviewPosition } from "./BookPreviewBar";
 import { BookCredits } from "./BookCredits";
+import { ChapterNotesPanel } from "./ChapterNotesPanel";
 import type { useBookCompletion } from "./useBookCompletion";
 import type { useMetadataEditor } from "./useMetadataEditor";
 import type { useOfflineDownloads } from "./useOfflineDownloads";
@@ -1151,6 +1152,8 @@ export function PlayerPane({
               ) : null}
             </div>
           ) : null}
+
+          <ChapterNotesPanel book={selectedBook} />
 
           {demoMode ? <DemoMediaCredits /> : null}
 

@@ -15,6 +15,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
+#[path = "chapter_notes_http_tests.rs"]
+mod chapter_notes_http_tests;
 #[path = "share_recovery_service_tests.rs"]
 mod share_recovery_service_tests;
 #[path = "share_setup_http_tests.rs"]
@@ -9765,7 +9767,7 @@ async fn scopes_decide_which_tools_an_agent_has() {
 
     let everything =
         create_agent(&server, &owner, &["library", "progress", "history", "text"]).await;
-    assert_eq!(tool_names(&server, &everything).await.len(), 9);
+    assert_eq!(tool_names(&server, &everything).await.len(), 10);
 
     // Getting books is its own grant, and the one tool that acts says so.
     let shopper = create_agent(&server, &owner, &["getBooks"]).await;

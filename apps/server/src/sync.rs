@@ -3537,7 +3537,7 @@ impl<'a> Aligner<'a> {
 
 /// Echogarden's launcher reports a crashed worker as a clean exit, so a
 /// missing result is the only sign the command failed.
-async fn read_cli_output(path: &FsPath, what: &str) -> anyhow::Result<String> {
+pub(crate) async fn read_cli_output(path: &FsPath, what: &str) -> anyhow::Result<String> {
     fs::read_to_string(path).await.map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             anyhow::anyhow!(
@@ -3549,7 +3549,7 @@ async fn read_cli_output(path: &FsPath, what: &str) -> anyhow::Result<String> {
     })
 }
 
-async fn run_alignment_cli(
+pub(crate) async fn run_alignment_cli(
     cli_path: &FsPath,
     cli_args: &[String],
     ffmpeg_path: Option<&FsPath>,
@@ -3587,7 +3587,7 @@ fn stderr_tail(output: &std::process::Output) -> String {
     lines[lines.len().saturating_sub(12)..].join("\n")
 }
 
-async fn extract_alignment_audio(
+pub(crate) async fn extract_alignment_audio(
     ffmpeg_path: &FsPath,
     source_path: &FsPath,
     output_path: &FsPath,

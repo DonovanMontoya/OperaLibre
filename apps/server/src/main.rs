@@ -69,6 +69,7 @@ mod app;
 mod auth;
 mod backup;
 mod catalogue;
+mod chapter_notes;
 mod companions;
 mod config;
 mod covers;
