@@ -331,12 +331,7 @@ pub(crate) fn write_selected_archive(
             anyhow::bail!("duplicate archive entry")
         }
         writer.start_file(&item.archive_name, options)?;
-        let mut source = open_share_file(
-            &item.path,
-            allowed_roots
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("no allowed root"))?,
-        )?;
+        let mut source = open_selected_source(&item.path, allowed_roots)?;
         std::io::copy(&mut source, &mut writer)?;
     }
     writer.finish()?;
@@ -370,12 +365,7 @@ pub(crate) fn write_mixed_archive(
             anyhow::bail!("duplicate archive entry")
         }
         writer.start_file(&item.archive_name, options)?;
-        let mut source = open_share_file(
-            &item.path,
-            allowed_roots
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("no allowed root"))?,
-        )?;
+        let mut source = open_selected_source(&item.path, allowed_roots)?;
         std::io::copy(&mut source, &mut writer)?;
     }
     for entry in generated {
@@ -647,8 +637,17 @@ fn trusted_candidates_for_book(
 
 fn open_selected_source(path: &FsPath, roots: &[&FsPath]) -> anyhow::Result<std::fs::File> {
     for root in roots {
-        if path.starts_with(root) {
-            return open_share_file(path, root);
+        // The walk refuses to follow links, so a root reached through one
+        // (a NAS mount point, macOS /var) is opened by its resolved path. The
+        // scanner may have recorded the file under either spelling.
+        let Ok(resolved) = root.canonicalize() else {
+            continue;
+        };
+        if path.starts_with(&resolved) {
+            return open_share_file(path, &resolved);
+        }
+        if let Ok(relative) = path.strip_prefix(root) {
+            return open_share_file(&resolved.join(relative), &resolved);
         }
     }
     anyhow::bail!("asset is outside trusted share roots")
@@ -2786,6 +2785,33 @@ mod tests {
         assert_eq!(receipt.sha256, hex_digest(Sha256::digest(&bytes)));
         planned[0].archive_name = "../escape".into();
         assert!(write_verified_archive(output.path(), &planned, &[], root.path(), 4096).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_library_root_reached_through_a_symlink_still_opens_its_files() {
+        use std::io::Read;
+        let real = tempfile::tempdir().unwrap();
+        std::fs::write(real.path().join("book.epub"), b"epub").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            real.path().join("link.epub"),
+        )
+        .unwrap();
+        let links = tempfile::tempdir().unwrap();
+        let root = links.path().join("library");
+        std::os::unix::fs::symlink(real.path(), &root).unwrap();
+
+        // The scanner records files under the configured, unresolved root.
+        let mut opened = open_selected_source(&root.join("book.epub"), &[&root]).unwrap();
+        let mut contents = String::new();
+        opened.read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "epub");
+        // Resolving the root does not relax the check on what is inside it.
+        assert!(open_selected_source(&root.join("link.epub"), &[&root]).is_err());
+        assert!(open_selected_source(&outside.path().join("secret.txt"), &[&root]).is_err());
     }
 
     #[cfg(unix)]
