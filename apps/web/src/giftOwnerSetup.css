@@ -72,3 +72,5 @@
 .gift-owner-configuration__actions p { font-size: 0.85rem; opacity: 0.75; }
 .gift-owner-configuration [role="status"] { padding: 12px 14px; border-left: 3px solid var(--oxblood, #8b2e1f); background: rgba(var(--ink-rgb, 48, 39, 29), 0.045); }
 .gift-owner-configuration :is(button, input, summary):focus-visible { outline: 3px solid var(--oxblood, #8b2e1f); outline-offset: 3px; }
+.gift-owner-configuration__steps { display: grid; gap: 8px; margin: 0; padding-left: 1.3em; line-height: 1.45; }
+.gift-owner-configuration__steps a { color: inherit; font-weight: 600; }

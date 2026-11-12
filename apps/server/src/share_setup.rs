@@ -217,6 +217,28 @@ pub(crate) async fn get_configuration(
     Ok(Json(snapshot(load(&state).await?.as_ref())?))
 }
 
+/// Secrets are accepted only over HTTPS that ends at a reverse proxy on this
+/// machine, so they never cross a network in plain text.
+fn require_private_transport(
+    state: &AppState,
+    peer: &std::net::SocketAddr,
+    headers: &HeaderMap,
+) -> Result<(), ApiError> {
+    if matches!(state.deployment_mode, DeploymentMode::Proxy)
+        && peer.ip().is_loopback()
+        && headers
+            .get("x-forwarded-proto")
+            .and_then(|value| value.to_str().ok())
+            == Some("https")
+    {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "Gift credentials require HTTPS through a trusted loopback reverse proxy in proxy deployment mode.",
+        ))
+    }
+}
+
 pub(crate) async fn put_configuration(
     state: State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -228,17 +250,7 @@ pub(crate) async fn put_configuration(
     require_owner(&auth)?;
     let Json(input) =
         input.map_err(|_| ApiError::bad_request("Invalid gift configuration request."))?;
-    if !matches!(state.deployment_mode, DeploymentMode::Proxy)
-        || !peer.ip().is_loopback()
-        || headers
-            .get("x-forwarded-proto")
-            .and_then(|value| value.to_str().ok())
-            != Some("https")
-    {
-        return Err(ApiError::bad_request(
-            "Gift credentials require HTTPS through a trusted loopback reverse proxy in proxy deployment mode.",
-        ));
-    }
+    require_private_transport(&state, &peer, &headers)?;
     let _gate = SETUP_GATE.lock().await;
     if !input.owner_controls_broker
         || input.broker_origin.len() > 512
@@ -313,6 +325,84 @@ pub(crate) async fn put_configuration(
         allow_readers: input.allow_readers,
         retain_sender_state,
         auto_recover_senders,
+        connectivity,
+    };
+    let response = snapshot(Some(&config))?;
+    let payload = serde_json::to_string(&config)
+        .map_err(|_| ApiError::internal("Cannot save gift configuration."))?;
+    state
+        .database
+        .transaction(move |db| write_document(db, DOCUMENT, &payload))
+        .await?;
+    Ok(Json(response))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct InstallCloudflareBroker {
+    /// Used for this installation only. It is not stored.
+    api_token: String,
+    account_id: Option<String>,
+}
+
+/// Installs the broker in the owner's Cloudflare account and saves the
+/// result, so the owner handles one pasted token and no broker secret.
+pub(crate) async fn install_cloudflare_broker(
+    state: State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+    input: Result<Json<InstallCloudflareBroker>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<GiftSharingConfiguration>, ApiError> {
+    let state = state.0;
+    require_owner(&auth)?;
+    let Json(input) = input.map_err(|_| ApiError::bad_request("Invalid gift setup request."))?;
+    require_private_transport(&state, &peer, &headers)?;
+    let token = input.api_token.trim();
+    if !(20..=512).contains(&token.len())
+        || !token.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+    {
+        return Err(ApiError::bad_request(
+            "Paste the whole Cloudflare API token.",
+        ));
+    }
+    let account = input
+        .account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|account| !account.is_empty());
+    let _gate = SETUP_GATE.lock().await;
+    ensure_experiment(&state).await?;
+    // A new installation replaces the broker's secrets, which would strand
+    // any gift that is still waiting.
+    crate::share::ensure_no_pending_broker_rooms(&state).await?;
+    let previous = load(&state).await?;
+    let installed = crate::share_cloudflare::install(token, account).await?;
+    let connectivity = previous
+        .as_ref()
+        .map(|config| config.connectivity.clone())
+        .filter(|connectivity| !connectivity.ice_servers.is_empty())
+        .unwrap_or_else(|| crate::share_connectivity::Connectivity {
+            ice_servers: vec![crate::share_connectivity::IceServer {
+                urls: vec![crate::share_cloudflare::DEFAULT_STUN.to_string()],
+                username: None,
+                credential: None,
+                turn_rest_secret: None,
+            }],
+            relay_allowed: false,
+            require_relay: false,
+        });
+    let config = StoredConfiguration {
+        version: 1,
+        broker_origin: installed.origin,
+        owner_secret: installed.owner_secret,
+        allow_readers: previous.as_ref().is_some_and(|config| config.allow_readers),
+        retain_sender_state: previous
+            .as_ref()
+            .is_some_and(|config| config.retain_sender_state),
+        auto_recover_senders: previous
+            .as_ref()
+            .is_some_and(|config| config.auto_recover_senders),
         connectivity,
     };
     let response = snapshot(Some(&config))?;

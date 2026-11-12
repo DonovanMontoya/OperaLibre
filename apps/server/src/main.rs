@@ -98,6 +98,7 @@ mod share;
 mod share_alignment;
 #[allow(dead_code)]
 mod share_broker;
+mod share_cloudflare;
 #[allow(dead_code)]
 mod share_connectivity;
 #[allow(dead_code)]

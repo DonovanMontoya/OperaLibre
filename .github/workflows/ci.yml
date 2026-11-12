@@ -227,7 +227,9 @@ jobs:
         run: npm test -w @operalibre/web
 
       - name: Test book gifting broker
-        run: npm run test:broker
+        run: |
+          npm run test:broker
+          node script/gift_broker_modules.mjs --check
 
       - name: Test development proxy
         run: node --experimental-strip-types --test script/dev_proxy.test.mjs

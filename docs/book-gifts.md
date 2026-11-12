@@ -16,8 +16,8 @@ Book gifts are experimental. They have been tested from a Linux server to the iP
 | Piece | What it does | Cost |
 | --- | --- | --- |
 | An OperaLibre server on Linux or macOS | Sends the book. Windows servers cannot send gifts yet. | |
-| HTTPS in front of the server | Needed once, to save the broker secret. Tailscale Serve, Cloudflare Tunnel, or Caddy all work. | Free options exist |
-| A gift broker on Cloudflare Workers | Introduces your server and the recipient's phone to each other. | Free plan is enough for personal use |
+| HTTPS in front of the server | Needed while you set gifts up. Tailscale Serve, Cloudflare Tunnel, or Caddy all work. | Free options exist |
+| A Cloudflare account | Runs the gift broker, which introduces your server and the recipient's phone to each other. OperaLibre installs the broker for you. | Free plan is enough for personal use |
 | A STUN server | Tells each side its public address so they can connect directly. | Free (Cloudflare and others run public ones) |
 | A TURN relay (optional) | Carries the book when a direct connection is impossible. | You host or pay for it |
 | The OperaLibre app on the recipient's phone | Receives and stores the book. A browser cannot receive a gift. | |
@@ -31,11 +31,47 @@ Book gifts are experimental. They have been tested from a Linux server to the iP
 
 The broker never receives the book. It sees the encrypted preview, connection details, and the network addresses of the server and the phone. The recipient's phone learns your server's public address, as with any direct connection. To hide it, use a TURN relay and turn on **Always use the relay**.
 
-## 1. Deploy the gift broker
+## 1. Put HTTPS in front of the server
 
-The broker is a small Cloudflare Worker in the `share-broker` folder of the OperaLibre source. You deploy it to your own Cloudflare account; there is no shared one.
+Gift setup handles secrets, so the server accepts it only with `deployment_mode = proxy` in `server.config` and an HTTPS reverse proxy on the same machine. This keeps the secrets from ever crossing the network in plain text. None of these options needs a forwarded port:
 
-You need a free [Cloudflare account](https://dash.cloudflare.com/sign-up), Node.js 22 or newer, and the OperaLibre source:
+- **Tailscale Serve:** `tailscale serve --bg --https=443 http://127.0.0.1:4920` gives the server an HTTPS address inside your tailnet.
+- **Cloudflare Tunnel:** `cloudflared` gives it a public HTTPS address through an outgoing tunnel.
+- **Caddy or another reverse proxy** on the same machine, if you already have a domain.
+
+See [Deployment](deployment.md) and [Configuration](configuration.md#reference) for the server side of each. If your server already runs this way, there is nothing to change.
+
+Gifts themselves do not travel through this proxy. It is only for you, when you open OperaLibre to manage the server.
+
+## 2. Turn gifts on
+
+1. Open OperaLibre in a browser at its HTTPS address and sign in as the owner. The phone apps cannot change these settings.
+2. Go to **Administration → Experiments → Book gifts** and choose **Enable**.
+
+## 3. Set up the broker
+
+The broker is a small Cloudflare Worker that runs in your own Cloudflare account; there is no shared one. OperaLibre installs it for you:
+
+1. Under **Set up with Cloudflare**, choose **Create a Cloudflare token**. Sign in to Cloudflare, or make a free account. The page that opens is already filled in with the one permission needed, editing Workers. Choose **Continue to summary**, then **Create Token**.
+2. Copy the token, paste it into **Cloudflare API token**, and choose **Set up gifts**.
+
+Your server contacts Cloudflare once, installs the broker, creates its secrets, and saves a STUN server (`stun:stun.cloudflare.com:3478`). The token is used for that one installation and is not stored; you can delete it in Cloudflare afterwards. A brand new broker can take a minute to start answering.
+
+If the token works for more than one Cloudflare account, open **More than one Cloudflare account?** and enter the Account ID of the one to use.
+
+After a server update that changes gifts, open **Update or reinstall the broker** and paste a token again. This also replaces the broker's secrets, so links you have already sent stop working.
+
+The Workers free plan allows about 100,000 requests a day, far more than personal gifting uses. Check [Cloudflare's current limits](https://developers.cloudflare.com/workers/platform/limits/) before relying on that; when a free limit is reached, gifts fail until the next day.
+
+Optional settings, once the broker is set up:
+
+- **Let readers send gifts too.** Off by default, so only the owner can send. Readers can only gift books they can already open.
+- **Server restarts.** A waiting gift normally stops working if the server restarts before it is opened. **Keep waiting gifts across restarts** stores each waiting gift in the server's data folder until it is received or expires.
+- **Connection servers.** Change the STUN server or add a TURN relay. See [When the two sides cannot connect](#when-the-two-sides-cannot-connect).
+
+### Deploying the broker yourself
+
+If you would rather not give your server a Cloudflare token, deploy the broker from the `share-broker` folder of the OperaLibre source. You need Node.js 22 or newer:
 
 ```bash
 git clone https://github.com/DonovanMontoya/OperaLibre.git
@@ -44,9 +80,7 @@ npx wrangler login
 npx wrangler deploy
 ```
 
-`wrangler deploy` prints the broker's address, such as `https://operalibre-share-broker.your-name.workers.dev`. Keep it for step 3.
-
-Next, create two secrets. The first is the owner secret your server uses to prove it may create gifts. The broker stores only its SHA-256 digest:
+`wrangler deploy` prints the broker's address, such as `https://operalibre-share-broker.your-name.workers.dev`. Next, create two secrets. The first is the owner secret your server uses to prove it may create gifts. The broker stores only its SHA-256 digest:
 
 ```bash
 # The owner secret. Save this; you will paste it into OperaLibre.
@@ -63,34 +97,9 @@ npx wrangler secret put SIGNING_SECRET
 
 On Linux, use `sha256sum` in place of `shasum -a 256`.
 
-Open `https://your-broker-address/gift` in a browser. You should see a page titled "Someone sent you a book" saying the link is incomplete. That means the broker is running.
+Then, in OperaLibre, open **Use a broker you deployed yourself**. Enter the **Broker address** and the **Broker owner secret**. Open **Connection servers**, tick **Replace the connection servers**, and enter a STUN server such as `stun:stun.cloudflare.com:3478`. Tick **I run this broker and accept its costs**, then **Save gift setup**.
 
-The Workers free plan allows about 100,000 requests a day, far more than personal gifting uses. Check [Cloudflare's current limits](https://developers.cloudflare.com/workers/platform/limits/) before relying on that; when a free limit is reached, gifts fail until the next day.
-
-## 2. Put HTTPS in front of the server
-
-Saving the broker secret requires `deployment_mode = proxy` in `server.config` and an HTTPS reverse proxy on the same machine. This keeps the secret from ever crossing the network in plain text. None of these options needs a forwarded port:
-
-- **Tailscale Serve:** `tailscale serve --bg --https=443 http://127.0.0.1:4920` gives the server an HTTPS address inside your tailnet.
-- **Cloudflare Tunnel:** `cloudflared` gives it a public HTTPS address through an outgoing tunnel.
-- **Caddy or another reverse proxy** on the same machine, if you already have a domain.
-
-See [Deployment](deployment.md) and [Configuration](configuration.md#reference) for the server side of each. If your server already runs this way, there is nothing to change.
-
-Gifts themselves do not travel through this proxy. It is only for you, when you open OperaLibre to manage the server.
-
-## 3. Turn gifts on and connect the broker
-
-1. Open OperaLibre in a browser at its HTTPS address and sign in as the owner. The phone apps cannot change these settings.
-2. Go to **Administration → Experiments → Book gifts** and choose **Enable**.
-3. Enter the **Broker address** from step 1 and the **Broker owner secret**.
-4. Open **Connection servers**, tick **Replace the connection servers**, and enter a STUN server. `stun:stun.cloudflare.com:3478` works for most people.
-5. Tick **I run this broker and accept its costs**, then **Save gift setup**.
-
-Two optional settings:
-
-- **Let readers send gifts too.** Off by default, so only the owner can send. Readers can only gift books they can already open.
-- **Server restarts.** A waiting gift normally stops working if the server restarts before it is opened. **Keep waiting gifts across restarts** stores each waiting gift in the server's data folder until it is received or expires.
+Either way, you can check the broker by opening `https://your-broker-address/gift` in a browser. A page titled "Someone sent you a book" saying the link is incomplete means it is running.
 
 ## 4. Send a gift
 
@@ -132,6 +141,6 @@ Cloudflare's hosted TURN service is not supported yet, and neither are TCP or TL
 
 ## Turning it off
 
-**Administration → Experiments → Book gifts → Disable** stops gifts at once: transfers in progress end, and links already sent stop working until it is turned back on. Your broker settings are kept. To remove them from the server, open **Maintenance** and choose **Remove gift setup**. To stop the broker itself, run `npx wrangler delete` in `share-broker`.
+**Administration → Experiments → Book gifts → Disable** stops gifts at once: transfers in progress end, and links already sent stop working until it is turned back on. Your broker settings are kept. To remove them from the server, open **Maintenance** and choose **Remove gift setup**. To stop the broker itself, delete the `operalibre-share-broker` Worker under **Workers & Pages** in the Cloudflare dashboard.
 
-The broker secrets are stored in the server's database and therefore in its backups. If a backup is exposed, deploy new secrets to the broker and save the new owner secret in OperaLibre.
+The broker secrets are stored in the server's database and therefore in its backups. If a backup is exposed, use **Update or reinstall the broker** to give the broker new secrets.
