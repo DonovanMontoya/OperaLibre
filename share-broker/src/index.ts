@@ -1,6 +1,6 @@
+import { MAX_TTL_SECONDS } from "./limits.js";
 const MAX_MESSAGE_BYTES = 64 * 1024;
 const MAX_MESSAGES = 32;
-const MAX_TTL_SECONDS = 15 * 60;
 const MAX_PREVIEW_MESSAGE_BYTES = 180 * 1024;
 import { issue, consume, ownerAuthorized, readBounded, verifyClaim, signClaim } from "./experimental.js";
 import { rotateRole, claimRecipientRecovery, recipientRecoverySuccessor, recipientRecoveryAuthorized, type Transaction, type TransactionalStorage } from "./claims.js";
@@ -116,7 +116,7 @@ export class SecureRoom implements DurableObject {
     if (!body || typeof body.room !== "string") return new Response(null, { status: 400 });
     const now = Math.floor(Date.now() / 1000);
     if (url.pathname === "/preview-put") {
-      if (typeof body.nonce !== "string" || !/^[A-Za-z0-9_-]{16}$/.test(body.nonce) || typeof body.ciphertext !== "string" || !/^[A-Za-z0-9_-]{22,174784}$/.test(body.ciphertext) || !Number.isSafeInteger(body.expiresAt) || body.expiresAt! <= now || body.expiresAt! > now + 900) return new Response(null, { status: 400 });
+      if (typeof body.nonce !== "string" || !/^[A-Za-z0-9_-]{16}$/.test(body.nonce) || typeof body.ciphertext !== "string" || !/^[A-Za-z0-9_-]{22,174784}$/.test(body.ciphertext) || !Number.isSafeInteger(body.expiresAt) || body.expiresAt! <= now || body.expiresAt! > now + MAX_TTL_SECONDS) return new Response(null, { status: 400 });
       return this.state.storage.transaction(async txn => {
         if (await txn.get("revoked") || await txn.get("preview")) return new Response(null, { status: 409 });
         await txn.put("preview", { nonce: body.nonce, ciphertext: body.ciphertext, expiresAt: body.expiresAt });

@@ -268,3 +268,24 @@ test("mounted gift actions react to enablement, installation, removal and late s
     await page.close();
   } finally { await browser.close(); }
 });
+
+test("a narrow-screen sender can choose 24 hours and sends that lifetime to the server", { timeout: 15000 }, async () => {
+  const browser = await chromium.launch({ executablePath: process.env.OPERALIBRE_TEST_CHROMIUM || undefined, headless: true });
+  try {
+    const f = await fixture(browser);
+    await f.page.setViewportSize({ width: 320, height: 667 });
+    await f.page.goto(`${origin}/test/gift-sender.html?enabled=1`);
+    await f.page.getByRole("button", { name: "Gift this book" }).click();
+    const duration = f.page.getByLabel("Link works for", { exact: true });
+    await duration.waitFor();
+    assert.equal(await duration.inputValue(), "900");
+    await duration.selectOption("86400");
+    const box = await duration.boundingBox();
+    assert.ok(box.x >= 0 && box.x + box.width <= 320);
+    await f.page.getByRole("button", { name: "Create gift link" }).click();
+    await f.page.getByRole("heading", { name: "Your gift link" }).waitFor();
+    assert.equal(f.requests.find(request => request.type === "create").body.expiresInSeconds, 86400);
+    assert.deepEqual(f.errors, []);
+    await f.context.close();
+  } finally { await browser.close(); }
+});

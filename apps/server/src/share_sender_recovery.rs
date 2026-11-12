@@ -369,7 +369,8 @@ impl RecoveryStore {
             record.validate(&store.0.server_id)?;
             anyhow::ensure!(
                 record.expires_at > now
-                    && record.expires_at <= now.saturating_add(900)
+                    && record.expires_at
+                        <= now.saturating_add(crate::share::GIFT_MAX_LIFETIME_SECONDS)
                     && record.producer.is_none()
                     && record.pending_producer.is_none()
                     && !record.cleanup_only,
@@ -574,7 +575,7 @@ impl RecoveryStore {
                 && record.broker_origin == authority.broker_origin
                 && record.expires_at <= authority.invitation_expires_at
                 && record.expires_at > now
-                && record.expires_at <= now.saturating_add(900),
+                && record.expires_at <= now.saturating_add(crate::share::GIFT_MAX_LIFETIME_SECONDS),
             "sender recovery is not authorized"
         );
         let opened_record = record.clone();

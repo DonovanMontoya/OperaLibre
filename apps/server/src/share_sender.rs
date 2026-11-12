@@ -208,7 +208,7 @@ where
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     anyhow::ensure!(now < expires_at, "share expired");
     anyhow::ensure!(
-        expires_at <= now.saturating_add(900),
+        expires_at <= now.saturating_add(crate::share::GIFT_MAX_LIFETIME_SECONDS),
         "invalid share lifetime"
     );
     let deadline = tokio::time::Instant::now()
@@ -329,7 +329,11 @@ async fn wait_for_verified_receipt(
     anyhow::ensure!(now < expires_at, "share expired");
     // Native verification hashes the complete staged archive and can take much
     // longer than 30 seconds on a phone. Do not extend the invitation itself.
-    let timeout = std::time::Duration::from_secs(expires_at.saturating_sub(now).min(900));
+    let timeout = std::time::Duration::from_secs(
+        expires_at
+            .saturating_sub(now)
+            .min(crate::share::GIFT_MAX_LIFETIME_SECONDS),
+    );
     cancellable_send(
         async {
             tokio::time::timeout(timeout, async {
@@ -1115,7 +1119,11 @@ async fn send_persisted_archive<C: PersistedChannel>(
 ) -> anyhow::Result<()> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     anyhow::ensure!(now < expires_at, "share expired");
-    let remaining = std::time::Duration::from_secs(expires_at.saturating_sub(now).min(900));
+    let remaining = std::time::Duration::from_secs(
+        expires_at
+            .saturating_sub(now)
+            .min(crate::share::GIFT_MAX_LIFETIME_SECONDS),
+    );
     cancellable_send(async {
         tokio::time::timeout(remaining, async {
             anyhow::ensure!(offset <= size && file.metadata().await?.len()==size,"archive size changed");

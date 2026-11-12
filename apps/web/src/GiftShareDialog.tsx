@@ -189,10 +189,10 @@ export function GiftShareDialog({ bookId, api = senderApi, alignmentReady = fals
             {messageLength > 1000 ? <p role="alert" className="gift-share-alert">Shorten the message to 1000 characters or fewer.</p> : null}
           </fieldset>
           <fieldset className="gift-share-group" disabled={phase === "creating"}>
-            <legend>Link works for</legend>
-            <div className="gift-share-segments">
-              {[300, 900].map(seconds => <label key={seconds}><input type="radio" name="gift-expiry" value={seconds} checked={expiry === seconds} onChange={() => setExpiry(seconds)} /><span>{seconds / 60} minutes</span></label>)}
-            </div>
+            <label className="gift-share-note-label" htmlFor="gift-expiry">Link works for</label>
+            <select id="gift-expiry" className="gift-share-expiry" value={expiry} onChange={event => setExpiry(Number(event.currentTarget.value))}>
+              {[[300, "5 minutes"], [900, "15 minutes"], [3600, "1 hour"], [21600, "6 hours"], [86400, "24 hours"]].map(([seconds, label]) => <option key={seconds} value={seconds}>{label}</option>)}
+            </select>
           </fieldset>
           <p className="gift-share-quiet">Share only books you have permission to share. No DRM removal is provided. Protected files are left out when the server recognizes them, but this is not a guarantee of DRM detection. Gifts are experimental and only work in test builds.</p>
         </> : null}
