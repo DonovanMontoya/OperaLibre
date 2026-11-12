@@ -91,6 +91,7 @@ export function PlayerPane({
   closeReadalong,
   completionError,
   completionPendingBookId,
+  continueReadingBook,
   currentTrack,
   demoMode,
   descriptionCanExpand,
@@ -183,6 +184,7 @@ export function PlayerPane({
   closeReadalong: () => void;
   completionError: DeviceNotice | null;
   completionPendingBookId: string | null;
+  continueReadingBook: (book: Book, play?: boolean) => void;
   currentTrack: Track | null;
   demoMode: boolean;
   descriptionCanExpand: boolean;
@@ -1540,7 +1542,7 @@ export function PlayerPane({
                   <p>Pick up where you left off.</p>
                   <div className="empty-player-books">
                     {resumeBooks.map(book => (
-                      <button key={book.id} type="button" className="empty-player-book" onClick={() => setSelectedBookId(book.id)}>
+                      <button key={book.id} type="button" className="empty-player-book" onClick={() => continueReadingBook(book)}>
                         <CoverArt book={book} size="small" />
                         <span className="empty-player-book-copy">
                           <strong>{book.title}</strong>
