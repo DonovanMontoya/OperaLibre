@@ -1,0 +1,270 @@
+/* Phone: a sheet rising from the bottom like the player's sheets.
+   Wider screens: a centered card. Colors come from the app's theme tokens so
+   the iOS dark appearance flips them; --paper itself never flips. */
+.gift-share-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  align-items: end;
+  justify-items: center;
+  background: rgba(14, 10, 7, 0.5);
+}
+.gift-share-dialog {
+  --gs-line: rgba(var(--ink-rgb, 26, 20, 16), 0.14);
+  --gs-faded: var(--ink-faded, #6b5a4c);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: 100%;
+  max-height: 92vh;
+  max-height: 92dvh;
+  box-sizing: border-box;
+  border-radius: 20px 20px 0 0;
+  background: rgb(var(--sheet-rgb, 255, 250, 235));
+  color: var(--ink, #1a1410);
+  font-family: "Fraunces", "Times New Roman", serif;
+  box-shadow: 0 -12px 40px rgba(14, 10, 7, 0.28);
+  animation: gift-share-rise 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.gift-share-dialog:focus { outline: none; }
+@media (min-width: 40rem) {
+  .gift-share-scrim { align-items: center; padding: 24px; }
+  .gift-share-dialog { width: min(34rem, 100%); max-height: 86dvh; border-radius: 18px; box-shadow: 0 20px 60px rgba(14, 10, 7, 0.32); }
+}
+@keyframes gift-share-rise { from { transform: translateY(24px); opacity: 0; } }
+
+.gift-share-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 12px 6px 22px;
+}
+.gift-share-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 500;
+  color: var(--gs-faded);
+}
+.gift-share-close {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.gift-share-body {
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 4px 22px 18px;
+}
+.gift-share-body p { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
+
+.gift-share-book { display: flex; gap: 14px; align-items: flex-start; margin: 4px 0 20px; }
+.gift-share-book-mark {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 58px;
+  border-radius: 3px 6px 6px 3px;
+  background: #6e2418;
+  color: #d9b574;
+  box-shadow: inset 4px 0 0 rgba(0, 0, 0, 0.22);
+}
+.gift-share-book h3 {
+  margin: 0 0 4px;
+  font-size: 1.55rem;
+  line-height: 1.15;
+  font-weight: 600;
+  font-variation-settings: "opsz" 72;
+  overflow-wrap: anywhere;
+}
+.gift-share-book p { color: var(--gs-faded); font-size: 0.95rem; }
+
+.gift-share-group { margin: 0 0 22px; padding: 0; border: 0; min-width: 0; }
+.gift-share-group legend,
+.gift-share-note-label,
+.gift-share-link-label {
+  display: block;
+  padding: 0;
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.gift-share-assets {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--gs-line);
+}
+.gift-share-asset { border-bottom: 1px solid var(--gs-line); }
+.gift-share-asset label {
+  display: grid;
+  grid-template-columns: 22px 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 6px 2px;
+  cursor: pointer;
+}
+.gift-share-asset[data-locked] label { cursor: default; }
+.gift-share-asset input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--oxblood, #8b2e1f);
+}
+.gift-share-asset-icon { color: var(--gs-faded); }
+.gift-share-asset-name { display: grid; min-width: 0; }
+.gift-share-asset-name strong { font-weight: 500; }
+.gift-share-asset-name small {
+  color: var(--gs-faded);
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gift-share-asset-size {
+  color: var(--gs-faded);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.gift-share-body .gift-share-asset-note {
+  margin: -4px 0 10px 66px;
+  color: var(--gs-faded);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+.gift-share-asset[data-locked] :is(strong, .gift-share-asset-icon) { opacity: 0.7; }
+
+/* The note is written on the gift's flyleaf, so it looks like one. */
+.gift-share-note {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 7.5rem;
+  padding: 14px 16px;
+  border: 1px solid var(--gs-line);
+  border-radius: 4px;
+  background: rgb(var(--lift-rgb, 255, 252, 244));
+  box-shadow: 0 0.5rem 1.2rem -0.9rem rgba(40, 14, 8, 0.35);
+  color: var(--ink, #1a1410);
+  font: italic 1.05rem/1.7 "Fraunces", serif;
+  resize: vertical;
+}
+.gift-share-note::placeholder { color: var(--gs-faded); opacity: 0.8; }
+.gift-share-note + small { display: block; margin-top: 6px; }
+.gift-share-note + small[data-over] { color: var(--oxblood, #8b2e1f); }
+
+.gift-share-segments {
+  display: inline-grid;
+  grid-auto-flow: column;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(var(--ink-rgb, 26, 20, 16), 0.07);
+}
+.gift-share-segments label { position: relative; cursor: pointer; }
+.gift-share-segments input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.gift-share-segments span {
+  display: block;
+  padding: 9px 16px;
+  border-radius: 999px;
+  font-size: 0.92rem;
+  white-space: nowrap;
+}
+.gift-share-segments input:checked + span {
+  background: rgb(var(--lift-rgb, 255, 252, 244));
+  box-shadow: 0 1px 3px rgba(14, 10, 7, 0.16);
+  font-weight: 600;
+}
+.gift-share-segments input:focus-visible + span { outline: 3px solid var(--oxblood, #8b2e1f); outline-offset: 1px; }
+
+.gift-share-quiet { color: var(--gs-faded); font-size: 0.85rem; }
+.gift-share-body .gift-share-alert {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--oxblood, #8b2e1f);
+  background: rgba(var(--oxblood-rgb, 139, 46, 31), 0.08);
+  font-size: 0.92rem;
+}
+.gift-share-body .gift-share-status { margin-top: 14px; font-size: 0.92rem; }
+
+.gift-share-body .gift-share-created > p:first-child { margin-bottom: 18px; }
+.gift-share-link {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px dashed rgba(var(--ink-rgb, 26, 20, 16), 0.35);
+  border-radius: 6px;
+  background: rgb(var(--lift-rgb, 255, 252, 244));
+  color: inherit;
+  font: 0.92rem/1.45 "Fraunces", serif;
+  word-break: break-all;
+  resize: none;
+}
+.gift-share-created .gift-share-primary { width: 100%; }
+.gift-share-revoke {
+  margin-top: 26px;
+  padding-top: 18px;
+  border-top: 1px solid var(--gs-line);
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+.gift-share-revoke p { color: var(--gs-faded); font-size: 0.9rem; }
+
+.gift-share-foot {
+  display: grid;
+  gap: 12px;
+  padding: 14px 22px max(16px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--gs-line);
+}
+.gift-share-total { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-variant-numeric: tabular-nums; }
+.gift-share-total span { font-weight: 600; }
+.gift-share-total small { color: var(--gs-faded); }
+.gift-share-problems { flex-basis: 100%; margin: 4px 0 0; padding-left: 18px; color: var(--oxblood, #8b2e1f); font-size: 0.85rem; }
+.gift-share-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.gift-share-actions > :only-child { flex: 1; }
+
+.gift-share-primary,
+.gift-share-secondary {
+  min-height: 48px;
+  padding: 0 20px;
+  border-radius: 12px;
+  font: 600 1rem "Fraunces", serif;
+  cursor: pointer;
+}
+.gift-share-primary {
+  flex: 1;
+  border: 0;
+  background: var(--oxblood, #8b2e1f);
+  color: var(--on-oxblood, #f1e7d0);
+  box-shadow: 0 2px 0 rgba(var(--oxblood-shadow-rgb, 112, 37, 24), 0.6);
+}
+.gift-share-secondary {
+  border: 1px solid rgba(var(--ink-rgb, 26, 20, 16), 0.22);
+  background: transparent;
+  color: inherit;
+  font-weight: 500;
+}
+.gift-share-danger { color: var(--oxblood, #8b2e1f); }
+.gift-share-dialog button:disabled { cursor: not-allowed; opacity: 0.55; }
+.gift-share-dialog :is(button, textarea):focus-visible,
+.gift-share-asset input:focus-visible {
+  outline: 3px solid var(--oxblood, #8b2e1f);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gift-share-dialog { animation: none; }
+}

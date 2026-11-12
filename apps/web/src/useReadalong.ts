@@ -1,4 +1,4 @@
-import { type Dispatch, type SetStateAction, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   ApiError,
   generateSyncMap,
@@ -12,6 +12,7 @@ import {
 } from "./api";
 import { createAlignmentStatusUpdater, readAlignmentPreference, writeAlignmentPreference } from "./alignmentPreference";
 import { syncMapCacheReducer } from "./syncMapCache";
+import { giftLocalSyncCacheKey } from "./giftLocalSync.ts";
 import type { AuthUser, Book, CompanionFile, JobStatus } from "./types";
 import { groupCompanions, hasExtras, readAlongMode, readerStorageKey, syncMapPrecision } from "./readalong";
 import { getOfflineCompanionUrl, getOfflineSyncMap, releaseOfflineMediaUrl, saveOfflineSyncMap } from "./offline";
@@ -75,9 +76,21 @@ export function useReadalong({
     setAlignmentState({ scope: alignmentScope, status });
   }), [alignmentScope]);
   const updateAlignmentStatus = alignmentStatusUpdater.update;
-  const sentenceFollowAvailable = capabilities.sentenceAlignment && alignmentStatus?.enabled === true;
-  const narrationFollowActive = readalongEnabled && followSyncEnabled && sentenceFollowAvailable;
   const [{ maps: syncMaps, revision: syncMapRevision }, dispatchSyncMap] = useReducer(syncMapCacheReducer, { maps: {}, revision: 0 });
+  const mapBookId = selectedBook?.id, mapSource = selectedBook?.source, mapProof = selectedBook?.localSyncMap;
+  const mapTracks = selectedBook?.tracks, mapReadingFile = selectedBook?.readingFile, mapCompanions = selectedBook?.companions;
+  const selectedMapKey = useMemo(() => mapBookId ? giftLocalSyncCacheKey({ id: mapBookId, source: mapSource, localSyncMap: mapProof, tracks: mapTracks ?? [], readingFile: mapReadingFile ?? null, companions: mapCompanions }) : null, [mapBookId, mapSource, mapProof, mapTracks, mapReadingFile, mapCompanions]);
+  const localGiftSync = selectedBook?.source === "device" && !!selectedBook.localSyncMap;
+  const sentenceFollowAvailableForBook = useCallback((book: Book) => book.source === "device"
+    ? readalongOpen && book.id === mapBookId && !!book.localSyncMap && syncMapPrecision(syncMaps[giftLocalSyncCacheKey(book)]) === "sentence"
+    : capabilities.sentenceAlignment && alignmentStatus?.enabled === true,
+  [syncMaps, readalongOpen, mapBookId, capabilities.sentenceAlignment, alignmentStatus?.enabled]);
+  const sentenceFollowAvailable = selectedBook?.source === "device"
+    ? readalongOpen && localGiftSync && syncMapPrecision(syncMaps[selectedMapKey!]) === "sentence"
+    : capabilities.sentenceAlignment && alignmentStatus?.enabled === true;
+  const localSyncMapChecked = localGiftSync && selectedMapKey !== null && Object.prototype.hasOwnProperty.call(syncMaps, selectedMapKey);
+  const narrationFollowActive = readalongEnabled && followSyncEnabled && sentenceFollowAvailable;
+  const shouldLoadSyncMap = readalongEnabled && followSyncEnabled && (localGiftSync || sentenceFollowAvailable);
   const [syncJob, setSyncJob] = useState<JobStatus | null>(null);
   const [syncJobError, setSyncJobError] = useState<string | null>(null);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
@@ -133,7 +146,7 @@ export function useReadalong({
     return (localCompanions?.scope === companionScope ? localCompanions.urls[file.id] : null) ?? readalongUrl(file.url);
   };
   const activeCompanionIsBook = !!activeCompanion && activeCompanion.id === selectedBook?.readingFile?.id;
-  const selectedSyncMap = selectedBook ? syncMaps[selectedBook.id] ?? null : null;
+  const selectedSyncMap = selectedMapKey ? syncMaps[selectedMapKey] ?? null : null;
   // Only a forced alignment drives the marker. A map that is not one — an
   // interpolated map a device cached before those were dropped — is left out
   // entirely, so the reader falls back to chapter sync instead of following
@@ -146,9 +159,10 @@ export function useReadalong({
   const selectedReadAlongMode = selectedBook ? readAlongMode(selectedBook, selectedSyncMap, sentenceFollowAvailable) : null;
   const selectedHasExtras = !!selectedBook && hasExtras(selectedBook);
   const readalongAvailable = readalongEnabled && (!!selectedBook?.readingFile || selectedHasExtras);
-  const selectedSyncPrecise = hasPreciseSync(selectedBook);
+  const selectedSyncPrecise = selectedBook?.source === "device" ? sentenceFollowAvailable : hasPreciseSync(selectedBook);
   const canGenerateSync =
     currentUser.isAdmin &&
+    selectedBook?.source !== "device" &&
     !!alignmentStatus?.enabled &&
     selectedBook?.readingFile?.extension === "epub";
   const readerScope = `${getServerStorageKey()}.${currentUser.id}`;
@@ -277,8 +291,8 @@ export function useReadalong({
     };
   }, [currentUser.id, isOperaLibre, localMode, demoMode, alignmentStatusUpdater]);
 
-  const syncMapBook = narrationFollowActive && readalongOpen && selectedBook?.syncFile ? selectedBook : null;
-  const syncMapBookId = syncMapBook?.id ?? null;
+  const syncMapBook = shouldLoadSyncMap && readalongOpen && selectedBook?.syncFile ? selectedBook : null;
+  const syncMapBookId = syncMapBook ? giftLocalSyncCacheKey(syncMapBook) : null;
   useEffect(() => {
     if (!syncMapBookId) {
       return;
@@ -286,12 +300,15 @@ export function useReadalong({
     const controller = new AbortController();
     const { signal } = controller;
     void (async () => {
-      const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
+      const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook, signal) : null;
       if (signal.aborted) return null;
+      // Standalone gift maps are immutable selected receipts. Never send their
+      // device IDs or local metadata to a currently selected server.
+      if (syncMapBook?.source === "device") return stored;
       if (stored) dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map: stored });
       // Show the downloaded map immediately while checking in the background
       // for an alignment that finished after this book came down.
-      return getSyncMap(syncMapBookId, signal);
+      return getSyncMap(syncMapBook!.id, signal);
     })()
       .then((map) => {
         if (signal.aborted) return;
@@ -305,13 +322,16 @@ export function useReadalong({
       .catch(async () => {
         if (signal.aborted) return;
         // No server in reach: a downloaded book carries its own sync map.
-        const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
+        const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook, signal) : null;
         if (!signal.aborted) {
           dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map: stored });
         }
       });
     return () => {
       controller.abort();
+      // A local map must be rechecked after closing/switching books; a cached
+      // verification must not mask later corruption of its private file.
+      if (syncMapBook?.source === "device") dispatchSyncMap({ type: "forget", bookId: syncMapBookId });
     };
     // Updating the visible map must not cancel its own background refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -402,6 +422,7 @@ export function useReadalong({
     companionPreviewUrl,
     galleryAvailable,
     narrationFollowActive,
+    localSyncMapChecked,
     openReadalong,
     readalongAvailable,
     readalongOpen,
@@ -417,6 +438,7 @@ export function useReadalong({
     selectedSyncRecoveryGaps,
     selectedSyncPrecise,
     sentenceFollowAvailable,
+    sentenceFollowAvailableForBook,
     setActiveCompanionId,
     setReadalongOpen,
     setReaderClosing,

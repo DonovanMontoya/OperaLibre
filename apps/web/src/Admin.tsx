@@ -72,6 +72,9 @@ import { CompactNavBar } from "./CompactNavBar";
 import { SyncJobMonitor } from "./SyncJobMonitor";
 import { LibroImports } from "./LibroImports";
 import { LibroCatalog } from "./LibroCatalog";
+import { BookGiftsExperiment } from "./BookGiftsExperiment";
+import { getServerType } from "./api";
+import { isDemoMode } from "./demo";
 
 type AdminSection = "overview" | "users" | "requests" | "books" | "experiments" | "imports";
 type AccountRole = "owner" | "admin" | "reader";
@@ -1070,6 +1073,7 @@ export function AdminPanel({
                 </ExperimentSection>
               </article>
               <AgentAccessExperiment isOwner={currentUser.isOwner} />
+              {currentUser.isOwner && !isDemoMode() && getServerType() === "operalibre" ? <BookGiftsExperiment /> : null}
             </div>
           </section>
         </div>

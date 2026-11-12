@@ -183,6 +183,12 @@ import { useNowPlaying } from "./useNowPlaying";
 import { useAudioElement } from "./useAudioElement";
 import { usePlaybackRestore } from "./usePlaybackRestore";
 import { useAudioSource } from "./useAudioSource";
+import { GiftAppBoundary } from "./GiftAppBoundary";
+import { deviceGiftReceiving } from "./giftReceiving";
+import { createPersistentGiftTransport } from "./giftPersistentTransport";
+import { fetchVerifiedGiftPreview } from "./giftPreviewSource";
+import { loadOptionalNativeGiftRecoveryState, compareAndSwapNativeGiftRecoveryState } from "./giftNativeRecovery";
+import { createNativeGiftStaging, recoverNativeGiftStaging } from "./giftNativeStaging";
 // How long a Play still waiting on the stream shows as loading.
 const PLAY_PENDING_LIMIT_MS = 45_000;
 const SHELF_EXPANDED_STORAGE_KEY = "operalibre.shelfExpanded";
@@ -230,7 +236,20 @@ function initialAuthState(): AuthState {
     : { phase: "loading" };
 }
 
+// Gift links open only in the phone apps, which can store the book, and only
+// after the device's owner turns receiving on.
+const experimentalGiftTransport = createPersistentGiftTransport(fetchVerifiedGiftPreview, {
+  storage: { loadOptional: loadOptionalNativeGiftRecoveryState, compareAndSwap: compareAndSwapNativeGiftRecoveryState },
+  stages: { create: createNativeGiftStaging, recover: recoverNativeGiftStaging }
+});
+
 export default function App() {
+  return <GiftAppBoundary enabled={Capacitor.isNativePlatform()} native={Capacitor.isNativePlatform()} transport={experimentalGiftTransport} receiving={deviceGiftReceiving}>
+    <AuthenticatedApp />
+  </GiftAppBoundary>;
+}
+
+function AuthenticatedApp() {
   const [authState, setAuthState] = useState<AuthState>(initialAuthState);
 
   const checkAuth = useCallback(async () => {
@@ -1494,6 +1513,7 @@ function MainApp({
     native,
     playbackFold,
     sentenceFollowAvailable: readalong.sentenceFollowAvailable,
+    sentenceFollowAvailableForBook: readalong.sentenceFollowAvailableForBook,
     shelfExpanded
   });
   const {

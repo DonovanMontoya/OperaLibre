@@ -3,6 +3,9 @@ import type { ServerBackend, ProgressWrite, ProgressWriteOptions } from "./serve
 import { Capacitor } from "@capacitor/core";
 import { ApiError } from "./apiError";
 import { fetchWithTimeout } from "./fetchWithTimeout";
+import { giftBrokerTransportSecure } from "./giftBrokerOrigin";
+import { parseCreatedGift, parseGiftInventory, type SelectedGiftRequest } from "./giftSelectionModel";
+import { giftOwnerConfigurationPayload, parseGiftOwnerConfiguration, type GiftOwnerConfigurationRequest } from "./giftOwnerSetupModel";
 import type {
   AlignmentStatus,
   AuthStatus,
@@ -614,6 +617,116 @@ async function request<T>(path: string, options?: RequestOptions, timeoutMs = 30
   requireOperaLibreServer();
   // Read together: the token is the one issued by the address it is sent to.
   return requestAt<T>(currentApiBase(), getStoredToken(), path, options, timeoutMs);
+}
+
+export function isGiftBrokerTransportSecure(): boolean {
+  if (typeof window === "undefined") return false;
+  return giftBrokerTransportSecure(currentApiBase(), window.location.href, window.isSecureContext === true, import.meta.env.DEV);
+}
+
+export async function getBookGiftInventory(bookId: string, signal?: AbortSignal) {
+  const value = await request<unknown>(`/api/books/${encodeURIComponent(bookId)}/gift-inventory`, { signal, redirect: "error", ignoreUnauthorized: true });
+  return parseGiftInventory(value, bookId);
+}
+
+export async function createSelectedBookGift(input: SelectedGiftRequest, signal?: AbortSignal) {
+  requireOperaLibreServer();
+  // Bind both values before the POST. A later server switch must never send
+  // this private management token or old authentication to the new server.
+  const originalBase = currentApiBase(), originalToken = getStoredToken();
+  // Only selection IDs and the optional note/expiry cross this boundary. Never
+  // serialize a client Book, filesystem path, hash, manifest or private secret.
+  const body: SelectedGiftRequest = { bookId: input.bookId, selectedAssetIds: [...input.selectedAssetIds], ...(input.personalMessage !== undefined ? { personalMessage: input.personalMessage } : {}), ...(input.expiresInSeconds !== undefined ? { expiresInSeconds: input.expiresInSeconds } : {}) };
+  const gift = parseCreatedGift(await requestAt<unknown>(originalBase, originalToken, "/api/shares/selected", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }, 120_000));
+  const managementToken = gift.managementToken;
+  return { ...gift, ...(managementToken ? { revoke: async (revokeSignal?: AbortSignal) => {
+    await requestAt<void>(originalBase, originalToken, `/api/shares/${encodeURIComponent(managementToken)}`, { method: "DELETE", signal: revokeSignal, redirect: "error", ignoreUnauthorized: true });
+  } } : {}) };
+}
+
+function requireGiftSetupTransport() {
+  if (!isGiftBrokerTransportSecure()) throw new ApiError("Use a secure HTTPS page and direct HTTPS server connection for gift setup.", 400);
+}
+
+export function captureGiftOwnerSetupGuard(): () => boolean {
+  const base = currentApiBase(), token = getStoredToken();
+  return () => getServerType() === "operalibre" && currentApiBase() === base && getStoredToken() === token;
+}
+
+export async function getGiftOwnerConfiguration(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config", { signal, redirect: "error", ignoreUnauthorized: true }));
+}
+
+export async function saveGiftOwnerConfiguration(input: GiftOwnerConfigurationRequest, signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  if (input.ownerControlsBroker !== true) throw new ApiError("Confirm that you control this broker before saving credentials.", 400);
+  const body = giftOwnerConfigurationPayload(input);
+  forgetBookGiftsStatus();
+  return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config", { method: "PUT", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }));
+}
+
+export async function deleteGiftOwnerConfiguration(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  forgetBookGiftsStatus();
+  await request<void>("/api/admin/shares/config", { method: "DELETE", signal, redirect: "error", ignoreUnauthorized: true });
+}
+
+export async function cleanupConfiguredGiftBroker(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  return request<{ completed: number; pending: number }>("/api/admin/shares/config/cleanup", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true }, 120_000);
+}
+
+export async function recoverConfiguredGiftSenders(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  const result = await request<{ recovered: number; alreadyActive: number; pending: number }>("/api/admin/shares/config/recover", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true }, 120_000);
+  if (!result || [result.recovered, result.alreadyActive, result.pending].some(value => !Number.isSafeInteger(value) || value < 0 || value > 256)) throw new ApiError("Sender recovery could not be confirmed.", 502);
+  return { recovered: result.recovered, alreadyActive: result.alreadyActive, pending: result.pending };
+}
+
+export async function abandonConfiguredGiftSenders(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  const result = await request<{ abandoned: number; completed: number; pending: number }>("/api/admin/shares/config/abandon", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify({ confirmAbandon: true }) }, 120_000);
+  if (!result || [result.abandoned, result.completed, result.pending].some(value => !Number.isSafeInteger(value) || value < 0 || value > 8192)) throw new ApiError("Gift abandonment could not be confirmed.", 502);
+  return { abandoned: result.abandoned, completed: result.completed, pending: result.pending };
+}
+
+/** Whether the server's book gifts experiment is on, and whether this
+ * account may send. A server that predates gifts answers 404, which reads as off. */
+export type BookGiftsStatus = { enabled: boolean; configured: boolean; canSend: boolean };
+const BOOK_GIFTS_OFF: BookGiftsStatus = { enabled: false, configured: false, canSend: false };
+let bookGiftsStatus: { key: string; value: Promise<BookGiftsStatus> } | null = null;
+
+function parseBookGiftsStatus(value: unknown): BookGiftsStatus {
+  const status = value as Partial<BookGiftsStatus> | null;
+  if (!status || typeof status.enabled !== "boolean" || typeof status.configured !== "boolean" || typeof status.canSend !== "boolean") throw new ApiError("Book gifts could not be checked.", 502);
+  return { enabled: status.enabled, configured: status.configured, canSend: status.canSend };
+}
+
+/** Asked once per server and sign-in; saving gift settings asks again. */
+export function getBookGiftsStatus(): Promise<BookGiftsStatus> {
+  if (getServerType() !== "operalibre") return Promise.resolve(BOOK_GIFTS_OFF);
+  const key = `${currentApiBase()}\n${getStoredToken() ?? ""}`;
+  if (bookGiftsStatus?.key === key) return bookGiftsStatus.value;
+  const value = request<unknown>("/api/experimental-features/book-gifts", { redirect: "error", ignoreUnauthorized: true })
+    .then(parseBookGiftsStatus)
+    .catch((error: unknown) => {
+      // Off on an older server. Anything else may be a dropped connection, so ask again next time.
+      if (!(error instanceof ApiError && error.status === 404) && bookGiftsStatus?.value === value) bookGiftsStatus = null;
+      return BOOK_GIFTS_OFF;
+    });
+  bookGiftsStatus = { key, value };
+  return value;
+}
+
+function forgetBookGiftsStatus() {
+  bookGiftsStatus = null;
+}
+
+export async function setBookGiftsEnabled(enabled: boolean) {
+  requireOperaLibreServer();
+  forgetBookGiftsStatus();
+  return parseBookGiftsStatus(await request<unknown>("/api/experimental-features/book-gifts/enabled", { method: "PUT", redirect: "error", body: JSON.stringify({ enabled }) }));
 }
 
 async function requestAt<T>(
