@@ -4,6 +4,11 @@ The Cloudflare Worker that introduces a sending server to a recipient's app for
 [book gifts](../docs/book-gifts.md). That guide covers deploying and using it.
 Each owner deploys their own copy; this directory contains no credentials.
 
+The server carries a compiled copy of this Worker so it can install the broker
+for the owner. After changing anything here, run
+`node script/gift_broker_modules.mjs` and commit the result; CI fails when the
+copy is out of date.
+
 Book gifts are an experiment the server owner turns on under Administration →
 Experiments. The rest of this file is the design record written while the
 feature was being built. Where it says a gate is closed or a route is

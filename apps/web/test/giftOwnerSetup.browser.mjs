@@ -177,3 +177,35 @@ test("advanced connectivity is opt-in, clears private inputs, and posts only exp
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });
+
+test("a fresh server is set up by pasting one Cloudflare token, which is never kept on the page", { timeout: 15000 }, async () => {
+  const browser = await chromium.launch({ executablePath: process.env.OPERALIBRE_TEST_CHROMIUM || undefined, headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await page.goto(`${origin}/test/gift-owner-setup.html?secure=1&fresh=1`);
+    const token = page.getByLabel("Cloudflare API token");
+    await token.waitFor();
+    const link = await page.getByRole("link", { name: "Create a Cloudflare token" }).getAttribute("href");
+    assert.match(link, /^https:\/\/dash\.cloudflare\.com\/profile\/api-tokens\?/);
+    assert.deepEqual(JSON.parse(new URL(link).searchParams.get("permissionGroupKeys")), [{ key: "workers_scripts", type: "edit" }]);
+    // The manual form stays available, but out of the way.
+    assert.equal(await page.getByLabel("Broker owner secret").isVisible(), false);
+    const setUp = page.getByRole("button", { name: "Set up gifts" });
+    await setUp.click();
+    await page.getByRole("status").filter({ hasText: "Paste the Cloudflare API token first" }).waitFor();
+    await token.fill("A_TOKEN_CLOUDFLARE_WILL_REFUSE_1234");
+    await setUp.click();
+    await page.getByRole("status").filter({ hasText: "did not accept this token" }).waitFor();
+    assert.equal(await token.inputValue(), "");
+    await token.fill("  CLOUDFLARE_TOKEN_FOR_TEST_ONLY_1234 ");
+    await setUp.click();
+    await page.getByRole("status").filter({ hasText: "Your broker is installed" }).waitFor();
+    assert.equal(await page.getByLabel("Broker address").inputValue(), "https://operalibre-share-broker.home.workers.dev");
+    const installs = (await page.evaluate(() => window.ownerSetupCalls)).filter(call => call.kind === "install");
+    assert.deepEqual(installs.at(-1).install, { apiToken: "CLOUDFLARE_TOKEN_FOR_TEST_ONLY_1234" });
+    assert.equal((await page.locator("body").innerText()).includes("CLOUDFLARE_TOKEN_FOR_TEST_ONLY"), false);
+    assert.equal(await page.evaluate(() => JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)]).includes("CLOUDFLARE_TOKEN")), false);
+    await page.getByText("Update or reinstall the broker", { exact: true }).first().click();
+    await page.getByRole("button", { name: "Reinstall broker" }).waitFor();
+  } finally { await browser.close(); }
+});

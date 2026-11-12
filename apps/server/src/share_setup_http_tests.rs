@@ -596,3 +596,205 @@ async fn turning_gifts_off_stops_startup_recovery_and_requests_already_admitted(
     .await;
     assert!(matches!(abandoned, Err(error) if error.status == StatusCode::NOT_FOUND));
 }
+
+/// A stand-in for the Cloudflare API: one account with no `workers.dev` name
+/// and no Workers, which accepts a single token.
+#[derive(Default)]
+struct FakeCloudflare {
+    subdomain: Option<String>,
+    installed: bool,
+    uploads: Vec<String>,
+    enabled: bool,
+}
+
+const CLOUDFLARE_TOKEN: &str = "cloudflare-test-token-0123456789abcdef";
+const CLOUDFLARE_ACCOUNT: &str = "0123456789abcdef0123456789abcdef";
+
+async fn fake_cloudflare(
+    State(cloud): State<Arc<std::sync::Mutex<FakeCloudflare>>>,
+    request: Request<Body>,
+) -> Response {
+    let ok = |result: serde_json::Value| {
+        Json(serde_json::json!({"success": true, "errors": [], "result": result})).into_response()
+    };
+    let refuse = |status: StatusCode, code: u64, message: &str| {
+        (status, Json(serde_json::json!({"success": false, "errors": [{"code": code, "message": message}]}))).into_response()
+    };
+    let authorized = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        == Some(&format!("Bearer {CLOUDFLARE_TOKEN}"));
+    if !authorized {
+        return refuse(StatusCode::FORBIDDEN, 10000, "Authentication error");
+    }
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let body = axum::body::to_bytes(request.into_body(), 4 * 1024 * 1024)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&body).into_owned();
+    let account = format!("/client/v4/accounts/{CLOUDFLARE_ACCOUNT}/workers");
+    let script = format!("{account}/scripts/operalibre-share-broker");
+    let mut cloud = cloud.lock().unwrap();
+    match (method.as_str(), path.as_str()) {
+        ("GET", "/client/v4/accounts") => {
+            ok(serde_json::json!([{"id": CLOUDFLARE_ACCOUNT, "name": "Home"}]))
+        }
+        ("GET", path) if path == format!("{account}/subdomain") => match &cloud.subdomain {
+            Some(subdomain) => ok(serde_json::json!({"subdomain": subdomain})),
+            None => refuse(StatusCode::NOT_FOUND, 10007, "There is no subdomain"),
+        },
+        ("PUT", path) if path == format!("{account}/subdomain") => {
+            let requested: serde_json::Value = serde_json::from_str(&body).unwrap();
+            cloud.subdomain = requested["subdomain"].as_str().map(str::to_string);
+            ok(requested)
+        }
+        ("GET", path) if path == format!("{account}/scripts") => ok(if cloud.installed {
+            serde_json::json!([{"id": "operalibre-share-broker", "migration_tag": "v1"}])
+        } else {
+            serde_json::json!([{"id": "another-worker"}])
+        }),
+        ("PUT", path) if path == script => {
+            if cloud.installed && body.contains("new_sqlite_classes") {
+                return refuse(
+                    StatusCode::BAD_REQUEST,
+                    10074,
+                    "Migration tag precondition failed",
+                );
+            }
+            cloud.installed = true;
+            cloud.uploads.push(body);
+            ok(serde_json::json!({"id": "operalibre-share-broker"}))
+        }
+        ("POST", path) if path == format!("{script}/subdomain") => {
+            cloud.enabled = body.contains("\"enabled\":true");
+            ok(serde_json::json!({"enabled": true}))
+        }
+        _ => refuse(StatusCode::NOT_FOUND, 7003, "No route for that URI"),
+    }
+}
+
+#[tokio::test]
+async fn a_pasted_cloudflare_token_installs_the_broker_and_saves_the_setup() {
+    let cloud = Arc::new(std::sync::Mutex::new(FakeCloudflare::default()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/client/v4", listener.local_addr().unwrap());
+    let api = Router::new()
+        .fallback(fake_cloudflare)
+        .with_state(cloud.clone());
+    tokio::spawn(async move { axum::serve(listener, api).await.unwrap() });
+    *crate::share_cloudflare::TEST_API.lock().unwrap() = Some(base);
+
+    let mut server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "cloudflare-reader").await;
+    let install = |token: &'static str, bearer: String, https: bool| {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/admin/shares/config/cloudflare")
+            .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+            .header(header::CONTENT_TYPE, "application/json");
+        if https {
+            request = request.header("x-forwarded-proto", "https");
+        }
+        request
+            .body(Body::from(
+                serde_json::json!({"apiToken": token}).to_string(),
+            ))
+            .unwrap()
+    };
+    assert_eq!(
+        server
+            .send(install(CLOUDFLARE_TOKEN, owner.clone(), true))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST,
+        "a token is not accepted outside the HTTPS proxy deployment"
+    );
+    server.state.deployment_mode = DeploymentMode::Proxy;
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    assert_eq!(
+        server
+            .send(install(CLOUDFLARE_TOKEN, reader, true))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        server
+            .send(install(CLOUDFLARE_TOKEN, owner.clone(), false))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let rejected = server
+        .send(install(
+            "cloudflare-wrong-token-0123456789abcdef",
+            owner.clone(),
+            true,
+        ))
+        .await;
+    assert_eq!(rejected.status, StatusCode::BAD_REQUEST);
+    assert!(rejected.text().contains("did not accept this token"));
+    assert!(!rejected.text().contains("cloudflare-wrong-token"));
+    assert_eq!(server.get(ROUTE, &owner).await.json()["configured"], false);
+    assert!(cloud.lock().unwrap().uploads.is_empty());
+
+    let installed = server
+        .send(install(CLOUDFLARE_TOKEN, owner.clone(), true))
+        .await;
+    assert_eq!(installed.status, StatusCode::OK, "{}", installed.text());
+    let subdomain = cloud.lock().unwrap().subdomain.clone().unwrap();
+    assert!(subdomain.starts_with("operalibre-"));
+    assert_eq!(
+        installed.json()["brokerOrigin"],
+        format!("https://operalibre-share-broker.{subdomain}.workers.dev")
+    );
+    assert_eq!(
+        installed.json()["connectivity"]["iceServers"][0]["urls"][0],
+        "stun:stun.cloudflare.com:3478"
+    );
+    let stored = |server: &TestServer| {
+        let database = server.state.database.clone();
+        async move {
+            let payload = database
+                .call(|db| read_document(db, "share-owner-configuration-v1"))
+                .await
+                .unwrap()
+                .unwrap();
+            serde_json::from_str::<serde_json::Value>(&payload).unwrap()
+        }
+    };
+    let first = stored(&server).await;
+    let secret = first["ownerSecret"].as_str().unwrap().to_string();
+    assert!(
+        !first.to_string().contains(CLOUDFLARE_TOKEN),
+        "the token is never stored"
+    );
+    assert!(!installed.text().contains(&secret));
+    {
+        let cloud = cloud.lock().unwrap();
+        assert!(cloud.enabled);
+        let upload = &cloud.uploads[0];
+        // The broker gets only the digest of the secret the server keeps.
+        assert!(upload.contains(&hex_digest(sha2::Sha256::digest(secret.as_bytes()))));
+        assert!(!upload.contains(&secret));
+        assert!(upload.contains("new_sqlite_classes"));
+        assert!(upload.contains("name=\"index.js\""));
+        assert!(upload.contains("export class SecureRoom"));
+    }
+
+    // Installing again updates the broker in place and keeps the owner's choices.
+    let allowed = put(&server, &owner, serde_json::json!({"brokerOrigin": first["brokerOrigin"], "allowReaders": true, "ownerControlsBroker": true}), true).await;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.text());
+    let again = server
+        .send(install(CLOUDFLARE_TOKEN, owner.clone(), true))
+        .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.text());
+    assert_eq!(again.json()["allowReaders"], true);
+    let second = stored(&server).await;
+    assert_ne!(second["ownerSecret"], first["ownerSecret"]);
+    assert_eq!(second["brokerOrigin"], first["brokerOrigin"]);
+    assert_eq!(cloud.lock().unwrap().uploads.len(), 2);
+}

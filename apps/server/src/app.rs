@@ -492,6 +492,10 @@ pub(crate) fn build_router(
                 .delete(crate::share_setup::delete_configuration),
         )
         .route(
+            "/api/admin/shares/config/cloudflare",
+            post(crate::share_setup::install_cloudflare_broker),
+        )
+        .route(
             "/api/admin/shares/config/cleanup",
             post(crate::share_setup::retry_configured_cleanup),
         )

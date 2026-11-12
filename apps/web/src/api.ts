@@ -666,6 +666,14 @@ export async function saveGiftOwnerConfiguration(input: GiftOwnerConfigurationRe
   return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config", { method: "PUT", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }));
 }
 
+/** The token goes only to the owner's own server, which uses it once and does not keep it. */
+export async function installGiftBrokerOnCloudflare(input: { apiToken: string; accountId?: string }, signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  forgetBookGiftsStatus();
+  const body = { apiToken: input.apiToken, ...(input.accountId ? { accountId: input.accountId } : {}) };
+  return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config/cloudflare", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }, 120_000));
+}
+
 export async function deleteGiftOwnerConfiguration(signal?: AbortSignal) {
   requireGiftSetupTransport();
   forgetBookGiftsStatus();
