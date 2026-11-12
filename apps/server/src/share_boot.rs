@@ -97,6 +97,10 @@ fn start(
 
 async fn recovery_pass(state: &AppState) -> Result<bool, ApiError> {
     let _gate = SETUP_GATE.lock().await;
+    // Checked on every pass: the owner can turn gifts off while this runs.
+    if !experiment_enabled(state).await {
+        return Ok(false);
+    }
     let Some(config) = load(state).await? else {
         return Ok(false);
     };

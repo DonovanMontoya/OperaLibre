@@ -4,10 +4,10 @@ import { createStagedGiftTracker } from "../src/giftStagedCleanup.ts";
 
 function fixture() {
   const values = new Map<string, string>(), cleaned: string[] = [];
-  let time = 1_000_000, failing = false;
+  let time = 1_000_000, failing = false, importing: string | null = null;
   const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => void values.set(key, value), removeItem: (key: string) => void values.delete(key) };
-  const tracker = createStagedGiftTracker(() => storage, async id => { if (failing) throw new Error("locked"); cleaned.push(id); }, () => time);
-  return { tracker, cleaned, values, advance(minutes: number) { time += minutes * 60_000; }, fail(value: boolean) { failing = value; } };
+  const tracker = createStagedGiftTracker(() => storage, async id => { if (failing) throw new Error("locked"); cleaned.push(id); }, id => id === importing, () => time);
+  return { tracker, cleaned, values, advance(minutes: number) { time += minutes * 60_000; }, fail(value: boolean) { failing = value; }, importing(id: string | null) { importing = id; } };
 }
 
 test("a gift that can still be resumed keeps its staged download", async () => {
@@ -46,4 +46,16 @@ test("a cleanup that fails is tried again later, and finishing a gift clears it 
   await f.tracker.finish("gift-b__________");
   assert.deepEqual(f.cleaned, ["gift-a__________", "gift-b__________"]);
   assert.equal(f.values.size, 0);
+});
+
+test("an import interrupted mid-extraction keeps its archive until it has been recovered", async () => {
+  const f = fixture();
+  f.tracker.note("gift-a__________");
+  f.importing("gift-a__________");
+  f.advance(60);
+  await f.tracker.sweep();
+  assert.deepEqual(f.cleaned, []);
+  f.importing(null);
+  await f.tracker.sweep();
+  assert.deepEqual(f.cleaned, ["gift-a__________"]);
 });

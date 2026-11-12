@@ -2,7 +2,7 @@ import { useCallback, useRef } from "react";
 import { createStagedGiftTracker, type StagedGiftTracker } from "./giftStagedCleanup";
 import { cleanupNativeGiftStaging } from "./giftNativeStaging";
 import { GiftScreen, GiftScreenError, type GiftPreview } from "./GiftScreen";
-import { importNativeGift, type NativeGiftAsset, type GiftMetadata } from "./giftDeviceImport";
+import { importNativeGift, pendingGiftImportId, type NativeGiftAsset, type GiftMetadata } from "./giftDeviceImport";
 import "./giftScreen.css";
 import type { GiftLink } from "./giftAppLinks";
 export { createExperimentalGiftLink, parseExperimentalGiftFragment, type GiftLink } from "./giftAppLinks";
@@ -21,7 +21,7 @@ export const unavailableGiftTransport: GiftTransport = {
   async receive() { throw new GiftScreenError("unavailable"); }
 };
 
-export const deviceStagedGifts = createStagedGiftTracker(() => localStorage, cleanupNativeGiftStaging);
+export const deviceStagedGifts = createStagedGiftTracker(() => localStorage, cleanupNativeGiftStaging, giftId => pendingGiftImportId(localStorage) === giftId);
 
 export function ExperimentalGiftRoute({ link, transport, onClose, importGift = importNativeGift, staged = deviceStagedGifts }: {
   link: GiftLink;

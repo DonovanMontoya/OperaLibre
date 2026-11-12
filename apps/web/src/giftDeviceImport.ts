@@ -69,6 +69,16 @@ export function buildGiftDeviceBook(giftId: string, assets: NativeGiftAsset[], m
   return { id, deviceBookId: id, source: "device", title: metadata.title.trim(), author: metadata.author ?? null, narrator: metadata.narrator ?? null, description: metadata.description ?? null, durationSeconds: knownDuration ? offset : null, trackCount: tracks.length, coverArtUrl: null, coverArtContentType: cover ? coverType : null, localCoverPath: cover ? `${directory}/${cover.name}` : undefined, genres: metadata.genres ?? [], tags: metadata.tags ?? [], publishedDate: metadata.publishedDate ?? null, asin: metadata.asin ?? null, addedAt: new Date().toISOString(), readingFile: reading, companions: reading && ebook ? [{ ...reading, kind: "book", sizeBytes: ebook.size, localFilePath: `${directory}/${ebook.name}` }] : [], syncFile: null, chapters, metadata: summary, tracks, progress: null };
 }
 
+/** The gift whose extraction was interrupted, if any. Its staged archive is
+ * still needed, however old, until the import is recovered. */
+export function pendingGiftImportId(storage: JournalStorage): string | null {
+  try {
+    const pending: unknown = JSON.parse(storage.getItem(IMPORT_JOURNAL) ?? "null");
+    const giftId = (pending as { giftId?: unknown } | null)?.giftId;
+    return typeof giftId === "string" ? giftId : null;
+  } catch { return null; }
+}
+
 /** A retry must re-verify the already committed native directory. */
 async function recoverExtraction(storage: JournalStorage, extract: NativeGiftPlugin["extract"], readAsset?: GiftAssetReader): Promise<"imported" | "duplicate" | null> {
   const raw = storage.getItem(IMPORT_JOURNAL);

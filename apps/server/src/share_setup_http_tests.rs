@@ -530,3 +530,53 @@ async fn book_gift_senders_are_the_owner_and_readers_the_owner_allowed() {
     );
     assert_eq!(server.get(switch, &reader).await.json()["canSend"], true);
 }
+
+#[tokio::test]
+async fn turning_gifts_off_stops_startup_recovery_and_requests_already_admitted() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let payload = serde_json::json!({"version":1,"brokerOrigin":"https://broker.example","ownerSecret":"only-local-test-owner-secret-1234567890","allowReaders":false,"retainSenderState":true,"autoRecoverSenders":true,"connectivity":{}}).to_string();
+    server
+        .state
+        .database
+        .transaction(move |db| write_document(db, "share-owner-configuration-v1", &payload))
+        .await
+        .unwrap();
+    // The switch was on when the server booted and is turned off before the
+    // next recovery pass. A pass that still ran would wait 30 seconds for
+    // another, so finishing at once shows the loop stopped.
+    let off = server
+        .send_json(
+            "PUT",
+            "/api/experimental-features/book-gifts/enabled",
+            &owner,
+            serde_json::json!({"enabled":false}),
+        )
+        .await;
+    assert_eq!(off.status, StatusCode::OK);
+    let task = crate::share_setup::start_boot_recovery(server.state.clone(), true).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // A request that passed the route guard before the switch changed.
+    let auth = AuthUser::from(server.state.users.read().await.users.first().unwrap());
+    let (book, _) = server.first_book_and_track(&owner).await;
+    let input: crate::share::CreateSelectedShareRequest =
+        serde_json::from_value(serde_json::json!({"bookId":book,"selectedAssetIds":["anything"]}))
+            .unwrap();
+    let created = crate::share_setup::create_configured_share(
+        State(server.state.clone()),
+        Extension(auth.clone()),
+        Json(input),
+    )
+    .await;
+    assert!(matches!(created, Err(error) if error.status == StatusCode::NOT_FOUND));
+    let recovered = crate::share_setup::recover_configured_senders(
+        State(server.state.clone()),
+        Extension(auth),
+    )
+    .await;
+    assert!(matches!(recovered, Err(error) if error.status == StatusCode::NOT_FOUND));
+}

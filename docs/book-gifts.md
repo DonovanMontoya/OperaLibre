@@ -125,7 +125,7 @@ Cloudflare's hosted TURN service is not supported yet, and neither are TCP or TL
 ## Limits
 
 - A gift link works for at most 15 minutes and can be claimed once.
-- A gift can be up to `max_book_download_gib` in size (25 GiB by default), but it must finish before the link expires, so very large audiobooks may not make it on a slow connection.
+- A gift can be up to `max_book_download_gib` in size and never more than 25 GiB, but it must finish before the link expires, so very large audiobooks may not make it on a slow connection.
 - Waiting gifts share the server's `max_concurrent_book_downloads` slots. With the default of `1`, one gift can wait at a time, and offline downloads wait while it does. Raise the setting if that gets in the way.
 - Gift links open the app with an `operalibre://` link. Another app on the phone could register the same kind of link, so recipients should cancel if anything other than OperaLibre offers to open it.
 - Nothing removes copy protection, and protected files the server recognizes are left out. Only share books you have the right to share.

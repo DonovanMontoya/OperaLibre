@@ -6,6 +6,7 @@ use crate::*;
 
 const DOCUMENT: &str = "share-owner-configuration-v1";
 const EXPERIMENT_DOCUMENT: &str = "book-gifts-experiment-v1";
+const EXPERIMENT_OFF: &str = "Book gifts are not turned on for this server.";
 static SETUP_GATE: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Serialize, Deserialize)]
@@ -35,6 +36,16 @@ pub(crate) async fn enable_experiment_for_test(state: &AppState) {
         .unwrap();
 }
 
+/// For work that waited on the setup gate: the owner may have turned gifts
+/// off since the request was admitted or the last recovery pass ran.
+async fn ensure_experiment(state: &AppState) -> Result<(), ApiError> {
+    if experiment_enabled(state).await {
+        Ok(())
+    } else {
+        Err(ApiError::not_found(EXPERIMENT_OFF))
+    }
+}
+
 /// Guards every gift route. The app hides its gift controls on this 404, as
 /// it does for a server that predates gifts.
 pub(crate) async fn require_experiment(
@@ -45,7 +56,7 @@ pub(crate) async fn require_experiment(
     if experiment_enabled(&state).await {
         next.run(request).await
     } else {
-        ApiError::not_found("Book gifts are not turned on for this server.").into_response()
+        ApiError::not_found(EXPERIMENT_OFF).into_response()
     }
 }
 
@@ -358,6 +369,7 @@ pub(crate) async fn recover_configured_senders(
     let state = state.0;
     require_owner(&auth)?;
     let _gate = SETUP_GATE.lock().await;
+    ensure_experiment(&state).await?;
     let config = load(&state)
         .await?
         .ok_or_else(|| ApiError::service_unavailable("No gift broker is configured."))?;
@@ -546,6 +558,7 @@ async fn create_owned(
     if *cancelled.borrow() {
         return Err(ApiError::conflict("Gift preparation was cancelled."));
     }
+    ensure_experiment(&state).await?;
     require_book_access(&auth, &input.book_id)?;
     let config = load(&state).await?.ok_or_else(|| {
         ApiError::service_unavailable("The owner has not configured a gift broker.")
