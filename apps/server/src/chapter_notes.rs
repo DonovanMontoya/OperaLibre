@@ -912,21 +912,14 @@ async fn generate(
                                 })?,
                             );
                         }
-                        if let Some(parent) = path.parent() {
-                            fs::create_dir_all(parent)
-                                .await
-                                .map_err(|error| GenerateError::Failed(error.to_string()))?;
-                        }
                         let saved = SavedTranscript {
                             start_seconds: plan.start_seconds,
                             end_seconds: end,
                             spans,
                         };
-                        let bytes = serde_json::to_vec(&saved)
-                            .map_err(|error| GenerateError::Failed(error.to_string()))?;
-                        fs::write(&path, bytes)
-                            .await
-                            .map_err(|error| GenerateError::Failed(error.to_string()))?;
+                        // Written before the notes that rely on it, so a
+                        // saved note never points at a torn transcript.
+                        write_json_atomic(&path, &saved).await?;
                         saved.spans
                     }
                 };
