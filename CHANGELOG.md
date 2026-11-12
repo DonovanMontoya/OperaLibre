@@ -312,6 +312,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The reader no longer draws a separate word-by-word highlight. Follow-along marks the current sentence. ([#82](https://github.com/DonovanMontoya/OperaLibre/pull/82))
 - Audible accounts are no longer added by pasting a browser URL into OperaLibre. Account setup for that release belonged to Libation. ([#65](https://github.com/DonovanMontoya/OperaLibre/pull/65))
 
+## [0.5.3] - 2026-11-09
+
+### Fixed
+
+- An update that starts in the same second as a rolled-back one now gets its own backup folder instead of failing with "File exists". ([#463](https://github.com/DonovanMontoya/OperaLibre/pull/463))
+
 ## [0.1.0] - 2026-07-17
 
 First tagged release: a private audiobook server with a web app, an iPhone app, and a macOS app.
@@ -324,5 +330,6 @@ First tagged release: a private audiobook server with a web app, an iPhone app, 
 - Playback speed, a sleep timer, chapters, cover art, and metadata editing.
 - Packaged builds for Windows, Linux, and macOS, with a launcher that starts the server without a terminal window.
 
-[Unreleased]: https://github.com/DonovanMontoya/OperaLibre/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/DonovanMontoya/OperaLibre/compare/0.5.3...HEAD
+[0.5.3]: https://github.com/DonovanMontoya/OperaLibre/compare/0.5.2...0.5.3
 [0.1.0]: https://github.com/DonovanMontoya/OperaLibre/releases/tag/v0.1.0

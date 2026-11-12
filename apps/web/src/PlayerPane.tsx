@@ -62,7 +62,7 @@ import type { DeviceDownloadActivity } from "./SettingsCards";
 import { OfflineBookReadiness } from "./OfflineBookReadiness";
 import { offlineReadinessNeedsAttention } from "./offlineReadiness";
 import type { Dispatch, ReactNode, RefObject, SetStateAction, TouchEvent, UIEvent } from "react";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ServerCapabilities } from "./serverCapabilities";
 import { usePhoneWidthWindow } from "./useOrientation";
 import { useReadingQueue } from "./useReadingQueue";
@@ -305,6 +305,11 @@ export function PlayerPane({
   } = uploads;
 
   const phoneWidth = usePhoneWidthWindow();
+  // The books most recently in progress, offered when nothing is open.
+  const resumeBooks = useMemo(() => books
+    .filter(book => book.progress?.status === "inProgress")
+    .sort((a, b) => Number(b.progress?.updatedAt ?? 0) - Number(a.progress?.updatedAt ?? 0))
+    .slice(0, 3), [books]);
   const compactActions = native || phoneWidth;
   const [bookActionsOpen, setBookActionsOpen] = useState(false);
   const [bookActionsAbove, setBookActionsAbove] = useState(false);
@@ -1004,7 +1009,8 @@ export function PlayerPane({
                 {queueSaveFailed ? (
                   <span className="download-status" role="alert">Up Next could not be saved. Check available device storage and try again.</span>
                 ) : null}
-                {playbackBook && playbackBook.id !== selectedBook.id ? (
+                {/* The web mini player already shows what is playing. */}
+                {native && playbackBook && playbackBook.id !== selectedBook.id ? (
                   <button type="button" className="book-quick-return book-quick-now-playing" onClick={scrollToPlayer}>
                     <Headphones size={14} />
                     <span>Now playing <em>{playbackBook.title}</em></span>
@@ -1031,27 +1037,29 @@ export function PlayerPane({
                   the next. */}
               {!native ? (
                 <>
-                  <dl className="book-colophon">
-                    {[
-                      {
-                        label: "Series",
-                        value: selectedBook.metadata.series
-                          ? `${selectedBook.metadata.series}${selectedBook.metadata.seriesPosition ? ` · #${selectedBook.metadata.seriesPosition}` : ""}`
-                          : null
-                      },
-                      { label: "Published", value: displayPublishedDate(selectedBook.publishedDate) },
-                      { label: "Publisher", value: selectedBook.metadata.publisher || null },
-                      {
-                        label: "Runtime",
-                        value: formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ?? null
-                      }
-                    ].map((fact) => (
-                      <div key={fact.label}>
-                        <dt>{fact.label}</dt>
-                        <dd title={fact.value ?? undefined}>{fact.value ?? "—"}</dd>
-                      </div>
-                    ))}
-                  </dl>
+                  <div className="book-colophon-frame">
+                    <dl className="book-colophon">
+                      {[
+                        {
+                          label: "Series",
+                          value: selectedBook.metadata.series
+                            ? `${selectedBook.metadata.series}${selectedBook.metadata.seriesPosition ? ` · #${selectedBook.metadata.seriesPosition}` : ""}`
+                            : null
+                        },
+                        { label: "Published", value: displayPublishedDate(selectedBook.publishedDate) },
+                        { label: "Publisher", value: selectedBook.metadata.publisher || null },
+                        {
+                          label: "Runtime",
+                          value: formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ?? null
+                        }
+                      ].map((fact) => (
+                        <div key={fact.label}>
+                          <dt>{fact.label}</dt>
+                          <dd title={fact.value ?? undefined}>{fact.value ?? "—"}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
                   <div className="metadata-strip book-subjects">
                     {tagsForBook(selectedBook).map((tag) => (
                       <span className="metadata-custom-tag" key={tag.name}>
@@ -1527,7 +1535,33 @@ export function PlayerPane({
           {books.length > 0 ? (
             <>
               <h2>Nothing <em>playing</em></h2>
-              <p>Choose a book from your shelf to begin listening.</p>
+              {resumeBooks.length ? (
+                <>
+                  <p>Pick up where you left off.</p>
+                  <div className="empty-player-books">
+                    {resumeBooks.map(book => (
+                      <button key={book.id} type="button" className="empty-player-book" onClick={() => setSelectedBookId(book.id)}>
+                        <CoverArt book={book} size="small" />
+                        <span className="empty-player-book-copy">
+                          <strong>{book.title}</strong>
+                          {book.author ? <em>{book.author}</em> : null}
+                          {book.progress?.percentComplete != null ? (
+                            <small>{Math.round(book.progress.percentComplete)}% listened</small>
+                          ) : null}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p>Choose a book from your shelf to begin listening.</p>
+              )}
+              {/* Only shown where the library is a drawer; a wide window
+                  already has the shelf beside this page. */}
+              <button type="button" className="empty-player-browse" onClick={() => setLibraryOpen(true)}>
+                <Library size={15} />
+                <span>Browse the library</span>
+              </button>
             </>
           ) : (
             <>

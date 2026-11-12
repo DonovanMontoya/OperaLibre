@@ -7516,6 +7516,24 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane.purchase-browsin
   position: relative;
 }
 
+/* In the library drawer the account button is not the rightmost control and
+   the drawer can be narrower than the menu, so the menu hangs from the whole
+   header instead of the button and never runs past the drawer's left edge. */
+@media (max-width: 960px) {
+  html:not(.native-app) .library-pane > .pane-title {
+    position: relative;
+  }
+
+  html:not(.native-app) .library-pane > .pane-title .user-menu-wrap {
+    position: static;
+  }
+
+  html:not(.native-app) .library-pane > .pane-title .user-menu {
+    top: calc(100% - 10px);
+    width: min(316px, 100%);
+  }
+}
+
 /* A chosen picture fills whichever badge holds it and takes that badge's
    shape; an initial sits on the badge's own colour instead. */
 .avatar-art {
@@ -7875,6 +7893,8 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane.purchase-browsin
 }
 
 .unplayed-confirm-summary {
+  /* The card scrolls in a short window; the summary keeps every row. */
+  flex-shrink: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0;
@@ -10527,6 +10547,9 @@ html:not(.native-app) .web-shell.player-view-now .player-pane.has-native-player 
   grid-template-rows: minmax(0, 1fr);
   overflow-y: hidden;
   padding-bottom: clamp(28px, 4vw, 56px);
+  /* The library column takes a share of the window, so the card's layouts
+     below follow the room the pane actually has, not the window width. */
+  container: now-player / inline-size;
 }
 
 html:not(.native-app) .web-shell.player-view-now .player-pane.has-native-player
@@ -11166,7 +11189,7 @@ html:not(.native-app) .native-player-return-icon {
   background: linear-gradient(155deg, var(--oxblood), var(--oxblood-deep));
 }
 
-@media (min-width: 1500px) {
+@container now-player (min-width: 1380px) {
   html:not(.native-app) .native-now-playing {
     grid-template-columns: minmax(220px, 0.88fr) minmax(340px, 1.12fr);
     grid-template-areas:
@@ -11221,15 +11244,17 @@ html:not(.native-app) .native-player-return-icon {
   }
 }
 
-/* A browser window around tablet width has plenty of horizontal room, but
-   not enough vertical room for the phone-style stack plus the supporting
-   cards. Pair the cover with the controls and keep the supporting information
-   in one compact row so the playback surface remains a single screen. */
-@media (min-width: 621px) and (max-width: 1499px) {
+@media (max-width: 1499px) {
   html:not(.native-app) .web-shell.player-view-now .player-pane.has-native-player {
     padding-top: 76px;
   }
+}
 
+/* A player around tablet width has plenty of horizontal room, but not enough
+   vertical room for the phone-style stack plus the supporting cards. Pair the
+   cover with the controls and keep the supporting information in one compact
+   row so the playback surface remains a single screen. */
+@container now-player (min-width: 680px) and (max-width: 1379px) {
   html:not(.native-app) .native-now-playing {
     grid-template-columns: minmax(170px, 0.72fr) minmax(0, 1.28fr);
     grid-template-areas:
@@ -11368,10 +11393,12 @@ html:not(.native-app) .native-player-return-icon {
 
 @media (max-width: 620px) {
   html:not(.native-app) .web-shell.player-view-now .player-pane.has-native-player {
-    padding-top: 76px;
     padding-bottom: 22px;
   }
+}
 
+/* Too narrow to pair the cover with the controls: the phone-style stack. */
+@container now-player (max-width: 679px) {
   html:not(.native-app) .native-now-playing {
     min-height: 0;
     gap: 12px;
@@ -11419,50 +11446,71 @@ html:not(.native-app) .native-player-return-icon {
   }
 }
 
-@media (max-width: 620px) and (max-height: 740px) {
-  html:not(.native-app) .native-now-playing {
-    gap: 8px;
-    padding: 12px;
-  }
+@container now-player (max-width: 679px) {
+  @media (max-height: 740px) {
+    html:not(.native-app) .native-now-playing {
+      gap: 8px;
+      padding: 12px;
+    }
 
-  html:not(.native-app) .native-now-artwork .large-cover {
-    width: min(46vw, 170px, 24vh);
-  }
+    html:not(.native-app) .native-now-artwork .large-cover {
+      width: min(46vw, 170px, 24vh);
+    }
 
-  html:not(.native-app) .native-now-copy {
-    gap: 3px;
-  }
+    html:not(.native-app) .native-now-copy {
+      gap: 3px;
+    }
 
-  html:not(.native-app) .native-now-copy h2 {
-    font-size: clamp(1.1rem, 5.4vw, 1.35rem);
-  }
+    html:not(.native-app) .native-now-copy h2 {
+      font-size: clamp(1.1rem, 5.4vw, 1.35rem);
+    }
 
-  html:not(.native-app) .native-now-copy p {
-    font-size: 1rem;
-  }
+    html:not(.native-app) .native-now-copy p {
+      font-size: 1rem;
+    }
 
-  html:not(.native-app) .native-now-timeline input[type="range"] {
-    height: 22px;
-  }
+    html:not(.native-app) .native-now-timeline input[type="range"] {
+      height: 22px;
+    }
 
-  html:not(.native-app) .native-now-play {
-    width: 62px;
-    height: 62px;
-    flex-basis: 62px;
-  }
+    html:not(.native-app) .native-now-play {
+      width: 62px;
+      height: 62px;
+      flex-basis: 62px;
+    }
 
-  html:not(.native-app) .native-now-transport .native-now-seek {
-    width: 40px;
-    height: 42px;
-    flex-basis: 40px;
-  }
+    html:not(.native-app) .native-now-transport .native-now-seek {
+      width: 40px;
+      height: 42px;
+      flex-basis: 40px;
+    }
 
-  html:not(.native-app) .native-now-utility button {
-    min-height: 40px;
+    html:not(.native-app) .native-now-utility button {
+      min-height: 40px;
+    }
   }
 }
 
-@media (max-width: 760px) {
+@container now-player (max-width: 679px) {
+  html:not(.native-app) .web-now-extras {
+    display: none;
+  }
+}
+
+/* A short window (a phone on its side, a small laptop with the browser's own
+   bars) cannot hold the card and its controls in one screen. Drop the
+   supporting cards and let the page scroll rather than clip the transport. */
+@media (max-height: 560px) {
+  html:not(.native-app) .web-shell.player-view-now .player-pane.has-native-player {
+    grid-template-rows: auto;
+    overflow-y: auto;
+  }
+
+  html:not(.native-app) .native-now-playing {
+    height: max-content;
+    overflow: visible;
+  }
+
   html:not(.native-app) .web-now-extras {
     display: none;
   }
@@ -20953,6 +21001,13 @@ html:not(.native-app) .book-quick-return {
 /* The title page's fixed facts: the same four cells for every book, so a
    missing series or publisher leaves a dash rather than moving its
    neighbours. */
+/* The row's own width picks four cells or two by two: beside the library
+   column the title page can be phone-narrow in a wide window. */
+html:not(.native-app) .book-colophon-frame {
+  min-width: 0;
+  container: book-colophon / inline-size;
+}
+
 html:not(.native-app) .book-colophon {
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.9fr) minmax(0, 1.3fr) minmax(0, 0.8fr);
@@ -21023,7 +21078,7 @@ html:not(.native-app) .book-subjects span {
   white-space: nowrap;
 }
 
-@media (max-width: 620px) {
+@container book-colophon (max-width: 480px) {
   html:not(.native-app) .book-colophon {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -21042,6 +21097,29 @@ html:not(.native-app) .book-subjects span {
 
   html:not(.native-app) .book-colophon > div:nth-child(n + 3) {
     border-top: 1px solid rgba(var(--ink-rgb), 0.12);
+  }
+}
+
+/* Beside the library column the title page can be far narrower than the
+   window. When the labelled actions cannot all fit on their one line, they
+   keep their icons and drop the words (each has its own name and tooltip)
+   instead of scrolling the last ones out of sight. */
+html:not(.native-app) .book-heading {
+  container: book-heading / inline-size;
+}
+
+@container book-heading (max-width: 820px) {
+  html:not(.native-app) .book-heading .heading-actions:not(.is-compact) .download-btn > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  html:not(.native-app) .book-heading .heading-actions:not(.is-compact) .download-btn {
+    padding-inline: 10px;
   }
 }
 
@@ -21176,7 +21254,7 @@ html:not(.native-app) .book-subjects span {
     min-width: 0;
   }
 
-  html:not(.native-app) .book-heading .book-colophon {
+  html:not(.native-app) .book-heading .book-colophon-frame {
     grid-row: 5;
   }
 
@@ -21196,6 +21274,7 @@ html:not(.native-app) .book-subjects span {
       padding-block: 4px;
     }
     & .native-now-play {
+      flex-basis: 96px;
       width: 96px;
       height: 96px;
     }
@@ -21723,7 +21802,7 @@ html:not(.native-app) .library-pane.purchase-browsing {
     letter-spacing: 0.08em;
     padding-inline: 8px;
   }
-  html:not(.native-app) .book-heading :is(.book-colophon, .book-subjects) {
+  html:not(.native-app) .book-heading :is(.book-colophon-frame, .book-subjects) {
     grid-column: 1 / -1;
     margin: 4px 0;
   }
@@ -23730,4 +23809,956 @@ html.native-app[data-text-large] .native-shell.has-mini-player .word-board {
 html.native-app .continue-reading-book img.cover-mark {
   aspect-ratio: 1;
   object-fit: cover;
+}
+
+/* ============================================================
+   Short windows: a phone on its side, or a laptop browser with its own
+   bars open. Full-height chrome left no room for the books, dialogs, and
+   administration sections themselves, so every surface tightens its
+   header and lets its content start within the first screen.
+   ============================================================ */
+@media (max-height: 520px) {
+  html:not(.native-app) .library-pane {
+    padding-top: 12px;
+  }
+
+  html:not(.native-app) .library-pane > .pane-title {
+    flex-wrap: nowrap;
+    gap: 10px;
+    margin-bottom: 10px;
+    padding-bottom: 10px;
+  }
+
+  html:not(.native-app) .library-pane > .pane-title h1 {
+    font-size: 1.55rem;
+    line-height: 1;
+  }
+
+  html:not(.native-app) .library-pane .pane-actions {
+    gap: 4px;
+  }
+
+  html:not(.native-app) .library-pane .pane-actions .icon-button {
+    width: 34px;
+    height: 34px;
+    min-height: 34px;
+  }
+
+  html:not(.native-app) .library-pane > .library-toolbar {
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+
+  html:not(.native-app) .library-pane .source-toggle button {
+    min-height: 34px;
+    padding-block: 4px;
+  }
+
+  html:not(.native-app) .library-pane .library-search,
+  html:not(.native-app) .library-pane .library-filter-toggle {
+    min-height: 36px;
+    padding-block: 6px;
+  }
+
+  html:not(.native-app) .library-pane .library-controls > * {
+    min-height: 36px;
+  }
+
+  /* Dialogs use the whole height and keep their actions in view. */
+  html:not(.native-app) .modal-scrim {
+    padding: 8px;
+  }
+
+  html:not(.native-app) .modal-card {
+    max-height: calc(100dvh - 16px);
+    padding: 1rem 1.25rem 1.1rem;
+    gap: 0.7rem;
+  }
+
+  html:not(.native-app) .sleep-sheet-layer {
+    padding: 8px;
+  }
+
+  html:not(.native-app) .sleep-sheet,
+  html:not(.native-app) .details-sheet {
+    max-height: calc(100dvh - 16px);
+  }
+
+  /* Administration: the heading shrinks to one line and the section tabs
+     stay on one scrolling row. */
+  html:not(.native-app) .admin-overlay {
+    padding-block: 14px 28px;
+  }
+
+  html:not(.native-app) .admin-head h1 {
+    font-size: 1.9rem;
+  }
+
+  html:not(.native-app) .admin-head p {
+    display: none;
+  }
+
+  html:not(.native-app) .admin-nav {
+    margin: 12px auto 12px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  html:not(.native-app) .admin-nav button {
+    flex: 0 0 auto;
+    min-height: 36px;
+    padding: 0 12px;
+    white-space: nowrap;
+  }
+
+  /* The sign-in page keeps its form and its other choices on screen. */
+  html:not(.native-app) .connect-page {
+    padding-block: 16px;
+    gap: 12px;
+  }
+}
+
+/* The account menu can be taller than a short window or drawer; it scrolls
+   inside itself rather than running off the bottom. */
+html:not(.native-app) .user-menu {
+  max-height: calc(100dvh - 120px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* In a short window a long form keeps Save and Cancel pinned to the bottom
+   of the dialog; taller windows show them after the last field. */
+@media (max-height: 520px) {
+  html:not(.native-app) .modal-card > .metadata-edit-actions {
+    position: sticky;
+    bottom: -1.75rem;
+    z-index: 1;
+    margin: 0 -1.5rem -1.75rem;
+    padding: 0.85rem 1.5rem 1rem;
+    border-top: 1px solid rgba(var(--ink-rgb), 0.1);
+    background: rgba(var(--sheet-rgb), 0.98);
+  }
+}
+
+html:not(.native-app) .metadata-edit-actions button {
+  white-space: nowrap;
+}
+
+/* A tablet's drawer is wide enough to read, not a phone strip. */
+@media (min-width: 621px) and (max-width: 960px) {
+  html:not(.native-app) .library-pane {
+    width: min(440px, 86vw);
+  }
+}
+
+/* Wide windows give the shelf, and Get books with it, more room. */
+html:not(.native-app) .web-shell {
+  --library-column: 380px;
+}
+
+@media (min-width: 1600px) {
+  html:not(.native-app) .web-shell {
+    --library-column: 440px;
+  }
+}
+
+@media (min-width: 2200px) {
+  html:not(.native-app) .web-shell {
+    --library-column: 520px;
+  }
+}
+
+@media (min-width: 961px) {
+  html:not(.native-app) .web-shell:not(.shelf-expanded) {
+    grid-template-columns: minmax(300px, var(--library-column)) minmax(0, 1fr);
+  }
+
+  html:not(.native-app) .web-shell .mini-player {
+    left: calc(var(--library-column) + clamp(14px, 2vw, 28px));
+  }
+}
+
+/* Administration on a wide window: the heading runs across the top, the
+   section list sits under it on the left, and the section fills the rest. */
+@media (min-width: 1200px) and (min-height: 640px) {
+  html:not(.native-app) .admin-overlay {
+    grid-template-rows: auto minmax(0, 1fr);
+    row-gap: 28px;
+  }
+
+  html:not(.native-app) .admin-overlay > .admin-navigation {
+    display: contents;
+  }
+
+  html:not(.native-app) .admin-overlay .admin-head {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  html:not(.native-app) .admin-overlay .admin-nav {
+    position: sticky;
+    top: 0;
+    grid-column: 1;
+    grid-row: 2;
+    margin: 0;
+  }
+
+  html:not(.native-app) .admin-overlay > .admin-content,
+  html:not(.native-app) .admin-overlay > .admin-message {
+    grid-column: 2;
+  }
+
+  html:not(.native-app) .admin-overlay > .admin-content {
+    grid-row: 2;
+  }
+}
+
+/* --- Empty player: the book in progress, and the way to the shelf. --- */
+.empty-player-books {
+  display: grid;
+  gap: 10px;
+  width: min(100%, 360px);
+  margin: 18px auto 0;
+}
+
+.empty-player-book {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 12px 16px 12px 12px;
+  border: 1px solid rgba(var(--ink-rgb), 0.16);
+  border-radius: 14px;
+  background: rgba(var(--lift-rgb), 0.7);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.empty-player-book:hover,
+.empty-player-book:focus-visible {
+  border-color: rgba(var(--oxblood-rgb), 0.45);
+  background: rgba(var(--lift-rgb), 0.95);
+}
+
+.empty-player-book .cover-mark {
+  width: 64px;
+  height: 64px;
+}
+
+.empty-player-book-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.empty-player-book-copy strong {
+  overflow: hidden;
+  font: 500 1.05rem/1.2 "Fraunces", serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty-player-book-copy em {
+  overflow: hidden;
+  color: var(--ink-faded);
+  font: italic 0.9rem/1.2 "Fraunces", serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty-player-book-copy small {
+  color: var(--oxblood);
+  font: 0.62rem "JetBrains Mono", monospace;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.empty-player-browse {
+  display: none;
+}
+
+@media (max-width: 960px) {
+  .empty-player-browse {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 18px;
+    padding: 10px 16px;
+    border: 1px solid rgba(var(--ink-rgb), 0.2);
+    border-radius: 999px;
+    color: var(--ink);
+    background: transparent;
+    font: 0.66rem "JetBrains Mono", monospace;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+}
+
+html.native-app .empty-player-browse {
+  display: none;
+}
+
+@media (max-height: 520px) {
+  html:not(.native-app) .empty-player {
+    padding-block: 12px;
+  }
+
+  html:not(.native-app) .empty-player > svg {
+    display: none;
+  }
+
+  html:not(.native-app) .empty-player h2 {
+    margin-top: 0;
+    font-size: 1.9rem;
+  }
+}
+
+html:not(.native-app) .admin-quick-actions button,
+html:not(.native-app) .admin-backup-actions button {
+  white-space: nowrap;
+}
+
+/* Short windows, continued: the sign-in page drops its mark, sheets drop
+   their grabber and hints, and the speed sheet puts speed and volume side by
+   side so Done stays on screen. */
+@media (max-height: 520px) {
+  html:not(.native-app) .auth-shell {
+    padding-block: 12px;
+  }
+
+  html:not(.native-app) .connect-mark {
+    display: none;
+  }
+
+  html:not(.native-app) .connect-page h1 {
+    margin: 0;
+    font-size: 1.6rem;
+  }
+
+  html:not(.native-app) .sleep-sheet-grabber,
+  html:not(.native-app) .sleep-sheet > .sleep-sheet-hint,
+  html:not(.native-app) .speed-sheet-volume .sleep-sheet-hint {
+    display: none;
+  }
+
+  html:not(.native-app) .sleep-sheet:has(.speed-sheet-volume) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: 28px;
+    row-gap: 10px;
+    align-items: start;
+    width: min(100%, 820px);
+  }
+
+  html:not(.native-app) .sleep-sheet:has(.speed-sheet-volume) > :is(header, .speed-sheet-done) {
+    grid-column: 1 / -1;
+  }
+
+  html:not(.native-app) .sleep-sheet .speed-sheet-volume {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+  }
+}
+
+/* The labelled book actions use a tighter tracking than other chips so all
+   five fit beside each other on a desktop title page. */
+html:not(.native-app) .book-heading .heading-actions:not(.is-compact) .download-btn {
+  letter-spacing: 0.12em;
+}
+
+@media (max-height: 520px) {
+  /* Sheets scroll as a whole; their blocks keep their own height. */
+  html:not(.native-app) :is(.sleep-sheet, .details-sheet) > * {
+    flex-shrink: 0;
+  }
+
+  /* A sideways phone's drawer is wide enough to put search and sorting on
+     one row, so the first books show under the header. */
+  html:not(.native-app) .library-pane {
+    width: min(640px, 86vw);
+  }
+
+  html:not(.native-app) .library-pane > .library-toolbar {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: center;
+  }
+
+  html:not(.native-app) .library-pane > .library-toolbar > :not(.library-search-row, .library-controls) {
+    grid-column: 1 / -1;
+  }
+
+  html:not(.native-app) .library-pane .library-controls {
+    flex-wrap: nowrap;
+  }
+
+  html:not(.native-app) .library-pane .continue-reading h2,
+  html:not(.native-app) .library-pane :is(.continue-reading-heading, .listening-queue-heading) {
+    margin-block: 4px;
+    font-size: 1.2rem;
+  }
+}
+
+/* A short window has room for the details sheet's three actions on one row,
+   which leaves the progress and facts readable above the pinned bar. */
+@media (max-height: 520px) {
+  html:not(.native-app) .details-sheet {
+    width: min(100%, 720px);
+  }
+
+  html:not(.native-app) .details-sheet-grabber {
+    display: none;
+  }
+
+  html:not(.native-app) .details-sheet-hero {
+    grid-template-columns: 56px minmax(0, 1fr);
+    padding: 10px 14px;
+  }
+
+  html:not(.native-app) .details-sheet-hero .cover-mark {
+    width: 56px;
+    height: 56px;
+  }
+
+  html:not(.native-app) .details-sheet-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin-top: 10px;
+    padding-top: 10px;
+  }
+
+  html:not(.native-app) .details-sheet-actions .details-sheet-reset {
+    grid-column: auto;
+  }
+
+  html:not(.native-app) .details-sheet-actions button {
+    min-height: 40px;
+  }
+}
+
+/* The store account dialogs keep their plain system body text for dense
+   account details, but take the app's serif heading and oxblood primary
+   action so they read as part of the same app. */
+html:not(.native-app) :is(.audible-management-dialog, .libro-management-dialog) h2 {
+  font: 400 1.75rem/1.1 "Instrument Serif", serif;
+}
+
+/* Becoming available switches straight to the filled button; fading in
+   from the disabled outline left it briefly unreadable. Hover still fades. */
+html:not(.native-app) .audible-management .audible-primary-action {
+  border-color: var(--oxblood);
+  background: var(--oxblood);
+  color: var(--on-oxblood);
+  transition: transform 0.2s ease;
+}
+
+html:not(.native-app) .audible-management .audible-primary-action:not(:disabled):hover {
+  background: var(--oxblood-deep);
+  color: var(--on-oxblood);
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+/* A tablet's admin sections fit on one row without wrapping their labels. */
+@media (min-width: 621px) and (max-width: 1199px) {
+  html:not(.native-app) .admin-nav {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  html:not(.native-app) .admin-nav button {
+    flex: 0 0 auto;
+    padding: 0 12px;
+    white-space: nowrap;
+  }
+}
+
+/* Until the window can give the accounts a real column, they stack above
+   the new-account form, so existing users are what opens first. */
+@media (max-width: 1000px) {
+  html:not(.native-app) .admin-overlay .admin-user-layout {
+    grid-template-columns: 1fr;
+  }
+
+  html:not(.native-app) .admin-overlay .admin-create-user {
+    position: static;
+    order: 1;
+  }
+}
+
+/* Get books in the library column: the store connections and the account
+   choice sit as compact rows, so the first purchases show on opening. */
+html:not(.native-app) .library-pane .audible-connection-row {
+  padding: 2px 0;
+}
+
+html:not(.native-app) .library-pane .libro-connection-row {
+  padding: 8px 0;
+}
+
+html:not(.native-app) .library-pane :is(.purchase-account-filter, .libro-account-filter) {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+/* Store buttons keep their full touch height except in a short window,
+   where the first purchases need the room. */
+@media (max-height: 520px) {
+  html:not(.native-app) .library-pane :is(.audible-sidebar-actions, .libro-sidebar-actions) :is(button, .quiet-button) {
+    min-height: 36px;
+  }
+
+  html:not(.native-app) .library-pane .purchase-account-filter select {
+    min-height: 36px;
+    padding-block: 6px;
+  }
+}
+
+/* The account menu never runs below a short window. */
+@media (max-height: 520px) {
+  html:not(.native-app) .user-menu {
+    max-height: calc(100dvh - 64px);
+  }
+
+  html:not(.native-app) .user-menu .avatar-tile {
+    width: 34px;
+    height: 34px;
+  }
+}
+
+/* The Audible dialog follows the other book dialogs: serif body text at a
+   readable size, pill buttons, two accounts side by side when there is room,
+   and a primary action that looks plainly unavailable when it is. */
+html:not(.native-app) .audible-management-dialog {
+  width: min(720px, 100%);
+}
+
+html:not(.native-app) .audible-management-dialog .audible-management {
+  font: 400 0.95rem/1.5 "Fraunces", serif;
+}
+
+html:not(.native-app) .audible-management-dialog .audible-management :is(.download-btn, .quiet-button, .account-list-actions > :is(button, a)) {
+  border-radius: 999px;
+  font: 500 0.85rem/1.2 "Fraunces", serif;
+}
+
+html:not(.native-app) .audible-management-dialog .audible-accounts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  column-gap: 20px;
+}
+
+html:not(.native-app) .audible-management .audible-primary-action:disabled {
+  border-color: rgba(var(--ink-rgb), 0.22);
+  background: transparent;
+  color: var(--ink-faded);
+  opacity: 1;
+}
+
+/* In a short window the picture choices become one scrolling row so the
+   menu's own items stay on screen. */
+@media (max-height: 520px) {
+  html:not(.native-app) .user-menu .avatar-picker-grid {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: 34px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    padding-bottom: 4px;
+    /* The faded edge shows the row continues sideways. */
+    -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent);
+    mask-image: linear-gradient(90deg, #000 85%, transparent);
+    padding-right: 24px;
+  }
+
+  html:not(.native-app) .user-menu .avatar-picker {
+    gap: 8px;
+    padding-bottom: 8px;
+  }
+
+  /* The row scrolls inside the menu's own width. */
+  html:not(.native-app) .user-menu .avatar-picker,
+  html:not(.native-app) .user-menu .avatar-picker-grid {
+    min-width: 0;
+    max-width: 100%;
+  }
+}
+
+/* Get books in a short window: the store tabs share the navigation row, the
+   controls slim down, and the store connections shrink to one line each, so
+   the first purchases are on the opening screen. The same applies to the
+   Imports section of administration. */
+@media (max-height: 520px) {
+  html:not(.native-app) .library-pane.purchase-browsing > .library-toolbar {
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  }
+
+  html:not(.native-app) .library-pane.purchase-browsing .shelf-navigation {
+    grid-column: 1;
+  }
+
+  html:not(.native-app) .library-pane.purchase-browsing .purchase-source {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  html:not(.native-app) .library-pane .purchase-tabs button {
+    min-height: 34px;
+    padding-block: 4px;
+  }
+
+  html:not(.native-app) .library-pane .library-controls > *,
+  html:not(.native-app) .library-pane .library-controls button,
+  html:not(.native-app) .library-pane .library-sort {
+    min-height: 36px;
+    height: 36px;
+  }
+
+  html:not(.native-app) .library-pane :is(.audible-connection-row, .libro-connection-row) small {
+    display: none;
+  }
+
+  html:not(.native-app) .library-pane :is(.audible-connection-row, .libro-connection-row) {
+    padding-block: 0;
+  }
+
+  html:not(.native-app) .library-pane .libro-catalog-head {
+    margin-bottom: 0;
+  }
+
+  html:not(.native-app) .admin-overlay .libro-catalog {
+    padding-top: 8px;
+  }
+
+  html:not(.native-app) .admin-overlay .libro-connection-row {
+    padding-block: 6px;
+  }
+
+  html:not(.native-app) .admin-overlay .libro-connection-row small {
+    display: none;
+  }
+}
+
+@media (max-height: 520px) {
+  html:not(.native-app) .admin-overlay .admin-head .eyebrow {
+    display: none;
+  }
+
+  html:not(.native-app) .admin-overlay .admin-head h1 {
+    margin-top: 0;
+  }
+
+  html:not(.native-app) .admin-overlay .libro-catalog {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: 12px;
+    row-gap: 8px;
+    align-items: center;
+  }
+
+  html:not(.native-app) .admin-overlay .libro-catalog > * {
+    grid-column: 1 / -1;
+  }
+
+  html:not(.native-app) .admin-overlay .libro-catalog > :is(.libro-account-filter, .libro-catalog-search) {
+    grid-column: auto;
+    margin: 0;
+  }
+
+  html:not(.native-app) .admin-overlay .libro-account-filter {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+  }
+
+  html:not(.native-app) .admin-overlay .libro-catalog :is(select, input[type="search"]) {
+    min-height: 36px;
+    padding-block: 4px;
+  }
+}
+
+/* A search with no results reads as an answer, not a footnote. */
+html:not(.native-app) .library-pane .shelf-empty-state {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  padding: 22px 4px;
+}
+
+html:not(.native-app) .library-pane .shelf-empty-state > span {
+  color: var(--on-spine);
+  font: italic 1.25rem/1.35 "Fraunces", serif;
+}
+
+html:not(.native-app) .library-pane .shelf-empty-state .library-clear-filters {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid rgba(var(--spine-gold-rgb), 0.4);
+  border-radius: 999px;
+  color: var(--spine-gold);
+  text-decoration: none;
+}
+
+@media (max-height: 520px) {
+  /* Filters lay their groups side by side so more than one fits. */
+  html:not(.native-app) .library-pane .library-filters-body {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 18px;
+    align-items: start;
+  }
+}
+
+/* Dialogs are fully opaque: at 98% a dark cover or a heading behind them
+   still showed through the form. */
+html:not(.native-app) .modal-card,
+html:not(.native-app) .modal-card > .metadata-edit-actions {
+  background: rgb(var(--sheet-rgb));
+}
+
+/* A short window keeps the cover help to one line. */
+@media (max-height: 520px) {
+  html:not(.native-app) .metadata-cover-field small:not(:first-of-type) {
+    display: none;
+  }
+}
+
+@media (max-height: 520px) {
+  /* All stores in a short window shows purchases first. Each store's own tab
+     still carries its connection row with Manage and refresh. */
+  html:not(.native-app) .library-pane .purchase-results:has(.audible-sidebar):has(.libro-catalog) :is(.audible-connection-row, .libro-connection-row) {
+    display: none;
+  }
+
+  html:not(.native-app) .library-pane .purchase-account-filter .purchase-control-label {
+    font-size: 0.6rem;
+  }
+}
+
+@media (max-height: 520px) {
+  html:not(.native-app) .library-pane .purchase-results:has(.audible-sidebar):has(.libro-catalog) .audible-sidebar:not(:has(.audible-error, [role="status"], [role="alert"])) {
+    display: none;
+  }
+}
+
+/* A sideways phone's drawer has width to spare but little height: the
+   account menu widens, the twelve pictures sit in one row, and the menu
+   items take two columns, so Sign out stays on screen. */
+@media (max-height: 520px) and (min-width: 600px) {
+  html:not(.native-app) .library-pane > .pane-title .user-menu {
+    width: min(560px, 100%);
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 4px;
+    row-gap: 0;
+  }
+
+  html:not(.native-app) .user-menu > :not([role="menuitem"]) {
+    grid-column: 1 / -1;
+  }
+
+  html:not(.native-app) .user-menu .user-menu-head {
+    padding: 8px 12px;
+  }
+
+  html:not(.native-app) .user-menu .avatar-picker-grid {
+    grid-auto-flow: row;
+    grid-auto-columns: auto;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: 6px;
+    overflow: visible;
+    padding-right: 0;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+
+  html:not(.native-app) .user-menu .avatar-tile {
+    width: auto;
+    height: auto;
+  }
+
+  html:not(.native-app) .user-menu :is(button, a)[role="menuitem"] {
+    min-height: 38px;
+  }
+
+  html:not(.native-app) .user-menu .behavior-settings small {
+    display: none;
+  }
+
+  html:not(.native-app) .user-menu .user-menu-leave {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Where the section tabs are one scrolling row, they fade at the trailing
+   edge so a cut-off last tab reads as "more this way". Phones stack them in
+   a grid instead. */
+@media (min-width: 761px) and (max-width: 1199px), (min-width: 761px) and (max-height: 639px), (max-height: 520px) {
+  html:not(.native-app) .admin-overlay .admin-nav {
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 40px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 40px), transparent);
+  }
+
+  /* Room past the last tab so it can scroll clear of the fade. */
+  html:not(.native-app) .admin-overlay .admin-nav::after {
+    content: "";
+    flex: 0 0 40px;
+  }
+}
+
+/* Short labelled buttons keep their words on one line. */
+html:not(.native-app) .admin-section-head :is(button, .quiet-button) {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* The play button and Add to Up Next wrap onto two lines together rather
+   than cutting the second one short. */
+html:not(.native-app) .book-heading .book-quick-start {
+  flex-wrap: wrap;
+}
+
+html:not(.native-app) .book-heading .book-quick-start .book-quick-return {
+  white-space: nowrap;
+}
+
+/* A short window shows every sleep timer choice: two columns of options. */
+@media (max-height: 520px) {
+  html:not(.native-app) .sleep-sheet .sleep-options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 20px;
+  }
+
+  html:not(.native-app) .sleep-sheet .sleep-options > * {
+    min-height: 38px;
+  }
+
+  html:not(.native-app) .sleep-sheet:has(.sleep-options) {
+    width: min(100%, 720px);
+  }
+}
+
+/* The reader in a short window: it fills the window, the top bar slims,
+   and the page count sits beside a compact listen button, so the page
+   itself gets most of the height. */
+@media (max-height: 520px) {
+  html:not(.native-app) .epub-reader.fullscreen {
+    inset: 0;
+    height: 100dvh;
+    border: 0;
+  }
+
+  html:not(.native-app) .epub-reader.fullscreen .epub-topbar {
+    min-height: 0;
+    padding-block: 2px;
+  }
+
+  html:not(.native-app) .epub-reader.fullscreen .epub-icon-button {
+    width: 34px;
+    height: 34px;
+  }
+
+  html:not(.native-app) .epub-reader.fullscreen .epub-bottombar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding-block: 6px;
+  }
+
+  html:not(.native-app) .epub-reader.fullscreen .epub-pageinfo {
+    flex: 1;
+    margin: 0;
+  }
+
+  html:not(.native-app) .epub-reader.fullscreen .epub-audiobar-listen {
+    flex: 0 0 auto;
+    width: auto;
+    min-height: 34px;
+    padding: 0 18px;
+  }
+}
+
+/* From 1500px the pane beside the library is wide enough for the three
+   resume cards side by side, centred in the pane. */
+@media (min-width: 1500px) {
+  html:not(.native-app) .web-shell .player-pane:has(> .empty-player) {
+    align-content: center;
+  }
+
+  html:not(.native-app) .empty-player {
+    align-self: center;
+    width: 100%;
+    max-width: 1120px;
+  }
+
+  html:not(.native-app) .empty-player-books {
+    grid-template-columns: repeat(auto-fit, minmax(0, 320px));
+    justify-content: center;
+    width: 100%;
+    max-width: 1060px;
+  }
+
+  html:not(.native-app) .empty-player-book {
+    grid-template-columns: 72px minmax(0, 1fr);
+    padding: 14px 18px 14px 14px;
+  }
+
+  html:not(.native-app) .empty-player-book .cover-mark {
+    width: 72px;
+    height: 72px;
+  }
+
+  html:not(.native-app) .empty-player-book-copy strong {
+    font-size: 1.2rem;
+  }
+}
+
+/* A short window shows two resume cards under a smaller heading. */
+@media (max-height: 520px) {
+  html:not(.native-app) .empty-player h2 {
+    margin-bottom: 4px;
+    font-size: 1.6rem;
+  }
+
+  html:not(.native-app) .empty-player-books {
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  html:not(.native-app) .empty-player-book {
+    grid-template-columns: 52px minmax(0, 1fr);
+    padding-block: 8px;
+  }
+
+  html:not(.native-app) .empty-player-book .cover-mark {
+    width: 52px;
+    height: 52px;
+  }
+}
+
+/* On very wide windows the reading room keeps its contents, page, and
+   listening panel together in the middle instead of at the window's edges. */
+@media (min-width: 2000px) {
+  html:not(.native-app) .epub-reader.room {
+    width: min(100%, 1760px);
+    margin-inline: auto;
+  }
+}
+
+/* The closed drawer sits just off the left edge, but its outer shadow still
+   reached into the page as a dark band; it only casts one while open. */
+@media (max-width: 960px) {
+  html:not(.native-app) .library-pane {
+    transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.35s ease;
+  }
+
+  html:not(.native-app) .library-pane:not(.open) {
+    box-shadow: none;
+  }
 }
