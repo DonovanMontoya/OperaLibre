@@ -57,9 +57,9 @@ export function alignmentGiftSelection(inventory: GiftInventory, alignmentId: st
 export function defaultGiftSelection(inventory: GiftInventory): string[] {
   const selected = new Set(inventory.defaultSelectedAssetIds.filter(id => {
     const asset = inventory.assets.find(item => item.id === id)!;
-    return !giftAssetDisabledReason(asset) && asset.kind !== "audio";
+    return !giftAssetDisabledReason(asset);
   }));
-  for (const asset of inventory.assets) if (asset.kind === "metadata") selected.add(asset.id);
+  for (const asset of inventory.assets) if (asset.kind === "metadata" || (asset.kind === "audio" && !giftAssetDisabledReason(asset))) selected.add(asset.id);
   for (const kind of ["ebook", "cover"]) {
     if (![...selected].some(id => inventory.assets.find(asset => asset.id === id)?.kind === kind)) {
       const asset = inventory.assets.find(asset => asset.kind === kind && !giftAssetDisabledReason(asset));

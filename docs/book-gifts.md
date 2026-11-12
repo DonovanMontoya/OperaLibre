@@ -103,8 +103,8 @@ Either way, you can check the broker by opening `https://your-broker-address/gif
 
 ## 4. Send a gift
 
-1. Open a book's page and choose **Share gift**.
-2. Choose what to include. The ebook and cover are selected by default; add the audiobook or read-along timing if you want. The sheet shows the size.
+1. Open a book's page and choose **More → Gift this book**.
+2. Choose what to include. The audiobook, ebook, and cover are selected by default when available. You can change the selection or add read-along timing if supported. The sheet shows the size.
 3. Add a personal message if you like, choose how long the link works (5 or 15 minutes), and choose **Create gift link**.
 4. Copy the link and send it privately. Anyone who has the link can claim the gift, and it can be claimed once.
 

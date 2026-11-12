@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { AudioLines, BookOpen, Gift, Headphones, ImageIcon, Tag, X, type LucideIcon } from "lucide-react";
-import { captureGiftOwnerSetupGuard as captureGiftServerGuard, createSelectedBookGift, getBookGiftInventory, getBookGiftsStatus } from "./api";
+import { captureGiftOwnerSetupGuard as captureGiftServerGuard, createSelectedBookGift, getBookGiftInventory, getBookGiftsStatus, subscribeBookGiftsStatus } from "./api";
 import { useModalFocus } from "./useModalFocus";
 import { alignmentGiftSelection, defaultGiftSelection, giftAssetDisabledReason, giftSelectionSummary, giftSizeLabel, parseCreatedGift, parseGiftInventory, selectedGiftRequest, type CreatedGift, type GiftInventory, type GiftInventoryAsset, type SelectedGiftRequest, type SenderCreatedGift } from "./giftSelectionModel";
 import "./giftShare.css";
@@ -12,9 +11,18 @@ export function useBookGiftSending(eligible: boolean): boolean {
   const [canSend, setCanSend] = useState(false);
   useEffect(() => {
     if (!eligible) { setCanSend(false); return; }
-    let active = true;
-    void getBookGiftsStatus().then(status => { if (active) setCanSend(status.canSend); });
-    return () => { active = false; };
+    let sequence = 0;
+    const refresh = () => {
+      const current = ++sequence;
+      const sameServer = captureGiftServerGuard();
+      setCanSend(false);
+      void getBookGiftsStatus().then(status => {
+        if (current === sequence && sameServer()) setCanSend(status.canSend);
+      });
+    };
+    const unsubscribe = subscribeBookGiftsStatus(refresh);
+    refresh();
+    return () => { sequence++; unsubscribe(); };
   }, [eligible]);
   return eligible && canSend;
 }
@@ -40,16 +48,12 @@ function expiryLabel(seconds: number) {
   return at.toLocaleString([], sameDay ? { hour: "numeric", minute: "2-digit" } : { weekday: "short", hour: "numeric", minute: "2-digit" });
 }
 
-export function GiftShareAction({ bookId, enabled, alignmentReady = false, api = senderApi }: { bookId: string; enabled: boolean; alignmentReady?: boolean; api?: GiftSenderApi }) {
-  const [open, setOpen] = useState(false);
+export function GiftShareAction({ enabled, onOpen }: { enabled: boolean; onOpen(): void }) {
   if (!enabled) return null;
-  return <>
-    <button className="book-action" type="button" onClick={() => setOpen(true)} aria-haspopup="dialog"><span className="book-action-dot"><Gift size={16} aria-hidden="true" /></span><span className="book-action-label">Share gift</span></button>
-    {open ? createPortal(<GiftShareDialog key={bookId} bookId={bookId} api={api} alignmentReady={alignmentReady} onClose={() => setOpen(false)} />, document.body) : null}
-  </>;
+  return <button className="book-action-item" type="button" onClick={onOpen} aria-haspopup="dialog"><Gift size={18} aria-hidden="true" /><span>Gift this book</span></button>;
 }
 
-export function GiftShareDialog({ bookId, api, alignmentReady = false, onClose }: { bookId: string; api: GiftSenderApi; alignmentReady?: boolean; onClose(): void }) {
+export function GiftShareDialog({ bookId, api = senderApi, alignmentReady = false, onClose }: { bookId: string; api?: GiftSenderApi; alignmentReady?: boolean; onClose(): void }) {
   const [inventory, setInventory] = useState<GiftInventory | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [message, setMessage] = useState("");

@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BookPreviewBar, type PreviewPosition } from "./BookPreviewBar";
 import { BookCredits } from "./BookCredits";
@@ -66,7 +67,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "re
 import type { ServerCapabilities } from "./serverCapabilities";
 import { usePhoneWidthWindow } from "./useOrientation";
 import { useReadingQueue } from "./useReadingQueue";
-import { GiftShareAction, useBookGiftSending } from "./GiftShareDialog";
+import { GiftShareAction, GiftShareDialog, useBookGiftSending } from "./GiftShareDialog";
 
 // Beyond this the segments are too thin to read or tap, and their fixed
 // borders/gaps overflow a phone screen; fall back to one continuous bar.
@@ -314,9 +315,17 @@ export function PlayerPane({
     .slice(0, 3), [books]);
   const compactActions = native || phoneWidth;
   const [bookActionsOpen, setBookActionsOpen] = useState(false);
+  const [giftOpen, setGiftOpen] = useState(false);
+  useEffect(() => setGiftOpen(false), [selectedBook?.id, giftSending]);
   const [bookActionsAbove, setBookActionsAbove] = useState(false);
   const bookActionsRef = useRef<HTMLDivElement>(null);
+  const bookActionsMenuRef = useRef<HTMLDivElement>(null);
   const bookActionsId = useId();
+  const giftWasOpen = useRef(false);
+  useLayoutEffect(() => {
+    if (giftWasOpen.current && !giftOpen) bookActionsRef.current?.querySelector<HTMLButtonElement>(".book-action-more")?.focus();
+    giftWasOpen.current = giftOpen;
+  }, [giftOpen]);
   const [queueIds, saveQueueIds] = useReadingQueue(readingQueueStorageKey);
   const selectedBookQueued = !!selectedBook && queueIds.includes(selectedBook.id);
   const [queueSaveFailed, setQueueSaveFailed] = useState(false);
@@ -326,20 +335,28 @@ export function PlayerPane({
     if (!bookActionsOpen) return;
     const placeMenu = () => {
       const rail = bookActionsRef.current?.querySelector<HTMLElement>(".book-action-rail");
-      const menu = bookActionsRef.current?.querySelector<HTMLElement>(".book-action-menu");
-      if (!rail || !menu) return;
-      const { top, bottom } = rail.getBoundingClientRect();
+      const menu = bookActionsMenuRef.current;
+      const anchor = rail ?? bookActionsRef.current?.querySelector<HTMLElement>(".book-action-more");
+      if (!anchor || !menu) return;
+      const { top, bottom, right } = anchor.getBoundingClientRect();
       const spaceBelow = window.innerHeight - bottom;
-      setBookActionsAbove(menu.offsetHeight + 8 > spaceBelow && top > spaceBelow);
+      const above = menu.scrollHeight + 8 > spaceBelow && top > spaceBelow;
+      setBookActionsAbove(above);
+      menu.style.maxHeight = `${Math.max(48, (above ? top : spaceBelow) - 16)}px`;
+      if (!compactActions) {
+        menu.style.left = `${Math.max(16, Math.min(window.innerWidth - menu.offsetWidth - 16, right - menu.offsetWidth))}px`;
+        menu.style.top = `${above ? top - menu.offsetHeight - 8 : bottom + 8}px`;
+      }
     };
     placeMenu();
     window.addEventListener("resize", placeMenu);
-    return () => window.removeEventListener("resize", placeMenu);
-  }, [bookActionsOpen]);
+    window.addEventListener("scroll", placeMenu, true);
+    return () => { window.removeEventListener("resize", placeMenu); window.removeEventListener("scroll", placeMenu, true); };
+  }, [bookActionsOpen, giftSending, compactActions]);
   useEffect(() => {
     if (!bookActionsOpen) return;
     const closeOutside = (event: Event) => {
-      if (event.target instanceof Node && !bookActionsRef.current?.contains(event.target)) {
+      if (event.target instanceof Node && !bookActionsRef.current?.contains(event.target) && !bookActionsMenuRef.current?.contains(event.target)) {
         setBookActionsOpen(false);
       }
     };
@@ -890,6 +907,7 @@ export function PlayerPane({
           ) : null}
           {native ? bookPageMasthead : <div className="book-page-masthead">{bookPageMasthead}</div>}
 
+          {giftOpen && giftSending && selectedBook.source !== "device" ? createPortal(<GiftShareDialog key={selectedBook.id} bookId={selectedBook.id} onClose={() => setGiftOpen(false)} />, document.body) : null}
           <div className="book-heading">
             <div className="book-cover-column">
               <CoverArt book={selectedBook} size="large" />
@@ -905,7 +923,6 @@ export function PlayerPane({
                   <Bookmark size={13} /> {isViewingPlayingBook ? "Now Reading" : "Book Details"}
                 </span>
                 <div className={`heading-actions book-detail-actions ${compactActions ? "is-compact" : ""}`} ref={bookActionsRef}>
-                  <GiftShareAction key={selectedBook.id} bookId={selectedBook.id} enabled={giftSending && selectedBook.source !== "device"} />
                   {compactActions ? (
                     <div className="book-action-bar">
                       <div className="book-action-rail">
@@ -922,11 +939,16 @@ export function PlayerPane({
                           <span className="book-action-label">More</span>
                         </button>
                       </div>
-                      <div id={bookActionsId} role="group" aria-label="Book actions"
+                      <div ref={bookActionsMenuRef} id={bookActionsId} role="group" aria-label="Book actions"
                         className={`book-action-menu ${bookActionsOpen ? "is-open" : ""} ${bookActionsAbove ? "opens-up" : ""}`}
                         onClick={event => {
                           if (event.target instanceof Element && event.target.closest("button")) setBookActionsOpen(false);
                         }}>
+                        <GiftShareAction enabled={giftSending && selectedBook.source !== "device"} onOpen={() => {
+                          setBookActionsOpen(false);
+                          bookActionsRef.current?.querySelector<HTMLButtonElement>(".book-action-more")?.focus();
+                          setGiftOpen(true);
+                        }} />
                         {completionAction}
                         {resetAction}
                         {epubAction}
@@ -940,6 +962,16 @@ export function PlayerPane({
                       {resetAction}
                       {readAction}
                       {storageAction}
+                      {giftSending && selectedBook.source !== "device" ? <div className="book-action-overflow">
+                        <button type="button" className="download-btn book-action-more" aria-label="More book actions" aria-expanded={bookActionsOpen} aria-controls={bookActionsId} onClick={() => setBookActionsOpen(open => !open)}><Ellipsis size={13} /> More</button>
+                        {createPortal(<div ref={bookActionsMenuRef} id={bookActionsId} role="group" aria-label="Book actions" className={`book-action-menu is-desktop ${bookActionsOpen ? "is-open" : ""}`}>
+                          <GiftShareAction enabled={giftSending} onOpen={() => {
+                            setBookActionsOpen(false);
+                            bookActionsRef.current?.querySelector<HTMLButtonElement>(".book-action-more")?.focus();
+                            setGiftOpen(true);
+                          }} />
+                        </div>, document.body)}
+                      </div> : null}
                     </>
                   )}
                   {playbackError ? <span className="download-status">{playbackError}</span> : null}

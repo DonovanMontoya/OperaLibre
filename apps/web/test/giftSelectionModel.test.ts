@@ -14,15 +14,26 @@ function inventory(): GiftInventory {
   ], defaultSelectedAssetIds: ["metadata", "ebook", "cover", "audio", "alignment"] };
 }
 
-test("lightweight defaults include metadata, ebook and cover but never opt in to audio or alignment", () => {
+test("defaults include all available audiobook tracks, ebook and cover without opting into alignment", () => {
   const inv = parseGiftInventory(inventory(), "server-book");
   const selected = defaultGiftSelection(inv);
-  assert.deepEqual(selected, ["metadata", "ebook", "cover"]);
-  assert.deepEqual(giftSelectionSummary(inv, selected).formats, ["Metadata", "EPUB", "Cover"]);
-  assert.equal(giftSelectionSummary(inv, selected).sizeBytes, 130);
-  assert.equal(giftSelectionSummary(inv, [...selected, "audio"]).sizeBytes, 1130);
+  assert.deepEqual(selected, ["metadata", "ebook", "cover", "audio"]);
+  assert.deepEqual(giftSelectionSummary(inv, selected).formats, ["Metadata", "EPUB", "Cover", "M4B"]);
+  assert.equal(giftSelectionSummary(inv, selected).sizeBytes, 1130);
+
   inv.defaultSelectedAssetIds = [];
   assert.deepEqual(defaultGiftSelection(inv), selected);
+});
+
+test("default audio selection skips unavailable tracks but keeps available tracks even above the size limit", () => {
+  const inv = inventory();
+  inv.assets.push({ id: "audio2", kind: "audio", fileName: "second.mp3", sizeBytes: 200, available: true });
+  inv.assets.push({ id: "locked-audio", kind: "audio", fileName: "protected.aax", sizeBytes: 100, available: false, disabledReason: "Protected audio" });
+  inv.defaultSelectedAssetIds = [];
+  inv.maxBytes = 100;
+  const selected = defaultGiftSelection(inv);
+  assert.deepEqual(selected, ["metadata", "ebook", "cover", "audio", "audio2"]);
+  assert.match(giftSelectionSummary(inv, selected).errors.join(), /size limit/);
 });
 
 test("selected IDs, metadata, availability and matching dependencies are validated", () => {
@@ -109,7 +120,6 @@ test("a gift link is accepted only when actually returned by the server", () => 
 
 test("the gift action follows the server's experiment and API requests use the agreed selection-only routes", async () => {
   const component = await readFile(new URL("../src/GiftShareDialog.tsx", import.meta.url), "utf8");
-  assert.match(component, /getBookGiftsStatus\(\)\.then\(status => \{ if \(active\) setCanSend\(status\.canSend\); \}\)/);
   assert.doesNotMatch(component, /localStorage|sessionStorage|console\.|navigator\.share|createExperimentalGiftLink/);
   assert.match(component, /Share only books you have permission to share/);
   assert.match(component, /No DRM removal is provided/);
