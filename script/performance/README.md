@@ -84,3 +84,8 @@ Coverage to extend with the optimization: artwork reload/fetch counts, a success
 native download-recovery scenario for any new batched status API, and React profiling for shelf
 memoization. Those are not claimed by the current timing measurements. Avoid adding a duplicate
 server model or testing newly invented helpers that production never calls.
+
+## Native streaming
+
+The [standalone streaming benchmark](streaming/README.md) compares prepared
+M4A and experimental bundled HLS using the native iOS player in a simulator.
