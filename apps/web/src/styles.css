@@ -22636,8 +22636,8 @@ html.native-app.platform-ios:not(.dark-mode) .ledger-dashboard .profile-headline
   --on-spine: var(--ink);
   --on-spine-rgb: var(--ink-rgb);
   --on-spine-bright-rgb: var(--ink-rgb);
-  --spine-gold: #7d5a1c;
-  --spine-gold-rgb: 125, 90, 28;
+  --spine-gold: #6e4f17;
+  --spine-gold-rgb: 110, 79, 23;
   --spine-top: var(--paper);
   --shelf-top: var(--paper);
   --shelf-low: var(--paper);
@@ -22650,6 +22650,192 @@ html.native-app.platform-ios:not(.dark-mode) .native-shell > .library-pane,
 html.native-app.platform-ios:not(.dark-mode) .games-shell {
   background: var(--paper);
   background-image: var(--paper-wash);
+}
+
+/* The gold family is tuned for dark wood: --gold-soft is a pale straw that
+   glows on the shelf but turns to faint yellow on paper, both as fills (the
+   selected view, the active game, progress meters) and as the --spine-gold
+   text the player and book pages fall back to. On paper the whole family
+   steps down to ochre: fills stay unmistakably gold and keep ~7:1 for their
+   dark labels, and gold text holds ~5:1 or better on every light paper.
+   The web-style tab strip stays dark, so it keeps the straw gold. */
+html.native-app.platform-ios:not(.dark-mode) {
+  --gold: #9c7128;
+  --gold-soft: #c99c4f;
+  --spine-gold: #6e4f17;
+  --spine-gold-rgb: 110, 79, 23;
+}
+
+/* Series names are Instrument Serif italic in gold: a hairline display cut
+   that reads as a flourish on the dark shelf but breaks up on paper at 16px.
+   On paper they take the book titles' Fraunces in ink at weight 500, so a
+   group heading still stands apart from the titles under it by weight and
+   the SERIES label beside it. */
+html.native-app.platform-ios:not(.dark-mode) .book-sort-group-toggle > strong {
+  color: var(--ink);
+  font-family: "Fraunces", serif;
+  font-style: normal;
+  font-weight: 500;
+  font-size: 0.95rem;
+}
+
+html.native-app.platform-ios:not(.dark-mode) :is(.game-card .section-label, .match-record strong) {
+  color: var(--spine-gold);
+}
+
+html.native-app.platform-ios:not(.dark-mode) .spine-tabs {
+  --gold: #b8893a;
+  --gold-soft: #d9b574;
+  --spine-gold: #d9b574;
+  --spine-gold-rgb: 217, 181, 116;
+}
+
+/* The shelf's quiet text is paper at 40-65% over a dark wood. Retinted to ink
+   over paper, those alphas fall to about 4:1 in thin mono caps and read as
+   haze, so on paper they use the theme's solid text roles instead: --ink-soft
+   for lines a reader scans (authors, counts, the status tabs), --ink-faded for
+   labels. Selected, engaged and disabled states keep their own colours, and
+   the fold layouts' longer selectors get their own rules so the short lists
+   stay low enough not to outrank those states. */
+html.native-app.platform-ios:not(.dark-mode) :is(
+  .book-text > span:not([class]),
+  .book-text > .book-row-narrator,
+  .continue-reading-author,
+  .library-results-summary,
+  .library-filter-toggle:not(.engaged, .open, .status-engaged),
+  .shelf-status-row button:not(.selected, :disabled),
+  .games-switcher button:not(.active),
+  .match-score
+) {
+  color: var(--ink-soft);
+}
+
+html.native-app.platform-ios:not(.dark-mode) .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) :is(
+  .library-status-inline button:not(.selected, :disabled),
+  .library-filter-toggle.status-engaged:not(.engaged, .open)
+) {
+  color: var(--ink-soft);
+}
+
+html.native-app.platform-ios:not(.dark-mode) :is(
+  .shelf-facet-title,
+  .shelf-facet-hint,
+  .facet-chip em,
+  .shelf-facet-more,
+  .library-active-filters-caption,
+  .active-filter-caption,
+  .library-clear-filters,
+  .library-sort > span,
+  .view-toggle button:not(.selected),
+  .source-toggle button:not(.selected),
+  .purchase-source label,
+  .account-list-copy,
+  .audible-row span,
+  .continue-reading-chevron,
+  .continue-reading-library-heading,
+  .book-sort-group-chevron,
+  .book-sort-group-toggle > em,
+  .book-sort-group-toggle > span,
+  .book-availability,
+  .book-progress.notStarted em,
+  .queue-row .continue-reading-progress,
+  .queue-actions button:not(:disabled),
+  .queue-unavailable,
+  .empty-state,
+  .mini-meta > span,
+  .mini-progress span,
+  .sleep-sheet-hint,
+  .sleep-options .sleep-off span,
+  .speed-wheel-hint,
+  .games-head p,
+  .games-privacy,
+  .match-record
+) {
+  color: var(--ink-faded);
+}
+
+html.native-app.platform-ios:not(.dark-mode) .native-shell.tab-shelf:not(.library-book-open) :is(
+  .library-pane:not(.purchase-browsing) .continue-reading-heading h2,
+  .library-pane:not(.purchase-browsing) .continue-reading-up-next h3,
+  .library-pane:not(.purchase-browsing) .queue-hint,
+  .book-list.is-grid.is-lettered .book-letter > em
+) {
+  color: var(--ink-faded);
+}
+
+html.native-app.platform-ios:not(.dark-mode) .library-search input::placeholder {
+  color: var(--ink-faded);
+}
+
+/* The shelf's mono caps run 9-10.5px with wide tracking. Pale on dark wood
+   they hold up; dark on paper the hairline strokes thin out and the caps
+   blur together. On paper they step up to 11px at weight 500 and give back
+   most of the tracking, so a label keeps roughly its old width. The fold
+   layouts size some of these with longer selectors, hence the second list. */
+html.native-app.platform-ios:not(.dark-mode) :is(
+  .continue-reading-progress,
+  .library-sort > span,
+  .library-results-summary,
+  .library-filter-toggle,
+  .shelf-status-row button,
+  .library-status-inline button,
+  .book-sort-group-toggle > span,
+  .book-sort-group-toggle > em,
+  .book-runtime-tag,
+  .book-progress em,
+  .match-record,
+  .match-score
+),
+html.native-app.platform-ios:not(.dark-mode) .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) :is(
+  .continue-reading-heading h2,
+  .continue-reading-up-next h3,
+  .library-status-inline button,
+  .library-filter-toggle
+) {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+}
+
+html.native-app.platform-ios:not(.dark-mode) :is(.book-runtime-tag, .book-shared-readers, .book-readalong-tag.extras) {
+  color: var(--ink-faded) !important;
+}
+
+/* The match board sat in a 22% black tray, a grey slab on paper. On paper it
+   is a shallow well instead, and each piece gets an edge so the six colours
+   stand on the sheet without a dark backing. The selected ring was paper,
+   invisible on a paper well, so it is ink here. */
+html.native-app.platform-ios:not(.dark-mode) .match-board {
+  background: rgba(var(--ink-rgb), 0.05);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.08);
+}
+
+html.native-app.platform-ios:not(.dark-mode) .match-board.busy {
+  background: rgba(var(--ink-rgb), 0.08);
+}
+
+html.native-app.platform-ios:not(.dark-mode) .match-piece {
+  box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.16), 0 1px 2px rgba(var(--ink-rgb), 0.22);
+}
+
+html.native-app.platform-ios:not(.dark-mode) .match-piece.selected {
+  box-shadow: 0 0 0 3px var(--paper), 0 0 0 5px var(--ink);
+}
+
+/* Word Grid's scored tiles and keys are dark fills; their letters were ink. */
+html.native-app.platform-ios:not(.dark-mode) :is(.word-tile, .word-key):is(.correct, .present) {
+  color: #fff;
+}
+
+html.native-app.platform-ios:not(.dark-mode) :is(.word-tile, .word-key).absent {
+  border-color: rgba(var(--ink-rgb), 0.12);
+  background: rgba(var(--ink-rgb), 0.14);
+  color: var(--ink-faded);
+}
+
+html.native-app.platform-ios:not(.dark-mode) :is(.word-tile, .word-key):not(.correct, .present, .absent) {
+  border-color: rgba(var(--ink-rgb), 0.22);
+  background: rgba(var(--lift-rgb), 0.7);
 }
 
 html.native-app.platform-ios:not(.dark-mode) .mini-player {
