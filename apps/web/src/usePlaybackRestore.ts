@@ -225,9 +225,8 @@ export function usePlaybackRestore({
         // the current shelf revision was fetched after this listening happened.
         if (nativeProgress && !previousLocal?.syncStatus) nativeProgress.baseUpdatedAt = undefined;
       }
-      // Native checkpoints from here on belong to this launch's listening.
-      if (!cancelled && previewStartedAt !== null) {
-        forgetInterruptedClipPreview(window.localStorage, getServerStorageKey(), currentUser.id, playbackBook.id);
+      if (!nativeAudio && !cancelled && previewStartedAt !== null) {
+        forgetInterruptedClipPreview(window.localStorage, getServerStorageKey(), currentUser.id, playbackBook.id, previewStartedAt);
       }
       if (playbackBook.source === "device") {
         const local = freshestProgress(...localCopies, nativeProgress);

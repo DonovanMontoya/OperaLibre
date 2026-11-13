@@ -1791,6 +1791,7 @@ function MainApp({
   });
 
   useAudioElement({
+    clipPreviewBookIdRef,
     activeTrackIndex,
     applyPlaybackVolume,
     audioRef,

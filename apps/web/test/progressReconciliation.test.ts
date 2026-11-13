@@ -326,7 +326,11 @@ for (const interrupted of [true, false]) {
     f.options.nativeAudio = true;
     const preview = clips.clipPreviewFlag(f.storage, () => ({ serverKey: "server", userId: "reader" }));
     preview.current = "book";
-    if (!interrupted) preview.current = null;
+    if (!interrupted) {
+      preview.current = null;
+      // The native return/load has acknowledged its durable replacement.
+      clips.forgetInterruptedClipPreview(f.storage, "server", "reader", "book");
+    }
     // The native player kept checkpointing at the clip while it played.
     f.dependencies["./nativeAudio"].getNativeAudioRecovery = async () => ({
       trackId: "track", positionSeconds: 300, bookPositionSeconds: 300, durationSeconds: 7200,
@@ -336,7 +340,18 @@ for (const interrupted of [true, false]) {
     const resumed = interrupted ? 1060 : 300;
     assert.equal(f.seeks.at(-1)!.positionSeconds, resumed);
     assert.ok(f.writes.every(write => write.progress.bookPositionSeconds === resumed));
-    assert.equal(clips.interruptedClipPreviewStart(f.storage, "server", "reader", "book"), null);
+    assert.equal(clips.interruptedClipPreviewStart(f.storage, "server", "reader", "book") !== null, interrupted);
+    if (interrupted) {
+      // Relaunch again before native load has replaced the old checkpoint.
+      const next = fixture();
+      next.write(f.checkpoint());
+      next.options.nativeAudio = true;
+      next.storage.setItem("operalibre.clipPreview:server:reader:book", f.storage.getItem("operalibre.clipPreview:server:reader:book")!);
+      next.dependencies["./nativeAudio"].getNativeAudioRecovery = f.dependencies["./nativeAudio"].getNativeAudioRecovery;
+      await next.restore();
+      assert.equal(next.seeks.at(-1)!.positionSeconds, resumed);
+      assert.ok(next.writes.every(write => write.progress.bookPositionSeconds === resumed));
+    }
   });
 }
 
@@ -1772,4 +1787,24 @@ test("clip previews leave the durable checkpoint and progress queue untouched", 
   await sync.flushProgressSaveQueue();
   assert.equal(f.writes.length, 1);
   assert.equal(f.writes[0].progress.bookPositionSeconds, f.local.bookPositionSeconds);
+});
+
+test("automatic native seeks preserve preview suppression and the return seek releases only native suppression", () => {
+  const f = fixture();
+  const nativeSeeks: Array<{ position: number; preview: boolean }> = [];
+  f.options.nativeAudio = true;
+  f.options.clipPreviewBookIdRef.current = "book";
+  const controls = loadHook("usePlaybackControls", {
+    ...f.dependencies,
+    "./nativeAudio": { ...f.dependencies["./nativeAudio"],
+      seekNativeAudio: async (position: number, preview: boolean) => { nativeSeeks.push({ position, preview }); } },
+    "./offlinePlayback": { playbackRestoreBookAfterAction: (_previous: unknown, id: string) => id },
+    "./formatting": { durationFromTracks: () => 7200 },
+    "./playbackGain": {}, "./bookVolume": {}, "./carPlay": {}, "./playbackPending": {},
+    "./native": {}, "./nativeAudioStartup": {}, "./playbackSpeed": {}
+  })({ ...f.options, setPlaybackBookId: () => {}, persistProgress: async () => {} });
+  controls.setPlaybackPosition(f.options.audioRef.current, 500);
+  controls.seekBookPosition(1000, false, true, false);
+  assert.deepEqual(nativeSeeks, [{ position: 500, preview: true }, { position: 1000, preview: false }]);
+  assert.equal(f.options.clipPreviewBookIdRef.current, "book", "frontend saves stay blocked until the return is observed");
 });

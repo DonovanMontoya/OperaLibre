@@ -1249,23 +1249,26 @@ function clipBody({ id, startSeconds, endSeconds, title, note }: ClipFields) {
 }
 
 /** Safe to repeat: the server keeps one clip per id. */
-export async function saveClip(clip: ClipFields) {
+export async function saveClip(clip: ClipFields, signal?: AbortSignal) {
   return request<Clip>(`/api/books/${encodeURIComponent(clip.bookId)}/clips`, {
     method: "POST",
+    signal,
     body: clipBody(clip)
   });
 }
 
-export async function updateClip(clip: ClipFields) {
+export async function updateClip(clip: ClipFields, signal?: AbortSignal) {
   return request<Clip>(`/api/books/${encodeURIComponent(clip.bookId)}/clips/${encodeURIComponent(clip.id)}`, {
     method: "PUT",
+    signal,
     body: clipBody(clip)
   });
 }
 
-export async function deleteClip(clip: Pick<Clip, "id" | "bookId">) {
+export async function deleteClip(clip: Pick<Clip, "id" | "bookId">, signal?: AbortSignal) {
   return request<void>(`/api/books/${encodeURIComponent(clip.bookId)}/clips/${encodeURIComponent(clip.id)}`, {
-    method: "DELETE"
+    method: "DELETE",
+    signal
   });
 }
 

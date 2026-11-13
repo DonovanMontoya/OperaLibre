@@ -184,15 +184,15 @@ test("a preview the app never returned from is still known after a restart", () 
   assert.equal(interruptedClipPreviewStart(storage, "server", "reader", "book"), null);
 });
 
-test("a preview that returns, or moves to another book, leaves nothing behind", () => {
+test("releasing a preview keeps native recovery excluded until its replacement is ready", () => {
   const storage = memoryStorage();
   const flag = clipPreviewFlag(storage, () => ({ serverKey: "server", userId: "reader" }));
   flag.current = "first";
   flag.current = "second";
-  assert.equal(interruptedClipPreviewStart(storage, "server", "reader", "first"), null);
+  assert.notEqual(interruptedClipPreviewStart(storage, "server", "reader", "first"), null);
   assert.notEqual(interruptedClipPreviewStart(storage, "server", "reader", "second"), null);
   flag.current = null;
-  assert.equal(interruptedClipPreviewStart(storage, "server", "reader", "second"), null);
+  assert.notEqual(interruptedClipPreviewStart(storage, "server", "reader", "second"), null);
   assert.equal(flag.current, null);
 });
 

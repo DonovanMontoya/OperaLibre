@@ -138,13 +138,16 @@ export function clipPreviewFlag(storage: ClipStorage | null, scope: () => { serv
     set current(next: string | null) {
       // Going from one clip straight to another keeps the first start.
       if (next === bookId) return;
-      const previous = bookId;
       bookId = next;
       if (!storage) return;
       const { serverKey, userId } = scope();
       try {
-        if (previous) storage.removeItem(clipPreviewStorageKey(serverKey, userId, previous));
-        if (next) storage.setItem(clipPreviewStorageKey(serverKey, userId, next), String(Date.now()));
+        // Releasing the web gate does not prove native recovery was replaced.
+        // A normal native load clears the durable marker once its seek is ready.
+        if (next) {
+          const startedAt = interruptedClipPreviewStart(storage, serverKey, userId, next) ?? Date.now();
+          storage.setItem(clipPreviewStorageKey(serverKey, userId, next), String(startedAt));
+        }
       } catch {
         // The in-memory flag still keeps preview positions out of saves.
       }
@@ -162,7 +165,8 @@ export function interruptedClipPreviewStart(storage: ClipStorage, serverKey: str
   }
 }
 
-export function forgetInterruptedClipPreview(storage: ClipStorage, serverKey: string, userId: string, bookId: string): void {
+export function forgetInterruptedClipPreview(storage: ClipStorage, serverKey: string, userId: string, bookId: string, expectedStart?: number): void {
+  if (expectedStart !== undefined && interruptedClipPreviewStart(storage, serverKey, userId, bookId) !== expectedStart) return;
   try {
     storage.removeItem(clipPreviewStorageKey(serverKey, userId, bookId));
   } catch {

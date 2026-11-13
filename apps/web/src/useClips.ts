@@ -4,6 +4,7 @@ import {
   deleteClip,
   downloadClipAudio,
   getServerStorageKey,
+  getStoredToken,
   isNetworkError,
   listClips,
   saveClip,
@@ -94,12 +95,29 @@ export function useClips({
   enabled: boolean;
   pausePlayback: (audio: HTMLAudioElement | null | undefined) => void;
   persistProgress: () => Promise<void>;
-  seekBookPosition: (value: number, autoPlay?: boolean, temporary?: boolean) => void;
+  seekBookPosition: (value: number, autoPlay?: boolean, temporary?: boolean, nativePreview?: boolean) => void;
   userId: string;
 }) {
   const bookId = book?.id ?? null;
   const collectionBookId = collectionBook?.id ?? null;
   const storageKey = pendingClipStorageKey(getServerStorageKey(), userId);
+  const token = getStoredToken();
+  const deliveryScope = useMemo(() => ({ active: true, token, storageKey, controller: new AbortController() }), [token, storageKey]);
+  const deliveryScopeRef = useRef(deliveryScope);
+  deliveryScopeRef.current = deliveryScope;
+  function ownsDelivery(signal = deliveryScope.controller.signal) {
+    return !signal.aborted && signal === deliveryScope.controller.signal && deliveryScope.active && deliveryScopeRef.current === deliveryScope
+      && getStoredToken() === deliveryScope.token
+      && pendingClipStorageKey(getServerStorageKey(), userId) === deliveryScope.storageKey;
+  }
+  useEffect(() => {
+    if (deliveryScope.controller.signal.aborted) deliveryScope.controller = new AbortController();
+    deliveryScope.active = true;
+    return () => {
+      deliveryScope.active = false;
+      deliveryScope.controller.abort();
+    };
+  }, [deliveryScope]);
   const [saved, setSaved] = useState<Clip[]>([]);
   const [pending, setPending] = useState<Clip[]>(() => readPendingClips(window.localStorage, storageKey));
   const [availability, setAvailability] = useState<"unknown" | "available" | "unsupported">("unknown");
@@ -120,6 +138,7 @@ export function useClips({
   const deliveriesRef = useRef(new Map<string, Promise<ClipDelivery>>());
 
   function storePending(next: Clip[]) {
+    if (!ownsDelivery()) return;
     pendingRef.current = next;
     writePendingClips(window.localStorage, storageKey, next);
     setPending(next);
@@ -131,6 +150,7 @@ export function useClips({
    * that is briefly unmounted.
    */
   function deliver(clip: Clip): Promise<ClipDelivery> {
+    if (!ownsDelivery()) return Promise.resolve("waiting");
     const queued = pendingRef.current.find((candidate) => candidate.id === clip.id);
     if (!queued) return Promise.resolve("saved");
     const existing = deliveriesRef.current.get(clip.id);
@@ -141,17 +161,22 @@ export function useClips({
   }
 
   async function deliverNow(clip: Clip): Promise<ClipDelivery> {
+    const signal = deliveryScope.controller.signal;
+    if (!ownsDelivery(signal)) return "waiting";
     try {
       let stored: Clip | null = null;
       if (!clip.deleted) {
-        stored = await saveClip(clip);
+        stored = await saveClip(clip, signal);
+        if (!ownsDelivery(signal)) return "waiting";
         // A repeated save returns the first copy, which can predate an offline trim.
         const latest = pendingRef.current.find((candidate) => candidate.id === clip.id) ?? clip;
-        if (!latest.deleted && !sameContent(stored, latest)) stored = await updateClip(latest);
+        if (!latest.deleted && !sameContent(stored, latest)) stored = await updateClip(latest, signal);
       }
       // A removal can arrive while either the save or trim request is in flight.
       const removed = clip.deleted || pendingRef.current.find((candidate) => candidate.id === clip.id)?.deleted;
-      if (removed) await deleteClip(clip);
+      if (!ownsDelivery(signal)) return "waiting";
+      if (removed) await deleteClip(clip, signal);
+      if (!ownsDelivery(signal)) return "waiting";
       storePending(pendingRef.current.filter((candidate) => candidate.id !== clip.id));
       if (removed) setSaved((current) => current.filter((candidate) => candidate.id !== clip.id));
       else if (stored && stored.bookId === bookIdRef.current) {
@@ -160,6 +185,7 @@ export function useClips({
       }
       return "saved";
     } catch (failure) {
+      if (!ownsDelivery(signal)) return "waiting";
       if (!saveWasRejected(failure) || isNetworkError(failure)) return bookUnavailable(failure) ? "held" : "waiting";
       storePending(pendingRef.current.filter((candidate) => candidate.id !== clip.id));
       return errorMessage(failure, "The clip could not be saved.");
@@ -339,7 +365,7 @@ export function useClips({
   function finishAudition(finished: Audition) {
     setAudition(null);
     pausePlayback(audioRef.current);
-    seekBookPosition(finished.returnTo, false, true);
+    seekBookPosition(finished.returnTo, false, true, false);
     setReturningTo(finished.returnTo);
   }
   const finishAuditionRef = useRef(finishAudition);
@@ -383,8 +409,7 @@ export function useClips({
       // player still reports the place the listener came from.
       if (inside) setAudition({ ...audition, reached: true });
       else if (Date.now() - audition.startedAt > AUDITION_START_TIMEOUT_MS) {
-        clipPreviewBookIdRef.current = null;
-        setAudition(null);
+        finishAuditionRef.current(audition);
       }
       return;
     }
