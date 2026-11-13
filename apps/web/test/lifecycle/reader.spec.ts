@@ -99,19 +99,11 @@ test('Focus preserves the EPUB host and rendition through resizing and returning
   await expect.poll(async () => (await place(page)) ?? before).not.toBe(before);
 });
 
-test('chapter following opens at the current audiobook chapter before sentence sync is available', async ({ page }) => {
+test('a book without a sentence map offers no Follow control', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('operalibre.readerFollow', '1'));
-  await page.goto(`${url}test/reader-catch-up.html?chapter-sync`);
+  await page.goto(`${url}test/reader-catch-up.html`);
   await expect(page.locator('.epub-loading')).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() =>
-    (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation()?.start?.href
-  )).toContain('c2.xhtml');
-  // The remembered-page settling checks run at 300 ms and 1 s. The narrated
-  // chapter must remain in control after both have had a chance to run.
-  await page.waitForTimeout(1200);
-  expect(await page.evaluate(() =>
-    (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation().start.href
-  )).toContain('c2.xhtml');
+  await expect(page.getByRole('button', { name: /follow/i })).toHaveCount(0);
 });
 
 test('Follow starts off and keeps the reader choice on reopening', async ({ page }) => {
