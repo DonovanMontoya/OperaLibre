@@ -15851,15 +15851,10 @@ html.native-app .recent-row {
   pointer-events: none;
 }
 
-/* No room above the cover: the brief notice drops below it instead, and the
-   first-use hint is left out; the ribbon's own label says what it does. */
-.native-now-artwork[data-clip-callout="below"] .native-cover-clip-notice {
-  top: calc(var(--cover-top, 0px) + var(--cover-height, 100%) + 8px);
-  transform: translateX(-100%);
-}
-
-.native-now-artwork[data-clip-callout="below"] .native-cover-clip-hint {
-  display: none;
+/* Room for the notice above the cover on screens too short to have it. */
+.native-now-artwork.has-clips .large-cover {
+  transform: scale(var(--clip-cover-scale, 1));
+  transform-origin: 50% 100%;
 }
 
 /* The ribbon's centre is 40px in from the cover's right edge. */

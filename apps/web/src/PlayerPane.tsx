@@ -336,14 +336,22 @@ export function PlayerPane({
     const positionRibbon = () => {
       const frame = artwork.getBoundingClientRect();
       const bounds = cover.getBoundingClientRect();
-      artwork.style.setProperty("--cover-left", `${bounds.left - frame.left}px`);
-      artwork.style.setProperty("--cover-top", `${bounds.top - frame.top}px`);
-      artwork.style.setProperty("--cover-width", `${bounds.width}px`);
-      artwork.style.setProperty("--cover-height", `${bounds.height}px`);
       // The clip notice and hint sit above the cover so they never cover the
-      // art. A short screen leaves no room there inside the card.
+      // art. A screen too short to leave room for them inside the card scales
+      // the cover down from its bottom edge, which moves nothing else. The
+      // cover's box is worked out unscaled so the result does not feed back.
       const card = artwork.closest(".native-now-playing")?.getBoundingClientRect() ?? frame;
-      artwork.dataset.clipCallout = bounds.top - card.top >= CLIP_CALLOUT_ROOM ? "above" : "below";
+      const applied = artwork.classList.contains("has-clips") ? Number(artwork.style.getPropertyValue("--clip-cover-scale")) || 1 : 1;
+      const width = bounds.width / applied;
+      const height = bounds.height / applied;
+      const centre = bounds.left + bounds.width / 2;
+      const shortfall = Math.max(0, Math.ceil(CLIP_CALLOUT_ROOM - (bounds.bottom - height - card.top)));
+      const scale = clips.visible && height > 0 ? Math.max(0.6, (height - shortfall) / height) : 1;
+      artwork.style.setProperty("--clip-cover-scale", String(scale));
+      artwork.style.setProperty("--cover-left", `${centre - (width * scale) / 2 - frame.left}px`);
+      artwork.style.setProperty("--cover-top", `${bounds.bottom - height * scale - frame.top}px`);
+      artwork.style.setProperty("--cover-width", `${width * scale}px`);
+      artwork.style.setProperty("--cover-height", `${height * scale}px`);
     };
     positionRibbon();
     const observer = new ResizeObserver(positionRibbon);
@@ -351,7 +359,7 @@ export function PlayerPane({
     observer.observe(cover);
     window.addEventListener("resize", positionRibbon);
     return () => { observer.disconnect(); window.removeEventListener("resize", positionRibbon); };
-  }, [playbackBook?.id, nativePlayerView, isViewingPlayingBook]);
+  }, [playbackBook?.id, nativePlayerView, isViewingPlayingBook, clips.visible]);
   const [contentsTab, setContentsTab] = useState<"chapters" | "clips">("chapters");
   // The ribbon explains what it keeps until the first clip is saved on this device.
   const [clipHintSeen, setClipHintSeen] = useState(() => {
@@ -739,7 +747,7 @@ export function PlayerPane({
                   them either side of its fold. Everywhere else they take no
                   box and their children lay out in the card's grid. */}
               <div className="native-now-half native-now-lead">
-                <div className="native-now-artwork" ref={nowArtworkRef}>
+                <div className={`native-now-artwork${clips.visible ? " has-clips" : ""}`} ref={nowArtworkRef}>
                   <CoverArt book={playbackBook} size="large" />
                   {clips.visible ? (
                     <button type="button" className={`native-cover-clip${clips.lastSavedId && !clips.error ? " saved" : ""}`} aria-label="Save a clip of the last 30 seconds and the next 10" title="Save a clip: the last 30 seconds and the next 10" onClick={saveClipMoment}>
