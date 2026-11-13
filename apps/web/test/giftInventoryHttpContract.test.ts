@@ -15,7 +15,12 @@ test("actual server HTTP inventory is accepted by the sender parser and stays li
   assert.deepEqual(summary.errors, []);
   assert.ok(summary.assets.some(asset => asset.kind === "metadata"));
   assert.ok(summary.assets.some(asset => asset.kind === "ebook"));
-  assert.ok(summary.assets.every(asset => asset.kind !== "audio" && asset.kind !== "alignment"));
+  assert.ok(summary.assets.some(asset => asset.kind === "audio"));
+  assert.deepEqual(
+    summary.assets.filter(asset => asset.kind === "audio").map(asset => asset.id),
+    inventory.assets.filter(asset => asset.kind === "audio" && asset.available && !asset.disabledReason).map(asset => asset.id),
+  );
+  assert.ok(summary.assets.every(asset => asset.kind !== "alignment"));
   const request = selectedGiftRequest(inventory, selected, "A private card");
   assert.deepEqual(request.selectedAssetIds, selected);
   assert.deepEqual(Object.keys(request), ["bookId", "selectedAssetIds", "personalMessage", "expiresInSeconds"]);

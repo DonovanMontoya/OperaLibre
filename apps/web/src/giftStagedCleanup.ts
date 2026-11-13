@@ -1,8 +1,10 @@
+import { GIFT_MAX_LIFETIME_SECONDS } from "./giftSelectionModel.ts";
+
 /** Remembers which gifts have a download staged on this device, so an
  * abandoned or failed one does not keep its archive on the phone for good. */
 const KEY = "operalibre.giftStaged.v1";
-// A gift link works for at most 15 minutes; after that nothing can resume it.
-const KEEP_MS = 16 * 60 * 1000;
+// Retain resumable archives through the longest invitation, with a minute of grace.
+const KEEP_MS = (GIFT_MAX_LIFETIME_SECONDS + 60) * 1000;
 
 type Store = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 

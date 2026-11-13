@@ -22167,7 +22167,16 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
   text-align: left;
 }
 
+.book-action-overflow { position: relative; }
+.book-action-menu.is-desktop {
+  position: fixed;
+  bottom: auto;
+  width: min(248px, calc(100vw - 32px));
+}
+
 .book-action-menu {
+  overflow-y: auto;
+  overscroll-behavior: contain;
   display: none;
   transform-origin: top right;
 }

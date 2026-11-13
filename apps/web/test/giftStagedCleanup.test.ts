@@ -13,7 +13,7 @@ function fixture() {
 test("a gift that can still be resumed keeps its staged download", async () => {
   const f = fixture();
   f.tracker.note("gift-a__________");
-  f.advance(10);
+  f.advance(24 * 60);
   await f.tracker.sweep();
   assert.deepEqual(f.cleaned, []);
 });
@@ -23,7 +23,7 @@ test("a download left behind by a gift that has expired is removed at the next s
   f.tracker.note("gift-a__________");
   f.advance(10);
   f.tracker.note("gift-b__________");
-  f.advance(7);
+  f.advance(24 * 60 - 9);
   await f.tracker.sweep();
   assert.deepEqual(f.cleaned, ["gift-a__________"]);
   f.advance(10);
@@ -39,7 +39,7 @@ test("a cleanup that fails is tried again later, and finishing a gift clears it 
   await f.tracker.finish("gift-a__________");
   assert.equal(f.values.size, 1);
   f.fail(false);
-  f.advance(20);
+  f.advance(24 * 60 + 2);
   await f.tracker.sweep();
   assert.deepEqual(f.cleaned, ["gift-a__________"]);
   f.tracker.note("gift-b__________");
@@ -52,7 +52,7 @@ test("an import interrupted mid-extraction keeps its archive until it has been r
   const f = fixture();
   f.tracker.note("gift-a__________");
   f.importing("gift-a__________");
-  f.advance(60);
+  f.advance(24 * 60 + 2);
   await f.tracker.sweep();
   // Closing the gift screen after a failed extraction must not remove it either.
   await f.tracker.finish("gift-a__________");
