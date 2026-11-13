@@ -10516,3 +10516,26 @@ fn marking_a_legacy_row_finished_does_not_back_it_up() {
         super::ProgressDecision::Keep => panic!("completion writes are always stored"),
     }
 }
+
+#[test]
+fn epub_archives_open_with_or_without_bytes_before_them() {
+    let root = tempfile::tempdir().unwrap();
+    let epub = crate::alignment::build_test_epub_with_text("<p>A meadow</p>", "<p>Later</p>");
+    let plain = root.path().join("plain.epub");
+    let prefixed = root.path().join("prefixed.epub");
+    std::fs::write(&plain, &epub).unwrap();
+    std::fs::write(&prefixed, [b"stub loader ".as_slice(), &epub].concat()).unwrap();
+    for path in [&plain, &prefixed] {
+        let mut archive = crate::util::open_zip_file(std::fs::File::open(path).unwrap()).unwrap();
+        let mut text = String::new();
+        std::io::Read::read_to_string(
+            &mut archive.by_name("OEBPS/text/ch1.xhtml").unwrap(),
+            &mut text,
+        )
+        .unwrap();
+        assert!(text.contains("meadow"), "{}", path.display());
+    }
+    let not_zip = root.path().join("not.epub");
+    std::fs::write(&not_zip, b"plain text").unwrap();
+    assert!(crate::util::open_zip_file(std::fs::File::open(&not_zip).unwrap()).is_err());
+}

@@ -264,7 +264,7 @@ fn analyze_document_in(
     // An EPUB is read entry by entry from disk, so what it holds is the text
     // it decompresses, however small or large the archive is.
     if extension == "epub" {
-        let parsed = zip::ZipArchive::new(file)
+        let parsed = open_zip_file(file)
             .map_err(anyhow::Error::from)
             .and_then(|mut archive| {
                 alignment::parse_epub_archive_within(&mut archive, memory_bytes)

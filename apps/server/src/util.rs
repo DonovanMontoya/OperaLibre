@@ -65,6 +65,21 @@ pub(crate) fn sanitize_zip_entry(value: &str) -> String {
     }
 }
 
+/// Opens an EPUB (or any ZIP) read from disk.
+///
+/// `ZipArchive::new` first searches for bytes prepended to the archive, and
+/// that search reads the whole file in small pieces, on every chapter, image,
+/// and stylesheet the reader requests. EPUBs start at byte zero, so try that
+/// first and fall back to the full search for any archive that does not.
+pub(crate) fn open_zip_file(
+    file: std::fs::File,
+) -> zip::result::ZipResult<zip::ZipArchive<std::fs::File>> {
+    let config = zip::read::Config {
+        archive_offset: zip::read::ArchiveOffset::Known(0),
+    };
+    zip::ZipArchive::with_config(config, file.try_clone()?).or_else(|_| zip::ZipArchive::new(file))
+}
+
 pub(crate) fn bytes_etag(data: &[u8]) -> String {
     let mut hasher = Sha1::new();
     hasher.update(data);
