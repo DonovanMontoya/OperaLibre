@@ -379,6 +379,12 @@ pub(crate) fn read_document(
         .optional()
 }
 
+/// Remove one JSON document, if it is there.
+pub(crate) fn delete_document(connection: &Connection, name: &str) -> rusqlite::Result<()> {
+    connection.execute("DELETE FROM documents WHERE name = ?1", params![name])?;
+    Ok(())
+}
+
 /// Write one JSON document.
 pub(crate) fn write_document(
     connection: &Connection,

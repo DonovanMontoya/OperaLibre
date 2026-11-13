@@ -68,6 +68,7 @@ import type {
 } from "./types";
 import { FRONTEND_VERSION } from "./version";
 import { ExperimentSection } from "./ExperimentSection";
+import { CloudRecognition } from "./CloudRecognition";
 import { CompactNavBar } from "./CompactNavBar";
 import { SyncJobMonitor } from "./SyncJobMonitor";
 import { LibroImports } from "./LibroImports";
@@ -144,6 +145,7 @@ export function AdminPanel({
   const [syncAddonChecking, setSyncAddonChecking] = useState(false);
   const syncAddonSurveyed = useRef(false);
   const [syncAddonBusy, setSyncAddonBusy] = useState<"install" | "toggle" | "remove" | null>(null);
+  const [cloudRecognition, setCloudRecognition] = useState(false);
   const backupInputRef = useRef<HTMLInputElement>(null);
 
   async function refreshUsers() {
@@ -1018,8 +1020,9 @@ export function AdminPanel({
                 <p>
                   Enables sentence highlighting, sentence seeking, and automatic page turns in the EPUB
                   reader, including existing sync maps. When disabled, only chapter sync is available.
-                  Creates precise sync maps using local speech recognition and forced alignment. Audio stays
-                  on this server. Jobs run one at a time and can use substantial CPU, memory, and disk space. On smaller servers, generation may affect playback.
+                  {" "}{cloudRecognition
+                    ? "Creates precise sync maps using OpenAI speech recognition, with your API key, and forced alignment on this server."
+                    : "Creates precise sync maps on this server using local speech recognition and forced alignment. Audio stays on this server."} Jobs run one at a time and can use substantial CPU, memory, and disk space. On smaller servers, generation may affect playback.
                 </p>
                 {syncAddon?.packageBytes ? (
                   <p className="admin-experiment-detail">
@@ -1068,6 +1071,7 @@ export function AdminPanel({
                     </a>
                   ) : null}
                 </div>
+                {syncAddon?.installed ? <CloudRecognition isOwner={currentUser.isOwner} onChange={setCloudRecognition} /> : null}
                 <ExperimentSection title="Sync books and activity">
                   <SyncJobMonitor books={books} onOpenBook={onOpenBook} syncEnabled={syncAddon?.enabled === true} />
                 </ExperimentSection>

@@ -25027,3 +25027,92 @@ html:not(.native-app) .book-heading .book-quick-start .book-quick-return {
     box-shadow: none;
   }
 }
+
+.recognition-choice {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  padding: 12px 0 0;
+  border: 0;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.12);
+}
+
+.recognition-choice legend {
+  float: left;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+.recognition-choice > label {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.recognition-choice > label:hover { background: rgba(var(--ink-rgb), 0.03); }
+
+.recognition-choice > label.selected {
+  border-color: rgba(var(--ink-rgb), 0.1);
+  background: rgba(var(--ink-rgb), 0.04);
+}
+
+.recognition-choice > label input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--oxblood);
+}
+
+.recognition-choice > label span {
+  display: grid;
+  gap: 4px;
+}
+
+.admin-experiment-list .recognition-choice > label strong {
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 500;
+}
+
+.recognition-choice > label small {
+  color: var(--ink-faded);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.recognition-choice > label em {
+  color: var(--ink-faded);
+  font: 400 0.68rem "JetBrains Mono", monospace;
+  font-style: normal;
+  line-height: 1.6;
+}
+
+.recognition-choice:disabled > label { cursor: default; }
+
+.recognition-choice-detail {
+  display: grid;
+  gap: 12px;
+  padding: 4px 12px 8px 40px;
+}
+
+.admin-experiment-list .recognition-choice-detail p {
+  max-width: 64ch;
+  font-size: 0.76rem;
+}
+
+.recognition-choice-detail label {
+  display: grid;
+  gap: 4px;
+  max-width: 440px;
+  font-size: 0.78rem;
+}

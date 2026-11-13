@@ -69,6 +69,7 @@ mod app;
 mod auth;
 mod backup;
 mod catalogue;
+mod cloud_recognition;
 mod companions;
 mod config;
 mod covers;

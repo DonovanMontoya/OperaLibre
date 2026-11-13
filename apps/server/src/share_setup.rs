@@ -425,10 +425,7 @@ pub(crate) async fn delete_configuration(
     crate::share::ensure_no_pending_broker_rooms(&state).await?;
     state
         .database
-        .transaction(|db| {
-            db.execute("DELETE FROM documents WHERE name = ?1", [DOCUMENT])?;
-            Ok(())
-        })
+        .transaction(|db| delete_document(db, DOCUMENT))
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
