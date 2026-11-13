@@ -68,8 +68,9 @@ export function CloudRecognition({ isOwner, onChange }: { isOwner: boolean; onCh
         <input type="radio" name="recognition" checked={choice === "local"} onChange={() => setChoice("local")} />
         <span>
           <strong>On this server</strong>
-          <small>Default. Audio never leaves your server.</small>
+          <small>Audio never leaves your server</small>
         </span>
+        <em>Default</em>
       </label>
       <label className={choice === "openai" ? "selected" : undefined}>
         <input type="radio" name="recognition" checked={choice === "openai"} onChange={() => setChoice("openai")} />
@@ -77,17 +78,19 @@ export function CloudRecognition({ isOwner, onChange }: { isOwner: boolean; onCh
           <strong>OpenAI</strong>
           <small>
             {saved === "openai"
-              ? `Using your API key with ${status.model}.`
-              : "Optional. Uses your own API key; can help with hard-to-follow narration."}
+              ? `Narration clips go to ${status.model} with your API key`
+              : "Narration clips go to OpenAI with your own API key"}
           </small>
         </span>
+        <em>Optional</em>
       </label>
 
       {switching && choice === "openai" ? (
         <form className="recognition-choice-detail" onSubmit={useOpenAi}>
           <p>
-            Clips of each book's narration are sent to OpenAI while it syncs, and billed to your key. Book text,
-            accounts, and listening history stay here. Matching audio to text still runs on this server.
+            OpenAI bills your key per minute of audio and handles it under its own terms. It can follow narration the
+            on-device recognizer finds hard. Book text, accounts, and listening history stay on this server, and so
+            does matching the audio to the text.
           </p>
           <label>
             <span>OpenAI API key</span>
@@ -105,7 +108,7 @@ export function CloudRecognition({ isOwner, onChange }: { isOwner: boolean; onCh
 
       {switching && choice === "local" ? (
         <div className="recognition-choice-detail">
-          <p>Syncs go back to running entirely on this server. The saved key is deleted.</p>
+          <p>Syncs run entirely on this server again, and the saved key is deleted.</p>
           <div className="admin-update-actions">
             <button type="button" onClick={() => void apply(disableCloudRecognition, "Could not switch back to this server.")}>
               {busy ? <LoaderCircle size={15} className="spin-icon" /> : null}
