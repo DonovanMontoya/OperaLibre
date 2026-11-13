@@ -128,6 +128,10 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     // The side rail's free slot last handed to the page; nil when there is
     // none, and unset until the page has been told either way.
     private var sentRail: CGRect??
+    /// How far the visible bar's platter sits from its column's centre,
+    /// towards the page. The clock above it shares that offset, and the
+    /// reader's rail keeps it once the tabs are hidden.
+    private var platterInset: CGFloat = 0
     // A 44pt play/pause target plus padding can stay in the column even when
     // Now Playing expands the system status area. The page drops secondary
     // controls before giving up the rail.
@@ -137,6 +141,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     // rotation, an iPad's top-hung bar — and sets the status bar's polarity.
     private var chrome: UIColor?
     private var barTint: UIColor?
+    private var accent: UIColor?
     private var chromeIsDark = true
     // The launch screen is parchment, and the shell cannot report its color
     // until the web view has loaded. Restoring the last one hands the two
@@ -180,6 +185,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         content.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(content.view)
         content.didMove(toParent: self)
+        paintWebView()
         contentConstraints = [
             content.view.topAnchor.constraint(equalTo: view.topAnchor),
             content.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -205,7 +211,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { content.preferredInterfaceOrientationForPresentation }
 
     func configure(items: [JSObject], selected: String, visible: Bool, blocked: Bool, appearance: String,
-                   chrome: String?, bar: String?) {
+                   chrome: String?, bar: String?, accent: String? = nil, uncovered: Bool = false) {
         loadViewIfNeeded()
         // The page may have reloaded and lost the clearance it was sent.
         sentTopClearance = -1
@@ -217,8 +223,8 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         // so the tones follow the selection a turn later, as they do after a
         // tap.
         let reselecting = requestedSelection != nil && selected != requestedSelection
-        if !reselecting { applyChrome(chrome, bar: bar) }
-        if visible != navigationVisible && navigation.parent != nil {
+        if !reselecting { applyChrome(chrome, bar: bar, accent: accent) }
+        if visible != navigationVisible && navigation.parent != nil && !uncovered {
             // Showing or hiding the bar resizes the web view, and the page
             // reflows over several frames as its safe area and viewport catch
             // up. Hold the last frame until the page reveals itself.
@@ -280,7 +286,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             }
         }
         if reselecting {
-            DispatchQueue.main.async { [weak self] in self?.applyChrome(chrome, bar: bar) }
+            DispatchQueue.main.async { [weak self] in self?.applyChrome(chrome, bar: bar, accent: accent) }
         }
         requestedSelection = selected
         // Web sheets rise from the bottom of the page, which now runs under
@@ -315,9 +321,10 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     /// The bar is glass over the screen it belongs to. Tinting that glass with
     /// the page's own tone keeps it from reading as a bright slab laid on the
     /// paper, and its labels take the page's ink: gold on the dark shelf and
-    /// parlour, oxblood — the same red as the play control — on paper.
+    /// parlour, and on paper the light theme's accent, the same color as the
+    /// play control (oxblood unless the page reports another).
     private func applyBarTint() {
-        let selected = chromeIsDark ? brass : oxblood
+        let selected = chromeIsDark ? brass : (accent ?? oxblood)
         // Ink and spine are the same tone in the palette; on paper it reads
         // as the text color rather than as the shelf's board.
         let resting = (chromeIsDark ? parchment : spine).withAlphaComponent(0.75)
@@ -350,10 +357,12 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     /// Take the tones the selected screen reports. Crossing them over the same
     /// beat as the shell's tab fade keeps the clock and the bar from turning
     /// over before the page behind them does.
-    private func applyChrome(_ hex: String?, bar: String?) {
+    private func applyChrome(_ hex: String?, bar: String?, accent accentHex: String? = nil) {
         let tint = bar.flatMap(chromeColor)
-        let retinted = tint != nil && tint != barTint
+        let newAccent = accentHex.flatMap(chromeColor)
+        let retinted = (tint != nil && tint != barTint) || (newAccent != nil && newAccent != accent)
         barTint = tint ?? barTint
+        accent = newAccent ?? accent
         guard let hex, let color = chromeColor(hex), color != chrome else {
             if retinted { applyBarTint() }
             return
@@ -366,9 +375,20 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         applyBarTint()
         let paint = {
             self.view.backgroundColor = color
+            self.paintWebView()
             self.setNeedsStatusBarAppearanceUpdate()
         }
         if first { paint() } else { UIView.animate(withDuration: 0.26, animations: paint) }
+    }
+
+    /// The web view shows its own background wherever the page has not drawn
+    /// yet, most visibly mid-rotation before the page lays out at the new
+    /// size. Capacitor gives it the launch parchment; the screen's own tone
+    /// keeps a dark screen dark while it turns.
+    private func paintWebView() {
+        guard let chrome, let webView = content.webView else { return }
+        webView.backgroundColor = chrome
+        webView.scrollView.backgroundColor = chrome
     }
 
     func hide() {
@@ -391,7 +411,8 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     }
 
     private func coverContent() {
-        guard cover == nil, let snapshot = view.snapshotView(afterScreenUpdates: false) else { return }
+        guard cover == nil, !view.bounds.isEmpty else { return }
+        let snapshot = view.frozenSnapshot()
         snapshot.frame = view.bounds
         snapshot.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(snapshot)
@@ -523,6 +544,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                     // controls stand in line with it.
                     rail = CGRect(x: items.midX - column.width / 2 - view.bounds.minX, y: top,
                                   width: column.width, height: items.minY - top)
+                    platterInset = barOnLeading ? items.midX - column.midX : column.midX - items.midX
                     frame.origin.x = view.bounds.minX
                     frame.size.width = view.bounds.width
                     columnReserve = Self.sideColumnReserve(width: column.width, onLeft: barOnLeading,
@@ -540,7 +562,12 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                 // Reader transport and its secondary actions need 248pt,
                 // plus the web rail's 8pt padding at each end.
                 if bottom - top >= 264 {
-                    rail = CGRect(x: column.minX - frame.minX, y: top, width: column.width, height: bottom - top)
+                    // In line with the clock above it and the bar's items
+                    // before they were hidden, a few points off the centre.
+                    let onLeft = column.minX <= view.bounds.minX + 0.5
+                    let midX = column.midX + (onLeft ? platterInset : -platterInset)
+                    rail = CGRect(x: midX - column.width / 2 - frame.minX, y: top,
+                                  width: column.width, height: bottom - top)
                 }
             }
             #endif
@@ -716,7 +743,9 @@ public final class NativeTabsPlugin: CAPPlugin, CAPBridgedPlugin {
                                  visible: call.getBool("visible") ?? false,
                                  blocked: call.getBool("blocked") ?? false,
                                  appearance: call.getString("appearance") ?? "system",
-                                 chrome: call.getString("chrome"), bar: call.getString("bar"))
+                                 chrome: call.getString("chrome"), bar: call.getString("bar"),
+                                 accent: call.getString("accent"),
+                                 uncovered: call.getBool("uncovered") ?? false)
             call.resolve()
         }
     }

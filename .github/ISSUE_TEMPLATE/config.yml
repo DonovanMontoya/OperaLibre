@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Private support and beta feedback
+    url: mailto:operalibre@agentmail.to?subject=OperaLibre%20support%20or%20beta%20feedback
+    about: Contact the project privately for support questions or beta feedback. Use Issues for public bug reports.
   - name: Security vulnerability
     url: https://github.com/DonovanMontoya/OperaLibre/security/advisories/new
     about: Report security issues privately. Please don't open a public issue.

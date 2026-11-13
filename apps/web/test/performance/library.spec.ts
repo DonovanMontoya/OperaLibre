@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { library, wav } from './fixtures';
+import { library, rangedWav, wav } from './fixtures';
 
 const count = Number(process.env.PERF_BOOKS ?? 1000);
 if (!Number.isInteger(count) || count < 20 || count > 10_000) throw new Error('PERF_BOOKS must be 20..10000');
@@ -34,6 +34,9 @@ test('large shelf search and real playback remain functional', async ({ page }, 
     requests[key] = (requests[key] ?? 0) + 1;
     let body: unknown;
     if (path === '/api/auth/status') body = { setupRequired: false, user, mediaToken: 'fixture' };
+    else if (path === '/api/health' && request.method() === 'GET') body = {
+      ok: true, serverId: 'perf-server', scanning: false, ready: true, catalogueError: false,
+    };
     else if (path === '/api/auth/me') body = user;
     else if (path === '/api/books') body = books;
     else if (path === '/api/libation/books') body = [];
@@ -48,7 +51,8 @@ test('large shelf search and real playback remain functional', async ({ page }, 
     }
     await route.fulfill({ json: body });
   });
-  await page.route('**/fixture.wav*', route => route.fulfill({ contentType: 'audio/wav', body: wav() }));
+  const audio = wav();
+  await page.route('**/fixture.wav*', route => route.fulfill(rangedWav(audio, route.request().headers().range)));
   const started = performance.now();
   await page.goto('/');
   await expect(page.locator('.book-row')).toHaveCount(count);

@@ -1,0 +1,19 @@
+name = "operalibre-share-broker"
+main = "src/index.ts"
+compatibility_date = "2026-11-05"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "SecureRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SecureRoom"]
+
+[vars]
+# Book gifts are refused until this is "true". See docs/book-gifts.md.
+EXPERIMENTAL_ENABLED = "true"
+
+# Two secrets are required; set them with `wrangler secret put`, never here:
+#   OWNER_SECRET_DIGEST_HEX  SHA-256 (hex) of the owner secret you give the server
+#   SIGNING_SECRET           at least 32 random characters, used only by the broker

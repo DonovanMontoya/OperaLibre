@@ -3,7 +3,7 @@
  * local even before the separate availability scan finishes; a missing or
  * unreadable local file falls back only for that track.
  */
-export type LocalFirstSource = { url: string; local: boolean };
+type LocalFirstSource = { url: string; local: boolean };
 
 export function resolveLocalFirstSources<T>(
   items: readonly T[],

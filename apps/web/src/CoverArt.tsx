@@ -1,8 +1,9 @@
 import { Capacitor } from "@capacitor/core";
 import { Headphones } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getServerStorageKey, mediaUrl } from "./api";
-import { getOfflineCoverUrl, releaseOfflineMediaUrl } from "./offline";
+import { coverRetryDelay, coverRetrySignal } from "./coverRetry";
+import { cacheShelfCover, getOfflineCoverUrl, releaseOfflineMediaUrl } from "./offline";
 import type { Book, LibationBook } from "./types";
 
 export function DownloadRing({ fraction }: { fraction: number | null }) {
@@ -31,15 +32,57 @@ export function DownloadRing({ fraction }: { fraction: number | null }) {
   );
 }
 
+/**
+ * Image sources that failed to load, each tried again after a short wait and
+ * all of them again when the network returns or the app is foregrounded.
+ */
+function useFailedCovers(resetKey: string) {
+  const generation = useSyncExternalStore(coverRetrySignal.subscribe, coverRetrySignal.generation, () => 0);
+  const scope = `${generation}:${resetKey}`;
+  const [state, setState] = useState<{ scope: string; sources: string[] }>({ scope, sources: [] });
+  const failures = useRef(new Map<string, number>());
+  const timers = useRef(new Set<number>());
+  // Read by `reset`, which stays stable so a wake does not redo local cover lookups.
+  const currentScope = useRef(scope);
+  currentScope.current = scope;
+  useEffect(() => {
+    const pending = timers.current;
+    failures.current.clear();
+    return () => {
+      pending.forEach(timer => window.clearTimeout(timer));
+      pending.clear();
+    };
+  }, [scope]);
+  const markFailed = useCallback((source: string) => {
+    setState(previous => ({ scope, sources: [...(previous.scope === scope ? previous.sources : []), source] }));
+    const count = (failures.current.get(source) ?? 0) + 1;
+    failures.current.set(source, count);
+    const delay = coverRetryDelay(count);
+    if (delay === null) return;
+    const timer = window.setTimeout(() => {
+      timers.current.delete(timer);
+      setState(previous => previous.scope === scope
+        ? { scope, sources: previous.sources.filter(failed => failed !== source) }
+        : previous);
+    }, delay);
+    timers.current.add(timer);
+  }, [scope]);
+  const reset = useCallback(() => {
+    failures.current.clear();
+    setState({ scope: currentScope.current, sources: [] });
+  }, []);
+  return { failed: state.scope === scope ? state.sources : [], markFailed, reset };
+}
+
 export function CoverArt({ book, size }: { book: Book; size: "small" | "large" }) {
   const className = size === "small" ? "cover-mark" : "large-cover";
   const key = `${getServerStorageKey()}:${book.id}:${book.coverArtUrl}:${book.coverArtContentType}:${book.localCoverPath}`;
   const [offline, setOffline] = useState<{ key: string; current: string | null; fallback: string | null } | null>(null);
-  const [failed, setFailed] = useState<string[]>([]);
+  const { failed, markFailed, reset } = useFailedCovers(key);
   useEffect(() => {
     let active = true;
     const resolvedUrls: (string | null)[] = [];
-    setFailed([]);
+    reset();
     if (Capacitor.isNativePlatform()) {
       void Promise.all([getOfflineCoverUrl(book, false), getOfflineCoverUrl(book, true)]).then(([current, fallback]) => {
         resolvedUrls.push(current, fallback);
@@ -51,12 +94,20 @@ export function CoverArt({ book, size }: { book: Book; size: "small" | "large" }
       active = false;
       resolvedUrls.forEach(releaseOfflineMediaUrl);
     };
-  }, [book, key]);
+  }, [book, key, reset]);
   const local = offline?.key === key ? offline : null;
   const primary = local?.current ?? (book.coverArtUrl ? mediaUrl(book.coverArtUrl) : null);
   const fallback = local?.fallback;
   const coverSrc = primary && !failed.includes(primary) ? primary
     : fallback && !failed.includes(fallback) ? fallback : null;
+  // A cover can finish loading before the local lookup answers (it is often in
+  // the HTTP cache), so the load is remembered and the copy is kept once both
+  // are known, and only when nothing local was found.
+  const [loaded, setLoaded] = useState<string | null>(null);
+  const remote = local && !local.current && coverSrc === primary ? coverSrc : null;
+  useEffect(() => {
+    if (remote && loaded === remote) void cacheShelfCover(book, remote);
+  }, [book, remote, loaded]);
   if (coverSrc) {
     return (
       <img
@@ -66,7 +117,8 @@ export function CoverArt({ book, size }: { book: Book; size: "small" | "large" }
         loading={size === "small" ? "lazy" : "eager"}
         decoding="async"
         fetchPriority={size === "large" ? "high" : "auto"}
-        onError={() => setFailed(previous => [...previous, coverSrc])}
+        onLoad={() => setLoaded(coverSrc)}
+        onError={() => markFailed(coverSrc)}
       />
     );
   }
@@ -78,15 +130,16 @@ export function CoverArt({ book, size }: { book: Book; size: "small" | "large" }
 }
 
 export function LibationCoverArt({ book }: { book: LibationBook }) {
-  const [loadFailed, setLoadFailed] = useState(false);
-  if (book.coverArtUrl && !loadFailed) {
+  const source = book.coverArtUrl ? mediaUrl(book.coverArtUrl) : null;
+  const { failed, markFailed } = useFailedCovers(source ?? "");
+  if (source && !failed.includes(source)) {
     return (
       <img
         className="audible-cover"
-        src={mediaUrl(book.coverArtUrl)}
+        src={source}
         alt=""
         loading="lazy"
-        onError={() => setLoadFailed(true)}
+        onError={() => markFailed(source)}
       />
     );
   }

@@ -174,6 +174,7 @@ import { AudibleManagement } from "./AudibleManagement";
 import { SettingsPage } from "./SettingsPage";
 import { AgentAccessDialog } from "./AgentAccess";
 import { MiniPlayer } from "./MiniPlayer";
+import { DeskView, useDeskView } from "./DeskView";
 import { PlayerPane } from "./PlayerPane";
 import { LibraryPane } from "./LibraryPane";
 import { usePlayerNavigation } from "./usePlayerNavigation";
@@ -185,6 +186,12 @@ import { useNowPlaying } from "./useNowPlaying";
 import { useAudioElement } from "./useAudioElement";
 import { usePlaybackRestore } from "./usePlaybackRestore";
 import { useAudioSource } from "./useAudioSource";
+import { GiftAppBoundary } from "./GiftAppBoundary";
+import { deviceGiftReceiving } from "./giftReceiving";
+import { createPersistentGiftTransport } from "./giftPersistentTransport";
+import { fetchVerifiedGiftPreview } from "./giftPreviewSource";
+import { loadOptionalNativeGiftRecoveryState, compareAndSwapNativeGiftRecoveryState } from "./giftNativeRecovery";
+import { createNativeGiftStaging, recoverNativeGiftStaging } from "./giftNativeStaging";
 // How long a Play still waiting on the stream shows as loading.
 const PLAY_PENDING_LIMIT_MS = 45_000;
 const SHELF_EXPANDED_STORAGE_KEY = "operalibre.shelfExpanded";
@@ -232,7 +239,20 @@ function initialAuthState(): AuthState {
     : { phase: "loading" };
 }
 
+// Gift links open only in the phone apps, which can store the book, and only
+// after the device's owner turns receiving on.
+const experimentalGiftTransport = createPersistentGiftTransport(fetchVerifiedGiftPreview, {
+  storage: { loadOptional: loadOptionalNativeGiftRecoveryState, compareAndSwap: compareAndSwapNativeGiftRecoveryState },
+  stages: { create: createNativeGiftStaging, recover: recoverNativeGiftStaging }
+});
+
 export default function App() {
+  return <GiftAppBoundary enabled={Capacitor.isNativePlatform()} native={Capacitor.isNativePlatform()} transport={experimentalGiftTransport} receiving={deviceGiftReceiving}>
+    <AuthenticatedApp />
+  </GiftAppBoundary>;
+}
+
+function AuthenticatedApp() {
   const [authState, setAuthState] = useState<AuthState>(initialAuthState);
 
   const checkAuth = useCallback(async () => {
@@ -321,19 +341,23 @@ export default function App() {
     return () => setUnauthorizedHandler(null);
   }, [checkAuth]);
 
+  // A session restored offline has no media credential. Any sign the server
+  // is reachable again (the network returning, the app foregrounding, or a
+  // library listing that succeeds) fetches it, or streams stay unauthorized.
+  const refreshMediaCredential = useCallback(() => {
+    if (!shouldRefreshMediaCredential(
+      Capacitor.isNativePlatform(),
+      getStoredToken(),
+      getStoredMediaToken(),
+      hasUserConfiguredServer(),
+      isLocalMode(),
+      isDemoMode()
+    )) return;
+    void checkAuth();
+  }, [checkAuth]);
+
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
-    const refreshMediaCredential = () => {
-      if (!shouldRefreshMediaCredential(
-        Capacitor.isNativePlatform(),
-        getStoredToken(),
-        getStoredMediaToken(),
-        hasUserConfiguredServer(),
-        isLocalMode(),
-        isDemoMode()
-      )) return;
-      void checkAuth();
-    };
     const refreshMediaCredentialOnForeground = () => {
       if (!document.hidden && navigator.onLine) refreshMediaCredential();
     };
@@ -343,7 +367,7 @@ export default function App() {
       window.removeEventListener("online", refreshMediaCredential);
       document.removeEventListener("visibilitychange", refreshMediaCredentialOnForeground);
     };
-  }, [checkAuth]);
+  }, [refreshMediaCredential]);
 
   const handleCurrentUserChanged = useCallback((user: AuthUser) => {
     cacheOfflineUser(user);
@@ -422,6 +446,7 @@ export default function App() {
     <MainApp
       currentUser={authState.user}
       onCurrentUserChanged={handleCurrentUserChanged}
+      onServerReachable={refreshMediaCredential}
       onConnectServer={async () => {
         await clearCarLibrary();
         exitLocalMode();
@@ -461,10 +486,12 @@ function MainApp({
   currentUser,
   onCurrentUserChanged,
   onLogout,
-  onConnectServer
+  onConnectServer,
+  onServerReachable
 }: {
   currentUser: AuthUser;
   onCurrentUserChanged: (user: AuthUser) => void;
+  onServerReachable: () => void;
   onLogout: () => void | Promise<void>;
   onConnectServer: () => void;
 }) {
@@ -1063,6 +1090,7 @@ function MainApp({
   const booksRef = useRef<Book[]>(books);
   const carPlay = useCarPlay({
     acknowledgedSeekGenerationRef,
+    acknowledgedServerPositionRef,
     bookGains,
     bookIdsKey,
     books,
@@ -1478,6 +1506,7 @@ function MainApp({
     initialLibraryHydrated,
     isOperaLibre,
     libraryRequestGenerationRef,
+    onServerReachable,
     libraryProgressReplaysRef,
     libraryRetryTimerRef,
     loadBooksRef,
@@ -1557,6 +1586,7 @@ function MainApp({
     native,
     playbackFold,
     sentenceFollowAvailable: readalong.sentenceFollowAvailable,
+    sentenceFollowAvailableForBook: readalong.sentenceFollowAvailableForBook,
     shelfExpanded
   });
   const {
@@ -1594,13 +1624,32 @@ function MainApp({
     libroAccounts,
     libroOnDevice,
     loadLibationBooks,
+    refreshAudiblePurchases,
     setLibroRefreshKey
   } = purchases;
 
   loadBooksRef.current = loadBooks;
 
+  // A pending reconnect runs at once when the network returns or the app comes
+  // back to the foreground, rather than waiting out its backoff.
+  useEffect(() => {
+    const reconnectNow = () => {
+      if (document.hidden || libraryRetryTimerRef.current === null) return;
+      void loadBooksRef.current();
+    };
+    window.addEventListener("online", reconnectNow);
+    document.addEventListener("visibilitychange", reconnectNow);
+    return () => {
+      window.removeEventListener("online", reconnectNow);
+      document.removeEventListener("visibilitychange", reconnectNow);
+    };
+  }, []);
+
   useEffect(
     () => () => {
+      // A listing still in flight belongs to this session; when it fails it
+      // must not schedule a retry that runs under the next account.
+      libraryRequestGenerationRef.current += 1;
       if (libraryRetryTimerRef.current !== null) {
         window.clearTimeout(libraryRetryTimerRef.current);
         libraryRetryTimerRef.current = null;
@@ -1764,6 +1813,7 @@ function MainApp({
     playPendingBookIdRef,
     playPendingRef,
     playWhenTrackLoads,
+    playbackActionVersionRef,
     playbackBook,
     playbackBookKey,
     playbackGain,
@@ -1848,15 +1898,29 @@ function MainApp({
     startPlayback
   });
 
+  // The chapter list follows playback, but opening a book page leaves its top
+  // (the way back, the cover and the actions) in view: the first chapter seen
+  // there is only noted, and later chapter changes scroll as before.
+  const followedChapterRef = useRef<string | null>(null);
+  const followedViewRef = useRef(nativePlayerView);
   useEffect(() => {
-    if (!chaptersOpen || !isViewingPlayingBook || activeChapterId === null) return;
+    const enteredBookPage = followedViewRef.current !== nativePlayerView;
+    followedViewRef.current = nativePlayerView;
+    if (!chaptersOpen || !isViewingPlayingBook || activeChapterId === null) {
+      followedChapterRef.current = null;
+      return;
+    }
+    const firstOnBookPage = native && nativePlayerView === "details"
+      && (enteredBookPage || followedChapterRef.current === null);
+    followedChapterRef.current = String(activeChapterId);
+    if (firstOnBookPage) return;
     const frame = window.requestAnimationFrame(() => {
       chaptersListRef.current
         ?.querySelector<HTMLElement>(`[data-chapter-id="${activeChapterId}"]`)
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeChapterId, chaptersOpen, isViewingPlayingBook]);
+  }, [activeChapterId, chaptersOpen, isViewingPlayingBook, native, nativePlayerView]);
 
   useEffect(() => {
     const sync = createForegroundProgressSync(
@@ -2036,6 +2100,7 @@ function MainApp({
     persistProgress,
     playbackBookIdRef,
     reconcileServerBookGains,
+    refreshAudiblePurchases,
     setBooks,
     setCurrentTrackId,
     setError,
@@ -2048,7 +2113,9 @@ function MainApp({
     setSelectedBookId
   });
 
+  const deskView = useDeskView(native, ipad, !!(playbackBook && currentTrack), readalongOpen);
   const nativeChrome = useNativeChrome({
+    deskView,
     startupViewReady,
     launchCoverLifted,
     appearanceMode,
@@ -2344,6 +2411,7 @@ function MainApp({
         purchases={purchases}
         readerPreferences={readerPreferences}
         refreshLibrary={refreshLibrary}
+        refreshShelf={refreshShelf}
         resumeSelectedBook={resumeSelectedBook}
         continueReadingBook={continueReadingBook}
         selectBook={shelfExpanded ? (book: Book) => openShelfBook(book.id) : selectBook}
@@ -2386,6 +2454,7 @@ function MainApp({
         closeReadalong={closeReadalong}
         completionError={completionError}
         completionPendingBookId={completionPendingBookId}
+        continueReadingBook={continueReadingBook}
         currentTrack={currentTrack}
         demoMode={demoMode}
         descriptionCanExpand={descriptionCanExpand}
@@ -2508,6 +2577,20 @@ function MainApp({
           seekTo={seekTo}
           setScrubPreview={setScrubPreview}
           sliderMax={sliderMax}
+          togglePlayback={togglePlayback}
+        />
+      ) : null}
+
+      {deskView && playbackBook && currentTrack ? (
+        <DeskView
+          activeChapter={activeChapter}
+          chapterDuration={chapterDuration}
+          chapterElapsed={displayChapterElapsed}
+          currentTrack={currentTrack}
+          isPlaying={isPlaying}
+          playPending={playPending}
+          playbackBook={playbackBook}
+          seekBy={seekBy}
           togglePlayback={togglePlayback}
         />
       ) : null}
@@ -2798,7 +2881,7 @@ function MainApp({
             onClick={() => openNativeTab("reading")}
           >
             <Headphones size={20} strokeWidth={1.6} />
-            <span>Reading</span>
+            <span>Listening</span>
           </button>
           {gamesEnabled ? <button
             type="button"

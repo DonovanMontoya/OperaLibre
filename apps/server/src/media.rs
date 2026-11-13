@@ -9,7 +9,26 @@ use axum::body::Bytes;
 // which matters more as playback speed increases.
 pub(crate) const MEDIA_STREAM_BUFFER_CAPACITY: usize = 256 * 1024;
 
+/// A cover requested without the current revision, or under a revision
+/// that has since been replaced, is checked with the server before use.
 pub(crate) const COVER_CACHE_CONTROL: &str = "private, no-cache";
+
+/// A cover URL carrying the current `?v=` revision names those exact bytes:
+/// a replaced cover gets a new revision and so a new URL. The client may keep
+/// it without asking again, so reopening the app shows covers from its cache
+/// even before the server answers.
+pub(crate) const VERSIONED_COVER_CACHE_CONTROL: &str = "private, max-age=31536000, immutable";
+
+/// Whether the request's `v` query parameter names the cover being served.
+fn requests_current_cover(query: Option<&str>, etag: &str) -> bool {
+    let current = etag.trim_matches('"');
+    !current.is_empty()
+        && query.is_some_and(|query| {
+            query
+                .split('&')
+                .any(|pair| pair.strip_prefix("v=") == Some(current))
+        })
+}
 
 /// Track streams and downloads carry the listener's media token in the URL,
 /// so a shared cache must never hold one.
@@ -25,12 +44,15 @@ pub(crate) const COMPANION_CACHE_CONTROL: &str = "private, no-cache";
 pub(crate) enum FileCaching {
     /// Streamed media: never stored, never revalidated.
     Private,
-    /// Kept and revalidated with an `ETag`.
+    /// Kept and revalidated with a content `ETag`.
     Revalidated,
 }
 
-/// A validator for a file on disk: its length and modification time, which
-/// together change whenever the library file is replaced.
+/// Distinguishes two EPUB archives inside an entry's validator. The entry
+/// CRC already changes with that member's bytes; length and mtime only
+/// separate archives that share one. They are not a validator for a whole
+/// file — a same-sized rewrite can land in the timestamp tick the file
+/// already has — so those responses use [`content_etag`].
 fn file_etag(metadata: &std::fs::Metadata) -> Option<String> {
     let modified = metadata
         .modified()
@@ -44,10 +66,33 @@ fn file_etag(metadata: &std::fs::Metadata) -> Option<String> {
     ))
 }
 
+/// ETag for a file a client is allowed to revalidate.
+///
+/// The tag is a hash of the bytes this response will send. Length and
+/// modification time stay put when a same-sized replacement is written
+/// during the timestamp tick already recorded on the file, which is several
+/// milliseconds on ordinary disks, and a client offering the old tag would
+/// then be told its copy was still current.
+fn content_etag(file: &std::fs::File) -> io::Result<String> {
+    let mut source = file.try_clone()?;
+    std::io::Seek::seek(&mut source, std::io::SeekFrom::Start(0))?;
+    let mut hasher = Sha1::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let amount = std::io::Read::read(&mut source, &mut buffer)?;
+        if amount == 0 {
+            break;
+        }
+        hasher.update(&buffer[..amount]);
+    }
+    Ok(format!("\"{}\"", hex_digest(hasher.finalize())))
+}
+
 pub(crate) async fn get_cover_art(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Path(book_id): Path<String>,
+    RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     require_book_access(&auth, &book_id)?;
@@ -56,12 +101,17 @@ pub(crate) async fn get_cover_art(
         .cover_art
         .get(&book_id)
         .ok_or(ApiError::not_found("Cover art not found"))?;
+    let cache_control = if requests_current_cover(query.as_deref(), &cover.etag) {
+        VERSIONED_COVER_CACHE_CONTROL
+    } else {
+        COVER_CACHE_CONTROL
+    };
 
     if if_none_match_matches(&headers, &cover.etag) {
         return Ok(Response::builder()
             .status(StatusCode::NOT_MODIFIED)
             .header(ETAG, cover.etag.clone())
-            .header(CACHE_CONTROL, COVER_CACHE_CONTROL)
+            .header(CACHE_CONTROL, cache_control)
             .body(Body::empty())?);
     }
 
@@ -78,7 +128,7 @@ pub(crate) async fn get_cover_art(
         .header(CONTENT_TYPE, cover.mime_type)
         .header(CONTENT_LENGTH, cover.len.to_string())
         .header(ETAG, cover.etag)
-        .header(CACHE_CONTROL, COVER_CACHE_CONTROL)
+        .header(CACHE_CONTROL, cache_control)
         .body(Body::from_stream(ReaderStream::new(file)))?)
 }
 
@@ -474,17 +524,26 @@ pub(crate) async fn serve_file_response(
         .iter()
         .map(|root| root.to_path_buf())
         .collect::<Vec<_>>();
-    let (file, metadata) =
-        tokio::task::spawn_blocking(move || open_contained_file(&path_for_open, &allowed_roots))
-            .await
-            .map_err(|error| ApiError::internal(format!("Could not open media file: {error}")))?
+    let revalidated = caching == FileCaching::Revalidated;
+    let (file, metadata, etag) = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+        let (file, metadata) = open_contained_file(&path_for_open, &allowed_roots)
             .map_err(|_| ApiError::not_found("Media file not found"))?;
+        // Hashed on this blocking thread: a long sync map or ebook must not
+        // stall the runtime, and the hash has to be known before the status
+        // line so a matching tag can answer 304 without the body.
+        let etag = if revalidated {
+            Some(content_etag(&file).map_err(|error| {
+                ApiError::internal(format!("Could not read media file: {error}"))
+            })?)
+        } else {
+            None
+        };
+        Ok((file, metadata, etag))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Could not open media file: {error}")))??;
     let file_size = metadata.len();
     let content_type = media_content_type(&file_path);
-    let etag = match caching {
-        FileCaching::Private => None,
-        FileCaching::Revalidated => file_etag(&metadata),
-    };
     let cache_control = match caching {
         FileCaching::Private => MEDIA_CACHE_CONTROL,
         FileCaching::Revalidated => COMPANION_CACHE_CONTROL,
@@ -626,6 +685,25 @@ pub(crate) fn download_volume_has_capacity(available: u64, source: u64, reserve:
         .is_some_and(|required| available >= required)
 }
 
+fn unique_download_entry_name(file_name: &str, used: &mut HashSet<String>) -> String {
+    let name = sanitize_zip_entry(file_name);
+    if used.insert(name.clone()) {
+        return name;
+    }
+    let (stem, extension) = name.rsplit_once('.').unwrap_or((&name, ""));
+    for suffix in 2.. {
+        let candidate = if extension.is_empty() {
+            format!("{stem} ({suffix})")
+        } else {
+            format!("{stem} ({suffix}).{extension}")
+        };
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!()
+}
+
 pub(crate) async fn download_book(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -722,12 +800,17 @@ pub(crate) async fn download_book(
             let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored)
                 .large_file(true);
+            let mut entry_names = HashSet::new();
             for (file_name, path) in tracks {
                 // Re-open per entry so only one track handle is live at a time;
                 // the containment check runs again against the same roots.
                 let (mut source, _) =
                     open_contained_file(&path, std::slice::from_ref(&library_root))?;
-                writer.start_file(sanitize_zip_entry(&file_name), options)?;
+                // Distinct source names can become identical after sanitizing.
+                writer.start_file(
+                    unique_download_entry_name(&file_name, &mut entry_names),
+                    options,
+                )?;
                 std::io::copy(&mut source, &mut writer)?;
             }
             writer.finish()?;

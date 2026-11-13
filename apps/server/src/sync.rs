@@ -448,12 +448,35 @@ pub(crate) async fn save_queue(
 
 pub(crate) async fn restore_queue(state: &AppState) -> Result<(), ApiError> {
     let _schedule_guard = state.sync_schedule_lock.lock().await;
-    let bytes = match fs::read(state.database_path.with_file_name("sync-jobs.json")).await {
+    let path = state.database_path.with_file_name("sync-jobs.json");
+    let bytes = match fs::read(&path).await {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    let entries: Vec<JobStatus> = serde_json::from_slice(&bytes)?;
+    // The server starts without a queue it cannot read, such as one written by
+    // a newer version before a downgrade, so read-along work never keeps
+    // listening and progress sync offline. The file is kept beside the empty
+    // queue that replaces it, for the owner to recover. A file kept by an
+    // earlier start is never replaced.
+    let entries: Vec<JobStatus> = match serde_json::from_slice(&bytes) {
+        Ok(entries) => entries,
+        Err(error) => {
+            let mut kept = path.with_extension("json.unreadable");
+            let mut copy = 1;
+            while fs::try_exists(&kept).await? {
+                kept = path.with_extension(format!("json.unreadable.{copy}"));
+                copy += 1;
+            }
+            tracing::error!(
+                ?error,
+                kept = %kept.display(),
+                "the read-along queue could not be read; starting with an empty queue"
+            );
+            fs::rename(&path, &kept).await?;
+            return Ok(());
+        }
+    };
     let mut jobs = state.jobs.write().await;
     for mut job in entries {
         if job.kind != SYNC_GENERATE_JOB_KIND {
@@ -494,7 +517,7 @@ pub(crate) async fn resume_queue(state: &AppState) {
     {
         return;
     }
-    let mut pending: Vec<_> = state
+    let pending: Vec<_> = state
         .jobs
         .read()
         .await
@@ -507,12 +530,16 @@ pub(crate) async fn resume_queue(state: &AppState) {
     if pending.is_empty()
         || state
             .update_manager
-            .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+            .sync_addon_runtime(&state.alignment_config)
             .await
             .is_none()
     {
         return;
     }
+    resume_pending_jobs(state, pending).await;
+}
+
+pub(crate) async fn resume_pending_jobs(state: &AppState, mut pending: Vec<JobStatus>) {
     pending.sort_by_key(sync_queue_order);
     for job in pending {
         let Some(book_id) = job.target_id else {
@@ -588,7 +615,7 @@ pub(crate) async fn alignment_status(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let runtime = state
         .update_manager
-        .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+        .sync_addon_runtime(&state.alignment_config)
         .await;
     Ok(Json(serde_json::json!({
         "enabled": runtime.is_some(),
@@ -666,13 +693,21 @@ async fn rerun_request_chapters(
         tracks.to_vec(),
         chapters.to_vec(),
     );
+    let allowed_roots = vec![state.library_root.clone(), state.sync_dir.clone()];
     tokio::task::spawn_blocking(move || {
         let epub = alignment::parse_epub_file(&epub_path).map_err(|_| sync_report::BOOK_CHANGED)?;
         let plan =
             plan_scopes(&epub, &tracks, chapter_slicing).map_err(|_| sync_report::BOOK_CHANGED)?;
         let spans = sync_report::chapter_spans(&epub, &tracks, &plan.scopes);
-        sync_report::rerun_base(&sync_dir, &book_id, &map_path, &spans, &chapters)
-            .map(|base| base.chapters)
+        sync_report::rerun_base(
+            &sync_dir,
+            &book_id,
+            &map_path,
+            &spans,
+            &chapters,
+            &allowed_roots,
+        )
+        .map(|base| base.chapters)
     })
     .await
     .map_err(|error| ApiError::internal(error.to_string()))?
@@ -704,7 +739,7 @@ pub(crate) async fn enqueue_sync_batch(
         })?;
     if state
         .update_manager
-        .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+        .sync_addon_runtime(&state.alignment_config)
         .await
         .is_none()
     {
@@ -820,12 +855,17 @@ async fn enqueue_sync_map_inner(
         })?;
     let Some(mut runtime) = state
         .update_manager
-        .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+        .sync_addon_runtime(&state.alignment_config)
         .await
     else {
-        return Err(ApiError::bad_request(
-            "Follow-along sync generation is not enabled. An owner can install and enable it under Administration → Experimental features.",
-        ));
+        let message = "Follow-along sync generation is not enabled. An owner can install and enable it under Administration → Experimental features.";
+        // The runtime can be disabled after recovery's availability check.
+        // Keep accepted jobs pending until it is available again.
+        return Err(if resume_id.is_some() {
+            ApiError::conflict(message)
+        } else {
+            ApiError::bad_request(message)
+        });
     };
     runtime.ffmpeg_path = runtime.ffmpeg_path.or_else(|| {
         state
@@ -1271,8 +1311,9 @@ pub(crate) async fn run_sync_generation(
                 spans.clone(),
                 chapters.to_vec(),
             );
+            let allowed_roots = vec![state.library_root.clone(), state.sync_dir.clone()];
             let base = tokio::task::spawn_blocking(move || {
-                sync_report::rerun_base(&sync_dir, &book, &path, &spans, &chapters)
+                sync_report::rerun_base(&sync_dir, &book, &path, &spans, &chapters, &allowed_roots)
             })
             .await?
             .map_err(|message| anyhow::anyhow!(message))?;
@@ -1338,21 +1379,15 @@ pub(crate) async fn run_sync_generation(
         },
         outcomes: Vec::new(),
     };
-    match fs::read(&checkpoint_path).await {
-        Ok(bytes) => {
-            let checkpoint: SyncCheckpoint = serde_json::from_slice(&bytes)?;
-            if checkpoint.fingerprint == run.fingerprint
-                && checkpoint.completed_scopes <= selected.len()
-            {
-                run = checkpoint;
-                done_weight = selected[..run.completed_scopes]
-                    .iter()
-                    .map(|&index| scope_weights[index])
-                    .sum();
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+    if let Some(checkpoint) = read_checkpoint(&checkpoint_path).await?
+        && checkpoint.fingerprint == run.fingerprint
+        && checkpoint.completed_scopes <= selected.len()
+    {
+        run = checkpoint;
+        done_weight = selected[..run.completed_scopes]
+            .iter()
+            .map(|&index| scope_weights[index])
+            .sum();
     }
     let mut attempted = selected[..run.completed_scopes]
         .iter()
@@ -1683,6 +1718,28 @@ async fn align_unless_paused(
         biased;
         _ = wait_for_manual_pause(aligner.state, aligner.job_id) => None,
         result = aligner.align_scope(scope, track, transcript, scope_number, progress) => Some(result),
+    }
+}
+
+/// A checkpoint only saves time, so one that cannot be parsed (a torn write
+/// from an older version, or a newer format after a downgrade) is treated
+/// like a changed input: the book starts over instead of the job failing.
+async fn read_checkpoint(path: &FsPath) -> anyhow::Result<Option<SyncCheckpoint>> {
+    let bytes = match fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(checkpoint) => Ok(Some(checkpoint)),
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                path = %path.display(),
+                "discarding a read-along checkpoint that could not be read"
+            );
+            Ok(None)
+        }
     }
 }
 
@@ -3600,18 +3657,21 @@ async fn extract_alignment_audio_with_timeout(
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct AlignmentConfig {
-    pub(crate) cli_path: Option<PathBuf>,
+pub(crate) enum AlignmentConfig {
+    Manual(PathBuf),
+    Path(PathBuf),
+    Managed,
 }
 
 impl AlignmentConfig {
     pub(crate) fn from_server_config(config: &ServerConfig) -> Self {
-        let cli_path = config
+        config
             .alignment_cli_path
             .clone()
             .filter(|path| path.is_file())
-            .or_else(find_alignment_cli_on_path);
-        Self { cli_path }
+            .map(Self::Manual)
+            .or_else(|| find_alignment_cli_on_path().map(Self::Path))
+            .unwrap_or(Self::Managed)
     }
 }
 
@@ -3622,6 +3682,60 @@ pub(crate) fn find_alignment_cli_on_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn path_runtime_discovery_preserves_source_and_manual_precedence() {
+        const CHILD: &str = "OPERALIBRE_TEST_PATH_RUNTIME";
+        if let Some(expected_path) = std::env::var_os(CHILD) {
+            let config = ServerConfig::load().unwrap();
+            let alignment = AlignmentConfig::from_server_config(&config);
+            match (config.alignment_cli_path, alignment) {
+                (None, AlignmentConfig::Path(path)) => {
+                    assert_eq!(path, PathBuf::from(expected_path))
+                }
+                (Some(expected), AlignmentConfig::Manual(path)) => assert_eq!(path, expected),
+                (configured, actual) => {
+                    panic!("Unexpected runtime source: {configured:?}, {actual:?}")
+                }
+            }
+            return;
+        }
+        // Isolate PATH in a child process so parallel tests never see it.
+        let root = tempfile::tempdir().unwrap();
+        let cli = root.path().join("echogarden");
+        let manual = root.path().join("manual-cli");
+        std::fs::write(&cli, []).unwrap();
+        std::fs::write(&manual, []).unwrap();
+        let config = root.path().join("fixture.config");
+        for explicit in [false, true] {
+            std::fs::write(
+                &config,
+                if explicit {
+                    "alignment_cli_path=manual-cli\n"
+                } else {
+                    ""
+                },
+            )
+            .unwrap();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "sync::tests::path_runtime_discovery_preserves_source_and_manual_precedence",
+                    "--nocapture",
+                ])
+                .env("PATH", root.path())
+                .env("OPERALIBRE_SERVER_CONFIG", &config)
+                .env(CHILD, &cli)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
+
     #[tokio::test]
     async fn checkpoint_rejects_changed_runtime_components_at_the_same_paths() {
         let root = tempfile::tempdir().unwrap();
@@ -5550,6 +5664,20 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
             assert_eq!(report.chapters[0].status, ChapterStatus::Failed);
             assert!(report.chapters[0].error.is_some());
             assert_eq!(report.chapters[1].status, ChapterStatus::Aligned);
+        }
+
+        #[tokio::test]
+        async fn an_unreadable_checkpoint_restarts_the_book_instead_of_failing_the_job() {
+            let book = ChapterBook::new(2);
+            let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
+            let checkpoint = sync_checkpoint_path(&book.state, &job);
+            std::fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+            std::fs::write(&checkpoint, b"{\"fingerprint\": tru").unwrap();
+
+            let generated = book.run_job(&job, None).await.unwrap();
+            assert!(generated.failed.is_empty());
+            assert_eq!(book.calls(), ["1.wav", "2.wav"]);
+            assert_eq!(starts(&book.map()).len(), 2);
         }
 
         fn gaps_of(gaps: &[alignment::RecoveryGap]) -> Vec<(f64, f64)> {

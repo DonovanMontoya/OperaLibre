@@ -1,5 +1,6 @@
 import { BookClips } from "./BookClips";
 import type { Clip } from "./clips";
+import { createPortal } from "react-dom";
 import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BookPreviewBar, type PreviewPosition } from "./BookPreviewBar";
 import { BookCredits } from "./BookCredits";
@@ -51,7 +52,7 @@ import { durationFromTracks, formatDurationLabel, formatTime } from "./formattin
 import { haptic } from "./native";
 import { Capacitor } from "@capacitor/core";
 import { bookDownloadUrl, mediaUrl } from "./api";
-import { tagsForBook } from "./bookMetadata";
+import { displayPublishedDate, tagsForBook } from "./bookMetadata";
 import { readerStatusLabel } from "./sharedProgress";
 import { READ_ALONG_MODE_LABELS } from "./readalong";
 import { formatSleepTimerMinutes, SLEEP_TIMER_MAX_MINUTES, SLEEP_TIMER_MIN_MINUTES } from "./sleepTimer";
@@ -59,14 +60,17 @@ import type { ChapterSegment } from "./chapters";
 import type { Book, Chapter, SharedProgress, Track } from "./types";
 import type { DeviceNotice } from "./ConfirmDialogs";
 import type { NativeTab } from "./nativeTabs";
+import { CompactNavBar } from "./CompactNavBar";
 import type { NativePlayerSheet } from "./PlayerSheets";
 import type { DeviceDownloadActivity } from "./SettingsCards";
 import { OfflineBookReadiness } from "./OfflineBookReadiness";
+import { offlineReadinessNeedsAttention } from "./offlineReadiness";
 import type { Dispatch, ReactNode, RefObject, SetStateAction, TouchEvent, UIEvent } from "react";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ServerCapabilities } from "./serverCapabilities";
 import { usePhoneWidthWindow } from "./useOrientation";
 import { useReadingQueue } from "./useReadingQueue";
+import { GiftShareAction, GiftShareDialog, useBookGiftSending } from "./GiftShareDialog";
 
 // Beyond this the segments are too thin to read or tap, and their fixed
 // borders/gaps overflow a phone screen; fall back to one continuous bar.
@@ -92,6 +96,7 @@ export function PlayerPane({
   closeReadalong,
   completionError,
   completionPendingBookId,
+  continueReadingBook,
   currentTrack,
   demoMode,
   descriptionCanExpand,
@@ -190,6 +195,7 @@ export function PlayerPane({
   closeReadalong: () => void;
   completionError: DeviceNotice | null;
   completionPendingBookId: string | null;
+  continueReadingBook: (book: Book, play?: boolean) => void;
   currentTrack: Track | null;
   demoMode: boolean;
   descriptionCanExpand: boolean;
@@ -270,6 +276,7 @@ export function PlayerPane({
   volume: number;
   withWebViewTransition: (update: () => void) => void;
 }) {
+  const giftSending = useBookGiftSending(isOperaLibre && !demoMode && !localMode);
   const {
     cancelOfflineDownload,
     downloadForOffline,
@@ -346,11 +353,24 @@ export function PlayerPane({
   }
   useEffect(() => setContentsTab("chapters"), [selectedBook?.id]);
   const phoneWidth = usePhoneWidthWindow();
+  // The books most recently in progress, offered when nothing is open.
+  const resumeBooks = useMemo(() => books
+    .filter(book => book.progress?.status === "inProgress")
+    .sort((a, b) => Number(b.progress?.updatedAt ?? 0) - Number(a.progress?.updatedAt ?? 0))
+    .slice(0, 3), [books]);
   const compactActions = native || phoneWidth;
   const [bookActionsOpen, setBookActionsOpen] = useState(false);
+  const [giftOpen, setGiftOpen] = useState(false);
+  useEffect(() => setGiftOpen(false), [selectedBook?.id, giftSending]);
   const [bookActionsAbove, setBookActionsAbove] = useState(false);
   const bookActionsRef = useRef<HTMLDivElement>(null);
+  const bookActionsMenuRef = useRef<HTMLDivElement>(null);
   const bookActionsId = useId();
+  const giftWasOpen = useRef(false);
+  useLayoutEffect(() => {
+    if (giftWasOpen.current && !giftOpen) bookActionsRef.current?.querySelector<HTMLButtonElement>(".book-action-more")?.focus();
+    giftWasOpen.current = giftOpen;
+  }, [giftOpen]);
   const [queueIds, saveQueueIds] = useReadingQueue(readingQueueStorageKey);
   const selectedBookQueued = !!selectedBook && queueIds.includes(selectedBook.id);
   const [queueSaveFailed, setQueueSaveFailed] = useState(false);
@@ -360,20 +380,28 @@ export function PlayerPane({
     if (!bookActionsOpen) return;
     const placeMenu = () => {
       const rail = bookActionsRef.current?.querySelector<HTMLElement>(".book-action-rail");
-      const menu = bookActionsRef.current?.querySelector<HTMLElement>(".book-action-menu");
-      if (!rail || !menu) return;
-      const { top, bottom } = rail.getBoundingClientRect();
+      const menu = bookActionsMenuRef.current;
+      const anchor = rail ?? bookActionsRef.current?.querySelector<HTMLElement>(".book-action-more");
+      if (!anchor || !menu) return;
+      const { top, bottom, right } = anchor.getBoundingClientRect();
       const spaceBelow = window.innerHeight - bottom;
-      setBookActionsAbove(menu.offsetHeight + 8 > spaceBelow && top > spaceBelow);
+      const above = menu.scrollHeight + 8 > spaceBelow && top > spaceBelow;
+      setBookActionsAbove(above);
+      menu.style.maxHeight = `${Math.max(48, (above ? top : spaceBelow) - 16)}px`;
+      if (!compactActions) {
+        menu.style.left = `${Math.max(16, Math.min(window.innerWidth - menu.offsetWidth - 16, right - menu.offsetWidth))}px`;
+        menu.style.top = `${above ? top - menu.offsetHeight - 8 : bottom + 8}px`;
+      }
     };
     placeMenu();
     window.addEventListener("resize", placeMenu);
-    return () => window.removeEventListener("resize", placeMenu);
-  }, [bookActionsOpen]);
+    window.addEventListener("scroll", placeMenu, true);
+    return () => { window.removeEventListener("resize", placeMenu); window.removeEventListener("scroll", placeMenu, true); };
+  }, [bookActionsOpen, giftSending, compactActions]);
   useEffect(() => {
     if (!bookActionsOpen) return;
     const closeOutside = (event: Event) => {
-      if (event.target instanceof Node && !bookActionsRef.current?.contains(event.target)) {
+      if (event.target instanceof Node && !bookActionsRef.current?.contains(event.target) && !bookActionsMenuRef.current?.contains(event.target)) {
         setBookActionsOpen(false);
       }
     };
@@ -654,6 +682,9 @@ export function PlayerPane({
       onTouchEnd={finishBookDetailsBackSwipe}
       onTouchCancel={() => { bookDetailsSwipeStartRef.current = null; }}
     >
+      {native && nativeTab === "shelf" && nativePlayerView === "details" && selectedBook ? (
+        <CompactNavBar scroller={playerPaneRef} threshold={90} title={selectedBook.title} backLabel="Library" onBack={returnToLibrary} />
+      ) : null}
       <button
         type="button"
         className="library-open-btn"
@@ -692,8 +723,12 @@ export function PlayerPane({
                 </div>
 
                 <div className="native-now-copy">
+                  {/* Many books name chapters only by number; the kicker then
+                      says nothing the title below does not. */}
                   <span className="native-now-kicker">
-                    {activeChapter ? `Chapter ${activeChapter.chapterNumber}` : "Now playing"}
+                    {activeChapter && activeChapter.title.trim().toLowerCase() !== `chapter ${activeChapter.chapterNumber}`
+                      ? `Chapter ${activeChapter.chapterNumber}`
+                      : "Now playing"}
                   </span>
                   <h2>{activeChapter?.title ?? currentTrack.title}</h2>
                   <p>{playbackBook.title}</p>
@@ -795,7 +830,7 @@ export function PlayerPane({
                     type="button"
                     onClick={() => openNativePlayerSheet("speed")}
                   >
-                    <Gauge size={16} /> {speed}×
+                    <Gauge size={16} /> <span className="native-now-speed">{speed}×</span>
                   </button>
                   <button type="button" onClick={() => {
                     setSleepCustomOpen(false);
@@ -852,7 +887,7 @@ export function PlayerPane({
                         ?? `${playbackBook.title}${playbackBook.author ? ` by ${playbackBook.author}` : ""}${playbackBook.narrator ? `, narrated by ${playbackBook.narrator}` : ""}.`}
                     </p>
                     <div className="web-now-tags" aria-label="Book metadata">
-                      {playbackBook.publishedDate ? <span>{playbackBook.publishedDate}</span> : null}
+                      {playbackBook.publishedDate ? <span>{displayPublishedDate(playbackBook.publishedDate)}</span> : null}
                       {playbackBook.metadata.publisher ? <span>{playbackBook.metadata.publisher}</span> : null}
                       {playbackBook.genres.slice(0, 3).map((genre) => <span key={genre}>{genre}</span>)}
                     </div>
@@ -927,6 +962,7 @@ export function PlayerPane({
           ) : null}
           {native ? bookPageMasthead : <div className="book-page-masthead">{bookPageMasthead}</div>}
 
+          {giftOpen && giftSending && selectedBook.source !== "device" ? createPortal(<GiftShareDialog key={selectedBook.id} bookId={selectedBook.id} onClose={() => setGiftOpen(false)} />, document.body) : null}
           <div className="book-heading">
             <div className="book-cover-column">
               <CoverArt book={selectedBook} size="large" />
@@ -958,11 +994,16 @@ export function PlayerPane({
                           <span className="book-action-label">More</span>
                         </button>
                       </div>
-                      <div id={bookActionsId} role="group" aria-label="Book actions"
+                      <div ref={bookActionsMenuRef} id={bookActionsId} role="group" aria-label="Book actions"
                         className={`book-action-menu ${bookActionsOpen ? "is-open" : ""} ${bookActionsAbove ? "opens-up" : ""}`}
                         onClick={event => {
                           if (event.target instanceof Element && event.target.closest("button")) setBookActionsOpen(false);
                         }}>
+                        <GiftShareAction enabled={giftSending && selectedBook.source !== "device"} onOpen={() => {
+                          setBookActionsOpen(false);
+                          bookActionsRef.current?.querySelector<HTMLButtonElement>(".book-action-more")?.focus();
+                          setGiftOpen(true);
+                        }} />
                         {completionAction}
                         {resetAction}
                         {epubAction}
@@ -976,6 +1017,16 @@ export function PlayerPane({
                       {resetAction}
                       {readAction}
                       {storageAction}
+                      {giftSending && selectedBook.source !== "device" ? <div className="book-action-overflow">
+                        <button type="button" className="download-btn book-action-more" aria-label="More book actions" aria-expanded={bookActionsOpen} aria-controls={bookActionsId} onClick={() => setBookActionsOpen(open => !open)}><Ellipsis size={13} /> More</button>
+                        {createPortal(<div ref={bookActionsMenuRef} id={bookActionsId} role="group" aria-label="Book actions" className={`book-action-menu is-desktop ${bookActionsOpen ? "is-open" : ""}`}>
+                          <GiftShareAction enabled={giftSending} onOpen={() => {
+                            setBookActionsOpen(false);
+                            bookActionsRef.current?.querySelector<HTMLButtonElement>(".book-action-more")?.focus();
+                            setGiftOpen(true);
+                          }} />
+                        </div>, document.body)}
+                      </div> : null}
                     </>
                   )}
                   {playbackError ? <span className="download-status">{playbackError}</span> : null}
@@ -992,67 +1043,69 @@ export function PlayerPane({
               <h2 data-length={titleLengthClass(selectedBook.title)}>
                 <span>{selectedBook.title}</span>
               </h2>
-              {!native || !isViewingPlayingBook ? (
-                <div className="book-quick-start">
+              {/* The playing book's page leads back to the player too, so every book
+                  page has one clear listening action. */}
+              <div className="book-quick-start">
+                <button
+                  type="button"
+                  className="book-quick-play"
+                  aria-label={isViewingPlayingBook ? "Return to Now Playing" : `Play ${selectedBook.title}`}
+                  onClick={() => {
+                    if (isViewingPlayingBook) scrollToPlayer();
+                    else void playSelectedBook(selectedBook);
+                  }}
+                >
+                  <span className="book-quick-play-icon">
+                    {isViewingPlayingBook ? <Headphones size={20} /> : <Play size={20} fill="currentColor" />}
+                  </span>
+                  <span className="book-quick-play-copy">
+                    <strong>
+                      {isViewingPlayingBook
+                        ? "Return to Now Playing"
+                        : selectedBook.progress?.status === "inProgress"
+                        ? "Resume this book"
+                        : selectedBook.progress?.status === "finished"
+                          ? "Read it again"
+                          : "Begin this reading"}
+                    </strong>
+                    <small>
+                      {selectedBook.progress?.status === "inProgress"
+                        && formatDurationLabel(selectedBook.progress.remainingSeconds)
+                        ? `${formatDurationLabel(selectedBook.progress.remainingSeconds)} left`
+                        : formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ?? "Start from the beginning"}
+                    </small>
+                  </span>
+                </button>
+                {/* A book in progress is already in Up Next. */}
+                {selectedBook.progress?.status !== "inProgress" ? (
                   <button
                     type="button"
-                    className="book-quick-play"
-                    aria-label={isViewingPlayingBook ? "Return to Now Playing" : `Play ${selectedBook.title}`}
+                    className="book-quick-return book-quick-queue"
+                    aria-pressed={selectedBookQueued}
+                    aria-label={selectedBookQueued ? `Remove ${selectedBook.title} from Up Next` : `Add ${selectedBook.title} to Up Next`}
                     onClick={() => {
-                      if (isViewingPlayingBook) scrollToPlayer();
-                      else void playSelectedBook(selectedBook);
+                      haptic("light");
+                      setQueueSaveFailed(!saveQueueIds(selectedBookQueued
+                        ? queueIds.filter(id => id !== selectedBook.id)
+                        : [...queueIds, selectedBook.id]));
                     }}
                   >
-                    <span className="book-quick-play-icon">
-                      {isViewingPlayingBook ? <Headphones size={20} /> : <Play size={20} fill="currentColor" />}
-                    </span>
-                    <span className="book-quick-play-copy">
-                      <strong>
-                        {isViewingPlayingBook
-                          ? "Return to Now Playing"
-                          : selectedBook.progress?.status === "inProgress"
-                          ? "Resume this book"
-                          : selectedBook.progress?.status === "finished"
-                            ? "Read it again"
-                            : "Begin this reading"}
-                      </strong>
-                      <small>
-                        {selectedBook.progress?.status === "inProgress"
-                          && formatDurationLabel(selectedBook.progress.remainingSeconds)
-                          ? `${formatDurationLabel(selectedBook.progress.remainingSeconds)} left`
-                          : formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ?? "Start from the beginning"}
-                      </small>
-                    </span>
+                    {selectedBookQueued ? <Check size={14} /> : <Plus size={14} />}
+                    <span>{selectedBookQueued ? "In Up Next" : "Add to Up Next"}</span>
+                    {selectedBookQueued ? <X className="book-quick-queue-remove" size={14} aria-hidden="true" /> : null}
                   </button>
-                  {/* A book in progress is already in Up Next. */}
-                  {selectedBook.progress?.status !== "inProgress" ? (
-                    <button
-                      type="button"
-                      className="book-quick-return book-quick-queue"
-                      aria-pressed={selectedBookQueued}
-                      aria-label={selectedBookQueued ? `Remove ${selectedBook.title} from Up Next` : `Add ${selectedBook.title} to Up Next`}
-                      onClick={() => {
-                        haptic("light");
-                        setQueueSaveFailed(!saveQueueIds(selectedBookQueued
-                          ? queueIds.filter(id => id !== selectedBook.id)
-                          : [...queueIds, selectedBook.id]));
-                      }}
-                    >
-                      {selectedBookQueued ? <Check size={14} /> : <Plus size={14} />}
-                      <span>{selectedBookQueued ? "In Up Next · Remove" : "Add to Up Next"}</span>
-                    </button>
-                  ) : null}
-                  {queueSaveFailed ? (
-                    <span className="download-status" role="alert">Up Next could not be saved. Check available device storage and try again.</span>
-                  ) : null}
-                  {playbackBook && playbackBook.id !== selectedBook.id ? (
-                    <button type="button" className="book-quick-return book-quick-now-playing" onClick={scrollToPlayer}>
-                      <Headphones size={14} />
-                      <span>Now playing <em>{playbackBook.title}</em></span>
-                    </button>
-                  ) : null}
-                </div>
-              ) : null}
+                ) : null}
+                {queueSaveFailed ? (
+                  <span className="download-status" role="alert">Up Next could not be saved. Check available device storage and try again.</span>
+                ) : null}
+                {/* The web mini player already shows what is playing. */}
+                {native && playbackBook && playbackBook.id !== selectedBook.id ? (
+                  <button type="button" className="book-quick-return book-quick-now-playing" onClick={scrollToPlayer}>
+                    <Headphones size={14} />
+                    <span>Now playing <em>{playbackBook.title}</em></span>
+                  </button>
+                ) : null}
+              </div>
               <BookCredits
                 key={selectedBook.id}
                 author={selectedBook.author}
@@ -1073,27 +1126,29 @@ export function PlayerPane({
                   the next. */}
               {!native ? (
                 <>
-                  <dl className="book-colophon">
-                    {[
-                      {
-                        label: "Series",
-                        value: selectedBook.metadata.series
-                          ? `${selectedBook.metadata.series}${selectedBook.metadata.seriesPosition ? ` · #${selectedBook.metadata.seriesPosition}` : ""}`
-                          : null
-                      },
-                      { label: "Published", value: selectedBook.publishedDate || null },
-                      { label: "Publisher", value: selectedBook.metadata.publisher || null },
-                      {
-                        label: "Runtime",
-                        value: formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ?? null
-                      }
-                    ].map((fact) => (
-                      <div key={fact.label}>
-                        <dt>{fact.label}</dt>
-                        <dd title={fact.value ?? undefined}>{fact.value ?? "—"}</dd>
-                      </div>
-                    ))}
-                  </dl>
+                  <div className="book-colophon-frame">
+                    <dl className="book-colophon">
+                      {[
+                        {
+                          label: "Series",
+                          value: selectedBook.metadata.series
+                            ? `${selectedBook.metadata.series}${selectedBook.metadata.seriesPosition ? ` · #${selectedBook.metadata.seriesPosition}` : ""}`
+                            : null
+                        },
+                        { label: "Published", value: displayPublishedDate(selectedBook.publishedDate) },
+                        { label: "Publisher", value: selectedBook.metadata.publisher || null },
+                        {
+                          label: "Runtime",
+                          value: formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ?? null
+                        }
+                      ].map((fact) => (
+                        <div key={fact.label}>
+                          <dt>{fact.label}</dt>
+                          <dd title={fact.value ?? undefined}>{fact.value ?? "—"}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
                   <div className="metadata-strip book-subjects">
                     {tagsForBook(selectedBook).map((tag) => (
                       <span className="metadata-custom-tag" key={tag.name}>
@@ -1107,9 +1162,10 @@ export function PlayerPane({
             </div>
           </div>
 
-
-
-          {selectedBook.source !== "device" && !demoMode && downloadedBookIds.has(selectedBook.id) ? (
+          {/* Only a download with something missing needs a word here; the
+              storage action already says the book is on the device. */}
+          {selectedBook.source !== "device" && !demoMode && downloadedBookIds.has(selectedBook.id)
+            && offlineReadinessNeedsAttention(readiness[selectedBook.id]) ? (
             <section className="book-offline-files" aria-label="Offline files">
               <OfflineBookReadiness book={selectedBook} readiness={readiness[selectedBook.id]} />
               {capabilities.downloads && !!readiness[selectedBook.id]?.missingFiles.length ? (
@@ -1138,7 +1194,7 @@ export function PlayerPane({
                   {tag.name}{tag.position ? ` · #${tag.position}` : ""}
                 </span>
               ))}
-              {selectedBook.publishedDate ? <span>{selectedBook.publishedDate}</span> : null}
+              {selectedBook.publishedDate ? <span>{displayPublishedDate(selectedBook.publishedDate)}</span> : null}
               {selectedBook.metadata.publisher ? <span>{selectedBook.metadata.publisher}</span> : null}
               {selectedBook.genres.slice(0, 2).map((genre) => <span key={genre}>{genre}</span>)}
             </div>
@@ -1595,7 +1651,33 @@ export function PlayerPane({
           {books.length > 0 ? (
             <>
               <h2>Nothing <em>playing</em></h2>
-              <p>Choose a book from your shelf to begin listening.</p>
+              {resumeBooks.length ? (
+                <>
+                  <p>Pick up where you left off.</p>
+                  <div className="empty-player-books">
+                    {resumeBooks.map(book => (
+                      <button key={book.id} type="button" className="empty-player-book" onClick={() => continueReadingBook(book)}>
+                        <CoverArt book={book} size="small" />
+                        <span className="empty-player-book-copy">
+                          <strong>{book.title}</strong>
+                          {book.author ? <em>{book.author}</em> : null}
+                          {book.progress?.percentComplete != null ? (
+                            <small>{Math.round(book.progress.percentComplete)}% listened</small>
+                          ) : null}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p>Choose a book from your shelf to begin listening.</p>
+              )}
+              {/* Only shown where the library is a drawer; a wide window
+                  already has the shelf beside this page. */}
+              <button type="button" className="empty-player-browse" onClick={() => setLibraryOpen(true)}>
+                <Library size={15} />
+                <span>Browse the library</span>
+              </button>
             </>
           ) : (
             <>

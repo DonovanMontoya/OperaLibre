@@ -1,6 +1,6 @@
 import type { Progress } from "./types";
 
-export type ProgressSaveResult = { attempted: Progress; saved: Progress };
+type ProgressSaveResult = { attempted: Progress; saved: Progress };
 export type LibraryProgressReplay = (ProgressSaveResult & { acknowledgements: ProgressSaveResult[] }) | null;
 
 export type PendingSeek = { trackId: string; positionSeconds: number };
@@ -15,4 +15,6 @@ export type QueuedProgressSave = {
   // shouldFlagIntentionalRegression). Decided when the save is queued, from
   // the seek's own target rather than from whatever the clock reads later.
   intentionalRegression: boolean;
+  /** Queued by a page hide or close, which may be the last chance to send it. */
+  keepalive?: boolean;
 };

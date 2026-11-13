@@ -11,6 +11,10 @@ Browser clients that authenticate with the session cookie must send an `Origin` 
 
 The included React/Vite app is one client for this API. Custom web, mobile, desktop, or native frontends can use the same endpoints as long as they follow the authentication and media URL conventions below.
 
+Catalogue responses keep their existing JSON and OPDS shapes. Generation admits at most two responses across the server and one per reader, including slow downloads; excess requests receive `429` with `Retry-After`. A listing of up to 4 MiB is served from memory. A larger complete response spills to an anonymous temporary file, so a slow download does not keep the body on the heap. A response is limited to 64 MiB and any individual book's catalogue metadata to 2 MiB; oversized metadata receives `413`, without a partial catalogue. Native clients can request smaller pages with `limit` and `cursor`; Audiobookshelf-compatible listings cap explicit page and search limits at 500. Default unpaged listings remain complete when they fit the response budget.
+
+Right after an automatic update, until the update is confirmed, every API, Audiobookshelf-compatible and OPDS request except `GET /api/health` receives `503` with `Retry-After`, sign-in included. Treat it like a server that is still starting: keep local changes and retry.
+
 ## Authentication
 
 The web app obtains a session token and a separate scoped media token via `POST /api/auth/login`. Send the session token in `Authorization: Bearer ...` for API requests. Read-only cover, readalong, companion, sync-map, stream, download, and OPDS endpoints accept the media token as a `?token=` query parameter so plain `<audio>` and `<img>` elements work without exposing a full API bearer token in URLs. `GET /api/auth/status` returns the current session's media token when authenticated.
@@ -119,13 +123,19 @@ The archive includes accounts, permissions, progress, per-book settings, saved c
 | `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sentence- and word-level sync map. Admin only; requires an enabled add-on or manually configured alignment CLI. With no body the whole book is synced; the optional body `{ "chapters": [index, ...] }` re-runs only those chapters (see [Re-running chapters](#re-running-chapters)). Jobs are durably queued and deduplicated by book; queued and interrupted jobs resume after restart with the same job IDs. Interrupted books resume from the last completed chapter or track; unfinished sections are repeated. Changed inputs, alignment runtime, or server alignment code invalidate saved sections. Paused jobs remain paused across restarts. Returns `{ "jobId": "..." }`. |
 | `GET` | `/api/books/{book_id}/sync/report` | Chapter-by-chapter grades for the served sync map. Admin only. Returns 404 until the current map has been graded. See [Sync grades](#sync-grades). |
 | `PUT` | `/api/books/{book_id}/sync/language` | Set the language sync recognizes this book's narration in, overriding the EPUB's label, with `{ "language": "en" }`; `{ "language": null }` goes back to the EPUB's label. Admin only. Takes effect at the book's next sync. Returns `{ "languageOverride": "en", "previousLanguageOverride": null }`. Optional `expectedLanguage` applies the change only if the saved override still matches; otherwise returns 409. See [Diagnoses](#diagnoses). |
-| `GET` | `/api/alignment/status` | Whether sync generation is enabled: `{ "enabled": bool, "cliPath": string \| null }`. Admin only. |
+| `GET` | `/api/alignment/status` | Whether sync generation and sentence following are enabled: `{ "enabled": bool, "cliPath": string \| null }`. Signed-in users; `cliPath` is only shown to administrators. |
 | `GET` | `/api/experimental-features/readalong-sync` | Installed, enabled, version, package availability, size, and management status for the optional generator. Admin only. Add `?refresh=true` to refresh release metadata. |
 | `POST` | `/api/experimental-features/readalong-sync/install` | Download, verify, and install or update the official platform package. Owner only; managed release installations only. |
-| `PUT` | `/api/experimental-features/readalong-sync/enabled` | Enable or disable an installed managed add-on with `{ "enabled": bool }`. Owner only. |
+| `PUT` | `/api/experimental-features/readalong-sync/enabled` | Enable or disable an installed managed add-on or a generator found on the server's `PATH` with `{ "enabled": bool }`. Owner only. An explicit `alignment_cli_path` remains always enabled. |
 | `DELETE` | `/api/experimental-features/readalong-sync` | Disable the managed add-on and move its installed files into recoverable update storage. Existing sync maps are retained. Owner only. |
 | `GET` | `/api/experimental-features/agent-access` | Whether [agent access](#agent-access-mcp) is on, and how many agents are connected by how many users: `{ enabled, assistants, listeners }`. Admin only. |
 | `PUT` | `/api/experimental-features/agent-access/enabled` | Turn agent access on or off with `{ "enabled": bool }`. Owner only. Turning it off keeps connected agents' tokens but refuses them until it is turned back on. |
+| `GET` | `/api/experimental-features/book-gifts` | Whether [book gifts](book-gifts.md) are on and whether the caller may send one: `{ enabled, configured, canSend }`. Signed-in users. |
+| `PUT` | `/api/experimental-features/book-gifts/enabled` | Turn book gifts on or off with `{ "enabled": bool }`. Owner only. Turning them off stops transfers in progress and keeps the saved broker settings. Not available on Windows servers. |
+| `POST` | `/api/admin/shares/config/cloudflare` | Install the gift broker in the owner's Cloudflare account from `{ apiToken, accountId? }` and save the result. The token is used once and not stored. Owner only, over HTTPS in proxy deployment mode. |
+| `GET` | `/api/books/{book_id}/gift-inventory` | The files of a book the caller may gift, with sizes and the default selection. Returns 404 while book gifts are off, as do the other gift routes. |
+| `POST` | `/api/shares/selected` | Create a gift from `{ bookId, selectedAssetIds, personalMessage?, expiresInSeconds? }`. Lifetime defaults to 900 seconds and is bounded to 60–86400 seconds (24 hours). Returns `{ giftUrl, expiresAt, managementToken }`. The owner, or a reader when the owner allows it. |
+| `DELETE` | `/api/shares/{managementToken}` | Revoke a gift that has not been received. |
 | `GET` | `/api/books/{book_id}/download` | Zip download of all the book's files. Subject to `max_book_download_gib` and `max_concurrent_book_downloads`. |
 | `DELETE` | `/api/books/{book_id}/download` | Delete the server's local copy. Admin only; Libation catalog state, progress, metadata overrides, and access grants are retained for later redownload. |
 | `GET` | `/api/books/{book_id}/progress` | Playback progress for the current user and book. |
@@ -142,6 +152,8 @@ The archive includes accounts, permissions, progress, per-book settings, saved c
 | `POST` | `/api/books/{book_id}/ebook` | Pair one validated, unencrypted EPUB with an existing book. Admin only; multipart field `file`. Limited to 64 MiB or `max_upload_gib`, whichever is lower. Does not overwrite files; refuses books with an existing paired EPUB or sync map. Returns the refreshed book list. |
 | `GET` | `/api/library/faststart` | Report which MP4/M4B files still keep their `moov` index behind the audio. Admin only. |
 | `POST` | `/api/library/faststart` | Start a faststart conversion job. Admin only; body `{ "bookId": string \| null, "includeActive": bool }`. Returns `{ "jobId": ... }` to poll on `/api/jobs/{job_id}`. |
+
+Generator status includes `canToggle`, indicating whether the owner can enable or disable the runtime independently of `managed` package management. A generator found on `PATH` reports `managed: false` and `canToggle: true`. It stays enabled by default, including when upgrading with an older experimental settings file. Disabling it stops new sync jobs, scheduled generation, and sentence following without deleting maps or listening progress. Re-enabling restores availability. An explicit `alignment_cli_path` reports `canToggle: false` and stays enabled.
 
 Book responses include `hasCoverOverride`, `coverArtContentType`, and a versioned `coverArtUrl`; use the returned URL after changes. Cover reads retain book-access restrictions and ETag validation. Uploads never rewrite audio: a managed hidden image sidecar lives in the writable book folder and the metadata store records its selection. Both are needed to preserve an override in a backup or move. Invalid uploads leave the current cover unchanged.
 
@@ -392,8 +404,8 @@ semantics. Job kind is `libro-import` and uses the standard jobs endpoints.
 | `GET` | `/api/libation/books` | Audible library known to Libation. |
 | `GET` | `/api/libation/covers/{picture_id}` | Audible cover-art proxy. Accepts the media token. |
 | `POST` | `/api/libation/sync` | Refresh Libation's library scan. Authenticated readers may call it; non-administrators are subject to the configured per-account hourly limit. |
-| `POST` | `/api/libation/books/{asin}/liberate` | Download one title. Admin or directly permitted reader. |
-| `POST` | `/api/libation/accounts/{profile_id}/books/{asin}/liberate` | Download one title through the selected Audible account. Admin or directly permitted reader. |
+| `POST` | `/api/libation/books/{asin}/liberate` | Download one title. Admin or directly permitted reader. Returns `429` at 100 unfinished downloads per user or 1,000 saved downloads overall. |
+| `POST` | `/api/libation/accounts/{profile_id}/books/{asin}/liberate` | Download one title through the selected Audible account. Admin or directly permitted reader, with the same unfinished-download limits. Duplicate requests reuse the existing job; a concurrent retry during registration returns `409`. |
 | `POST` | `/api/libation/liberate-all` | Download all eligible titles. Admin only. |
 | `GET` | `/api/libation/access` | Libation availability and the signed-in reader's direct/approval policy. |
 | `GET` | `/api/libation/requests` | The account's own requests; authorized approvers receive all requests. |

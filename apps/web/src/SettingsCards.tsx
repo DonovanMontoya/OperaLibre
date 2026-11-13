@@ -3,6 +3,7 @@ import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BehaviorSection } from "./BehaviorSection";
 import { BookPreviewSetting } from "./BookPreviewSetting";
 import { ContinueReadingSetting } from "./ContinueReadingSetting";
+import { GiftReceivingSetting } from "./GiftReceivingSetting";
 import { DeviceImportNotice } from "./DeviceImportNotice";
 import {
   ChevronDown,
@@ -35,7 +36,7 @@ import {
   removeServerAlias,
   type ServerAlias
 } from "./api";
-import type { AppearanceMode } from "./appearance";
+import { DARK_THEMES, LIGHT_THEMES, type AppearanceMode, type DarkTheme, type LightTheme } from "./appearance";
 import type { AuthUser, Book, LibationAccount, LibroAccountSummary } from "./types";
 import type { DeviceNotice } from "./ConfirmDialogs";
 import type { NativeTab, StoreSettingsTarget } from "./nativeTabs";
@@ -53,24 +54,64 @@ export type DeviceDownloadActivity = {
   queuedAt: number;
 };
 
+function ThemeColumn<Id extends string>({
+  label,
+  themes,
+  selected,
+  select
+}: {
+  label: "Light" | "Dark";
+  themes: readonly { id: Id; label: string }[];
+  selected: Id;
+  select: (theme: Id) => void;
+}) {
+  return (
+    <div className="settings-theme-column" role="radiogroup" aria-label={`${label} theme`}>
+      <span className="settings-theme-heading" aria-hidden="true">{label}</span>
+      {themes.map((theme) => (
+        <button
+          key={theme.id}
+          type="button"
+          role="radio"
+          aria-checked={selected === theme.id}
+          className={selected === theme.id ? "selected" : undefined}
+          data-theme={theme.id}
+          onClick={() => select(theme.id)}
+        >
+          <span className="settings-theme-cloth" aria-hidden="true" />
+          {theme.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function DisplaySettings({
   appearanceMode,
+  darkTheme,
   ios,
+  lightTheme,
   rotationLockAvailable,
   rotationLockBusy,
   rotationLockEnabled,
   rotationLockError,
   toggleRotationLock,
-  updateAppearanceMode
+  updateAppearanceMode,
+  updateDarkTheme,
+  updateLightTheme
 }: {
   appearanceMode: AppearanceMode;
+  darkTheme: DarkTheme;
   ios: boolean;
+  lightTheme: LightTheme;
   rotationLockAvailable: boolean;
   rotationLockBusy: boolean;
   rotationLockEnabled: boolean;
   rotationLockError: string | null;
   toggleRotationLock: () => Promise<void>;
   updateAppearanceMode: (mode: AppearanceMode) => void;
+  updateDarkTheme: (theme: DarkTheme) => void;
+  updateLightTheme: (theme: LightTheme) => void;
 }) {
   return (
     <section className="settings-card">
@@ -95,6 +136,24 @@ export function DisplaySettings({
           ))}
         </div>
       </div> : null}
+      {/* Themes are set once and rarely revisited, so the catalog folds
+          away behind a row naming the two in use. */}
+      {ios ? <details className="settings-themes">
+        <summary>
+          <span>
+            <strong>Themes</strong>
+            <small>
+              {LIGHT_THEMES.find((theme) => theme.id === lightTheme)?.label} for light,{" "}
+              {DARK_THEMES.find((theme) => theme.id === darkTheme)?.label} for dark
+            </small>
+          </span>
+          <ChevronDown size={16} aria-hidden="true" />
+        </summary>
+        <div className="settings-theme-samples">
+          <ThemeColumn label="Light" themes={LIGHT_THEMES} selected={lightTheme} select={updateLightTheme} />
+          <ThemeColumn label="Dark" themes={DARK_THEMES} selected={darkTheme} select={updateDarkTheme} />
+        </div>
+      </details> : null}
       {rotationLockAvailable ? <div className="settings-toggle-row">
         <span>
           <strong>Rotation lock</strong>
@@ -266,6 +325,7 @@ export function BehaviorSettings({
         <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
         {clippingAvailable ? <ClippingSetting enabled={clippingEnabled} onToggle={toggleClippingEnabled} /> : null}
         {bookPreviewsAvailable ? <BookPreviewSetting enabled={bookPreviewsEnabled} onToggle={toggleBookPreviewsEnabled} /> : null}
+        <GiftReceivingSetting />
         <div className="settings-toggle-row">
           <span>
             <strong>Games tab</strong>
@@ -334,7 +394,7 @@ export function DeviceLibrarySettings({
 }) {
   return (
     <section className="settings-card">
-      <span className="section-label"><FolderOpen size={13} /> On this device</span>
+      <span className="section-label"><FolderOpen size={13} /> Add files</span>
       <button type="button" className="download-btn" disabled={deviceImport !== null} onClick={() => void importFromDevice()}>
         {deviceImport ? <LoaderCircle size={13} className="spin-icon" /> : <Plus size={13} />}
         <span>{deviceImport ? `Importing ${deviceImport.completed}/${deviceImport.total || "…"}` : "Add audiobook files"}</span>
@@ -382,7 +442,7 @@ export function ServerDownloadSettings({
 }) {
   return (
     <section className="settings-card">
-      <span className="section-label"><Download size={13} /> On device</span>
+      <span className="section-label"><Download size={13} /> Downloads</span>
       {demoMode ? (
         <>
           <p className="settings-hint">The Alice demo audio, ebook, and sentence timing map are included on this device.</p>
@@ -529,9 +589,8 @@ export function ConnectionSettings({
       {!demoMode && !localMode ? <div className="server-aliases">
         <span className="settings-label">Address aliases</span>
         <p className="settings-hint">
-          Save other routes to this server, such as LAN, Tailscale, or a forwarded address.
-          Each address keeps its own sign-in: sign in at one once, and the app can switch to it
-          whenever the others are out of reach.
+          Other addresses for this server, such as Tailscale. Sign in at each once, and the app
+          switches to one when the others are out of reach.
         </p>
         {[
           { id: "primary", name: "Original address", url: getServerIdentityUrl() },

@@ -10,26 +10,12 @@ private struct LibroDeviceError: LocalizedError {
 
 /// Owns the device connection. Tokens never cross the JavaScript bridge.
 @objc(LibroDevicePlugin)
-public class LibroDevicePlugin: CAPPlugin, CAPBridgedPlugin, URLSessionTaskDelegate {
+public class LibroDevicePlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "LibroDevicePlugin"
     public let jsName = "LibroDevice"
     public let pluginMethods: [CAPPluginMethod] = [CAPPluginMethod(name: "request", returnType: CAPPluginReturnPromise)]
     private let queue = DispatchQueue(label: "com.operalibre.libro-device")
     private let service = "com.operalibre.libro-device"
-    private lazy var session: URLSession = {
-        let config = URLSessionConfiguration.ephemeral
-        config.httpShouldSetCookies = false
-        config.timeoutIntervalForRequest = 25
-        config.timeoutIntervalForResource = 30
-        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
-    }()
-
-    public func urlSession(_ session: URLSession, task: URLSessionTask,
-                           willPerformHTTPRedirection response: HTTPURLResponse,
-                           newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(nil) // Never forward a password or bearer to a redirect.
-    }
-
     private func keyQuery() -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
          kSecAttrAccount as String: "connection"]
@@ -84,26 +70,19 @@ public class LibroDevicePlugin: CAPPlugin, CAPBridgedPlugin, URLSessionTaskDeleg
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: Result<[String: Any], Error> = .failure(LibroDeviceError(message: "Could not reach Libro.fm. Check your internet connection."))
-        session.dataTask(with: request) { data, response, error in
-            defer { semaphore.signal() }
-            guard error == nil, let http = response as? HTTPURLResponse else { return }
-            if http.statusCode == 404 && path.contains("packaged_m4b") {
-                result = .success(["unavailable": true]); return
-            }
-            guard (200...299).contains(http.statusCode) else {
-                result = .failure(LibroDeviceError(message: [401,403].contains(http.statusCode)
-                    ? "Libro.fm could not authorize this request. Reconnect the device account."
-                    : "Libro.fm returned HTTP \(http.statusCode). Try again later.")); return
-            }
-            guard let data, let json = try? decodeLibroDeviceResponse(data) else {
-                result = .failure(LibroDeviceError(message: "Unexpected Libro.fm response.")); return
-            }
-            result = .success(json)
-        }.resume()
-        semaphore.wait()
-        return try result.get()
+        let (http, data) = try receiveLibroDeviceResponse(request)
+        if http.statusCode == 404 && path.contains("packaged_m4b") {
+            return ["unavailable": true]
+        }
+        guard (200...299).contains(http.statusCode) else {
+            throw LibroDeviceError(message: [401,403].contains(http.statusCode)
+                ? "Libro.fm could not authorize this request. Reconnect the device account."
+                : "Libro.fm returned HTTP \(http.statusCode). Try again later.")
+        }
+        guard let json = try? decodeLibroDeviceResponse(data) else {
+            throw LibroDeviceError(message: "Unexpected Libro.fm response.")
+        }
+        return json
     }
 
     @objc func request(_ call: CAPPluginCall) {
@@ -174,6 +153,9 @@ public class LibroDevicePlugin: CAPPlugin, CAPBridgedPlugin, URLSessionTaskDeleg
         do {
             for url in try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
                 if url.pathExtension == "m4b" {
+                    let size = (try fm.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
+                    guard size > 0, size <= maximumBackgroundDownloadBytes - bytes else { throw LibroDeviceError(message: "Book exceeds 25 GiB.") }
+                    bytes += size
                     files.append(["name":url.lastPathComponent, "path":url.absoluteString]); continue
                 }
                 guard url.pathExtension == "zip" else { continue }

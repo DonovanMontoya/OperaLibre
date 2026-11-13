@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C91700012E32000100B6D001 /* GiftArchiveExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C91700022E32000100B6D001 /* GiftArchiveExtractor.swift */; };
 		B17000012E32000100B6D001 /* LibroDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = B17000022E32000100B6D001 /* LibroDevice.swift */; };
 		D0F01D012F10000100A1B2C3 /* DeviceFold.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F01D022F10000100A1B2C3 /* DeviceFold.swift */; };
 		B17100012E32000100B6D001 /* LibroDeviceResponse.swift in Sources */ = {isa = PBXBuildFile; fileRef = B17100022E32000100B6D001 /* LibroDeviceResponse.swift */; };
@@ -25,6 +26,7 @@
 		A17B00172E32000100B6D001 /* BackgroundDownloadPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00162E32000100B6D001 /* BackgroundDownloadPolicy.swift */; };
 		A17B00212E32000100B6D001 /* AudiobookPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00202E32000100B6D001 /* AudiobookPlayer.swift */; };
 		A17B00232E32000100B6D001 /* CarLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00222E32000100B6D001 /* CarLibrary.swift */; };
+		A17B00512E32000100B6D001 /* StoredRecords.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00502E32000100B6D001 /* StoredRecords.swift */; };
 		A17B002E2E32000100B6D001 /* CarLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B002D2E32000100B6D001 /* CarLibraryStore.swift */; };
 		A17B00252E32000100B6D001 /* CarPlayCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00242E32000100B6D001 /* CarPlayCoordinator.swift */; };
 		A17B00272E32000100B6D001 /* CarPlayScene.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00262E32000100B6D001 /* CarPlayScene.swift */; };
@@ -32,9 +34,11 @@
 		A17B002B2E32000100B6D001 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B002A2E32000100B6D001 /* SceneDelegate.swift */; };
 		A17B00312E32000100B6D001 /* AudiobookShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00302E32000100B6D001 /* AudiobookShortcuts.swift */; };
 		A17B00332E32000100B6D001 /* NativeTabs.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00322E32000100B6D001 /* NativeTabs.swift */; };
+		A17B00412E32000100B6D001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A17B00402E32000100B6D001 /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		C91700022E32000100B6D001 /* GiftArchiveExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GiftArchiveExtractor.swift; sourceTree = "<group>"; };
 		B17000022E32000100B6D001 /* LibroDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibroDevice.swift; sourceTree = "<group>"; };
 		D0F01D022F10000100A1B2C3 /* DeviceFold.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceFold.swift; sourceTree = "<group>"; };
 		B17100022E32000100B6D001 /* LibroDeviceResponse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibroDeviceResponse.swift; sourceTree = "<group>"; };
@@ -54,6 +58,7 @@
 		A17B00162E32000100B6D001 /* BackgroundDownloadPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundDownloadPolicy.swift; sourceTree = "<group>"; };
 		A17B00202E32000100B6D001 /* AudiobookPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudiobookPlayer.swift; sourceTree = "<group>"; };
 		A17B00222E32000100B6D001 /* CarLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarLibrary.swift; sourceTree = "<group>"; };
+		A17B00502E32000100B6D001 /* StoredRecords.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoredRecords.swift; sourceTree = "<group>"; };
 		A17B002D2E32000100B6D001 /* CarLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarLibraryStore.swift; sourceTree = "<group>"; };
 		A17B00242E32000100B6D001 /* CarPlayCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayCoordinator.swift; sourceTree = "<group>"; };
 		A17B00262E32000100B6D001 /* CarPlayScene.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayScene.swift; sourceTree = "<group>"; };
@@ -62,6 +67,7 @@
 		A17B00302E32000100B6D001 /* AudiobookShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudiobookShortcuts.swift; sourceTree = "<group>"; };
 		A17B002C2E32000100B6D001 /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
 		A17B00322E32000100B6D001 /* NativeTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTabs.swift; sourceTree = "<group>"; };
+		A17B00402E32000100B6D001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -101,9 +107,11 @@
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				A17B00102E32000100B6D001 /* BackgroundDownloads.swift */,
 				B17000022E32000100B6D001 /* LibroDevice.swift */,
+				C91700022E32000100B6D001 /* GiftArchiveExtractor.swift */,
 				D0F01D022F10000100A1B2C3 /* DeviceFold.swift */,
 				B17100022E32000100B6D001 /* LibroDeviceResponse.swift */,
 				A17B00162E32000100B6D001 /* BackgroundDownloadPolicy.swift */,
+				A17B00502E32000100B6D001 /* StoredRecords.swift */,
 				A17B00122E32000100B6D001 /* ViewController.swift */,
 				A17B00322E32000100B6D001 /* NativeTabs.swift */,
 				A17B00142E32000100B6D001 /* NativeAudio.swift */,
@@ -119,6 +127,7 @@
 				504EC30E1FED79650016851F /* Assets.xcassets */,
 				504EC3101FED79650016851F /* LaunchScreen.storyboard */,
 				504EC3131FED79650016851F /* Info.plist */,
+				A17B00402E32000100B6D001 /* PrivacyInfo.xcprivacy */,
 				A17B002C2E32000100B6D001 /* App.entitlements */,
 				2FAD9762203C412B000D30F8 /* config.xml */,
 				50B271D01FEDC1A000F3C39B /* public */,
@@ -200,6 +209,7 @@
 				50379B232058CBB4000EE86E /* capacitor.config.json in Resources */,
 				504EC30D1FED79650016851F /* Main.storyboard in Resources */,
 				2FAD9763203C412B000D30F8 /* config.xml in Resources */,
+				A17B00412E32000100B6D001 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -233,9 +243,11 @@
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				A17B00112E32000100B6D001 /* BackgroundDownloads.swift in Sources */,
 				B17000012E32000100B6D001 /* LibroDevice.swift in Sources */,
+				C91700012E32000100B6D001 /* GiftArchiveExtractor.swift in Sources */,
 				D0F01D012F10000100A1B2C3 /* DeviceFold.swift in Sources */,
 				B17100012E32000100B6D001 /* LibroDeviceResponse.swift in Sources */,
 				A17B00172E32000100B6D001 /* BackgroundDownloadPolicy.swift in Sources */,
+				A17B00512E32000100B6D001 /* StoredRecords.swift in Sources */,
 				A17B00132E32000100B6D001 /* ViewController.swift in Sources */,
 				A17B00332E32000100B6D001 /* NativeTabs.swift in Sources */,
 				A17B00152E32000100B6D001 /* NativeAudio.swift in Sources */,
@@ -388,7 +400,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/App.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = WS7DWR8G56;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
@@ -400,7 +412,7 @@
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\"";
 				PRODUCT_BUNDLE_IDENTIFIER = com.donovanmontoya.operalibre;
 				PRODUCT_NAME = OperaLibre;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG OPERALIBRE_EXPERIMENTAL_GIFTS";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -412,7 +424,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/App.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = WS7DWR8G56;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
@@ -423,7 +435,7 @@
 				MARKETING_VERSION = 1.3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.donovanmontoya.operalibre;
 				PRODUCT_NAME = OperaLibre;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = OPERALIBRE_EXPERIMENTAL_GIFTS;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

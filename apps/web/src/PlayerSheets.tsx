@@ -10,9 +10,10 @@ import {
   Volume2,
   X
 } from "lucide-react";
-import type { Dispatch, FormEvent, SetStateAction } from "react";
+import { useLayoutEffect, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { useModalFocus } from "./useModalFocus";
 import type { ChapterSegment } from "./chapters";
+import { displayPublishedDate } from "./bookMetadata";
 import { CoverArt } from "./CoverArt";
 import { bookSubtitle, durationFromTracks, formatDurationLabel, formatTime } from "./formatting";
 import { haptic } from "./native";
@@ -110,7 +111,7 @@ export function BookDetailsSheet({
           </div>
           <div>
             <span>Published</span>
-            <strong>{playbackBook.publishedDate ?? "—"}</strong>
+            <strong>{displayPublishedDate(playbackBook.publishedDate) ?? "—"}</strong>
           </div>
           <div>
             <span>Tracks</span>
@@ -207,7 +208,7 @@ export function SpeedSheet({
         <div className="sleep-sheet-grabber" aria-hidden="true" />
         <header>
           <div>
-            <span className="eyebrow"><Gauge size={13} /> Cadence</span>
+            <span className="eyebrow"><Gauge size={13} /> Speed and volume</span>
             <h2 id="speed-sheet-title">Playback</h2>
           </div>
           <button type="button" className="icon-button" aria-label="Close" onClick={closeNativePlayerSheet}>
@@ -215,7 +216,7 @@ export function SpeedSheet({
           </button>
         </header>
         <p className="sleep-sheet-hint">Fine-tune the pace in 0.05× steps or jump to a familiar preset.</p>
-        <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary />
+        <PlaybackSpeedControl value={speed} onChange={updateSpeed} />
         {/* Noticing a book is too quiet happens mid-chapter, so the fix
             lives with the other thing a listener reaches for while the
             book is playing rather than on the book's own page. */}
@@ -268,6 +269,15 @@ export function ChapterSheet({
   setNativePlayerSheet: Dispatch<SetStateAction<NativePlayerSheet>>;
 }) {
   const dialogRef = useModalFocus<HTMLElement>(closeNativePlayerSheet);
+  // Open on the playing chapter, centred in the sheet. Only on open: following
+  // playback afterwards would yank the list away from someone browsing it.
+  useLayoutEffect(() => {
+    const sheet = dialogRef.current;
+    const row = sheet?.querySelector<HTMLElement>(".chapter-sheet-options button.selected");
+    if (!sheet || !row) return;
+    const offset = row.getBoundingClientRect().top - sheet.getBoundingClientRect().top;
+    sheet.scrollTop += offset - (sheet.clientHeight - row.offsetHeight) / 2;
+  }, [dialogRef]);
   return (
     <div className="sleep-sheet-layer" role="presentation">
       <button

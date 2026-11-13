@@ -1,9 +1,10 @@
 import type { SyncMap } from "./types";
 
-export type SyncMapCache = { maps: Record<string, SyncMap | null>; revision: number };
+type SyncMapCache = { maps: Record<string, SyncMap | null>; revision: number };
 type Action =
   | { type: "loaded"; bookId: string; map: SyncMap | null }
   | { type: "invalidate"; bookId: string }
+  | { type: "forget"; bookId: string }
   | { type: "reset" };
 
 /** Invalidation and the reader's reload signal must change together. */
@@ -14,6 +15,10 @@ export function syncMapCacheReducer(state: SyncMapCache, action: Action): SyncMa
     case "invalidate": {
       const { [action.bookId]: _removed, ...maps } = state.maps;
       return { maps, revision: state.revision + 1 };
+    }
+    case "forget": {
+      const { [action.bookId]: _removed, ...maps } = state.maps;
+      return { ...state, maps };
     }
     case "reset":
       return { maps: {}, revision: state.revision + 1 };

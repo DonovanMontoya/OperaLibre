@@ -16,6 +16,11 @@ on:
 permissions:
   contents: read
 
+# Only obsolete PR runs are cancelled; main, scheduled and manual runs are unique.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   portable:
     name: Follow-along reader and corpus contracts

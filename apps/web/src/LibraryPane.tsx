@@ -32,6 +32,7 @@ import {
   PanelLeftClose,
   PanelRightClose,
   PanelRightOpen,
+  Plus,
   RefreshCcw,
   Rows3,
   Search,
@@ -105,6 +106,7 @@ export function LibraryPane({
   purchases,
   readerPreferences,
   refreshLibrary,
+  refreshShelf,
   resumeSelectedBook,
   selectBook,
   selectFromShelf,
@@ -162,6 +164,7 @@ export function LibraryPane({
   purchases: ReturnType<typeof usePurchases>;
   readerPreferences: ReturnType<typeof useReaderPreferences>;
   refreshLibrary: () => Promise<void>;
+  refreshShelf: () => Promise<void>;
   resumeSelectedBook: (book: Book) => void;
   selectBook: (book: Book) => void;
   selectFromShelf: (book: Book) => void;
@@ -223,6 +226,7 @@ export function LibraryPane({
     brokenLibationAccounts,
     canBrowseLibation,
     displayedLibationJobs,
+    isRefreshingAudible,
     downloadAllLibationJob,
     libationAllPending,
     libationBooks,
@@ -250,6 +254,7 @@ export function LibraryPane({
     visibleLibationBooks,
     audibleBookCount
   } = purchases;
+  const checkingAudible = showAudiblePurchases && isRefreshingAudible;
   const {
     carPlaybackBook,
     takeOverFromCar
@@ -311,6 +316,7 @@ export function LibraryPane({
     ? books.filter(book => book.source === "device" || !!book.deviceBookId || downloadedBookIds.has(book.id))
     : books, [isOffline, books, downloadedBookIds]);
 
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [audibleDetailsId, setAudibleDetailsId] = useState<string | null>(null);
   const audibleDetailsBook = audibleDetailsId ? visibleLibationBooks.find(book => book.catalogId === audibleDetailsId) ?? null : null;
   // The list row and the details page share one action, so either shows the same download state.
@@ -431,7 +437,7 @@ export function LibraryPane({
   ) : null;
 
   return (
-    <aside ref={libraryPaneRef} className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource !== "local" ? "purchase-browsing" : ""}`} {...shelfPull.handlers}>
+    <aside ref={libraryPaneRef} className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource !== "local" ? "purchase-browsing" : ""}${librarySource === "local" && !isLoading && books.length === 0 ? " shelf-is-empty" : ""}`} {...shelfPull.handlers}>
       {native ? (
         <div
           className={`pull-indicator ${shelfPull.refreshing ? "refreshing" : ""}`}
@@ -469,17 +475,53 @@ export function LibraryPane({
           </div>
         ) : null}
         <div className="pane-actions">
+          {/* The apps gather the occasional ways to bring books in behind one
+              labeled button; pulling the shelf down also refreshes it. */}
           {native ? (
             <button
-              className="icon-button"
-              aria-label="Add audiobook from device"
-              disabled={deviceImport !== null}
-              onClick={() => void importFromDevice()}
+              type="button"
+              className="icon-button add-books-button"
+              aria-haspopup="menu"
+              aria-expanded={addMenuOpen}
+              onClick={() => setAddMenuOpen(true)}
             >
-              {deviceImport ? <LoaderCircle size={16} className="spin-icon" /> : <FolderOpen size={16} />}
+              {deviceImport ? <LoaderCircle size={16} className="spin-icon" /> : <Plus size={16} />}
+              <span>Add</span>
             </button>
           ) : null}
-          {capabilities.uploads ? (
+          {native && addMenuOpen ? createPortal(
+            <div className="user-menu-layer">
+              <button type="button" className="user-menu-scrim" aria-label="Close menu" onClick={() => setAddMenuOpen(false)} />
+              <div className="user-menu add-books-menu" role="menu" aria-label="Add books">
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={deviceImport !== null}
+                  onClick={() => { setAddMenuOpen(false); void importFromDevice(); }}
+                >
+                  <FolderOpen size={16} /> Add files to this device
+                </button>
+                {capabilities.uploads ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setAddMenuOpen(false); setUploadError(null); setUploadModalOpen(true); }}
+                  >
+                    <Upload size={16} /> Upload to the server
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { setAddMenuOpen(false); void (librarySource !== "local" ? refreshShelf() : refreshLibrary()); }}
+                >
+                  <RefreshCcw size={16} /> {librarySource !== "local" ? "Refresh purchases" : capabilities.administration ? "Rescan library" : "Refresh library"}
+                </button>
+              </div>
+            </div>,
+            document.body
+          ) : null}
+          {!native && capabilities.uploads ? (
             <button
               className="icon-button upload-icon-button"
               aria-label="Upload audiobook"
@@ -555,13 +597,14 @@ export function LibraryPane({
               ) : null}
             </div>
           ) : null}
-          <button
+          {native ? null : <button
             className="icon-button refresh-icon-button"
-            aria-label={capabilities.administration ? "Rescan library" : "Refresh library"}
-            onClick={() => void refreshLibrary()}
+            aria-label={librarySource !== "local" ? "Refresh purchases" : capabilities.administration ? "Rescan library" : "Refresh library"}
+            aria-busy={checkingAudible}
+            onClick={() => void (librarySource !== "local" ? refreshShelf() : refreshLibrary())}
           >
-            <RefreshCcw size={16} />
-          </button>
+            <RefreshCcw size={16} className={checkingAudible ? "spin-icon" : undefined} />
+          </button>}
           <div className="user-menu-wrap" ref={userMenuWrapRef}>
             <button
               className="icon-button account-button"
@@ -639,7 +682,7 @@ export function LibraryPane({
                         tabs[next].focus();
                         tabs[next].click();
                       }}>
-                      {source === "all" ? "All accounts" : source === "libro" ? "Libro.fm" : "Audible"}
+                      {source === "all" ? "All stores" : source === "libro" ? "Libro.fm" : "Audible"}
                       {source === "audible" && brokenLibationAccounts.length > 0 ? <span className="source-health-badge" aria-label={`${brokenLibationAccounts.length} accounts need attention`}>{brokenLibationAccounts.length}</span> : null}
                     </button>
                   ))}
@@ -845,7 +888,9 @@ export function LibraryPane({
           </div>
         ) : null}
 
-        {librarySource !== "libro" && librarySource !== "all" ? <div className="library-results-summary">
+        {librarySource !== "libro" && librarySource !== "all" ? <div className={`library-results-summary${!searchQuery.trim() && !hasCollapsedShelfGroups && (librarySource === "local"
+          ? !isLoading && visibleBooks.length === books.length
+          : !libationLoading && visibleLibationBooks.length === audibleBookCount) ? " is-unfiltered" : ""}`}>
           <span role="status" aria-live="polite" aria-atomic="true">
             {librarySource === "local"
               ? isLoading ? "Loading books…" : `${visibleBooks.length} of ${books.length} books`
@@ -959,6 +1004,7 @@ export function LibraryPane({
 
       </div>
       <div className="purchase-books-pane">
+      {error ? <div className="empty-state error" role="alert">{error}</div> : null}
       <DeviceImportNotice notice={downloadStatus} busy={deviceImport !== null} onRetry={importFromDevice} />
 
       {librarySource === "libro" || librarySource === "all" ? (
@@ -971,9 +1017,8 @@ export function LibraryPane({
             <section className="connect-server-card" aria-label="Connect a server">
               <span className="section-label"><Network size={13} /> Listening from this device</span>
               <p>
-                Everything here stays on this device — no server or account needed.
-                When your OperaLibre or Jellyfin server is ready, connect it to
-                stream a shared library and sync your progress.
+                Books you add stay on this device. Connect a server to stream
+                your library and sync progress.
               </p>
               <a
                 className="connect-server-guide"
@@ -982,7 +1027,7 @@ export function LibraryPane({
                 rel="noreferrer"
               >
                 <ExternalLink size={12} aria-hidden="true" />
-                <span>New to OperaLibre? Read the server setup guide</span>
+                <span>Server setup guide</span>
               </a>
               <div className="connect-server-actions">
                 <button
@@ -1010,7 +1055,6 @@ export function LibraryPane({
             </section>
           ) : null}
           {isLoading ? <div className="empty-state">Loading library…</div> : null}
-          {error ? <div className="empty-state error">{error}</div> : null}
           {!isLoading && !error && books.length === 0 ? (
             <div className="empty-state device-empty-state">
               <span>{localMode ? "Your shelf is ready. Pick audiobook files from this device to start listening." : !isOperaLibre ? "No audiobooks are available to this account. Add audiobooks to a Books library in Jellyfin and check this account’s library access. Music libraries are not included." : "No audiobooks found in the configured library folder."}</span>
@@ -1041,7 +1085,9 @@ export function LibraryPane({
             </div>
           ) : null}
 
-          {!isLoading ? (
+          {/* While searching, the matches lead; the listening cards would
+              otherwise push them below the fold. Filters leave the plan up. */}
+          {!isLoading && !searchQuery.trim() ? (
             <ContinueReading
               key={queueStorageKey}
               storageKey={queueStorageKey}
@@ -1074,6 +1120,7 @@ export function LibraryPane({
             native={native}
             readalongEnabled={readalongEnabled}
             sentenceFollowAvailable={shelf.sentenceFollowAvailable}
+            sentenceFollowAvailableForBook={shelf.sentenceFollowAvailableForBook}
             onSelectBook={selectFromShelf}
             onToggleGroup={toggleShelfGroup}
           />

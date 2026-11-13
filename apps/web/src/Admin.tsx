@@ -1,9 +1,9 @@
 import { Capacitor } from "@capacitor/core";
 import {
-  ArrowLeft,
   ArrowUpCircle,
   BookOpen,
   Check,
+  ChevronLeft,
   CloudDownload,
   Database,
   Download,
@@ -53,7 +53,7 @@ import {
   updateUserLibationAccess,
   updateUserRole
 } from "./api";
-import { errorMessage } from "./formatting";
+import { countLabel, errorMessage } from "./formatting";
 import type {
   AuthUser,
   Book,
@@ -68,9 +68,13 @@ import type {
 } from "./types";
 import { FRONTEND_VERSION } from "./version";
 import { ExperimentSection } from "./ExperimentSection";
+import { CompactNavBar } from "./CompactNavBar";
 import { SyncJobMonitor } from "./SyncJobMonitor";
 import { LibroImports } from "./LibroImports";
 import { LibroCatalog } from "./LibroCatalog";
+import { BookGiftsExperiment } from "./BookGiftsExperiment";
+import { getServerType } from "./api";
+import { isDemoMode } from "./demo";
 
 type AdminSection = "overview" | "users" | "requests" | "books" | "experiments" | "imports";
 type AccountRole = "owner" | "admin" | "reader";
@@ -109,6 +113,7 @@ export function AdminPanel({
   onAlignmentChanged: (status: { enabled: boolean; cliPath: string | null }) => void;
 }) {
   const [section, setSection] = useState<AdminSection>("overview");
+  const shellRef = useRef<HTMLElement>(null);
   const [folderImportsOpen, setFolderImportsOpen] = useState(false);
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [libationRequests, setLibationRequests] = useState<LibationDownloadRequest[]>([]);
@@ -669,7 +674,7 @@ export function AdminPanel({
   }
 
   async function handleToggleSyncAddon() {
-    if (!currentUser.isOwner || !syncAddon?.installed || !syncAddon.managed) return;
+    if (!currentUser.isOwner || !syncAddon?.installed || !(syncAddon.canToggle ?? syncAddon.managed)) return;
     setSyncAddonBusy("toggle");
     setError(null);
     setNotice(null);
@@ -706,13 +711,14 @@ export function AdminPanel({
   }
 
   return (
-    <section className={`admin-shell ${onClose ? "admin-overlay" : ""}`} aria-label="Administration">
+    <section ref={shellRef} className={`admin-shell ${onClose ? "admin-overlay" : ""}`} aria-label="Administration">
+      {onBack ? <CompactNavBar scroller={shellRef} threshold={90} title="Administration" backLabel="Settings" onBack={onBack} /> : null}
       <div className="admin-navigation">
       <header className="admin-head">
         <div>
           {onBack ? <div className="admin-back">
             <button type="button" className="download-btn" onClick={onBack}>
-              <ArrowLeft size={15} /><span>Back to Settings</span>
+              <span className="native-player-return-icon"><ChevronLeft size={21} /></span><span>Back to Settings</span>
             </button>
           </div> : null}
           <span className="eyebrow"><ShieldCheck size={13} /> Administration</span>
@@ -732,7 +738,11 @@ export function AdminPanel({
             key={item}
             type="button"
             className={section === item ? "selected" : ""}
-            onClick={() => setSection(item)}
+            aria-current={section === item ? "page" : undefined}
+            onClick={(event) => {
+              setSection(item);
+              event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" });
+            }}
           >
             {item === "overview" ? <Database size={15} /> : item === "users" ? <Users size={15} /> : item === "requests" ? <CloudDownload size={15} /> : item === "experiments" ? <FlaskConical size={15} /> : <BookOpen size={15} />}
             {item === "overview" ? "Overview" : item === "users" ? "Users & access" : item === "requests" ? `Requests${pendingRequests.length ? ` (${pendingRequests.length})` : ""}` : item === "experiments" ? "Experiments" : item === "imports" ? "Imports" : "Downloaded books"}
@@ -752,10 +762,10 @@ export function AdminPanel({
       {section === "overview" ? (
         <div className="admin-content">
           <div className="admin-metrics">
-            <article><span>Accounts</span><strong>{users.length}</strong><small>{readers.length} readers · {users.filter((user) => user.isAdmin && !user.isOwner).length} admins · {users.filter((user) => user.isOwner).length} owners</small></article>
-            <article><span>Downloaded books</span><strong>{books.length}</strong><small>{totalTracks} audio tracks on the server</small></article>
+            <article><span>Accounts</span><strong>{users.length}</strong><small>{countLabel(readers.length, "reader")} · {countLabel(users.filter((user) => user.isAdmin && !user.isOwner).length, "admin")} · {countLabel(users.filter((user) => user.isOwner).length, "owner")}</small></article>
+            <article><span>Downloaded books</span><strong>{books.length}</strong><small>{countLabel(totalTracks, "audio track")} on the server</small></article>
             <article><span>Listening time</span><strong>{Math.round(totalHours).toLocaleString()}h</strong><small>available across the collection</small></article>
-            <article><span>Pending requests</span><strong>{canApprove ? pendingRequests.length : "—"}</strong><small>{users.filter((user) => !user.isOwner && user.libationAccess === "direct").length} accounts can download directly</small></article>
+            <article><span>Pending requests</span><strong>{canApprove ? pendingRequests.length : "—"}</strong><small>{countLabel(users.filter((user) => !user.isOwner && user.libationAccess === "direct").length, "account")} can download directly</small></article>
           </div>
           <section className="admin-card admin-quick-actions">
             <div><h2>Library operations</h2><p>Add a download to the collection or scan the server folders for changes.</p></div>
@@ -786,7 +796,7 @@ export function AdminPanel({
                   <h2>Export or restore server data</h2>
                   <p>
                     Back up accounts, permissions, reading logs, listening progress, per-book settings,
-                    metadata, work links, Libation records, and stable library IDs. Audiobook files and
+                    metadata, work links, Libation records, and stable library IDs. Audiobook files and{" "}
                     <code>server.config</code> are not included; Libation accounts may need to be reconnected
                     after moving to another server. Backup files contain sensitive account data.
                   </p>
@@ -1029,7 +1039,7 @@ export function AdminPanel({
                       {syncAddonBusy === "install" ? "Installing…" : syncAddon.installed ? "Update add-on" : "Install add-on"}
                     </button>
                   ) : null}
-                  {currentUser.isOwner && syncAddon?.installed && syncAddon.managed ? (
+                  {currentUser.isOwner && syncAddon?.installed && (syncAddon.canToggle ?? syncAddon.managed) ? (
                     <button
                       type="button"
                       className="quiet-button"
@@ -1063,6 +1073,7 @@ export function AdminPanel({
                 </ExperimentSection>
               </article>
               <AgentAccessExperiment isOwner={currentUser.isOwner} />
+              {currentUser.isOwner && !isDemoMode() && getServerType() === "operalibre" ? <BookGiftsExperiment /> : null}
             </div>
           </section>
         </div>

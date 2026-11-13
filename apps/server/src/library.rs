@@ -470,7 +470,7 @@ pub(crate) struct BookMetadataUpdate {
     pub(crate) asin: Option<String>,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 pub(crate) struct TrackMetadata {
     pub(crate) title: Option<String>,
     pub(crate) author: Option<String>,
@@ -478,11 +478,12 @@ pub(crate) struct TrackMetadata {
     pub(crate) duration_seconds: Option<f64>,
     pub(crate) asin: Option<String>,
     pub(crate) chapters: Vec<ParsedChapter>,
+    #[serde(skip)]
     pub(crate) cover_art: Option<EmbeddedImage>,
     pub(crate) summary: MetadataSummary,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 pub(crate) struct ParsedChapter {
     pub(crate) title: String,
     pub(crate) start_seconds: f64,
@@ -526,78 +527,92 @@ pub(crate) async fn list_books(
     Query(query): Query<ListBooksQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    ensure_startup_scan_finished(&state).await?;
-    let (books, next_cursor) = {
-        let library = state.library.read().await;
-        // A missing or inaccessible cursor restarts the walk. Select from
-        // one catalogue snapshot before copying metadata or adding progress.
-        let start = query
-            .limit
-            .and(query.cursor.as_deref())
-            .and_then(|cursor| {
-                library
-                    .books
-                    .iter()
-                    .position(|book| book.id == cursor && can_access_book(&auth, &book.id))
-            })
-            .map_or(0, |index| index + 1);
-        let mut visible = library.books[start..]
+    let lease = CatalogueLease::acquire(&state, &auth).await?;
+    catalogue_books_response(&state, auth, query, headers, lease).await
+}
+
+async fn catalogue_books_response(
+    state: &AppState,
+    auth: AuthUser,
+    query: ListBooksQuery,
+    headers: HeaderMap,
+    lease: CatalogueLease,
+) -> Result<Response, ApiError> {
+    ensure_startup_scan_finished(state).await?;
+    let library = state.library.clone().read_owned().await;
+    let start = query
+        .limit
+        .and(query.cursor.as_deref())
+        .and_then(|cursor| {
+            library
+                .books
+                .iter()
+                .position(|book| book.id == cursor && can_access_book(&auth, &book.id))
+        })
+        .map_or(0, |index| index + 1);
+    let limit = query
+        .limit
+        .map_or(usize::MAX, |limit| limit.clamp(1, MAX_BOOKS_PAGE));
+    let mut visible = library.books[start..]
+        .iter()
+        .filter(|book| can_access_book(&auth, &book.id));
+    let selected: Vec<&Book> = visible.by_ref().take(limit).collect();
+    let next_cursor = visible
+        .next()
+        .and_then(|_| selected.last().map(|book| book.id.clone()));
+    let enrichment = ProgressEnrichment::load(state, &auth, &selected).await?;
+    drop(selected);
+    tokio::task::spawn_blocking(move || {
+        let mut spool = CatalogueSpool::new(lease)?;
+        spool.bytes(b"[")?;
+        for (index, book) in library.books[start..]
             .iter()
-            .filter(|book| can_access_book(&auth, &book.id));
-        let limit = query
-            .limit
-            .map_or(usize::MAX, |limit| limit.clamp(1, MAX_BOOKS_PAGE));
-        let books: Vec<Book> = visible.by_ref().take(limit).cloned().collect();
-        let next_cursor = visible
-            .next()
-            .and_then(|_| books.last().map(|book| book.id.clone()));
-        (books, next_cursor)
-    };
-    let books = enrich_books_with_progress(&state, &auth, books).await?;
-
-    // The tag covers the response as it was actually built, so a change to a
-    // shared listener's position or to a volume gain invalidates it too. It
-    // also covers the navigation state: a page that was exactly full gains a
-    // next cursor when a later-sorting book arrives, with a body that did not
-    // change, and a client holding only the old tag must not be told there is
-    // nothing new. A cheaper tag derived from a library counter would answer
-    // 304 to some requests whose content had in fact changed.
-    let body = serde_json::to_vec(&books)?;
-    let mut hasher = Sha1::new();
-    hasher.update(&body);
-    match &next_cursor {
-        Some(cursor) => {
-            hasher.update(b"\nnext:");
-            hasher.update(cursor.as_bytes());
+            .filter(|book| can_access_book(&auth, &book.id))
+            .take(limit)
+            .enumerate()
+        {
+            spool.begin_item();
+            if index > 0 {
+                spool.bytes(b",")?;
+            }
+            spool.json(&enrichment.apply_catalogue(book)?)?;
+            spool.finish_item()?;
         }
-        None => hasher.update(b"\nend"),
-    }
-    let etag = format!("\"{}\"", hex_digest(hasher.finalize()));
-    if if_none_match_matches(&headers, &etag) {
-        return Ok(Response::builder()
-            .status(StatusCode::NOT_MODIFIED)
-            .header(ETAG, &etag)
-            .header(CACHE_CONTROL, "private, no-cache")
-            .body(Body::empty())?);
-    }
-
-    let mut response = Response::builder()
-        .status(StatusCode::OK)
-        .header(CONTENT_TYPE, "application/json")
-        .header(ETAG, &etag)
-        .header(CACHE_CONTROL, "private, no-cache");
-    if let Some(cursor) = next_cursor {
-        response = response.header("x-next-cursor", cursor);
-    }
-    Ok(response.body(Body::from(body))?)
+        spool.bytes(b"]")?;
+        let suffix = next_cursor
+            .as_ref()
+            .map_or_else(|| "\nend".to_string(), |cursor| format!("\nnext:{cursor}"));
+        let etag = spool.etag(suffix.as_bytes());
+        if if_none_match_matches(&headers, &etag) {
+            return Ok(Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header(ETAG, etag)
+                .header(CACHE_CONTROL, "private, no-cache")
+                .body(Body::empty())?);
+        }
+        spool.response("application/json", Some(&etag), next_cursor.as_deref())
+    })
+    .await
+    .map_err(|_| ApiError::internal("Catalogue generation was interrupted."))?
 }
 
 pub(crate) async fn rescan(
     State(state): State<AppState>,
     AdminUser(auth): AdminUser,
-) -> Result<Json<Vec<Book>>, ApiError> {
+) -> Result<Response, ApiError> {
+    let lease = CatalogueLease::acquire(&state, &auth).await?;
     rescan_library(&state).await?;
-    Ok(Json(books_with_progress(&state, &auth).await?))
+    catalogue_books_response(
+        &state,
+        auth,
+        ListBooksQuery {
+            limit: None,
+            cursor: None,
+        },
+        HeaderMap::new(),
+        lease,
+    )
+    .await
 }
 
 pub(crate) async fn get_book(
@@ -1067,9 +1082,16 @@ pub(crate) fn mint_identity_id() -> String {
     hex_digest(rand::random::<[u8; 16]>())
 }
 
+#[cfg(test)]
 pub(crate) fn file_identity_fingerprint(path: &FsPath) -> anyhow::Result<String> {
+    let root = ScanRoot::new(
+        path.parent()
+            .ok_or_else(|| anyhow::anyhow!("missing parent"))?,
+    )?;
+    file_identity_fingerprint_file(root.open(path)?.0)
+}
+fn file_identity_fingerprint_file(mut file: std::fs::File) -> anyhow::Result<String> {
     const SAMPLE_BYTES: usize = 64 * 1024;
-    let mut file = std::fs::File::open(path)?;
     let size = file.metadata()?.len();
     let mut hasher = Sha256::new();
     hasher.update(size.to_le_bytes());
@@ -1125,6 +1147,7 @@ type ScannedFingerprint = (PathBuf, String, String, Option<(u64, u64)>);
 /// so the steady state here is one stat per file.
 ///
 /// Blocking: run this on a blocking task, not on a runtime worker.
+#[cfg(test)]
 pub(crate) fn fingerprint_tracks(
     library_root: &FsPath,
     files: &[PathBuf],
@@ -1133,6 +1156,23 @@ pub(crate) fn fingerprint_tracks(
     HashMap<PathBuf, String>,
     BTreeMap<String, CachedFingerprint>,
 ) {
+    fingerprint_tracks_in(
+        &ScanRoot::new(library_root).unwrap(),
+        library_root,
+        files,
+        previous,
+    )
+    .unwrap()
+}
+fn fingerprint_tracks_in(
+    root: &ScanRoot,
+    library_root: &FsPath,
+    files: &[PathBuf],
+    previous: BTreeMap<String, CachedFingerprint>,
+) -> anyhow::Result<(
+    HashMap<PathBuf, String>,
+    BTreeMap<String, CachedFingerprint>,
+)> {
     use rayon::prelude::*;
 
     // Each file is fingerprinted independently, and the work is a content hash
@@ -1143,7 +1183,8 @@ pub(crate) fn fingerprint_tracks(
         .par_iter()
         .map(|path| {
             let alias = library_identity_path(library_root, path);
-            let stat = std::fs::metadata(path).ok().map(|metadata| {
+            let (file, metadata) = root.open(path)?;
+            let stat = Some({
                 let modified_ms = metadata
                     .modified()
                     .ok()
@@ -1160,14 +1201,14 @@ pub(crate) fn fingerprint_tracks(
             });
             let fingerprint = match reused {
                 Some(fingerprint) => fingerprint,
-                None => file_identity_fingerprint(path).unwrap_or_else(|error| {
+                None => file_identity_fingerprint_file(file).unwrap_or_else(|error| {
                     tracing::warn!("could not fingerprint {}: {error}", path.display());
                     path_identity_fingerprint(path)
                 }),
             };
-            (path.clone(), alias, fingerprint, stat)
+            Ok((path.clone(), alias, fingerprint, stat))
         })
-        .collect();
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     let mut fingerprints = HashMap::with_capacity(files.len());
     // Rebuilt from scratch so entries for removed files are pruned.
@@ -1190,7 +1231,7 @@ pub(crate) fn fingerprint_tracks(
         fingerprints.insert(path, fingerprint);
     }
 
-    (fingerprints, cache)
+    Ok((fingerprints, cache))
 }
 
 pub(crate) fn book_identity_fingerprint(track_fingerprints: &[String]) -> String {
@@ -1872,6 +1913,7 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
 
 /// Caller holds rescan_lock across publishing files and refreshing the catalogue.
 pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()> {
+    let input_root = ScanRoot::new(&state.library_root)?;
     let scan_root = state.library_root.clone();
     let (groups, walk_errors) = tokio::task::spawn_blocking(move || {
         let walk = walk_audio_files_checked(&scan_root);
@@ -1938,36 +1980,50 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
         .remove(DEFAULT_ROOT_ID)
         .unwrap_or_default();
 
+    let fingerprint_root = input_root.clone();
     let fingerprint_task = tokio::task::spawn_blocking(move || {
-        fingerprint_tracks(&library_root, &scanned_files, cached_fingerprints)
+        fingerprint_tracks_in(
+            &fingerprint_root,
+            &library_root,
+            &scanned_files,
+            cached_fingerprints,
+        )
     });
-    // Tag reading is the slowest part of a first scan, and every file is
-    // independent, so it fans out across the pool instead of walking the list
-    // on one thread.
+    // Embedded parsers and raster decoders share one memory allowance.
+    // Collect serially so completed metadata cannot outrun its aggregate budget.
     //
     // Only one cover per book is ever used, so the picture bytes every track
     // may carry are reduced to a digest here and read again once per book,
     // and only when the cover cache does not already hold them. Keeping every
     // track's picture through the scan cost hundreds of megabytes on a large
     // library.
+    let metadata_root = input_root.clone();
     let metadata_task = tokio::task::spawn_blocking(move || {
-        use rayon::prelude::*;
+        let mut retained = 0u64;
         metadata_files
-            .into_par_iter()
-            .map(|path| {
-                let mut metadata = read_track_metadata(&path);
+            .into_iter()
+            .map(|path| -> anyhow::Result<_> {
+                let mut metadata = read_track_metadata_in(&metadata_root, &path)?;
                 let cover = metadata
                     .cover_art
                     .take()
-                    .map(|image| ScannedCover::from_image(&path, &image));
-                (path, metadata, cover)
+                    .map(|image| ScannedCover::from_image_in(metadata_root.clone(), &path, &image));
+                let mut count = MetadataCounter {
+                    bytes: 0,
+                    remaining: (128 * 1024 * 1024u64).saturating_sub(retained),
+                };
+                serde_json::to_writer(&mut count, &metadata)?;
+                retained += count.bytes;
+                Ok((path, metadata, cover))
             })
-            .collect::<Vec<_>>()
+            .collect::<anyhow::Result<Vec<_>>>()
     });
-    let (track_fingerprints_by_path, fingerprint_cache) = fingerprint_task.await?;
+    let fingerprints = fingerprint_task.await?;
+    let metadata_results = metadata_task.await?;
+    let (track_fingerprints_by_path, fingerprint_cache) = fingerprints?;
     let mut metadata_by_path = HashMap::new();
     let mut covers_by_path = HashMap::new();
-    for (path, metadata, cover) in metadata_task.await? {
+    for (path, metadata, cover) in metadata_results? {
         if let Some(cover) = cover {
             covers_by_path.insert(path.clone(), cover);
         }
@@ -2069,6 +2125,7 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
     // Every book lists its directory and reads its sidecars, so this runs on
     // a blocking thread rather than holding a runtime worker for the scan.
     let library_root = state.library_root.clone();
+    let companion_root = input_root.clone();
     let sync_dir = state.sync_dir.clone();
     let (
         metadata_overrides,
@@ -2119,7 +2176,7 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
                 .as_ref()
                 .map(|_| format!("/api/books/{book_id}/cover"));
             let mut metadata_summary = merge_metadata_summary(&metadata);
-            if let Some(imported) = libro_metadata_for_group(&group_key) {
+            if let Some(imported) = libro_metadata_for_group_in(&input_root, &group_key) {
                 title = clean_imported_title(&imported.title);
                 if let Some(first) = metadata.first_mut() {
                     if !imported.authors.is_empty() {
@@ -2150,9 +2207,12 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
                 };
                 metadata_summary = merge_two_summaries(summary, metadata_summary);
             }
-            if let Some(sidecar) =
-                libation_sidecar_for_group(&group_key, &grouped_files, &mut listings)
-            {
+            if let Some(sidecar) = libation_sidecar_for_group_in(
+                &input_root,
+                &group_key,
+                &grouped_files,
+                &mut listings,
+            ) {
                 // A Libation sidecar is a direct Audible record for this download,
                 // so it intentionally wins over lossy container tags. User edits
                 // are applied below and remain the final authority.
@@ -2177,7 +2237,8 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
             if book_chapters.is_empty() && tracks.len() > 1 {
                 book_chapters = derive_track_chapters(&tracks);
             }
-            let sync_file = find_sync_file(
+            let sync_file = find_sync_file_in(
+                &input_root,
                 &book_id,
                 &group_key,
                 &grouped_files,
@@ -2290,9 +2351,10 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
         .iter()
         .flat_map(|(_, paths)| paths.iter().cloned())
         .collect::<Vec<_>>();
-    let companion_analyses =
-        tokio::task::spawn_blocking(move || analyze_all(&candidate_paths, &previous_analyses))
-            .await?;
+    let companion_analyses = tokio::task::spawn_blocking(move || {
+        analyze_all_in(&companion_root, &candidate_paths, &previous_analyses)
+    })
+    .await?;
     for (book_index, candidates) in pending_companions {
         let book = &mut books[book_index];
         let described = describe(
@@ -2437,7 +2499,7 @@ fn build_tracks(
                 .iter()
                 .map(|chapter| Chapter {
                     id: stable_id(&format!("{track_id}:{}", chapter.start_seconds)),
-                    title: chapter.title.clone(),
+                    title: clean_tag_text(&chapter.title),
                     track_id: track_id.clone(),
                     track_index: index,
                     start_seconds: chapter.start_seconds,
@@ -2614,7 +2676,21 @@ pub(crate) struct ProbedSyncMap {
 
 /// Probe metadata without allocating the potentially large fragment array.
 /// `None` for a file that is not a servable sync map.
+#[cfg(test)]
 pub(crate) fn probe_sync_map(path: &FsPath, generated: bool) -> Option<ProbedSyncMap> {
+    probe_sync_map_in(path, generated, &[path.parent()?.to_path_buf()])
+}
+pub(crate) fn probe_sync_map_in(
+    path: &FsPath,
+    generated: bool,
+    allowed_roots: &[PathBuf],
+) -> Option<ProbedSyncMap> {
+    // Roots come from server configuration, never from the map's pathname.
+    // In particular, an exchanged library ancestor cannot become a new root.
+    let file = open_scan_file_in(path, allowed_roots).ok()?;
+    probe_sync_map_file(file, generated)
+}
+fn probe_sync_map_file(file: std::fs::File, generated: bool) -> Option<ProbedSyncMap> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Probe {
@@ -2641,7 +2717,7 @@ pub(crate) fn probe_sync_map(path: &FsPath, generated: bool) -> Option<ProbedSyn
         }
     }
     let mut reader = std::io::BufReader::new(DigestReader {
-        file: std::fs::File::open(path).ok()?,
+        file,
         digest: Sha256::new(),
         size: 0,
     });
@@ -2669,7 +2745,28 @@ pub(crate) fn probe_sync_map(path: &FsPath, generated: bool) -> Option<ProbedSyn
 /// Finds a readalong sync map for a book: a user-provided `.sync.json`
 /// sidecar beside the audiobook wins, then a server-generated file in the
 /// sync data directory.
+#[cfg(test)]
 pub(crate) fn find_sync_file(
+    book_id: &str,
+    group_key: &FsPath,
+    grouped_files: &[PathBuf],
+    book_title: &str,
+    sync_dir: &FsPath,
+    listings: &mut DirectoryFiles,
+) -> Option<DiscoveredSyncFile> {
+    let root = ScanRoot::new(grouped_files.first()?.parent()?).ok()?;
+    find_sync_file_in(
+        &root,
+        book_id,
+        group_key,
+        grouped_files,
+        book_title,
+        sync_dir,
+        listings,
+    )
+}
+fn find_sync_file_in(
+    root: &ScanRoot,
     book_id: &str,
     group_key: &FsPath,
     grouped_files: &[PathBuf],
@@ -2699,10 +2796,14 @@ pub(crate) fn find_sync_file(
                 .map(|name| name[..name.len() - SYNC_SIDECAR_SUFFIX.len()].to_string())
         },
     );
-    let sidecar = sidecar.and_then(|path| probe_sync_map(&path, false).map(|probe| (path, probe)));
+    let sidecar = sidecar.and_then(|path| {
+        probe_sync_map_file(root.open(&path).ok()?.0, false).map(|probe| (path, probe))
+    });
     let generated = is_plain_file_token(book_id)
         .then(|| sync_dir.join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}")))
-        .and_then(|path| probe_sync_map(&path, true).map(|probe| (path, probe)));
+        .and_then(|path| {
+            probe_sync_map_in(&path, true, &[sync_dir.to_path_buf()]).map(|probe| (path, probe))
+        });
     // A replacement must actually become the served map, even when the old
     // generated map was copied beside the audio as a sidecar.
     let (path, probe, source) = match (sidecar, generated) {
@@ -2877,8 +2978,26 @@ pub(crate) fn group_files_into_books(
     groups
 }
 
+#[cfg(test)]
 pub(crate) fn read_track_metadata(file_path: &FsPath) -> TrackMetadata {
-    let Ok(tagged_file) = read_from_path(file_path) else {
+    let Some(root) = file_path.parent().and_then(|path| ScanRoot::new(path).ok()) else {
+        return TrackMetadata::default();
+    };
+    read_track_metadata_in(&root, file_path).unwrap_or_default()
+}
+fn read_track_metadata_in(root: &ScanRoot, file_path: &FsPath) -> anyhow::Result<TrackMetadata> {
+    let (file, _) = root.open(file_path)?;
+    Ok(read_track_metadata_file(file, file_path))
+}
+fn read_track_metadata_file(file: std::fs::File, file_path: &FsPath) -> TrackMetadata {
+    let _parse_guard = METADATA_PARSE_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Ok(mut input) = MetadataInput::new(file) else {
+        tracing::warn!(path = %file_path.display(), "Skipping malformed or oversized embedded metadata");
+        return TrackMetadata::default();
+    };
+    let Ok(tagged_file) = read_bounded_tags(&input, file_path) else {
         return TrackMetadata::default();
     };
 
@@ -2889,7 +3008,7 @@ pub(crate) fn read_track_metadata(file_path: &FsPath) -> TrackMetadata {
     if let Some(vendor_summary) = tag.and_then(extract_vendor_json_summary) {
         summary = merge_two_summaries(summary, vendor_summary);
     }
-    let chapters = read_embedded_chapters(file_path);
+    let chapters = read_embedded_chapters_from(file_path, &mut input);
 
     let author = tag
         .and_then(|tag| {
@@ -2903,11 +3022,11 @@ pub(crate) fn read_track_metadata(file_path: &FsPath) -> TrackMetadata {
                 ],
             )
         })
-        .or_else(|| tag.and_then(|tag| tag.artist().map(|value| value.to_string())));
+        .or_else(|| tag.and_then(|tag| tag.artist().map(clean_tag_text)));
 
     TrackMetadata {
         title: tag
-            .and_then(|tag| tag.title().map(|value| value.to_string()))
+            .and_then(|tag| tag.title().map(clean_tag_text))
             .or_else(|| summary.album.clone()),
         narrator: tag
             .and_then(extract_narrator)
@@ -3044,24 +3163,27 @@ pub(crate) fn extract_metadata_summary(tag: &Tag) -> MetadataSummary {
 pub(crate) fn first_tag_text(tag: &Tag, keys: &[ItemKey]) -> Option<String> {
     keys.iter()
         .find_map(|key| tag.get_string(*key))
-        .map(clean_metadata_text)
+        .map(clean_tag_text)
         .filter(|value| !value.is_empty())
 }
 
 pub(crate) fn collect_genres(tag: &Tag) -> Vec<String> {
     tag.get_strings(ItemKey::Genre)
+        .take(100)
         .flat_map(|value| value.split([';', ',']))
-        .map(clean_metadata_text)
+        .take(100)
+        .map(clean_tag_text)
         .filter(|value| !value.is_empty())
         .collect()
 }
 
 pub(crate) fn collect_raw_fields(tag: &Tag) -> Vec<MetadataField> {
     tag.items()
+        .take(100)
         .filter_map(|item| {
             let value = match item.value() {
                 ItemValue::Text(value) | ItemValue::Locator(value) => {
-                    truncate_metadata_value(&clean_metadata_text(value))
+                    truncate_metadata_value(&clean_tag_text(value))
                 }
                 ItemValue::Binary(value) => format!("<{} bytes>", value.len()),
             };
@@ -3074,7 +3196,7 @@ pub(crate) fn collect_raw_fields(tag: &Tag) -> Vec<MetadataField> {
                 key: item_key_label(item.key()),
                 value,
                 description: (!item.description().is_empty())
-                    .then(|| item.description().to_string()),
+                    .then(|| clean_tag_text(item.description())),
             })
         })
         .collect()
@@ -3082,6 +3204,15 @@ pub(crate) fn collect_raw_fields(tag: &Tag) -> Vec<MetadataField> {
 
 pub(crate) fn item_key_label(key: ItemKey) -> String {
     format!("{key:?}")
+}
+
+fn clean_tag_text(value: impl AsRef<str>) -> String {
+    let text = value.as_ref();
+    let mut end = text.len().min(16 * 1024);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    clean_metadata_text(&text[..end])
 }
 
 pub(crate) fn clean_metadata_text(value: impl AsRef<str>) -> String {
@@ -3141,7 +3272,7 @@ pub(crate) fn extract_vendor_narrator(tag: &Tag) -> Option<String> {
             .get("narrated_by")
             .or_else(|| value.get("narrator"))
             .and_then(serde_json::Value::as_str)
-            .map(clean_metadata_text)
+            .map(clean_tag_text)
     })
 }
 
@@ -3194,7 +3325,7 @@ pub(crate) fn json_string(value: &serde_json::Value, keys: &[&str]) -> Option<St
         value
             .get(*key)
             .and_then(serde_json::Value::as_str)
-            .map(clean_metadata_text)
+            .map(clean_tag_text)
             .filter(|value| !value.is_empty())
     })
 }
@@ -3212,7 +3343,7 @@ pub(crate) fn find_raw_text_by_name(tag: &Tag, names: &[&str]) -> Option<String>
 
         match item.value() {
             ItemValue::Text(value) | ItemValue::Locator(value) => {
-                Some(clean_metadata_text(value)).filter(|value| !value.is_empty())
+                Some(clean_tag_text(value)).filter(|value| !value.is_empty())
             }
             ItemValue::Binary(_) => None,
         }
@@ -3223,16 +3354,21 @@ pub(crate) fn extract_cover_art(tag: &Tag) -> Option<EmbeddedImage> {
     let picture = tag
         .get_picture_type(PictureType::CoverFront)
         .or_else(|| tag.pictures().first())?;
+    if picture.data().len() > MAX_COVER_UPLOAD_BYTES {
+        return None;
+    }
+    let data = normalize_cover(picture.data()).ok()?;
     Some(EmbeddedImage {
-        mime_type: cover_art_content_type(picture.mime_type().map(|mime| mime.as_str())),
-        data: picture.data().to_vec(),
-        etag: bytes_etag(picture.data()),
+        mime_type: "image/png".into(),
+        etag: bytes_etag(&data),
+        data,
     })
 }
 
 /// The type a cover is served under. The tag's own claim is served verbatim
 /// only when it names an image: anything else — `text/html` most of all —
 /// would otherwise go out same-origin as whatever the tag said it was.
+#[cfg(test)]
 pub(crate) fn cover_art_content_type(declared: Option<&str>) -> String {
     let declared = declared
         .map(|value| {
@@ -3257,15 +3393,23 @@ pub(crate) fn cover_art_content_type(declared: Option<&str>) -> String {
 
 /// The picture a track carries, read on its own. Used to fetch a book's cover
 /// once the scan has chosen it, without keeping every track's bytes around.
-pub(crate) fn read_track_cover_art(file_path: &FsPath) -> Option<EmbeddedImage> {
-    let tagged_file = read_from_path(file_path).ok()?;
+fn read_track_cover_art_in(root: &ScanRoot, file_path: &FsPath) -> Option<EmbeddedImage> {
+    let (file, _) = root.open(file_path).ok()?;
+    let _parse_guard = METADATA_PARSE_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let input = MetadataInput::new(file).ok()?;
+    let tagged_file = read_bounded_tags(&input, file_path).ok()?;
     tagged_file
         .primary_tag()
         .or_else(|| tagged_file.first_tag())
         .and_then(extract_cover_art)
 }
 
-pub(crate) fn read_embedded_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
+fn read_embedded_chapters_from(
+    file_path: &FsPath,
+    input: &mut MetadataInput,
+) -> Vec<ParsedChapter> {
     let extension = file_path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -3273,8 +3417,8 @@ pub(crate) fn read_embedded_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
         .to_lowercase();
 
     let mut chapters = match extension.as_str() {
-        "m4a" | "m4b" | "mp4" => read_mp4_chapters(file_path),
-        "mp3" => read_id3_chapters(file_path),
+        "m4a" | "m4b" | "mp4" => read_mp4_chapters(input),
+        "mp3" => read_id3_chapters(input),
         _ => Vec::new(),
     };
 
@@ -3285,8 +3429,22 @@ pub(crate) fn read_embedded_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
     chapters
 }
 
-pub(crate) fn read_mp4_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
-    let Ok(tag) = mp4ameta::Tag::read_from_path(file_path) else {
+fn read_mp4_chapters(input: &mut MetadataInput) -> Vec<ParsedChapter> {
+    let chapter_track = input.take_chapter_track();
+    if !chapter_track.is_empty() {
+        return chapter_track;
+    }
+    let Ok(mut reader) = input.fork(8 * 1024 * 1024) else {
+        return Vec::new();
+    };
+    let config = mp4ameta::ReadConfig {
+        read_meta_items: false,
+        read_chapter_track: false,
+        read_image_data: false,
+        read_audio_info: false,
+        ..mp4ameta::ReadConfig::DEFAULT
+    };
+    let Ok(tag) = mp4ameta::Tag::read_with(&mut reader, &config) else {
         return Vec::new();
     };
 
@@ -3304,7 +3462,7 @@ pub(crate) fn read_mp4_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
             title: if chapter.title.trim().is_empty() {
                 format!("Chapter {}", index + 1)
             } else {
-                chapter.title.clone()
+                clean_tag_text(&chapter.title)
             },
             start_seconds: chapter.start.as_secs_f64(),
             end_seconds: chapters
@@ -3315,8 +3473,11 @@ pub(crate) fn read_mp4_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
         .collect()
 }
 
-pub(crate) fn read_id3_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
-    let Ok(tag) = id3::Tag::read_from_path(file_path) else {
+fn read_id3_chapters(input: &MetadataInput) -> Vec<ParsedChapter> {
+    let Ok(reader) = input.fork(8 * 1024 * 1024) else {
+        return Vec::new();
+    };
+    let Ok(tag) = id3::Tag::read_from2(reader) else {
         return Vec::new();
     };
 
@@ -3485,11 +3646,13 @@ pub(crate) struct ScannedCover {
     pub(crate) len: u64,
     /// The track whose tag carries the picture.
     pub(crate) source: PathBuf,
+    pub(crate) root: ScanRoot,
 }
 
 impl ScannedCover {
-    pub(crate) fn from_image(source: &FsPath, image: &EmbeddedImage) -> Self {
+    fn from_image_in(root: ScanRoot, source: &FsPath, image: &EmbeddedImage) -> Self {
         Self {
+            root,
             mime_type: image.mime_type.clone(),
             etag: image.etag.clone(),
             len: image.data.len() as u64,
@@ -3544,7 +3707,7 @@ impl CoverSource for ScannedCover {
     /// cached, so a file rewritten between the two passes is served as it is
     /// rather than as it was.
     fn into_image(self) -> Option<EmbeddedImage> {
-        read_track_cover_art(&self.source)
+        read_track_cover_art_in(&self.root, &self.source)
     }
 }
 
@@ -3775,5 +3938,92 @@ mod mapping_revision_tests {
         let file = find();
         assert!(!file.report_current);
         assert_eq!(file.quality, None);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod scan_boundary_tests {
+    use super::*;
+    #[test]
+    fn bounded_metadata_keeps_the_opened_track_after_path_substitution() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = root.path().join("book.wav");
+        let samples = vec![0u8; 16_000];
+        let mut wav = b"RIFF".to_vec();
+        wav.extend((36 + samples.len() as u32).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend([1, 0, 1, 0]);
+        wav.extend(8_000u32.to_le_bytes());
+        wav.extend(16_000u32.to_le_bytes());
+        wav.extend([2, 0, 16, 0]);
+        wav.extend(b"data");
+        wav.extend((samples.len() as u32).to_le_bytes());
+        wav.extend(samples);
+        std::fs::write(&path, wav).unwrap();
+        let scan = ScanRoot::new(root.path()).unwrap();
+        let (opened, _) = scan.open(&path).unwrap();
+        let replacement = outside.path().join("oversized.wav");
+        std::fs::write(&replacement, b"ID3\x04\0\0\x7f\x7f\x7f\x7f").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&replacement, &path).unwrap();
+        let metadata = read_track_metadata_file(opened, &path);
+        assert_eq!(metadata.duration_seconds, Some(1.0));
+        assert!(read_track_metadata_in(&scan, &path).is_err());
+        assert!(read_track_cover_art_in(&scan, &path).is_none());
+    }
+    #[test]
+    fn replaced_track_cannot_supply_fingerprint_tags_cover_or_sync_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = root.path().join("book.mp3");
+        std::fs::write(&path, b"inside").unwrap();
+        let scan = ScanRoot::new(root.path()).unwrap();
+        let (first, cache) = fingerprint_tracks_in(
+            &scan,
+            root.path(),
+            std::slice::from_ref(&path),
+            BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(!first[&path].starts_with("path:"));
+        let secret = outside.path().join("secret.mp3");
+        std::fs::write(&secret, b"outside").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&secret, &path).unwrap();
+        assert!(
+            fingerprint_tracks_in(&scan, root.path(), std::slice::from_ref(&path), cache).is_err()
+        );
+        assert!(read_track_metadata_in(&scan, &path).is_err());
+        assert!(read_track_cover_art_in(&scan, &path).is_none());
+        let sync = root.path().join("book.sync.json");
+        std::os::unix::fs::symlink(&secret, &sync).unwrap();
+        assert!(scan.open(&sync).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod sync_probe_boundary_tests {
+    use super::*;
+    #[test]
+    fn report_probe_never_uses_a_replaced_maps_parent_as_its_root() {
+        let library = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let directory = library.path().join("Book");
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("Book.sync.json");
+        std::fs::write(&path, r#"{"precision":"sentence","generatedAt":"inside"}"#).unwrap();
+        let roots = [library.path().to_path_buf()];
+        assert!(probe_sync_map_in(&path, false, &roots).is_some());
+        std::fs::write(
+            outside.path().join("Book.sync.json"),
+            r#"{"precision":"sentence","generatedAt":"outside-secret"}"#,
+        )
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &directory).unwrap();
+        assert!(probe_sync_map_in(&path, false, &roots).is_none());
     }
 }

@@ -994,16 +994,22 @@ impl ActivityLog {
             .unwrap_or(0.0)
             + delta_seconds;
         let (row_user_id, row_day) = (user_id.to_string(), day.to_string());
-        self.db
+        let written = self
+            .db
             .transaction_while_guarded(move |transaction| {
+                // An admitted request can reach bookkeeping after its user
+                // has been deleted. Check existence in the same transaction.
                 transaction.execute(
-                    "INSERT INTO activity (user_id, day, seconds) VALUES (?1, ?2, ?3)
+                    "INSERT INTO activity (user_id, day, seconds)
+                     SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM users WHERE id = ?1)
                      ON CONFLICT (user_id, day) DO UPDATE SET seconds = excluded.seconds",
                     params![row_user_id, row_day, total],
-                )?;
-                Ok(())
+                )
             })
             .await?;
+        if written == 0 {
+            return Ok(0.0);
+        }
         value
             .by_user
             .entry(user_id.to_string())
@@ -1086,9 +1092,17 @@ pub(crate) fn read_users_rows(connection: &rusqlite::Connection) -> anyhow::Resu
     }
     // Accounts are presented oldest first, the order the file preserved.
     users.sort_by(|left, right| left.created_at.cmp(&right.created_at));
-    let permissions_version = db::read_document(connection, USERS_PERMISSIONS_VERSION_DOCUMENT)?
-        .and_then(|payload| payload.parse().ok())
-        .unwrap_or(0);
+    // Only an install from before the permissions migration lacks the version.
+    // One that cannot be read is refused rather than taken as 0: rerunning the
+    // migration would give every administrator back the Libation access and
+    // approval rights the owner may have taken away.
+    let permissions_version =
+        match db::read_document(connection, USERS_PERMISSIONS_VERSION_DOCUMENT)? {
+            None => 0,
+            Some(payload) => payload.parse().map_err(|_| {
+                anyhow::anyhow!("The stored account permissions version {payload:?} is unreadable")
+            })?,
+        };
     Ok(UsersStore {
         users,
         permissions_version,

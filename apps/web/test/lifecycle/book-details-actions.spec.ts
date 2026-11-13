@@ -89,7 +89,11 @@ async function setup(page: Page, platform: 'ios' | 'android' | 'web', admin = tr
     });
   }
   await page.goto(platform === 'web' ? url : `${url}test/duo-shell.html?platform=${platform}`);
-  if (platform === 'web') await page.getByRole('button', { name: 'Open library', exact: true }).click();
+  if (platform === 'web') {
+    await page.getByRole('button', { name: 'List view', exact: true }).waitFor({ state: 'attached' });
+    const openLibrary = page.getByRole('button', { name: 'Open library', exact: true });
+    if (await openLibrary.isVisible()) await openLibrary.click();
+  }
   await page.getByRole('button', { name: 'List view', exact: true }).click();
   await expect(page.locator('.book-row')).toHaveCount(books.length);
   return { books, writes };
@@ -369,5 +373,62 @@ for (const platform of ['ios', 'android'] as const) {
     await expect(storage).toHaveText('Download');
     expect(writes).toEqual([]);
     expect((await slots(page)).storage).toEqual(baseline.storage);
+  });
+}
+
+for (const sample of [
+  { platform: 'ios', width: 320, height: 667 },
+  { platform: 'android', width: 390, height: 844 },
+  { platform: 'ios', width: 720, height: 540 },
+  { platform: 'web', width: 560, height: 360 },
+  { platform: 'web', width: 1440, height: 900 },
+] as const) {
+  test(`${sample.platform} gifts open from More at ${sample.width}x${sample.height} and retain notes across resizing`, async ({ page }) => {
+    await page.setViewportSize({ width: sample.width, height: sample.height });
+    await setup(page, sample.platform);
+    await page.route('**/api/experimental-features/book-gifts/enabled', route => route.fulfill({ json: { enabled: true, configured: true, canSend: true } }));
+    await page.route('**/api/experimental-features/book-gifts', route => route.fulfill({ json: { enabled: true, configured: true, canSend: true } }));
+    await page.route('**/api/books/*/gift-inventory', route => route.fulfill({ json: {
+      bookId: 'book-1', title: 'A long title for a book to give to a friend', maxBytes: 5000,
+      assets: [{ id: 'metadata', kind: 'metadata', fileName: 'metadata.json', sizeBytes: 10, available: true },
+        { id: 'audio', kind: 'audio', fileName: 'audiobook.m4b', sizeBytes: 1000, available: true }],
+      defaultSelectedAssetIds: ['metadata']
+    } }));
+    // Enable after the initial page is already mounted, using the same API as Administration.
+    await page.evaluate(async () => { const path = '/src/api.ts'; const api = await import(path); await api.setBookGiftsEnabled(true); });
+    await openBook(page, 1);
+    const more = page.getByRole('button', { name: 'More book actions', exact: true });
+    await more.click();
+    const menu = page.getByRole('group', { name: 'Book actions', exact: true });
+    const gift = menu.getByRole('button', { name: 'Gift this book', exact: true });
+    await expect(gift).toBeVisible();
+    const bounds = (await gift.boundingBox())!;
+    expect(bounds.height).toBeGreaterThanOrEqual(44);
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(sample.width);
+    await expect.poll(() => gift.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+    })).toBe(true);
+    await page.screenshot({ animations: "disabled", path: `/tmp/ol-gift-menu-${sample.platform}-${sample.width}.png` });
+    await gift.click();
+    await expect(menu).toBeHidden();
+    const composer = page.getByRole('dialog');
+    await expect(composer).toBeVisible();
+    await expect(composer.getByRole('checkbox', { name: /audiobook.m4b/ })).toBeChecked();
+    const create = composer.getByRole('button', { name: 'Create gift link', exact: true });
+    const createBounds = (await create.boundingBox())!;
+    expect(createBounds.x).toBeGreaterThanOrEqual(0);
+    expect(createBounds.x + createBounds.width).toBeLessThanOrEqual(sample.width);
+    expect(createBounds.y).toBeGreaterThanOrEqual(0);
+    await expect.poll(async () => { const bounds = (await create.boundingBox())!; return bounds.y + bounds.height; }).toBeLessThanOrEqual(sample.height);
+
+    await composer.getByLabel('Personal message (optional)').fill('Keep this note when the window changes.');
+    await page.screenshot({ animations: "disabled", path: `/tmp/ol-gift-composer-${sample.platform}-${sample.width}.png` });
+    await page.setViewportSize({ width: sample.width < 800 ? 1000 : 390, height: 700 });
+    await expect(composer.getByLabel('Personal message (optional)')).toHaveValue('Keep this note when the window changes.');
+    await page.keyboard.press('Escape');
+    await expect(composer).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'More book actions', exact: true })).toBeFocused();
   });
 }

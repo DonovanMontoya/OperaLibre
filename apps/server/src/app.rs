@@ -56,6 +56,8 @@ pub(crate) struct AppState {
     /// A server-owned stop request, used when an in-process update needs the
     /// same graceful drain path as a signal-driven shutdown.
     pub(crate) shutdown: broadcast::Sender<()>,
+    /// Whether this start is an update the updater has not committed yet.
+    pub(crate) update_trial: Arc<UpdateTrial>,
     /// The work identity index above individual audio-file editions.
     pub(crate) works: Arc<WorksStore>,
     pub(crate) libation_requests: Arc<LibationRequests>,
@@ -85,8 +87,13 @@ pub(crate) struct AppState {
     /// admins cannot remux the same book from opposite ends.
     pub(crate) faststart_lock: Arc<Mutex<()>>,
     pub(crate) login_attempts: Arc<Mutex<HashMap<String, LoginThrottle>>>,
+    /// Serializes credential issuance with password replacement and revocation.
+    pub(crate) credential_issuance_lock: Arc<Mutex<()>>,
     pub(crate) password_task_slots: Arc<Semaphore>,
+    pub(crate) password_request_slots: Arc<Semaphore>,
     pub(crate) download_task_slots: Arc<Semaphore>,
+    pub(crate) catalogue_slots: Arc<Semaphore>,
+    pub(crate) catalogue_account_slots: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
     pub(crate) epub_entry_slots: Arc<Semaphore>,
     pub(crate) epub_entry_account_slots: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
     pub(crate) upload_lock: Arc<Mutex<()>>,
@@ -109,6 +116,7 @@ pub(crate) fn build_router(
         .route("/api/auth/status", get(auth_status))
         .route("/api/auth/setup", post(setup_admin))
         .route("/api/auth/login", post(login))
+        .route(UPDATE_TRIAL_COMMIT_PATH, post(commit_update_trial))
         // Audiobookshelf clients validate the server before presenting their
         // login form, and ping it again when checking a saved connection.
         .route("/abs/status", get(abs_status))
@@ -119,15 +127,21 @@ pub(crate) fn build_router(
         // Catch-all so unknown API paths return a JSON 404 instead of
         // falling through to the SPA fallback (or the auth middleware).
         .route("/api/{*path}", any(api_not_found))
-        // Sign-in and setup wait on the password-hashing worker pool, and
-        // every concurrent attempt clears the throttle check before any of
-        // them records a failure. Without this bound a saturated or wedged
-        // worker queue would hold unauthenticated connections open forever.
+        // Bound unauthenticated request lifetimes even if password work or
+        // persistence stalls. Admission separately bounds password workers
+        // and reserves sign-in throttle counters before verification.
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(REQUEST_TIMEOUT_SECONDS),
         ))
         .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES));
+
+    #[cfg(test)]
+    let public_share_routes = Router::new()
+        .route("/api/shares/{token}/preview", get(share_preview))
+        .route("/api/shares/{token}/download", get(share_download));
+    #[cfg(not(test))]
+    let public_share_routes = Router::new();
 
     let protected_routes = Router::new()
         .route("/api/auth/logout", post(logout))
@@ -472,10 +486,77 @@ pub(crate) fn build_router(
     );
     let cors = CorsLayer::new().allow_origin(AllowOrigin::list(origins));
 
+    // The book gifts experiment. Its switch is always reachable; everything
+    // else answers 404 until the owner turns it on.
+    let gift_routes = Router::new()
+        .route(
+            "/api/books/{book_id}/gift-inventory",
+            get(crate::share::gift_inventory),
+        )
+        .route(
+            "/api/shares/selected",
+            post(crate::share_setup::create_configured_share),
+        )
+        .route(
+            "/api/admin/shares/config",
+            get(crate::share_setup::get_configuration)
+                .put(crate::share_setup::put_configuration)
+                .delete(crate::share_setup::delete_configuration),
+        )
+        .route(
+            "/api/admin/shares/config/cloudflare",
+            post(crate::share_setup::install_cloudflare_broker),
+        )
+        .route(
+            "/api/admin/shares/config/cleanup",
+            post(crate::share_setup::retry_configured_cleanup),
+        )
+        .route(
+            "/api/admin/shares/config/recover",
+            post(crate::share_setup::recover_configured_senders),
+        )
+        .route(
+            "/api/admin/shares/config/abandon",
+            post(crate::share_setup::abandon_configured_senders),
+        )
+        .route("/api/shares/{token}", delete(crate::share::revoke_share));
+    // The earlier direct-download prototype, and cleanup against a broker
+    // named in the request, stay out of released servers.
+    #[cfg(test)]
+    let gift_routes = gift_routes.route("/api/shares", post(create_share)).route(
+        "/api/admin/shares/revocations/retry",
+        post(retry_owner_broker_revocations),
+    );
+    let protected_share_routes = gift_routes
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::share_setup::require_experiment,
+        ))
+        .route(
+            "/api/experimental-features/book-gifts",
+            get(crate::share_setup::book_gifts_experiment),
+        )
+        .route(
+            "/api/experimental-features/book-gifts/enabled",
+            put(crate::share_setup::set_book_gifts_enabled),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    // Added before the web app's static files, which stay open during an
+    // update trial so a reloaded page can load and wait for the API.
     let mut app = public_routes
+        .merge(public_share_routes)
+        .merge(protected_share_routes)
         .merge(protected_routes)
         .merge(long_running_routes)
-        .merge(agent_routes);
+        .merge(agent_routes)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            update_trial_gate,
+        ));
     if let Some(dist_dir) = web_dist_dir {
         if dist_dir.join("index.html").is_file() {
             tracing::info!("serving web app from {}", dist_dir.display());
@@ -582,7 +663,7 @@ pub(crate) async fn security_headers(
         headers.insert(
             "content-security-policy",
             HeaderValue::from_static(
-                "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: http: https:; connect-src 'self' http: https:; frame-src 'self' data: blob:; worker-src 'self' blob:; form-action 'self'",
+                "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; media-src 'self' data: blob: http: https:; connect-src 'self' http: https:; frame-src 'self' data: blob:; worker-src 'self' blob:; form-action 'self'",
             ),
         );
     }
@@ -661,10 +742,15 @@ pub(crate) async fn set_update_channel(
 }
 
 pub(crate) async fn install_update(
-    State(state): State<AppState>,
+    // Read through `.0` rather than a `State(state)` pattern: CodeQL's Axum
+    // model treats handler arguments as request input and only stops at the
+    // field read, so the pattern reported the startup data directory as
+    // user-controlled (github/codeql#22466).
+    state: State<AppState>,
     _: OwnerUser,
     request: Option<Json<updates::UpdateInstallRequest>>,
 ) -> Result<Json<updates::UpdateInstallStarted>, ApiError> {
+    let state = state.0;
     let started = prepare_update_handoff(&state.backup_lock, async {
         state
             .update_manager
@@ -738,7 +824,7 @@ pub(crate) async fn readalong_sync_addon_status(
 ) -> Result<Json<updates::SyncAddonStatus>, ApiError> {
     state
         .update_manager
-        .check_sync_addon(query.refresh, state.alignment_config.cli_path.as_deref())
+        .check_sync_addon(query.refresh, &state.alignment_config)
         .await
         .map(Json)
         .map_err(|error| ApiError::bad_gateway(format!("Could not check the sync add-on: {error}")))
@@ -770,7 +856,7 @@ pub(crate) async fn set_readalong_sync_addon_enabled(
 ) -> Result<Json<updates::SyncAddonStatus>, ApiError> {
     state
         .update_manager
-        .set_sync_addon_enabled(input.enabled)
+        .set_sync_addon_enabled(input.enabled, &state.alignment_config)
         .await
         .map(Json)
         .map_err(|error| {

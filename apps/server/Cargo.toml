@@ -1,6 +1,6 @@
 [package]
 name = "operalibre-server"
-version = "0.5.0"
+version = "0.5.3"
 edition = "2024"
 # Locked dependencies require 1.89 (aes 0.9.3, lofty 0.25.4, and related crates).
 rust-version = "1.89"
@@ -8,6 +8,8 @@ license-file = "../../LICENSE.md"
 
 [dependencies]
 anyhow = "1.0"
+async-trait = "0.1"
+bytes = "1"
 argon2 = "0.6"
 axum = { version = "0.8", features = ["multipart"] }
 base64 = "0.23"
@@ -15,6 +17,7 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 chrono-tz = "0.10"
 fs2 = "0.4"
 rand = "0.10"
+ring = "0.17"
 same-file = "1.0"
 id3 = "1.16"
 lofty = "0.25.1"
@@ -32,7 +35,7 @@ tokio = { version = "1.45", features = ["fs", "io-util", "macros", "net", "proce
 tokio-util = { version = "0.7", features = ["io"] }
 rayon = "1.11"
 # Session timestamps use checked u64/SQLite INTEGER conversions.
-rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint"] }
 # Outbound TLS keeps rustls on ring with the bundled Mozilla roots; see
 # `http_client_builder`.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "stream"] }
@@ -47,6 +50,9 @@ ed25519-dalek = "3"
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# WebRTC peer transport; integration remains feature-gated until the server
+# handshake and platform-specific builds are validated.
+webrtc = "0.21.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

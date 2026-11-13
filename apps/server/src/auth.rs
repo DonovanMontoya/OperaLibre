@@ -15,19 +15,30 @@ pub(crate) const LOGIN_MAX_FAILURES: u32 = 5;
 /// locked: catches an attacker walking a list of names.
 pub(crate) const LOGIN_IP_MAX_FAILURES: u32 = 25;
 
-/// Failures against one username from every address before the account is
-/// locked: the ceiling on guessing spread across many addresses. Looser than
-/// the per-address lock so a stranger cannot cheaply deny a victim from one
-/// address, but still bounding how many guesses one account absorbs a minute.
+/// Failures against one username from every address before the username is
+/// under attack. From then on, an address that has already failed against
+/// that name is refused until it has gone a lockout window without failing,
+/// while an address with no failures against it may still try.
 pub(crate) const LOGIN_ACCOUNT_MAX_FAILURES: u32 = 50;
 
 pub(crate) const LOGIN_LOCKOUT_SECONDS: u64 = 60;
 
 pub(crate) const LOGIN_THROTTLE_KEY_MAX_CHARS: usize = 64;
 
+/// Size at which a new throttle entry evicts the weakest entry that holds no
+/// lock, so a flood of made-up usernames cannot grow the map.
 pub(crate) const LOGIN_THROTTLE_MAX_ENTRIES: usize = 10_000;
 
+/// Entries holding a lock are never evicted, so they may take the map past
+/// [`LOGIN_THROTTLE_MAX_ENTRIES`], up to here. At this size a sign-in that
+/// needs a new entry is refused until locks expire: memory stays bounded and
+/// no lock is lifted early.
+pub(crate) const LOGIN_THROTTLE_LOCKED_MAX_ENTRIES: usize = 50_000;
+
 pub(crate) const PASSWORD_TASK_CONCURRENCY: usize = 4;
+
+/// Includes running password work and its bounded waiting queue.
+pub(crate) const PASSWORD_REQUEST_CAPACITY: usize = 16;
 
 pub(crate) const MIN_PASSWORD_CHARS: usize = 12;
 
@@ -37,11 +48,16 @@ pub(crate) const MAX_SESSIONS_PER_USER: usize = 20;
 
 pub(crate) const MAX_SESSIONS_TOTAL: usize = 1_000;
 
+/// Each entry is one shell's page origin, trusted on every install because the
+/// server cannot know which apps its readers use. Anything else served at one
+/// of these origins on a reader's device gets the same trust, so the list holds
+/// only origins a shipped app loads from.
 pub(crate) const OFFICIAL_APP_ORIGINS: &[&str] = &[
+    // Capacitor's iOS WebView origin.
     "capacitor://localhost",
-    "http://localhost",
     // Capacitor's default Android WebView origin.
     "https://localhost",
+    // The macOS app's bundled web server (apps/macos).
     "http://127.0.0.1:49201",
 ];
 
@@ -49,6 +65,11 @@ pub(crate) const OFFICIAL_APP_ORIGINS: &[&str] = &[
 pub(crate) struct LoginThrottle {
     pub(crate) failures: u32,
     pub(crate) last_failure: u64,
+    /// Identifies this run of failures. A new one starts whenever the count
+    /// starts again from zero, so a sign-in refunding its charge late can tell
+    /// the counter it charged from one rebuilt after that counter expired or
+    /// was evicted.
+    pub(crate) run: u64,
 }
 
 impl LoginThrottle {
@@ -403,15 +424,27 @@ async fn run_password_task<T: Send + 'static>(
     state: &AppState,
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, ApiError> {
-    let _permit = state
+    let request_permit = state
+        .password_request_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            ApiError::too_many_requests("Password workers are busy. Try again shortly.")
+        })?;
+    let permit = state
         .password_task_slots
         .clone()
         .acquire_owned()
         .await
         .map_err(|_| ApiError::internal("Password worker pool is unavailable."))?;
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|error| ApiError::internal(format!("Password worker failed: {error}")))
+    tokio::task::spawn_blocking(move || {
+        // Cancellation of the request must not release a still-running worker.
+        let _permit = permit;
+        let _request_permit = request_permit;
+        work()
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Password worker failed: {error}")))
 }
 
 pub(crate) async fn hash_password_async(
@@ -916,7 +949,7 @@ pub(crate) async fn authenticate_and_open_session(
     let username = normalize_username(&payload.username);
     let client_ip = request_client_ip(peer_address, headers);
     let throttle_keys = LoginThrottleKeys::new(client_ip, &username);
-    {
+    let charged = {
         let mut attempts = state.login_attempts.lock().await;
         let now = unix_now_seconds();
         attempts.retain(|_, throttle| !throttle.is_stale(now));
@@ -925,11 +958,23 @@ pub(crate) async fn authenticate_and_open_session(
                 "Too many failed sign-in attempts. Try again in a minute.",
             ));
         }
-    }
+        // Charge admission before yielding to password work. Cancelled or
+        // overloaded attempts stay charged until the ordinary lockout expires.
+        // Otherwise a disconnected request could buy an uncounted guess.
+        if !record_login_failures_in(&mut attempts, throttle_keys.all(), now) {
+            return Err(ApiError::too_many_requests(
+                "Too many sign-in attempts. Try again in a minute.",
+            ));
+        }
+        charged_runs(&attempts, [&throttle_keys.ip, &throttle_keys.username])
+    };
 
     if payload.password.chars().count() > MAX_PASSWORD_CHARS {
-        let _ = verify_dummy_password_async(state, "oversized-password".to_string()).await?;
-        record_login_failures(state, throttle_keys.all()).await;
+        // Burn a verification's worth of time on a bounded prefix, checked
+        // against the dummy hash only, so an oversized guess can neither run
+        // Argon2 over the whole input nor sign in with its first characters.
+        let prefix = payload.password.chars().take(MAX_PASSWORD_CHARS).collect();
+        let _ = verify_dummy_password_async(state, prefix).await?;
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
 
@@ -946,21 +991,42 @@ pub(crate) async fn authenticate_and_open_session(
         // Burn the same time as a real verification so response timing does
         // not reveal whether the username exists.
         let _ = verify_dummy_password_async(state, payload.password).await?;
-        record_login_failures(state, throttle_keys.all()).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     };
     if !verify_password_async(state, payload.password, user.password_hash.clone()).await? {
-        record_login_failures(state, throttle_keys.all()).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
-    // A success clears only the counters about this account. The per-address
-    // counter stays: otherwise anyone holding one valid account could sign in
-    // to it between guesses at others and never meet the address limit.
+    // A success clears only this address's counter for the account. The
+    // address and username counters just take back this attempt's charge:
+    // clearing the address counter would let anyone holding one valid account
+    // sign in to it between guesses at others, and clearing the username
+    // counter would hand everyone guessing at this name a fresh allowance.
+    // Keeping the charge would let frequent sign-ins put the name over its
+    // attack limit.
     let mut attempts = state.login_attempts.lock().await;
     attempts.remove(&throttle_keys.account);
-    attempts.remove(&throttle_keys.username);
+    refund_login_charge(&mut attempts, &charged);
     drop(attempts);
 
+    finish_password_login(state, &user).await
+}
+
+pub(crate) async fn finish_password_login(
+    state: &AppState,
+    verified: &User,
+) -> Result<(User, String), ApiError> {
+    let _issuance = state.credential_issuance_lock.lock().await;
+    let user = state
+        .users
+        .read()
+        .await
+        .users
+        .iter()
+        .find(|current| {
+            current.id == verified.id && current.password_hash == verified.password_hash
+        })
+        .cloned()
+        .ok_or_else(|| ApiError::unauthorized("Invalid username or password."))?;
     let token = create_session(state, &user.id).await?;
     Ok((user, token))
 }
@@ -983,12 +1049,38 @@ pub(crate) fn login_throttle_key(username: &str) -> String {
 /// name. Keyed by name alone, anyone who knew a username could keep that
 /// account locked with a handful of bad passwords a minute; the per-address
 /// counter below still catches an attacker walking many names.
+///
+/// The pair is keyed by the exact address, so one device on a home network
+/// mistyping a password cannot lock another device out of the same account.
 pub(crate) fn login_account_throttle_key(client_ip: IpAddr, username: &str) -> String {
-    format!("ip:{client_ip}:{}", login_throttle_key(username))
+    format!(
+        "ip:{}:{}",
+        client_ip.to_canonical(),
+        login_throttle_key(username)
+    )
 }
 
 pub(crate) fn login_ip_throttle_key(client_ip: IpAddr) -> String {
-    format!("ip:{client_ip}")
+    format!("ip:{}", login_throttle_network(client_ip))
+}
+
+/// The network the per-address counter is kept for. A host on a public IPv6
+/// network is normally handed a whole /64 and can pick any address in it, so
+/// that counter covers the /64; otherwise one machine could present a clean
+/// address on every attempt. Link-local, unique local (which includes
+/// Tailscale) and other non-public IPv6 addresses are each a device of their
+/// own, and count alone. Known limit: a host on the local network that picks
+/// its own ULA or link-local addresses is not held to this budget. Grouping
+/// them would let one device's typos lock out its neighbours.
+pub(crate) fn login_throttle_network(client_ip: IpAddr) -> String {
+    match client_ip.to_canonical() {
+        // Global unicast is 2000::/3.
+        IpAddr::V6(address) if address.segments()[0] & 0xe000 == 0x2000 => {
+            let prefix = u128::from(address) & !(u128::from(u64::MAX));
+            format!("{}/64", std::net::Ipv6Addr::from(prefix))
+        }
+        address => address.to_string(),
+    }
 }
 
 /// The three counters one sign-in attempt is checked against, layered so
@@ -998,14 +1090,18 @@ pub(crate) fn login_ip_throttle_key(client_ip: IpAddr) -> String {
 ///   fast lock. Keyed by address too, a stranger who knows a username cannot
 ///   deny its owner from somewhere else.
 /// - `ip`, address alone, locks at [`LOGIN_IP_MAX_FAILURES`]: an attacker
-///   walking many names from one address.
-/// - `username`, name alone, locks at [`LOGIN_ACCOUNT_MAX_FAILURES`]: the
-///   ceiling across addresses. Without it, guessing spread over many
-///   addresses would face no bound per account at all.
+///   walking many names from one address. For a public IPv6 client this is
+///   its /64, which also bounds a host rotating through its own addresses.
+/// - `username`, name alone, trips at [`LOGIN_ACCOUNT_MAX_FAILURES`]: the
+///   bound on guessing spread across many addresses. Once tripped, every
+///   address that has failed against the name is held off until it goes a
+///   full lockout window without failing, so each one gets a single guess a
+///   window instead of [`LOGIN_MAX_FAILURES`]. An address with no failures
+///   against the name is still let in: refusing it would let anyone who
+///   knows a username keep its owner out everywhere.
 ///
-/// A failure counts against all three; a sign-in is refused if any is over
-/// its limit; a success clears the two about its own account and leaves the
-/// address counter to expire on its own.
+/// A failure counts against all three; a success clears only this address's
+/// counter for the account and leaves the other two to expire on their own.
 pub(crate) struct LoginThrottleKeys {
     pub(crate) account: String,
     pub(crate) ip: String,
@@ -1030,46 +1126,157 @@ impl LoginThrottleKeys {
         attempts: &HashMap<String, LoginThrottle>,
         now_seconds: u64,
     ) -> bool {
-        [
-            (&self.account, LOGIN_MAX_FAILURES),
-            (&self.ip, LOGIN_IP_MAX_FAILURES),
-            (&self.username, LOGIN_ACCOUNT_MAX_FAILURES),
-        ]
-        .into_iter()
-        .any(|(key, max_failures)| {
+        let over = |key: &String, max_failures| {
             attempts
                 .get(key)
                 .is_some_and(|throttle| throttle.is_locked(now_seconds, max_failures))
-        })
+        };
+        let failed_here = attempts
+            .get(&self.account)
+            .is_some_and(|throttle| !throttle.is_stale(now_seconds));
+        over(&self.account, LOGIN_MAX_FAILURES)
+            || over(&self.ip, LOGIN_IP_MAX_FAILURES)
+            || (failed_here && over(&self.username, LOGIN_ACCOUNT_MAX_FAILURES))
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn record_login_failures<'a>(
     state: &AppState,
     throttle_keys: impl IntoIterator<Item = &'a String>,
-) {
+) -> bool {
     let now = unix_now_seconds();
     let mut attempts = state.login_attempts.lock().await;
-    // A flood of unique bogus usernames within the lockout window can't grow
-    // the map without bound: stop tracking new names at the cap. Entries for
-    // already-tracked names keep counting, and stale ones are pruned on every
-    // login attempt.
-    for throttle_key in throttle_keys {
-        if attempts.len() >= LOGIN_THROTTLE_MAX_ENTRIES && !attempts.contains_key(throttle_key) {
-            continue;
+    record_login_failures_in(&mut attempts, throttle_keys, now)
+}
+
+/// Count a failure against each key. Returns false, counting nothing, when
+/// the map is full of entries that hold locks.
+#[must_use]
+fn record_login_failures_in<'a>(
+    attempts: &mut HashMap<String, LoginThrottle>,
+    throttle_keys: impl IntoIterator<Item = &'a String>,
+    now: u64,
+) -> bool {
+    let throttle_keys: Vec<&String> = throttle_keys.into_iter().collect();
+    let missing = throttle_keys
+        .iter()
+        .filter(|key| !attempts.contains_key(**key))
+        .count();
+    // Make room rather than refuse: refusing would turn a flood of made-up
+    // usernames into a lockout for every sign-in. Evict only what this
+    // attempt needs, so a map that grew past the cap shrinks as its locks
+    // expire rather than in one long scan here.
+    for _ in 0..missing {
+        if attempts.len() + missing <= LOGIN_THROTTLE_MAX_ENTRIES
+            || !evict_weakest_login_throttle(attempts, &throttle_keys, now)
+        {
+            break;
         }
+    }
+    if attempts.len() + missing > LOGIN_THROTTLE_LOCKED_MAX_ENTRIES {
+        return false;
+    }
+    for throttle_key in throttle_keys {
         let entry = attempts
             .entry(throttle_key.clone())
             .or_insert(LoginThrottle {
                 failures: 0,
                 last_failure: 0,
+                run: 0,
             });
-        if entry.is_stale(now) {
+        if entry.failures == 0 || entry.is_stale(now) {
             entry.failures = 0;
+            entry.run = NEXT_LOGIN_THROTTLE_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         entry.failures += 1;
         entry.last_failure = now;
     }
+    true
+}
+
+static NEXT_LOGIN_THROTTLE_RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The run each key was charged in, for [`refund_login_charge`].
+pub(crate) fn charged_runs<const N: usize>(
+    attempts: &HashMap<String, LoginThrottle>,
+    keys: [&String; N],
+) -> [(String, u64); N] {
+    keys.map(|key| {
+        let run = attempts.get(key).map_or(0, |throttle| throttle.run);
+        (key.clone(), run)
+    })
+}
+
+/// Take back one charge from each counter that is still in the run it was
+/// charged in. A counter that expired or was evicted and then rebuilt by
+/// other failures keeps all of them.
+pub(crate) fn refund_login_charge(
+    attempts: &mut HashMap<String, LoginThrottle>,
+    charged: &[(String, u64)],
+) {
+    for (key, run) in charged {
+        if let Some(throttle) = attempts.get_mut(key)
+            && throttle.run == *run
+        {
+            throttle.failures = throttle.failures.saturating_sub(1);
+        }
+    }
+}
+
+/// Drop the entry that says least about an attack: a stale one first, then
+/// the one with the fewest failures, then the oldest. An entry that holds a
+/// lock is never dropped, since that would hand its address fresh guesses.
+/// Returns false when nothing could be dropped.
+fn evict_weakest_login_throttle(
+    attempts: &mut HashMap<String, LoginThrottle>,
+    keep: &[&String],
+    now: u64,
+) -> bool {
+    let weakest = attempts
+        .iter()
+        .filter(|(key, throttle)| {
+            !keep.contains(key) && !login_throttle_holds_lock(attempts, key, throttle, now)
+        })
+        .min_by_key(|(_, throttle)| {
+            (
+                !throttle.is_stale(now),
+                throttle.failures,
+                throttle.last_failure,
+            )
+        })
+        .map(|(key, _)| key.clone());
+    weakest.is_some_and(|key| attempts.remove(&key).is_some())
+}
+
+/// Whether dropping this entry would let some address past a refusal
+/// [`LoginThrottleKeys::is_locked`] makes now. Besides each counter's own
+/// limit, an (address, username) pair with a recent failure is what holds its
+/// address to one guess a window while that username is under attack, even
+/// with a single failure. An address counter (a single address, or a public
+/// IPv6 /64) with a recent failure is kept too: otherwise two addresses or
+/// networks taking turns under a full map would evict each other's counters
+/// and reset their budgets, and for a /64 every fresh address is clean, so
+/// that counter is all that holds the network to its budget.
+fn login_throttle_holds_lock(
+    attempts: &HashMap<String, LoginThrottle>,
+    key: &str,
+    throttle: &LoginThrottle,
+    now: u64,
+) -> bool {
+    if key.starts_with("user:") {
+        return throttle.is_locked(now, LOGIN_ACCOUNT_MAX_FAILURES);
+    }
+    // A pair key is `ip:{address}:user:{name}`; an address never contains
+    // `user`, so the first match is where the username key starts.
+    let Some(username_at) = key.find(":user:") else {
+        return !throttle.is_stale(now);
+    };
+    throttle.is_locked(now, LOGIN_MAX_FAILURES)
+        || (!throttle.is_stale(now)
+            && attempts
+                .get(&key[username_at + 1..])
+                .is_some_and(|username| username.is_locked(now, LOGIN_ACCOUNT_MAX_FAILURES)))
 }
 
 pub(crate) async fn create_session(state: &AppState, user_id: &str) -> Result<String, ApiError> {
@@ -1478,6 +1685,13 @@ pub(crate) async fn delete_user(
     state.progress.remove_user(&user_id).await?;
     state.book_settings.remove_user(&user_id).await?;
     remove_user_clips(&state.database, &user_id).await?;
+    state
+        .activity
+        .mutate(|activity| {
+            activity.by_user.remove(&user_id);
+            Ok(())
+        })
+        .await?;
     // Dropped before the history purge, so a flush of the buffered sessions
     // cannot re-persist the account between the two steps.
     state.open_sessions.lock().await.forget_user(&user_id);
@@ -1555,6 +1769,7 @@ pub(crate) async fn change_password(
     }
 
     let new_hash = hash_password_async(&state, payload.new_password).await?;
+    let _issuance = state.credential_issuance_lock.lock().await;
     state
         .users
         .mutate(|users| {

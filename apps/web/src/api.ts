@@ -4,6 +4,9 @@ import { Capacitor } from "@capacitor/core";
 import { ApiError } from "./apiError";
 import type { Clip } from "./clips";
 import { fetchWithTimeout } from "./fetchWithTimeout";
+import { giftBrokerTransportSecure } from "./giftBrokerOrigin";
+import { parseCreatedGift, parseGiftInventory, type SelectedGiftRequest } from "./giftSelectionModel";
+import { giftOwnerConfigurationPayload, parseGiftOwnerConfiguration, type GiftOwnerConfigurationRequest } from "./giftOwnerSetupModel";
 import type {
   AlignmentStatus,
   AuthStatus,
@@ -163,7 +166,7 @@ function storeServerAliases(aliases: ServerAlias[]) {
 
 export function addServerAlias(name: string, rawUrl: string): ServerAlias {
   const trimmedName = name.trim();
-  const url = Capacitor.isNativePlatform()
+  const url = usesNativeCredentialStorage()
     ? requireSecurePublicServerAddress(rawUrl)
     : normalizeServerAddress(rawUrl);
   if (!trimmedName) throw new Error("Alias name is required.");
@@ -172,7 +175,7 @@ export function addServerAlias(name: string, rawUrl: string): ServerAlias {
   if (aliases.some((alias) => alias.name.toLowerCase() === trimmedName.toLowerCase())) {
     throw new Error("An alias with that name already exists.");
   }
-  if (aliases.some((alias) => alias.url.toLowerCase() === url.toLowerCase())) {
+  if (aliases.some((alias) => addressKey(alias.url) === addressKey(url))) {
     throw new Error("That server address is already saved.");
   }
   const alias = { id: crypto.randomUUID(), name: trimmedName, url };
@@ -307,7 +310,7 @@ function readStoredServerUrl(): string | null {
     return null;
   }
   const stored = window.localStorage.getItem(SERVER_URL_STORAGE_KEY) ?? "";
-  storedServerUrl = Capacitor.isNativePlatform()
+  storedServerUrl = usesNativeCredentialStorage()
     ? upgradeStoredNativeServerAddress(stored)
     : stored;
   if (storedServerUrl && storedServerUrl !== stored) {
@@ -322,7 +325,7 @@ function readStoredServerUrl(): string | null {
 // The server address, ignoring the on-device and demo modes layered over it.
 function configuredServerUrl(): string {
   const url = readStoredServerUrl() ?? configuredApiBase ?? defaultServerUrl(getServerType());
-  return Capacitor.isNativePlatform() ? upgradeStoredNativeServerAddress(url) : url;
+  return usesNativeCredentialStorage() ? upgradeStoredNativeServerAddress(url) : url;
 }
 
 export function getServerUrl(): string {
@@ -362,7 +365,7 @@ export function getServerIdentityUrl(): string {
   const url = typeof window === "undefined"
     ? getServerUrl()
     : window.localStorage.getItem(SERVER_IDENTITY_URL_STORAGE_KEY) ?? getServerUrl();
-  const secured = Capacitor.isNativePlatform() ? upgradeStoredNativeServerAddress(url) : url;
+  const secured = usesNativeCredentialStorage() ? upgradeStoredNativeServerAddress(url) : url;
   if (typeof window !== "undefined" && secured !== url) {
     window.localStorage.setItem(SERVER_IDENTITY_URL_STORAGE_KEY, secured);
   }
@@ -380,7 +383,7 @@ export function hasUserConfiguredServer(): boolean {
 }
 
 function setServerUrl(rawValue: string) {
-  const value = Capacitor.isNativePlatform()
+  const value = usesNativeCredentialStorage()
     ? requireSecurePublicServerAddress(rawValue)
     : normalizeServerAddress(rawValue);
   storedServerUrl = value;
@@ -437,7 +440,7 @@ function currentApiBase(): string {
 // Where unauthenticated requests to a candidate address are sent, after the
 // same checks a saved address must pass.
 function serverRequestBase(serverType: ServerType, rawValue: string): string {
-  const base = Capacitor.isNativePlatform()
+  const base = usesNativeCredentialStorage()
     ? requireSecurePublicServerAddress(rawValue)
     : normalizeServerAddress(rawValue);
   if (!base) {
@@ -489,7 +492,7 @@ let vault: CredentialVault | null = null;
 function originalServerUrl(): string {
   const url = (typeof window === "undefined" ? null : window.localStorage.getItem(SERVER_IDENTITY_URL_STORAGE_KEY))
     ?? configuredServerUrl();
-  return Capacitor.isNativePlatform() ? upgradeStoredNativeServerAddress(url) : url;
+  return usesNativeCredentialStorage() ? upgradeStoredNativeServerAddress(url) : url;
 }
 
 /**
@@ -534,11 +537,13 @@ function persistsAuthToken(): boolean {
 
 /** Save the active address's sign-in; null ends it, media credential included. */
 export function setStoredToken(token: string | null) {
+  const previous = getStoredToken();
   if (token) {
     credentialVault().update(getServerUrl(), { token });
   } else {
     credentialVault().forget(getServerUrl());
   }
+  if (token !== previous) forgetBookGiftsStatus();
 }
 
 export function getStoredMediaToken(): string | null {
@@ -557,6 +562,7 @@ export function hasSignInAt(url: string): boolean {
 /** Signing out, or leaving this server, ends the sign-in at every address. */
 export function forgetAllSignIns() {
   credentialVault().forgetAll();
+  forgetBookGiftsStatus();
 }
 
 export { ApiError };
@@ -586,6 +592,12 @@ export function isServerNotReadyError(error: unknown): error is ApiError {
   return error instanceof ApiError && error.status === 503 && error.retryAfterSeconds !== undefined;
 }
 
+// The server is up but already sending this account a catalogue (another
+// device, or an overlapping refresh), so it turned this one away for now.
+export function isServerBusyError(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.status === 429;
+}
+
 function retryAfterSeconds(response: Response): number | undefined {
   const value = response.headers.get("Retry-After");
   if (value === null) return undefined;
@@ -609,6 +621,136 @@ async function request<T>(path: string, options?: RequestOptions, timeoutMs = 30
   requireOperaLibreServer();
   // Read together: the token is the one issued by the address it is sent to.
   return requestAt<T>(currentApiBase(), getStoredToken(), path, options, timeoutMs);
+}
+
+export function isGiftBrokerTransportSecure(): boolean {
+  if (typeof window === "undefined") return false;
+  return giftBrokerTransportSecure(currentApiBase(), window.location.href, window.isSecureContext === true, import.meta.env.DEV);
+}
+
+export async function getBookGiftInventory(bookId: string, signal?: AbortSignal) {
+  const value = await request<unknown>(`/api/books/${encodeURIComponent(bookId)}/gift-inventory`, { signal, redirect: "error", ignoreUnauthorized: true });
+  return parseGiftInventory(value, bookId);
+}
+
+export async function createSelectedBookGift(input: SelectedGiftRequest, signal?: AbortSignal) {
+  requireOperaLibreServer();
+  // Bind both values before the POST. A later server switch must never send
+  // this private management token or old authentication to the new server.
+  const originalBase = currentApiBase(), originalToken = getStoredToken();
+  // Only selection IDs and the optional note/expiry cross this boundary. Never
+  // serialize a client Book, filesystem path, hash, manifest or private secret.
+  const body: SelectedGiftRequest = { bookId: input.bookId, selectedAssetIds: [...input.selectedAssetIds], ...(input.personalMessage !== undefined ? { personalMessage: input.personalMessage } : {}), ...(input.expiresInSeconds !== undefined ? { expiresInSeconds: input.expiresInSeconds } : {}) };
+  const gift = parseCreatedGift(await requestAt<unknown>(originalBase, originalToken, "/api/shares/selected", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }, 120_000));
+  const managementToken = gift.managementToken;
+  return { ...gift, ...(managementToken ? { revoke: async (revokeSignal?: AbortSignal) => {
+    await requestAt<void>(originalBase, originalToken, `/api/shares/${encodeURIComponent(managementToken)}`, { method: "DELETE", signal: revokeSignal, redirect: "error", ignoreUnauthorized: true });
+  } } : {}) };
+}
+
+function requireGiftSetupTransport() {
+  if (!isGiftBrokerTransportSecure()) throw new ApiError("Use a secure HTTPS page and direct HTTPS server connection for gift setup.", 400);
+}
+
+export function captureGiftOwnerSetupGuard(): () => boolean {
+  const base = currentApiBase(), token = getStoredToken();
+  return () => getServerType() === "operalibre" && currentApiBase() === base && getStoredToken() === token;
+}
+
+export async function getGiftOwnerConfiguration(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config", { signal, redirect: "error", ignoreUnauthorized: true }));
+}
+
+export async function saveGiftOwnerConfiguration(input: GiftOwnerConfigurationRequest, signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  if (input.ownerControlsBroker !== true) throw new ApiError("Confirm that you control this broker before saving credentials.", 400);
+  const body = giftOwnerConfigurationPayload(input);
+  try {
+    return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config", { method: "PUT", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }));
+  } finally { forgetBookGiftsStatus(); }
+}
+
+/** The token goes only to the owner's own server, which uses it once and does not keep it. */
+export async function installGiftBrokerOnCloudflare(input: { apiToken: string; accountId?: string }, signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  const body = { apiToken: input.apiToken, ...(input.accountId ? { accountId: input.accountId } : {}) };
+  try {
+    return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config/cloudflare", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }, 120_000));
+  } finally { forgetBookGiftsStatus(); }
+}
+
+export async function deleteGiftOwnerConfiguration(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  try {
+    await request<void>("/api/admin/shares/config", { method: "DELETE", signal, redirect: "error", ignoreUnauthorized: true });
+  } finally { forgetBookGiftsStatus(); }
+}
+
+export async function cleanupConfiguredGiftBroker(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  return request<{ completed: number; pending: number }>("/api/admin/shares/config/cleanup", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true }, 120_000);
+}
+
+export async function recoverConfiguredGiftSenders(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  const result = await request<{ recovered: number; alreadyActive: number; pending: number }>("/api/admin/shares/config/recover", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true }, 120_000);
+  if (!result || [result.recovered, result.alreadyActive, result.pending].some(value => !Number.isSafeInteger(value) || value < 0 || value > 256)) throw new ApiError("Sender recovery could not be confirmed.", 502);
+  return { recovered: result.recovered, alreadyActive: result.alreadyActive, pending: result.pending };
+}
+
+export async function abandonConfiguredGiftSenders(signal?: AbortSignal) {
+  requireGiftSetupTransport();
+  const result = await request<{ abandoned: number; completed: number; pending: number }>("/api/admin/shares/config/abandon", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify({ confirmAbandon: true }) }, 120_000);
+  if (!result || [result.abandoned, result.completed, result.pending].some(value => !Number.isSafeInteger(value) || value < 0 || value > 8192)) throw new ApiError("Gift abandonment could not be confirmed.", 502);
+  return { abandoned: result.abandoned, completed: result.completed, pending: result.pending };
+}
+
+/** Whether the server's book gifts experiment is on, and whether this
+ * account may send. A server that predates gifts answers 404, which reads as off. */
+export type BookGiftsStatus = { enabled: boolean; configured: boolean; canSend: boolean };
+const BOOK_GIFTS_OFF: BookGiftsStatus = { enabled: false, configured: false, canSend: false };
+const bookGiftsStatusListeners = new Set<() => void>();
+
+export function subscribeBookGiftsStatus(listener: () => void): () => void {
+  bookGiftsStatusListeners.add(listener);
+  return () => { bookGiftsStatusListeners.delete(listener); };
+}
+
+let bookGiftsStatus: { key: string; value: Promise<BookGiftsStatus> } | null = null;
+
+function parseBookGiftsStatus(value: unknown): BookGiftsStatus {
+  const status = value as Partial<BookGiftsStatus> | null;
+  if (!status || typeof status.enabled !== "boolean" || typeof status.configured !== "boolean" || typeof status.canSend !== "boolean") throw new ApiError("Book gifts could not be checked.", 502);
+  return { enabled: status.enabled, configured: status.configured, canSend: status.canSend };
+}
+
+/** Asked once per server and sign-in; saving gift settings asks again. */
+export function getBookGiftsStatus(): Promise<BookGiftsStatus> {
+  if (getServerType() !== "operalibre") return Promise.resolve(BOOK_GIFTS_OFF);
+  const key = `${currentApiBase()}\n${getStoredToken() ?? ""}`;
+  if (bookGiftsStatus?.key === key) return bookGiftsStatus.value;
+  const value = request<unknown>("/api/experimental-features/book-gifts", { redirect: "error", ignoreUnauthorized: true })
+    .then(parseBookGiftsStatus)
+    .catch((error: unknown) => {
+      // Off on an older server. Anything else may be a dropped connection, so ask again next time.
+      if (!(error instanceof ApiError && error.status === 404) && bookGiftsStatus?.value === value) bookGiftsStatus = null;
+      return BOOK_GIFTS_OFF;
+    });
+  bookGiftsStatus = { key, value };
+  return value;
+}
+
+function forgetBookGiftsStatus() {
+  bookGiftsStatus = null;
+  for (const listener of bookGiftsStatusListeners) listener();
+}
+
+export async function setBookGiftsEnabled(enabled: boolean) {
+  requireOperaLibreServer();
+  try {
+    return parseBookGiftsStatus(await request<unknown>("/api/experimental-features/book-gifts/enabled", { method: "PUT", redirect: "error", body: JSON.stringify({ enabled }) }));
+  } finally { forgetBookGiftsStatus(); }
 }
 
 async function requestAt<T>(
@@ -788,7 +930,7 @@ export async function removeSyncAddon() {
   );
 }
 
-export type ServerRestoreResult = {
+type ServerRestoreResult = {
   restoredAt: string;
   safetyBackup: string;
   accounts: number;
@@ -1209,6 +1351,19 @@ export async function saveProgress(bookId: string, progress: ProgressWrite, opti
   return currentBackend().saveProgress(bookId, progress, options);
 }
 
+// The native shells reach the server cross-origin, behind a CORS preflight,
+// and keepalive with a preflight is not dependable in every WebView, so only
+// a same-origin page asks for it. A closing browser tab is the case it fixes.
+function apiIsSameOrigin(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const base = currentApiBase() || window.location.origin;
+    return new URL(base, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 async function saveOperaLibreProgress(bookId: string, progress: ProgressWrite, options?: ProgressWriteOptions) {
   // The server uses the observed revision to reject obsolete checkpoints;
   // legacy writes without a revision retain timestamp ordering.
@@ -1217,6 +1372,7 @@ async function saveOperaLibreProgress(bookId: string, progress: ProgressWrite, o
   const { updatedAt, trackId, positionSeconds, bookPositionSeconds, durationSeconds, baseUpdatedAt, recording } = progress;
   return request<Progress>(`/api/books/${encodeURIComponent(bookId)}/progress`, {
     method: "PUT",
+    keepalive: !!options?.keepalive && apiIsSameOrigin(),
     signal: options?.signal,
     body: JSON.stringify({
       trackId, positionSeconds, bookPositionSeconds, durationSeconds,
@@ -1583,7 +1739,7 @@ export type SyncSweep = {
   eligibleCount: number;
 };
 
-export type SyncSweepRun = { queued: number; skipped: number; error: string | null };
+type SyncSweepRun = { queued: number; skipped: number; error: string | null };
 
 export function getSyncSweep() {
   return request<SyncSweep>("/api/sync-sweep");

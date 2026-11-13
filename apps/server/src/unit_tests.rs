@@ -608,6 +608,34 @@ fn legacy_permissions_promote_the_first_admin_to_owner() {
 }
 
 #[test]
+fn unreadable_permissions_version_does_not_rerun_the_admin_migration() {
+    let root = tempfile::tempdir().unwrap();
+    let connection = super::db::open(&root.path().join("operalibre.db")).unwrap();
+    assert_eq!(
+        super::read_users_rows(&connection)
+            .unwrap()
+            .permissions_version,
+        0
+    );
+
+    super::db::write_document(&connection, super::USERS_PERMISSIONS_VERSION_DOCUMENT, "1").unwrap();
+    assert_eq!(
+        super::read_users_rows(&connection)
+            .unwrap()
+            .permissions_version,
+        1
+    );
+
+    super::db::write_document(
+        &connection,
+        super::USERS_PERMISSIONS_VERSION_DOCUMENT,
+        "one",
+    )
+    .unwrap();
+    assert!(super::read_users_rows(&connection).is_err());
+}
+
+#[test]
 fn interrupted_libation_approvals_preserve_the_decision() {
     let mut store: super::LibationRequestStore = serde_json::from_value(serde_json::json!({
         "requests": [
@@ -864,7 +892,7 @@ fn m4b_cover_art_survives_the_tag_read() {
     let cover = super::read_track_metadata(&book)
         .cover_art
         .expect("the embedded cover should be read back");
-    assert_eq!(cover.mime_type, "image/jpeg");
+    assert_eq!(cover.mime_type, "image/png");
     assert!(!cover.data.is_empty());
 }
 
@@ -1029,6 +1057,113 @@ async fn invalid_requested_range_returns_416_with_file_size() {
         response.headers()[axum::http::header::CONTENT_RANGE],
         "bytes */1000"
     );
+}
+
+/// A same-sized rewrite that keeps the previous modification time must not
+/// answer 304. Length and mtime can both stay put across that rewrite; the
+/// bytes are what the client is caching.
+#[tokio::test]
+async fn revalidated_etag_tracks_bytes_when_mtime_and_length_stay_put() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("book.sync.json");
+    let original = br#"{"start":0.0}"#;
+    std::fs::write(&path, original).unwrap();
+    let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+    let first = super::serve_file_response(
+        &path,
+        &[root.path()],
+        HeaderMap::new(),
+        None,
+        super::FileCaching::Revalidated,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let etag = first.headers()[super::ETAG].to_str().unwrap().to_string();
+    assert_eq!(
+        axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .as_ref(),
+        original
+    );
+
+    let rewritten = br#"{"start":1.0}"#;
+    assert_eq!(rewritten.len(), original.len());
+    std::fs::write(&path, rewritten).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    let metadata = std::fs::metadata(&path).unwrap();
+    assert_eq!(metadata.len(), original.len() as u64);
+    assert_eq!(metadata.modified().unwrap(), mtime);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(super::IF_NONE_MATCH, etag.parse().unwrap());
+    let updated = super::serve_file_response(
+        &path,
+        &[root.path()],
+        headers,
+        None,
+        super::FileCaching::Revalidated,
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated.status(), StatusCode::OK);
+    let new_etag = updated.headers()[super::ETAG].to_str().unwrap().to_string();
+    assert_ne!(new_etag, etag);
+    assert_eq!(
+        axum::body::to_bytes(updated.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .as_ref(),
+        rewritten
+    );
+
+    let mut headers = HeaderMap::new();
+    headers.insert(super::IF_NONE_MATCH, new_etag.parse().unwrap());
+    let cached = super::serve_file_response(
+        &path,
+        &[root.path()],
+        headers,
+        None,
+        super::FileCaching::Revalidated,
+    )
+    .await
+    .unwrap();
+    assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(cached.headers()[super::ETAG], new_etag);
+    assert!(
+        axum::body::to_bytes(cached.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // A timestamp bump that does not change the bytes is the same representation.
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(mtime + std::time::Duration::from_secs(30))
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(super::IF_NONE_MATCH, new_etag.parse().unwrap());
+    let untouched = super::serve_file_response(
+        &path,
+        &[root.path()],
+        headers,
+        None,
+        super::FileCaching::Revalidated,
+    )
+    .await
+    .unwrap();
+    assert_eq!(untouched.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(untouched.headers()[super::ETAG], new_etag);
 }
 
 #[tokio::test]
@@ -1418,7 +1553,7 @@ fn cookie_csrf_requires_the_target_or_an_explicit_origin() {
 fn csrf_origins_always_include_official_apps() {
     let origins = super::build_csrf_allowed_origins(&["HTTPS://Reader.Example.NET/".to_string()]);
     assert!(origins.contains("capacitor://localhost"));
-    assert!(origins.contains("http://localhost"));
+    assert!(!origins.contains("http://localhost"));
     assert!(origins.contains("https://localhost"));
     assert!(origins.contains("http://127.0.0.1:49201"));
     assert!(origins.contains("https://reader.example.net"));
@@ -1605,12 +1740,14 @@ fn login_throttle_locks_after_max_failures() {
     let below_limit = LoginThrottle {
         failures: super::LOGIN_MAX_FAILURES - 1,
         last_failure: now,
+        run: 0,
     };
     assert!(!below_limit.is_locked(now, super::LOGIN_MAX_FAILURES));
 
     let at_limit = LoginThrottle {
         failures: super::LOGIN_MAX_FAILURES,
         last_failure: now,
+        run: 0,
     };
     assert!(at_limit.is_locked(now, super::LOGIN_MAX_FAILURES));
     assert!(at_limit.is_locked(
@@ -1776,7 +1913,7 @@ exit 0
             auto_refresh_hours: Some(super::DEFAULT_LIBATION_AUTO_REFRESH_HOURS),
             reader_refreshes_per_hour: super::DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR,
         },
-        alignment_config: super::AlignmentConfig { cli_path: None },
+        alignment_config: super::AlignmentConfig::Managed,
         faststart_tools: None,
         update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
         sync_dir: data_dir.join("sync"),
@@ -1817,6 +1954,7 @@ exit 0
         )),
         open_sessions: super::Arc::new(super::Mutex::new(super::OpenSessions::default())),
         shutdown: tokio::sync::broadcast::channel(1).0,
+        update_trial: super::Arc::new(super::UpdateTrial::none()),
         works: super::Arc::new(super::WorksStore::new(
             database.clone(),
             super::StoreShape::Document(super::WORKS_DOCUMENT),
@@ -1847,12 +1985,18 @@ exit 0
         libation_refresh_reservation_lock: super::Arc::new(super::Mutex::new(())),
         faststart_lock: super::Arc::new(super::Mutex::new(())),
         login_attempts: super::Arc::new(super::Mutex::new(std::collections::HashMap::new())),
+        credential_issuance_lock: super::Arc::new(super::Mutex::new(())),
+        password_request_slots: super::Arc::new(super::Semaphore::new(
+            super::PASSWORD_REQUEST_CAPACITY,
+        )),
         password_task_slots: super::Arc::new(super::Semaphore::new(
             super::PASSWORD_TASK_CONCURRENCY,
         )),
         download_task_slots: super::Arc::new(super::Semaphore::new(
             super::DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS,
         )),
+        catalogue_slots: super::Arc::new(super::Semaphore::new(super::CATALOGUE_CONCURRENCY)),
+        catalogue_account_slots: super::Arc::new(super::Mutex::new(super::HashMap::new())),
         epub_entry_slots: super::Arc::new(super::Semaphore::new(super::EPUB_ENTRY_CONCURRENCY)),
         epub_entry_account_slots: super::Arc::new(super::Mutex::new(
             std::collections::HashMap::new(),
@@ -3632,22 +3776,13 @@ fn unchanged_tracks_reuse_cached_fingerprints_and_removed_ones_are_pruned() {
 }
 
 #[test]
-fn unreadable_tracks_keep_a_stable_identity_instead_of_failing_the_scan() {
+fn unreadable_tracks_withhold_scan_before_identity_resolution() {
     let root = tempfile::tempdir().unwrap();
     let missing = root.path().join("gone.mp3");
-    let files = std::slice::from_ref(&missing);
-
-    let (fingerprints, cache) =
-        super::fingerprint_tracks(root.path(), files, std::collections::BTreeMap::new());
-    let fingerprint = fingerprints[&missing].clone();
-    assert!(fingerprint.starts_with("path:"));
-    // Never cached, so a file that becomes readable again is picked up on
-    // the next scan rather than being stuck on the stand-in.
-    assert!(cache.is_empty());
-
-    let (repeated, _) =
-        super::fingerprint_tracks(root.path(), files, std::collections::BTreeMap::new());
-    assert_eq!(repeated[&missing], fingerprint);
+    let scan = super::ScanRoot::new(root.path()).unwrap();
+    assert!(scan.open(&missing).is_err());
+    // Production propagates an open failure before identities or catalogue
+    // publication, retaining the last good library and its progress IDs.
 }
 
 #[test]
@@ -7662,6 +7797,15 @@ async fn waiting_on_a_job_gives_up_at_the_ceiling() {
 async fn recording_activity_updates_one_row_and_the_cache() {
     let root = tempfile::tempdir().unwrap();
     let (state, _) = fake_libation_state(root.path());
+    state
+        .users
+        .mutate(|users| {
+            users.users.push(stored_user("reader", false, false));
+            users.users.push(stored_user("other", false, false));
+            Ok(())
+        })
+        .await
+        .unwrap();
     // Seed another listener through the whole-store path so the targeted
     // write can be seen to leave them alone.
     state
@@ -7878,6 +8022,43 @@ fn account_lockouts_are_keyed_by_address_and_name() {
         super::login_account_throttle_key(alice, "reader"),
         super::login_ip_throttle_key(alice)
     );
+
+    // A host on a public IPv6 network can pick any address in its /64, so the
+    // per-address counter covers the /64. The pair stays per device, so one
+    // device on the network cannot lock another out of an account.
+    let ipv6 = |text: &str| text.parse::<std::net::IpAddr>().unwrap();
+    assert_eq!(
+        super::login_ip_throttle_key(ipv6("2001:db8:1:2::1")),
+        super::login_ip_throttle_key(ipv6("2001:db8:1:2:abcd::99"))
+    );
+    assert_ne!(
+        super::login_ip_throttle_key(ipv6("2001:db8:1:2::1")),
+        super::login_ip_throttle_key(ipv6("2001:db8:1:3::1"))
+    );
+    assert_ne!(
+        super::login_account_throttle_key(ipv6("2001:db8:1:2::1"), "reader"),
+        super::login_account_throttle_key(ipv6("2001:db8:1:2::2"), "reader")
+    );
+    // Link-local, unique local and Tailscale addresses are each one device.
+    for (first, second) in [
+        ("fe80::1", "fe80::2"),
+        ("fd12:3456:789a:1::1", "fd12:3456:789a:1::2"),
+        ("fd7a:115c:a1e0::1", "fd7a:115c:a1e0::2"),
+    ] {
+        assert_ne!(
+            super::login_ip_throttle_key(ipv6(first)),
+            super::login_ip_throttle_key(ipv6(second))
+        );
+    }
+    // An IPv4 client seen through a dual-stack socket counts as itself.
+    assert_eq!(
+        super::login_ip_throttle_key(ipv6("::ffff:203.0.113.5")),
+        super::login_ip_throttle_key(alice)
+    );
+    assert_eq!(
+        super::login_account_throttle_key(ipv6("::ffff:203.0.113.5"), "reader"),
+        super::login_account_throttle_key(alice, "reader")
+    );
 }
 
 #[test]
@@ -7975,12 +8156,13 @@ fn malformed_port_environment_values_are_errors() {
 
 /// Failures count against three counters at once. The (address, username)
 /// pair locks fast, so a handful of bad passwords from one address cannot
-/// deny the account's owner from anywhere else; the username alone locks
-/// only after many more, so guessing spread across many addresses still
-/// meets a ceiling.
+/// deny the account's owner from anywhere else. Once a username has drawn
+/// many failures from many addresses, each address that has failed against
+/// it is held to one guess a lockout window, while an address that has not
+/// failed against it is still let in.
 #[cfg(unix)]
 #[tokio::test]
-async fn account_lockouts_layer_a_fast_pair_lock_under_a_username_ceiling() {
+async fn account_lockouts_slow_spread_guessing_without_locking_out_the_owner() {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     let root = tempfile::tempdir().unwrap();
@@ -8001,42 +8183,272 @@ async fn account_lockouts_layer_a_fast_pair_lock_under_a_username_ceiling() {
         assert!(!super::LoginThrottleKeys::new(alice, "other").is_locked(&attempts, now));
     }
 
-    // Fifty failures from fifty addresses lock the username for a fifty-first.
-    let stranger = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 51));
-    let stranger_on_target = super::LoginThrottleKeys::new(stranger, "target");
-    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
-        {
-            let attempts = state.login_attempts.lock().await;
-            assert!(
-                !stranger_on_target.is_locked(&attempts, now),
-                "locked after {} failures",
-                host - 1
-            );
-        }
-        let address = IpAddr::V4(Ipv4Addr::new(10, 0, 0, host as u8));
-        let keys = super::LoginThrottleKeys::new(address, "target");
-        super::record_login_failures(&state, keys.all()).await;
-    }
+    // Below the username ceiling an address keeps its ordinary allowance.
+    let attacker = |host: u32| {
+        let address = IpAddr::V4(Ipv4Addr::from(u32::from(Ipv4Addr::new(10, 0, 0, 0)) + host));
+        super::LoginThrottleKeys::new(address, "target")
+    };
+    super::record_login_failures(&state, attacker(1).all()).await;
     {
         let attempts = state.login_attempts.lock().await;
-        assert!(stranger_on_target.is_locked(&attempts, now));
-        assert!(!super::LoginThrottleKeys::new(stranger, "other").is_locked(&attempts, now));
+        assert!(!attacker(1).is_locked(&attempts, now));
     }
+    for host in 2..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        super::record_login_failures(&state, attacker(host).all()).await;
+    }
+
+    // At the ceiling, every address that has guessed is refused after a single
+    // failure, far short of the pair lock.
+    {
+        let attempts = state.login_attempts.lock().await;
+        for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+            let keys = attacker(host);
+            assert_eq!(attempts[&keys.account].failures, 1);
+            assert!(
+                keys.is_locked(&attempts, now),
+                "address {host} may guess again"
+            );
+        }
+        // The window passing gives an address back one guess, not five.
+        assert!(!attacker(1).is_locked(&attempts, now + super::LOGIN_LOCKOUT_SECONDS));
+    }
+
+    // An address that has not failed against the name is still let in, and
+    // its own first wrong guess puts it under the same one-guess rule.
+    let owner_device = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 44));
+    let owner_keys = super::LoginThrottleKeys::new(owner_device, "target");
+    {
+        let attempts = state.login_attempts.lock().await;
+        assert!(!owner_keys.is_locked(&attempts, now));
+    }
+    let wrong = super::authenticate_and_open_session(
+        &state,
+        SocketAddr::new(owner_device, 40_000),
+        &super::HeaderMap::new(),
+        super::LoginRequest {
+            username: "target".to_string(),
+            password: super::mint_identity_id(),
+        },
+    )
+    .await
+    .expect_err("there is no such account");
+    assert_eq!(wrong.status, super::StatusCode::UNAUTHORIZED);
 
     // The refusal is what the sign-in handler answers with, before it does
     // any password work.
     let refused = super::authenticate_and_open_session(
         &state,
-        SocketAddr::new(stranger, 40_000),
+        SocketAddr::new(owner_device, 40_001),
         &super::HeaderMap::new(),
         super::LoginRequest {
             username: "target".to_string(),
-            password: "whatever-password-1234".to_string(),
+            password: super::mint_identity_id(),
         },
     )
     .await
-    .expect_err("the username ceiling refuses the sign-in");
+    .expect_err("an address that just failed waits out the window");
     assert_eq!(refused.status, super::StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// A full throttle map makes room for a new attempt instead of refusing it:
+/// stale entries go first, then the weakest and oldest, and an entry that is
+/// holding a lock outlasts them.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_full_login_throttle_map_evicts_stale_then_oldest_entries() {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let now = super::unix_now_seconds();
+    let entry = |failures, age| super::LoginThrottle {
+        failures,
+        last_failure: now - age,
+        run: 0,
+    };
+    {
+        let mut attempts = state.login_attempts.lock().await;
+        attempts.insert(
+            "stale".to_string(),
+            entry(super::LOGIN_IP_MAX_FAILURES, super::LOGIN_LOCKOUT_SECONDS),
+        );
+        attempts.insert(
+            "locked".to_string(),
+            entry(
+                super::LOGIN_IP_MAX_FAILURES,
+                super::LOGIN_LOCKOUT_SECONDS - 5,
+            ),
+        );
+        // Live address counters are never evicted, so the weak entries are
+        // username counters.
+        attempts.insert(
+            "user:oldest".to_string(),
+            entry(1, super::LOGIN_LOCKOUT_SECONDS - 10),
+        );
+        for index in attempts.len()..super::LOGIN_THROTTLE_MAX_ENTRIES {
+            attempts.insert(format!("user:filler-{index}"), entry(1, 1));
+        }
+    }
+
+    let newcomer = super::LoginThrottleKeys::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)), "new");
+    super::record_login_failures(&state, newcomer.all()).await;
+
+    let attempts = state.login_attempts.lock().await;
+    assert_eq!(attempts.len(), super::LOGIN_THROTTLE_MAX_ENTRIES);
+    for key in newcomer.all() {
+        assert_eq!(attempts.get(key).map(|throttle| throttle.failures), Some(1));
+    }
+    assert!(!attempts.contains_key("stale"));
+    assert!(!attempts.contains_key("user:oldest"));
+    assert!(attempts.contains_key("locked"));
+}
+
+/// Entries holding locks are never evicted. A map full of them grows past the
+/// eviction cap rather than refusing a newcomer, and only at the hard ceiling
+/// is a newcomer refused, with every lock left in place.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_login_throttle_map_full_of_locks_grows_to_a_ceiling_then_refuses() {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let now = super::unix_now_seconds();
+    let fill_with_locks = |attempts: &mut std::collections::HashMap<_, _>, size| {
+        attempts.clear();
+        for index in 0..size {
+            attempts.insert(
+                format!("ip:198.18.{}.{}", index / 256, index % 256),
+                super::LoginThrottle {
+                    failures: super::LOGIN_IP_MAX_FAILURES,
+                    last_failure: now,
+                    run: 0,
+                },
+            );
+        }
+    };
+    let newcomer =
+        |host| super::LoginThrottleKeys::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, host)), "new");
+
+    fill_with_locks(
+        &mut *state.login_attempts.lock().await,
+        super::LOGIN_THROTTLE_MAX_ENTRIES,
+    );
+    assert!(super::record_login_failures(&state, newcomer(1).all()).await);
+    assert_eq!(
+        state.login_attempts.lock().await.len(),
+        super::LOGIN_THROTTLE_MAX_ENTRIES + 3
+    );
+
+    fill_with_locks(
+        &mut *state.login_attempts.lock().await,
+        super::LOGIN_THROTTLE_LOCKED_MAX_ENTRIES,
+    );
+    assert!(!super::record_login_failures(&state, newcomer(2).all()).await);
+    let attempts = state.login_attempts.lock().await;
+    assert_eq!(attempts.len(), super::LOGIN_THROTTLE_LOCKED_MAX_ENTRIES);
+    assert!(!attempts.contains_key(&newcomer(2).account));
+    assert!(attempts.contains_key("ip:198.18.0.0"));
+}
+
+/// Under a map full of locks, the only evictable entries would be /64
+/// counters below their limit. Two public networks alternating fresh
+/// addresses against an attacked name must not evict each other's counters
+/// and reset their budgets.
+#[cfg(unix)]
+#[tokio::test]
+async fn public_ipv6_networks_cannot_evict_each_others_budget_under_a_full_map() {
+    use std::net::{IpAddr, Ipv6Addr};
+
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let now = super::unix_now_seconds();
+    {
+        let mut attempts = state.login_attempts.lock().await;
+        for index in 0..super::LOGIN_THROTTLE_MAX_ENTRIES {
+            attempts.insert(
+                format!("ip:198.18.{}.{}", index / 256, index % 256),
+                super::LoginThrottle {
+                    failures: super::LOGIN_IP_MAX_FAILURES,
+                    last_failure: now,
+                    run: 0,
+                },
+            );
+        }
+        attempts.insert(
+            super::login_throttle_key("target"),
+            super::LoginThrottle {
+                failures: super::LOGIN_ACCOUNT_MAX_FAILURES,
+                last_failure: now,
+                run: 0,
+            },
+        );
+    }
+
+    let networks = [0x2001_0db8_0000_0001_u64, 0x2001_0db8_0000_0002];
+    let mut admitted = [0_u32; 2];
+    for host in 1..=u64::from(super::LOGIN_IP_MAX_FAILURES) * 2 {
+        for (network, admitted) in networks.iter().zip(&mut admitted) {
+            let address = Ipv6Addr::from((u128::from(*network) << 64) | u128::from(host));
+            let keys = super::LoginThrottleKeys::new(IpAddr::V6(address), "target");
+            if keys.is_locked(&*state.login_attempts.lock().await, now) {
+                continue;
+            }
+            assert!(super::record_login_failures(&state, keys.all()).await);
+            *admitted += 1;
+        }
+    }
+
+    assert_eq!(admitted, [super::LOGIN_IP_MAX_FAILURES; 2]);
+}
+
+/// The same holds for IPv4 and other single-address counters: two addresses
+/// taking turns under a full map must not evict each other's counters and
+/// guess without limit.
+#[cfg(unix)]
+#[tokio::test]
+async fn ipv4_addresses_cannot_evict_each_others_budget_under_a_full_map() {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let now = super::unix_now_seconds();
+    {
+        let mut attempts = state.login_attempts.lock().await;
+        for index in 0..super::LOGIN_THROTTLE_MAX_ENTRIES {
+            attempts.insert(
+                format!("ip:198.18.{}.{}", index / 256, index % 256),
+                super::LoginThrottle {
+                    failures: super::LOGIN_IP_MAX_FAILURES,
+                    last_failure: now,
+                    run: 0,
+                },
+            );
+        }
+    }
+
+    let guessers = [
+        (IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)), "alice"),
+        (IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2)), "bob"),
+    ];
+    let mut admitted = [0_u32; 2];
+    for _ in 0..super::LOGIN_IP_MAX_FAILURES * 4 {
+        for ((address, name), admitted) in guessers.iter().zip(&mut admitted) {
+            let keys = super::LoginThrottleKeys::new(*address, name);
+            if keys.is_locked(&*state.login_attempts.lock().await, now) {
+                continue;
+            }
+            assert!(super::record_login_failures(&state, keys.all()).await);
+            *admitted += 1;
+        }
+    }
+
+    assert!(
+        admitted
+            .iter()
+            .all(|count| *count <= super::LOGIN_IP_MAX_FAILURES),
+        "admitted {admitted:?}"
+    );
 }
 
 #[test]
@@ -9076,6 +9488,8 @@ async fn libation_restart_recovers_approved_and_direct_downloads_with_restricted
                 .pending_downloads
                 .push(super::PendingLibationDownload {
                     id: "saved-direct".to_string(),
+                    initiated_by: None,
+                    job_id: None,
                     profile_id: Some("legacy".to_string()),
                     asin: "B000RECOV2".to_string(),
                     grant_to_user: None,
@@ -9617,6 +10031,7 @@ async fn libation_account_removal_cannot_accept_a_download_for_a_deleted_profile
             Some(profile_id),
             "B000RACE01".to_string(),
             None,
+            None,
         )
         .await
     });
@@ -9682,7 +10097,7 @@ async fn libation_startup_imports_wait_for_the_catalogue_and_reuse_manually_name
         book.join("Already present [B000LOCAL1].wav"),
     )
     .unwrap();
-    let direct = super::start_libation_download(&state, None, "B000LOCAL1".to_string(), None)
+    let direct = super::start_libation_download(&state, None, "B000LOCAL1".to_string(), None, None)
         .await
         .unwrap()
         .0;
@@ -9730,10 +10145,11 @@ async fn libation_shutdown_preserves_a_download_queued_behind_the_startup_catalo
     let root = tempfile::tempdir().unwrap();
     let (state, _) = fake_libation_state(root.path());
     state.library.write().await.catalogue_ready = false;
-    let created = super::start_libation_download(&state, None, "B000QUEUE1".to_string(), None)
-        .await
-        .unwrap()
-        .0;
+    let created =
+        super::start_libation_download(&state, None, "B000QUEUE1".to_string(), None, None)
+            .await
+            .unwrap()
+            .0;
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while state.shutdown.receiver_count() < 2 {
             tokio::task::yield_now().await;
@@ -9772,7 +10188,8 @@ async fn libation_shutdown_preserves_intent_when_the_observer_starts_after_the_s
     let registration_guard = state.libation_account_registration_lock.lock().await;
     let starting_state = state.clone();
     let starting = tokio::spawn(async move {
-        super::start_libation_download(&starting_state, None, "B000LATE01".to_string(), None).await
+        super::start_libation_download(&starting_state, None, "B000LATE01".to_string(), None, None)
+            .await
     });
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while state
@@ -10007,4 +10424,95 @@ fn a_clip_longer_than_five_minutes_is_refused() {
     );
     assert!(super::clip_range(&book, 100.0, 400.5).is_err());
     assert!(super::clip_range(&book, f64::NAN, 10.0).is_err());
+}
+
+/// A row migrated from the JSON store: the track offset survived, the
+/// whole-book position defaulted to zero.
+fn legacy_progress_two_hours_in() -> (super::Book, super::Progress) {
+    let book = book_with_tracks(
+        Some(10_800.0),
+        vec![
+            track_with_duration("t1", 0, Some(3_600.0)),
+            track_with_duration("t2", 1, Some(7_200.0)),
+        ],
+    );
+    let previous = super::Progress {
+        recording: None,
+        book_id: "book".to_string(),
+        track_id: "t2".to_string(),
+        position_seconds: 3_600.0,
+        book_position_seconds: 0.0,
+        duration_seconds: Some(7_200.0),
+        updated_at: super::unix_now_millis().saturating_sub(5_000).to_string(),
+        finished_override: None,
+    };
+    (book, previous)
+}
+
+#[test]
+fn a_legacy_row_without_a_book_position_still_refuses_a_reset() {
+    let (book, previous) = legacy_progress_two_hours_in();
+    let now = super::unix_now_millis();
+    let reset = decision_update(0.0);
+    assert!(matches!(
+        super::decide_progress_write(&book, &book.tracks[0], Some(&previous), &reset, now),
+        super::ProgressDecision::Keep
+    ));
+
+    let mut seek = decision_update(1_800.0);
+    seek.intentional_seek = true;
+    match super::decide_progress_write(&book, &book.tracks[0], Some(&previous), &seek, now) {
+        super::ProgressDecision::Store {
+            backup_previous, ..
+        } => assert!(backup_previous, "the two hours being replaced are kept"),
+        super::ProgressDecision::Keep => panic!("a deliberate seek is honoured"),
+    }
+
+    let abs_reset = super::decide_abs_progress_write(
+        &book,
+        Some(&previous),
+        Some(0.0),
+        None,
+        Some(now),
+        &book.tracks[0],
+        now,
+    );
+    assert!(matches!(abs_reset, super::ProgressDecision::Keep));
+}
+
+#[test]
+fn finishing_at_the_start_backs_up_a_legacy_position() {
+    let (book, previous) = legacy_progress_two_hours_in();
+    let decision = super::decide_completion_write(
+        &book,
+        &book.tracks[0],
+        Some(&previous),
+        &completion_update(false, Some(0.0)),
+        Some((&book.tracks[0], 0.0)),
+        super::unix_now_millis(),
+    );
+    match decision {
+        super::ProgressDecision::Store {
+            backup_previous, ..
+        } => assert!(backup_previous),
+        super::ProgressDecision::Keep => panic!("completion writes are always stored"),
+    }
+}
+
+#[test]
+fn marking_a_legacy_row_finished_does_not_back_it_up() {
+    let (book, previous) = legacy_progress_two_hours_in();
+    match super::decide_completion_write(
+        &book,
+        &book.tracks[0],
+        Some(&previous),
+        &completion_update(true, None),
+        None,
+        super::unix_now_millis(),
+    ) {
+        super::ProgressDecision::Store {
+            backup_previous, ..
+        } => assert!(!backup_previous, "nothing moved, so nothing needs a copy"),
+        super::ProgressDecision::Keep => panic!("completion writes are always stored"),
+    }
 }

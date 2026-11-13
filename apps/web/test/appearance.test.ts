@@ -2,9 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   APPEARANCE_STORAGE_KEY,
+  DARK_THEMES,
+  DARK_THEME_STORAGE_KEY,
+  LIGHT_THEMES,
+  LIGHT_THEME_STORAGE_KEY,
   readAppearanceMode,
+  readDarkTheme,
+  readLightTheme,
   resolveDarkMode,
-  writeAppearanceMode
+  writeAppearanceMode,
+  writeDarkTheme,
+  writeLightTheme
 } from "../src/appearance.ts";
 import { memoryStorage } from "./memoryStorage.ts";
 
@@ -34,4 +42,33 @@ test("system mode is the only one that listens to the device theme", () => {
   assert.equal(resolveDarkMode("light", true), false);
   assert.equal(resolveDarkMode("system", false), false);
   assert.equal(resolveDarkMode("system", true), true);
+});
+
+test("existing installs keep the warm dark theme", () => {
+  assert.equal(readDarkTheme(memoryStorage()), "warm");
+  assert.equal(readDarkTheme(memoryStorage(DARK_THEME_STORAGE_KEY, "garbage")), "warm");
+});
+
+test("each dark theme round-trips through storage", () => {
+  for (const { id } of DARK_THEMES) {
+    const storage = memoryStorage();
+    writeDarkTheme(storage, id);
+    assert.equal(readDarkTheme(storage), id);
+  }
+});
+
+test("existing installs keep the parchment light theme", () => {
+  assert.equal(readLightTheme(memoryStorage()), "parchment");
+  assert.equal(readLightTheme(memoryStorage(LIGHT_THEME_STORAGE_KEY, "garbage")), "parchment");
+  // A dark theme id is not a light theme.
+  assert.equal(readLightTheme(memoryStorage(LIGHT_THEME_STORAGE_KEY, "midnight")), "parchment");
+});
+
+test("each light theme round-trips through storage without touching the dark one", () => {
+  for (const { id } of LIGHT_THEMES) {
+    const storage = memoryStorage(DARK_THEME_STORAGE_KEY, "graphite");
+    writeLightTheme(storage, id);
+    assert.equal(readLightTheme(storage), id);
+    assert.equal(readDarkTheme(storage), "graphite");
+  }
 });

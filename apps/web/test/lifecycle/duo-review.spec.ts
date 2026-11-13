@@ -201,7 +201,8 @@ test('native audiobook upload preserves device books and paired local copies', a
   await openShell(page, true, true, false, serverBooks, 1);
   const uploaded = { ...library(7)[6], title: 'Uploaded audiobook' };
   await page.route('**/api/library/upload', route => route.fulfill({ json: [...serverBooks, uploaded] }));
-  await page.getByRole('button', { name: 'Upload audiobook', exact: true }).click();
+  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Upload to the server', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Upload audiobook' });
   await dialog.getByLabel('Book name', { exact: true }).fill(uploaded.title);
   await dialog.locator('input[type=file]').setInputFiles({ name: 'chapter.mp3', mimeType: 'audio/mpeg', buffer: Buffer.from('fixture') });
@@ -250,7 +251,7 @@ test('native phone Continue Reading opens paused, plays explicitly, and remember
   await resume.click();
   await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(false);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await expect(page.locator('.settings-shell').getByText('Cadence', { exact: true })).toBeVisible();
+  await expect(page.locator('.settings-shell').getByText('Speed', { exact: true })).toBeVisible();
   await expect(page.getByRole('switch', { name: 'Games tab', exact: true })).toBeHidden();
   await page.locator('.behavior-settings > summary').scrollIntoViewIfNeeded();
   await page.locator('.behavior-settings > summary').click();
@@ -1039,10 +1040,12 @@ test('a device import failure is announced on the shelf with a retry', async ({ 
   const notice = page.locator('.library-pane').getByRole('alert');
   for (let attempt = 0; attempt < 2; attempt++) {
     const chosen = page.waitForEvent('filechooser');
-    const action = attempt === 0
-      ? page.getByRole('button', { name: 'Add audiobook from device', exact: true })
-      : notice.getByRole('button', { name: 'Try importing again' });
-    await action.click();
+    if (attempt === 0) {
+      await page.getByRole('button', { name: 'Add', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'Add files to this device', exact: true }).click();
+    } else {
+      await notice.getByRole('button', { name: 'Try importing again' }).click();
+    }
     // A browser-picked file has no native path, reproducing the platform's
     // missing-access failure through the real picker and import hook.
     await (await chosen).setFiles({ name: 'sample.mp3', mimeType: 'audio/mpeg', buffer: Buffer.from('fixture') });
@@ -1054,11 +1057,26 @@ test('a device import failure is announced on the shelf with a retry', async ({ 
 test('cancelling the device picker stays silent and leaves the shelf usable', async ({ page }) => {
   await openShell(page, true);
   const chosen = page.waitForEvent('filechooser');
-  const action = page.getByRole('button', { name: 'Add audiobook from device', exact: true });
+  const action = page.getByRole('button', { name: 'Add', exact: true });
   await action.click();
+  await page.getByRole('menuitem', { name: 'Add files to this device', exact: true }).click();
   await (await chosen).element().evaluate(input => input.dispatchEvent(new Event('cancel')));
   await expect(action).toBeEnabled();
+  await action.click();
+  await expect(page.getByRole('menuitem', { name: 'Add files to this device', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Close menu', exact: true }).click();
   await expect(page.locator('.library-pane').getByRole('alert')).toHaveCount(0);
+});
+
+test('at large system text sizes the Add button drops its word but keeps its name', async ({ page }) => {
+  await openShell(page, true);
+  await page.evaluate(() => document.documentElement.setAttribute('data-text-large', ''));
+  const action = page.getByRole('button', { name: 'Add', exact: true });
+  await expect(action).toBeVisible();
+  const word = action.locator('span');
+  expect(await word.evaluate(span => span.getBoundingClientRect().width)).toBeLessThanOrEqual(1);
+  await action.click();
+  await expect(page.getByRole('menuitem', { name: 'Add files to this device', exact: true })).toBeVisible();
 });
 
 
@@ -1138,8 +1156,9 @@ test('a shelf warning opens book details and clears after retrying only missing 
   const failedSyncRequests = syncRequests;
   filesAvailable = true;
   await retry.click();
-  await expect(panel).toContainText('Ebook: ready');
-  await expect(panel).toContainText('Sentence sync: ready');
+  // A complete download needs no panel; the status line confirms what arrived.
+  await expect(page.locator('.player-pane').getByRole('status')).toContainText('Ebook: ready · Sentence sync: ready');
+  await expect(panel).toHaveCount(0);
   await expect(retry).toHaveCount(0);
   await expect(warning).toHaveCount(0);
   expect(audioRequests).toBe(originalAudioRequests);

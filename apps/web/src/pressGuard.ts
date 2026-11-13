@@ -30,6 +30,13 @@ function liftedOnControl(rect: Rect, x: number, y: number): boolean {
   );
 }
 
+// A control can reach past its own box: a store purchase's title stretches its
+// hit area over the whole row. A lift still over that area is on the control.
+function liftedOnHitArea(control: Element, x: number, y: number): boolean {
+  const hit = typeof document === "undefined" ? null : document.elementFromPoint(x, y);
+  return !!hit && hit.closest(PRESSABLE) === control;
+}
+
 export function installPressGuard(root: EventTarget = document): void {
   let press: { pointerId: number; control: Element } | null = null;
   let abandoned: { control: Element; at: number } | null = null;
@@ -48,7 +55,8 @@ export function installPressGuard(root: EventTarget = document): void {
     if (!press || press.pointerId !== pointer.pointerId) return;
     const { control } = press;
     press = null;
-    if (!liftedOnControl(control.getBoundingClientRect(), pointer.clientX, pointer.clientY)) {
+    if (!liftedOnControl(control.getBoundingClientRect(), pointer.clientX, pointer.clientY)
+      && !liftedOnHitArea(control, pointer.clientX, pointer.clientY)) {
       abandoned = { control, at: event.timeStamp };
     }
   }, { capture: true, passive: true });

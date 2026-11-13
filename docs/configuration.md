@@ -113,7 +113,7 @@ When nginx is used, its `client_max_body_size` is an additional upload ceiling. 
 
 ### Data directory
 
-The server keeps its state — accounts, sessions, listening progress, the reading log, completions, the work index, metadata overrides, and Libation requests — in one SQLite database, `operalibre.db`, inside `data_dir`. The directory also holds generated sync maps (`sync/`), the durable sync queue and schedules (`sync-jobs.json`, `sync-schedules.json`, and `sync-sweep.json`), cached cover art (`covers/`), optional import-account credentials, the server log and PID file written by the launcher, and `update-backups/` from in-app updates. The release launchers and the installer read `data_dir` from `server.config` too, so moving it relocates all of those files together. On Unix, everything in it is kept readable only by the account running the server.
+The server keeps its state — accounts, sessions, listening progress, the reading log, completions, the work index, metadata overrides, and Libation requests — in one SQLite database, `operalibre.db`, inside `data_dir`. The directory also holds generated sync maps (`sync/`), the durable sync queue and schedules (`sync-jobs.json`, `sync-schedules.json`, and `sync-sweep.json`; a queue the server cannot read at startup is renamed to `sync-jobs.json.unreadable` (or `.unreadable.1`, `.unreadable.2`, and so on if that name is taken) and the server starts with an empty one), cached cover art (`covers/`), optional import-account credentials, the server log and PID file written by the launcher, and `update-backups/` from in-app updates. The release launchers and the installer read `data_dir` from `server.config` too, so moving it relocates all of those files together. On Unix, everything in it is kept readable only by the account running the server.
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -146,11 +146,11 @@ Libation is available when the server finds its CLI at the configured path or on
 
 ### Optional readalong alignment
 
-Owners of managed release installations can install and enable the generator under **Administration → Experiments**; no configuration entry is needed. Sentence following requires an aligned map, the experiment to be enabled, and the reader to press Follow in the ebook, including for user-provided and previously generated `.sync.json` maps. Disabling it keeps those maps and leaves chapter sync available. Development and manually managed installations can configure an existing echogarden executable here instead; that explicit configuration takes priority over the managed add-on. See [Library Layout](library-layout.md#sync-maps-following-the-narration) for the sync-map workflow.
+Owners of managed release installations can install and enable the generator under **Administration → Experiments**; no configuration entry is needed. Sentence following requires an aligned map, the experiment to be enabled, and the reader to press Follow in the ebook, including for user-provided and previously generated `.sync.json` maps. Disabling it keeps those maps and listening progress and leaves chapter sync available. Development and manually managed installations can configure an existing echogarden executable here instead; that explicit configuration takes priority over the managed add-on. See [Library Layout](library-layout.md#sync-maps-following-the-narration) for the sync-map workflow.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `alignment_cli_path` | *(empty)* | Optional path to a manually managed echogarden CLI. It is treated as installed and enabled and is not changed from the Administration panel. When blank, OperaLibre uses an enabled managed add-on instead. |
+| `alignment_cli_path` | *(empty)* | Optional path to a manually managed echogarden CLI. It is treated as installed and enabled and is not changed from the Administration panel. When blank, OperaLibre searches the server's `PATH` for echogarden before using an enabled managed add-on. A PATH installation is enabled by default, including after upgrades, and the owner can disable or re-enable it under **Administration → Experiments**. |
 
 ### Optional MP4 faststart conversion
 

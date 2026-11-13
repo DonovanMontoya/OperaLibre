@@ -1,3 +1,4 @@
+import { PrivacyPolicyLink } from "./PrivacyPolicyLink";
 import type { useDisplaySettings } from "./useDisplaySettings";
 import type { useOfflineDownloads } from "./useOfflineDownloads";
 import type { usePurchases } from "./usePurchases";
@@ -5,8 +6,9 @@ import type { useReadalong } from "./useReadalong";
 import type { useReaderPreferences } from "./useReaderPreferences";
 import type { useServerAliases } from "./useServerAliases";
 import type { useUploads } from "./useUploads";
-import { ArrowDown, ChevronRight, Gauge, Settings, UserCog } from "lucide-react";
+import { ArrowDown, ChevronDown, ChevronRight, Gauge, Settings, UserCog } from "lucide-react";
 import { PlaybackSpeedControl } from "./PlaybackControls";
+import { formatPlaybackSpeed } from "./playbackSpeed";
 import {
   BookStoreSettings,
   ConnectionSettings,
@@ -139,11 +141,15 @@ export function SettingsPage({
   } = purchases;
   const {
     appearanceMode,
+    darkTheme,
+    lightTheme,
     rotationLockBusy,
     rotationLockEnabled,
     rotationLockError,
     toggleRotationLock,
-    updateAppearanceMode
+    updateAppearanceMode,
+    updateDarkTheme,
+    updateLightTheme
   } = displaySettings;
   const {
     cancelOfflineDownload,
@@ -200,22 +206,34 @@ export function SettingsPage({
         </div>
         <section className="settings-card">
           <span className="section-label"><Gauge size={13} /> Playback</span>
-          <div className="settings-field">
-            <span className="settings-label">Cadence</span>
-            <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary />
-            <p className="settings-hint">Applies to every book and is remembered on this device.</p>
-          </div>
+          {/* The current speed is the glance; the slider and presets open on demand. */}
+          <details className="settings-themes settings-speed">
+            <summary>
+              <span>
+                <strong>Speed</strong>
+                <small>{formatPlaybackSpeed(speed)}×, for every book on this device</small>
+              </span>
+              <ChevronDown size={16} aria-hidden="true" />
+            </summary>
+            <div className="settings-field">
+              <PlaybackSpeedControl value={speed} onChange={updateSpeed} />
+            </div>
+          </details>
         </section>
 
         {ios || rotationLockAvailable ? <DisplaySettings
           appearanceMode={appearanceMode}
+          darkTheme={darkTheme}
           ios={ios}
+          lightTheme={lightTheme}
           rotationLockAvailable={rotationLockAvailable}
           rotationLockBusy={rotationLockBusy}
           rotationLockEnabled={rotationLockEnabled}
           rotationLockError={rotationLockError}
           toggleRotationLock={toggleRotationLock}
           updateAppearanceMode={updateAppearanceMode}
+          updateDarkTheme={updateDarkTheme}
+          updateLightTheme={updateLightTheme}
         /> : null}
 
         <BehaviorSettings
@@ -328,6 +346,9 @@ export function SettingsPage({
           switchToAlias={switchToAlias}
           switchingAliasId={switchingAliasId}
         />
+        <section className="settings-card" aria-label="Privacy">
+          <PrivacyPolicyLink />
+        </section>
         </div>
       </div>
     </section>

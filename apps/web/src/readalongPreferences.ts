@@ -3,6 +3,7 @@ type ReadalongPreferenceStorage = Pick<Storage, "getItem" | "setItem" | "removeI
 const READER_FOLLOW_STORAGE_KEY = "operalibre.readerFollow";
 const LEGACY_FOLLOW_SYNC_STORAGE_KEY = "operalibre.readalong.followSync";
 const FOLLOW_AGGRESSIVENESS_STORAGE_KEY = "operalibre.readalong.followAggressiveness";
+const FLAT_SPREAD_STORAGE_KEY = "operalibre.reader.flatSpread";
 
 export type FollowAggressiveness = 0 | 1 | 2;
 
@@ -39,6 +40,28 @@ export function readReaderFollowEnabled(storage?: ReadalongPreferenceStorage): b
 export function writeReaderFollowEnabled(enabled: boolean, storage?: ReadalongPreferenceStorage): void {
   try {
     (storage ?? window.localStorage).setItem(READER_FOLLOW_STORAGE_KEY, enabled ? "1" : "0");
+  } catch {
+    // Keep the in-memory choice usable when device storage is unavailable.
+  }
+}
+
+/** A foldable laid fully open on its side shows two pages unless the reader chose one. */
+export function readFlatSpreadEnabled(storage?: ReadalongPreferenceStorage): boolean {
+  try {
+    return (storage ?? window.localStorage).getItem(FLAT_SPREAD_STORAGE_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+export function writeFlatSpreadEnabled(enabled: boolean, storage?: ReadalongPreferenceStorage): void {
+  try {
+    const target = storage ?? window.localStorage;
+    if (enabled) {
+      target.removeItem(FLAT_SPREAD_STORAGE_KEY);
+    } else {
+      target.setItem(FLAT_SPREAD_STORAGE_KEY, "0");
+    }
   } catch {
     // Keep the in-memory choice usable when device storage is unavailable.
   }

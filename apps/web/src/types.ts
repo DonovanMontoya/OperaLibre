@@ -55,6 +55,13 @@ export type Book = {
   deviceBookId?: string;
   /** Cover art extracted from an imported file's tags, stored in app storage. */
   localCoverPath?: string;
+  /** Receipt-bound gift map and its exact local text/audio timeline. No URLs or
+   * sender identities; validated again when the local reader opens the map. */
+  localSyncMap?: {
+    asset: { name: string; size: number; sha256: string };
+    ebook: { name: string; size: number; sha256: string };
+    audio: { name: string; size: number; sha256: string; durationSeconds: number }[];
+  };
   /**
    * The viewer's own playback gain for this book, as a linear multiplier of the
    * file's level. Absent on Jellyfin, on device-only books, and on OperaLibre
@@ -200,7 +207,7 @@ export type SyncReport = {
 };
 
 /** `[startSeconds, endSeconds, offsetUtf16, lengthUtf16]` inside the fragment text. */
-export type SyncWord = [number, number, number, number];
+type SyncWord = [number, number, number, number];
 
 export type SyncFragment = {
   startSeconds: number;
@@ -528,6 +535,7 @@ export type SyncAddonStatus = {
   installed: boolean;
   enabled: boolean;
   managed: boolean;
+  canToggle?: boolean;
   installedVersion: string | null;
   latestVersion: string | null;
   updateAvailable: boolean;

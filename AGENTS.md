@@ -253,12 +253,14 @@ explicit; a release or dependency version bump alone is not a reason to remap.
 There are two version lines, and they are independent of each other:
 
 - **Server line**: the server and launcher crates (and their lockfiles). It
-  follows the stable release tags, such as `0.5.0`; nightlies between releases
-  are `0.5.1-nightly.<date>.<run>`. Release builds take their version from the
+  follows the stable release tags, such as `0.5.1`; nightlies between releases
+  are `0.5.2-nightly.<date>.<run>`. Release builds take their version from the
   tag (`OPERALIBRE_VERSION`), which also stamps the web bundle, so the crate
   version only shows in source builds. Keep it at the latest stable release.
+  The macOS app is on this line too: `script/build_and_run.sh` stamps the
+  server crate's version into its bundle.
 - **App line**: the iOS and Android apps, versioned for the stores (iOS 1.3.1
-  is on the App Store; the next app release is 1.3.2). iOS and Android share
+  is the confirmed App Store release; the in-tree app line is 1.3.2). iOS and Android share
   one build number. Android's `versionCode` is
   `major·1000000 + minor·10000 + patch·100 + build`, so it rises across builds
   and versions.

@@ -1,4 +1,5 @@
 import { ClippingSetting } from "./ClippingSetting";
+import { PrivacyPolicyLink } from "./PrivacyPolicyLink";
 import { BehaviorSection } from "./BehaviorSection";
 import { AgentAccessMenuItem } from "./AgentAccess";
 import { BookPreviewSetting } from "./BookPreviewSetting";
@@ -173,6 +174,7 @@ export function renderUserMenu({
           : currentUser.isAdmin ? "Jellyfin administrator" : "Jellyfin account"}
         onUserChanged={onCurrentUserChanged}
       />
+      {!native ? <PrivacyPolicyLink role="menuitem" /> : null}
       {capabilities.statistics ? (
         <button
           type="button"
@@ -198,17 +200,14 @@ export function renderUserMenu({
           }}
         />
       ) : null}
-      {capabilities.administration ? (
+      {/* The apps keep Administration in one place, inside Settings. */}
+      {capabilities.administration && !native ? (
         <button
           type="button"
           role="menuitem"
           onClick={() => {
             setUserMenuOpen(false);
-            if (native) {
-              openNativeTab("admin");
-            } else {
-              setUsersModalOpen(true);
-            }
+            setUsersModalOpen(true);
           }}
         >
           <UserCog size={16} /> Administration
