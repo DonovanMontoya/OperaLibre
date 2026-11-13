@@ -8243,6 +8243,13 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane.purchase-browsin
   width: min(560px, calc(100vw - 32px));
 }
 
+.upload-audiobook-card .metadata-edit-actions button[type="submit"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
 .upload-audiobook-hint {
   margin: 0;
   color: var(--ink-faded);
