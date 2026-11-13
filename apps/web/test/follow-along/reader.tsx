@@ -106,7 +106,7 @@ function Fixture() {
     </>}
   </div>{/* A containing block, so the full-screen reader fills the space under the controls instead of sliding beneath them. */}
   <div style={{ height: 'calc(100dvh - 80px)', transform: 'translateZ(0)' }}><EpubReadalong key={epoch} bookId={privatePath ?? "follow-regression"} storageScope="follow-regression"
-    title={privateFixture?.title ?? 'River Observatory'} url="/generated.epub" loadSource={loadSource} listeningChapter={null} syncTarget={null}
+    title={privateFixture?.title ?? 'River Observatory'} url="/generated.epub" loadSource={loadSource} listeningChapter={null}
     syncFragments={currentMap.fragments} syncRecoveryGaps={currentMap.recoveryGaps} audioChapters={privateFixture?.chapters ?? chapters}
     positionSeconds={position} followLeadSeconds={lead} onSeekTo={setPosition} /></div></>;
 }

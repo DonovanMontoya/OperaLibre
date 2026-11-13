@@ -35,7 +35,6 @@ for (const n of [1, 2, 3]) zip.file(`c${n}.xhtml`, `<html xmlns="http://www.w3.o
 const bytes = await zip.generateAsync({ type: "arraybuffer" });
 
 const narration = params.has("narration");
-const chapterSync = params.has("chapter-sync");
 const immersive = params.has("immersive");
 // The narrated chapter; the default is ahead of the reading place, which
 // offers the catch-up row.
@@ -68,9 +67,6 @@ function Fixture() {
         onOpen: () => {}
       } : null}
       url="/fixture.epub" loadSource={async () => bytes.slice(0)} listeningChapter={`Chapter ${chapter}`}
-      syncTarget={chapterSync
-        ? { id: `chapter-${chapter}`, title: `Chapter ${chapter}` }
-        : null}
       syncFragments={narration ? fragments : null} positionSeconds={position} onSeekTo={setPosition}
       pageTurnAnimation={params.has("page-turn")} />}
   </>;

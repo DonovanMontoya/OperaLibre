@@ -1017,7 +1017,7 @@ export function AdminPanel({
                 </div>
                 <p>
                   Enables sentence highlighting, sentence seeking, and automatic page turns in the EPUB
-                  reader, including existing sync maps. When disabled, only chapter sync is available.
+                  reader, including existing sync maps. When disabled, EPUBs open beside the audio without Follow.
                   Creates precise sync maps using local speech recognition and forced alignment. Audio stays
                   on this server. Jobs run one at a time and can use substantial CPU, memory, and disk space. On smaller servers, generation may affect playback.
                 </p>
