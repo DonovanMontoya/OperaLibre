@@ -15198,8 +15198,8 @@ html.native-app .recent-row {
 .clip-dial-audio b {
   position: absolute;
   top: 0;
-  color: rgba(241, 231, 208, 0.6);
-  font: 400 0.58rem "JetBrains Mono", monospace;
+  color: rgba(241, 231, 208, 0.8);
+  font: 400 0.7rem "JetBrains Mono", monospace;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   transform: translateX(-50%);
@@ -15249,8 +15249,9 @@ html.native-app .recent-row {
 
 .clip-dial-hint {
   margin: 0;
-  color: rgba(241, 231, 208, 0.66);
-  font: 0.66rem "JetBrains Mono", monospace;
+  color: rgba(241, 231, 208, 0.74);
+  font: 0.72rem/1.4 "JetBrains Mono", monospace;
+  text-wrap: balance;
   text-align: center;
 }
 
@@ -15349,11 +15350,13 @@ html.native-app .recent-row {
 }
 
 .clip-length button {
-  width: 44px;
+  min-width: 52px;
   height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 1px;
+  font: 600 0.72rem "JetBrains Mono", monospace;
   border: 1px solid rgba(241, 231, 208, 0.16);
   border-radius: 999px;
   color: rgba(255, 250, 237, 0.88);
@@ -15431,8 +15434,14 @@ html.native-app .recent-row {
   letter-spacing: 0.03em;
 }
 
-/* On a phone the actions fill their rows instead of leaving ragged gaps. */
+/* On a phone the actions fill their rows instead of leaving ragged gaps,
+   and the sheet takes most of the screen so the editor fits without
+   scrolling its header away. */
 @media (max-width: 520px) {
+  .clip-sheet {
+    max-height: 94dvh;
+  }
+
   .clip-actions > * {
     flex: 1 1 auto;
     justify-content: center;
@@ -15458,8 +15467,8 @@ html.native-app .recent-row {
 }
 
 @media (max-width: 520px) {
-  .clip-removal > span {
-    flex-basis: 100%;
+  .clip-removal.confirming > span {
+    flex: 0 0 100%;
   }
 
   .clip-removal.confirming {
@@ -15553,7 +15562,7 @@ html.native-app .recent-row {
 .book-contents-count {
   margin-left: 8px;
   padding: 1px 7px;
-  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  border: 1px solid rgba(var(--ink-rgb), 0.35);
   border-radius: 999px;
   color: var(--ink-soft);
   font: 0.7rem "JetBrains Mono", monospace;
@@ -15561,7 +15570,7 @@ html.native-app .recent-row {
 }
 
 .book-clips {
-  max-width: 48rem;
+  max-width: 40rem;
 }
 
 .book-clips p {
@@ -15667,7 +15676,7 @@ html.native-app .recent-row {
   margin-top: 4px;
   overflow: hidden;
   color: var(--ink-soft);
-  font: italic 0.88rem "Fraunces", serif;
+  font: italic 0.8rem "Fraunces", serif;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
@@ -15786,7 +15795,7 @@ html.native-app .recent-row {
 
 .native-cover-clip span {
   font: 700 0.62rem "JetBrains Mono", monospace;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 
@@ -15818,17 +15827,35 @@ html.native-app .recent-row {
   cursor: pointer;
 }
 
+/* A caption, not a control: no border, and a caret up to the ribbon it explains. */
 .native-cover-clip-hint {
+  position: absolute;
+  left: calc(var(--cover-left, 0px) + var(--cover-width, 100%) - 20px);
+  top: calc(var(--cover-top, 0px) + 80px);
+  z-index: 2;
   width: max-content;
-  max-width: calc(var(--cover-width, 100%) - 24px);
-  border-color: rgba(217, 181, 116, 0.45);
-  border-radius: 16px;
-  font-size: 0.68rem;
-  line-height: 1.35;
+  max-width: min(calc(var(--cover-width, 100%) - 32px), calc(17ch + 24px));
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: rgba(36, 27, 20, 0.86);
+  color: #f3ead8;
+  font: 0.7rem/1.35 "JetBrains Mono", monospace;
   text-align: center;
-  white-space: normal;
+  text-wrap: balance;
+  transform: translateX(-100%);
   pointer-events: none;
 }
+
+.native-cover-clip-hint::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  right: 20px;
+  border: 6px solid transparent;
+  border-top: 0;
+  border-bottom-color: rgba(36, 27, 20, 0.86);
+}
+
 
 .native-cover-clip-notice-action {
   display: inline-flex;

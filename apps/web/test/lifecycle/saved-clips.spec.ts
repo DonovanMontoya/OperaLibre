@@ -103,9 +103,9 @@ for (const width of [390, 1280]) {
     await expect(dialog.getByRole('heading', { name: 'Edit clip' })).toBeVisible();
     await expect(dialog.getByRole('button', { name: /Passage from book 2/ })).toBeVisible();
     await expect(dialog.getByText('Passage from book 1', { exact: true })).toHaveCount(0);
-    await dialog.getByLabel('Name', { exact: true }).fill('Remember this passage');
+    await dialog.getByLabel('Name (optional)', { exact: true }).fill('Remember this passage');
     await dialog.getByRole('button', { name: 'Save changes' }).click();
-    await expect(dialog.getByRole('button', { name: 'Saved', exact: true })).toBeVisible();
+    await expect(dialog.getByRole('status')).toHaveText('Changes saved');
     expect(fixture.clips.get(fixture.books[1].id)![0].title).toBe('Remember this passage');
     expect(fixture.writes).toEqual([]);
     expect(await page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
@@ -161,7 +161,7 @@ test('saved clips exposes loading failures and retry rather than claiming the bo
   await page.getByRole('tab', { name: 'Clips', exact: true }).click();
   const dialog = page;
   await expect(dialog.getByRole('button', { name: 'Try again' })).toBeVisible();
-  await expect(dialog.getByText(/No saved clips yet/)).toHaveCount(0);
+  await expect(dialog.getByText(/No clips yet/)).toHaveCount(0);
   fixture.fail(false);
   await dialog.getByRole('button', { name: 'Try again' }).click();
   await expect(page.locator('.book-clip-detail').filter({ hasText: 'Passage from book 2' })).toBeVisible();
@@ -174,8 +174,8 @@ test('a book with no clips explains how to save the first passage', async ({ pag
   await page.locator('.book-row').nth(1).click();
   await page.getByRole('tab', { name: 'Clips', exact: true }).click();
   const dialog = page;
-  await expect(dialog.getByText(/No saved clips yet/)).toBeVisible();
-  await expect(dialog.getByText(/tap the gold ribbon on the cover/)).toBeVisible();
+  await expect(dialog.getByText(/No clips yet/)).toBeVisible();
+  await expect(dialog.getByText(/press the gold Clip ribbon on the cover/)).toBeVisible();
   expect(fixture.writes).toEqual([]);
 });
 
@@ -227,11 +227,11 @@ test('expanded clip editor shows only its passage and returns to the list', asyn
   await expect(dialog.getByRole('heading', { name: 'Edit clip', exact: true })).toBeVisible();
   await expect(dialog.locator('.clip-row')).toHaveCount(1);
   await expect(dialog.getByText('Passage from book 2', { exact: true })).toHaveCount(0);
-  await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue('Another saved passage');
-  await dialog.getByRole('button', { name: 'Back to clips', exact: true }).click();
+  await expect(dialog.getByLabel('Name (optional)', { exact: true })).toHaveValue('Another saved passage');
+  await dialog.getByRole('button', { name: 'All clips', exact: true }).click();
   await expect(dialog.getByRole('heading', { name: 'Saved clips', exact: true })).toBeVisible();
   await expect(dialog.locator('.clip-row')).toHaveCount(2);
-  await expect(dialog.getByLabel('Name', { exact: true })).toHaveCount(0);
+  await expect(dialog.getByLabel('Name (optional)', { exact: true })).toHaveCount(0);
   expect(fixture.writes).toEqual([]);
 });
 
@@ -318,7 +318,7 @@ test('pending removal retries a lost-response server copy after restart without 
   await page.getByRole('button', { name: 'Details', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: /Saved clips/ }).click();
   const dialog = page.getByRole('dialog');
-  if (!await dialog.getByLabel('Name', { exact: true }).isVisible()) await dialog.locator('.clip-summary').filter({ hasText: 'A beginning' }).click();
+  if (!await dialog.getByLabel('Name (optional)', { exact: true }).isVisible()) await dialog.locator('.clip-summary').filter({ hasText: 'A beginning' }).click();
   await dialog.getByRole('button', { name: 'Remove clip', exact: true }).click();
   await dialog.getByRole('button', { name: 'Remove', exact: true }).click();
   await expect.poll(() => deleteAttempts).toBeGreaterThan(0);

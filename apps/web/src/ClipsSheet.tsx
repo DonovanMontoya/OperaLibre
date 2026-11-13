@@ -174,7 +174,8 @@ function ClipDial({
           })}
           {bars.map((index) => ({ index, at: (index * step - viewStart) / span }))
             // The frame's edges already carry their times below the dial.
-            .filter(({ index, at }) => index % DIAL_LABELLED_TICK === 0 && Math.abs(at - FRAME_START) > 0.07 && Math.abs(at - FRAME_END) > 0.07)
+            .filter(({ index, at }) => index % DIAL_LABELLED_TICK === 0 && at > 0.06 && at < 0.94
+              && Math.abs(at - FRAME_START) > 0.07 && Math.abs(at - FRAME_END) > 0.07)
             .map(({ index, at }) => (
               <b key={`label-${index}`} style={{ left: `${at * 100}%` }}>{formatTime(index * step)}</b>
             ))}
@@ -191,7 +192,7 @@ function ClipDial({
         <output>{formatTime(Math.round(range.startSeconds))}</output>
         <output>{formatTime(Math.round(range.endSeconds))}</output>
       </div>
-      <p className="clip-dial-hint">Drag the ruler to move the clip; let go to hear it.</p>
+      <p className="clip-dial-hint">Drag the ruler to move the clip. Let go to hear it.</p>
     </div>
   );
 }
@@ -316,7 +317,7 @@ function ClipRow({
                 disabled={shorter.endSeconds - shorter.startSeconds >= length}
                 onClick={() => resize(shorter)}
               >
-                <Minus size={15} />
+                <Minus size={12} aria-hidden="true" />1s
               </button>
               <span className="clip-length-picker">
                 <select
@@ -336,7 +337,7 @@ function ClipRow({
                 disabled={longer.endSeconds - longer.startSeconds <= length}
                 onClick={() => resize(longer)}
               >
-                <Plus size={15} />
+                <Plus size={12} aria-hidden="true" />1s
               </button>
             </div>
           </div>
