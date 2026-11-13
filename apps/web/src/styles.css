@@ -14951,12 +14951,24 @@ html.native-app .recent-row {
 
 .clip-sheet {
   max-height: min(82dvh, 720px);
+  padding-bottom: max(28px, calc(16px + env(safe-area-inset-bottom)));
 }
 
 /* The title block sits beside Back rather than centring between the buttons. */
 .clip-sheet header > div {
   flex: 1;
   min-width: 0;
+}
+
+@media (min-width: 720px) {
+  /* A centred dialog cannot be dragged, so it does not show a handle. */
+  .clip-sheet .sleep-sheet-grabber {
+    display: none;
+  }
+
+  .clip-sheet:has(.clip-empty) {
+    max-width: 560px;
+  }
 }
 
 .clip-sheet header .eyebrow {
@@ -14967,6 +14979,10 @@ html.native-app .recent-row {
 
 .clip-ribbon-glyph {
   flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  padding-top: 5px;
+  color: var(--on-gold);
   width: 22px;
   height: 30px;
   margin-top: 3px;
@@ -15021,6 +15037,23 @@ html.native-app .recent-row {
 
 .clip-row {
   border-bottom: 1px solid rgba(241, 231, 208, 0.13);
+}
+
+.clip-row.open {
+  border-bottom: 0;
+}
+
+.clip-row:not(.open) .clip-summary:hover {
+  background: rgba(255, 250, 237, 0.04);
+}
+
+.clip-summary {
+  border-radius: 10px;
+}
+
+.clip-summary:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  outline-offset: 2px;
 }
 
 .clip-row-head {
@@ -15080,9 +15113,9 @@ html.native-app .recent-row {
 }
 
 .clip-summary small {
-  color: rgba(241, 231, 208, 0.72);
+  color: rgba(241, 231, 208, 0.74);
   font-family: "JetBrains Mono", monospace;
-  font-size: 0.7rem;
+  font-size: 0.74rem;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.05em;
 }
@@ -15090,7 +15123,7 @@ html.native-app .recent-row {
 .clip-note {
   display: -webkit-box;
   overflow: hidden;
-  color: rgba(241, 231, 208, 0.62);
+  color: rgba(243, 234, 216, 0.78);
   font-family: "Fraunces", serif;
   font-size: 0.84rem;
   font-style: italic;
@@ -15142,7 +15175,7 @@ html.native-app .recent-row {
 
 .clip-dial-audio {
   position: absolute;
-  inset: 12px 0;
+  inset: 8px 0 12px;
   overflow: hidden;
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 13%, #000 87%, transparent);
   mask-image: linear-gradient(90deg, transparent, #000 13%, #000 87%, transparent);
@@ -15150,11 +15183,26 @@ html.native-app .recent-row {
 
 .clip-dial-audio i {
   position: absolute;
-  top: 50%;
-  width: max(2px, calc(var(--clip-dial-pitch) * 0.5));
-  border-radius: 999px;
-  background: rgba(241, 231, 208, 0.2);
-  transform: translateY(-50%);
+  bottom: 0;
+  width: 1.5px;
+  height: 30%;
+  border-radius: 1px;
+  background: rgba(241, 231, 208, 0.26);
+}
+
+.clip-dial-audio i.major {
+  width: 2px;
+  height: 56%;
+}
+
+.clip-dial-audio b {
+  position: absolute;
+  top: 0;
+  color: rgba(241, 231, 208, 0.6);
+  font: 400 0.58rem "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transform: translateX(-50%);
 }
 
 .clip-dial-audio i.kept {
@@ -15199,6 +15247,29 @@ html.native-app .recent-row {
   pointer-events: none;
 }
 
+.clip-dial-hint {
+  margin: 0;
+  color: rgba(241, 231, 208, 0.66);
+  font: 0.66rem "JetBrains Mono", monospace;
+  text-align: center;
+}
+
+.clip-editor-hint {
+  margin: 0;
+  color: rgba(241, 231, 208, 0.7);
+  font: italic 0.9rem "Fraunces", serif;
+}
+
+.clip-row-edit {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: rgba(217, 181, 116, 0.9);
+  font: 600 0.66rem "JetBrains Mono", monospace;
+  letter-spacing: 0.04em;
+}
+
 .clip-dial-times {
   display: flex;
   align-items: baseline;
@@ -15225,8 +15296,7 @@ html.native-app .recent-row {
 .clip-length {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 16px;
 }
 
 .clip-length > span,
@@ -15311,7 +15381,12 @@ html.native-app .recent-row {
   font-family: "Fraunces", serif;
   /* Below 16px iOS zooms the page when the field takes focus. */
   font-size: 1rem;
-  resize: vertical;
+  resize: none;
+}
+
+.clip-field textarea {
+  min-height: 76px;
+  field-sizing: content;
 }
 
 .clip-field input::placeholder,
@@ -15347,28 +15422,21 @@ html.native-app .recent-row {
 }
 
 .clip-saved-status {
-  min-height: 44px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 0 8px;
+  margin: 0;
   color: var(--gold-soft);
   font: 600 0.68rem "JetBrains Mono", monospace;
   letter-spacing: 0.03em;
 }
 
+/* On a phone the actions fill their rows instead of leaving ragged gaps. */
 @media (max-width: 520px) {
-  .clip-actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-  }
-
   .clip-actions > * {
+    flex: 1 1 auto;
     justify-content: center;
-  }
-
-  .clip-actions > :last-child:nth-child(odd) {
-    grid-column: 1 / -1;
+    white-space: nowrap;
   }
 }
 
@@ -15386,10 +15454,28 @@ html.native-app .recent-row {
   min-height: 57px;
   padding-top: 12px;
   border-top: 1px solid rgba(241, 231, 208, 0.1);
+  scroll-margin-bottom: 16px;
+}
+
+@media (max-width: 520px) {
+  .clip-removal > span {
+    flex-basis: 100%;
+  }
+
+  .clip-removal.confirming {
+    justify-content: space-between;
+  }
+}
+
+.clip-removal.confirming {
+  padding: 12px;
+  border: 1px solid rgba(214, 120, 96, 0.32);
+  border-radius: 12px;
+  background: rgba(139, 46, 31, 0.18);
 }
 
 .clip-removal > span {
-  flex: 1 1 100%;
+  flex: 1 1 auto;
   color: #f3c3b4;
   font-family: "Fraunces", serif;
   font-size: 0.95rem;
@@ -15410,7 +15496,9 @@ html.native-app .recent-row {
   display: flex;
   align-items: flex-start;
   gap: 14px;
-  padding: 6px 0 10px;
+  margin-top: 14px;
+  padding: 18px 0 10px;
+  border-top: 1px solid rgba(241, 231, 208, 0.1);
 }
 
 .clip-empty strong {
@@ -15438,38 +15526,42 @@ html.native-app .recent-row {
   border-bottom: 1px solid rgba(var(--ink-rgb), 0.18);
 }
 
+.book-contents-tabs {
+  gap: 8px;
+}
+
+/* Two short words do not need half the page each. */
 .book-contents-tabs button {
-  flex: 1;
+  flex: 0 0 auto;
   min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 20px;
   border: 0;
   border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--ink-soft);
-  font: 500 1rem "Fraunces", serif;
+  font: 400 1rem "Fraunces", serif;
 }
 
 .book-contents-tabs button[aria-selected="true"] {
   border-bottom-color: var(--oxblood);
   color: var(--oxblood);
+  font-weight: 500;
 }
 
 .book-contents-count {
   margin-left: 8px;
+  padding: 1px 7px;
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  border-radius: 999px;
   color: var(--ink-soft);
-  font: 0.72rem "JetBrains Mono", monospace;
+  font: 0.7rem "JetBrains Mono", monospace;
   font-variant-numeric: tabular-nums;
 }
 
-/* Two short words do not need half the page each once there is room. */
-@media (min-width: 720px) {
-  .book-contents-tabs {
-    gap: 8px;
-  }
-
-  .book-contents-tabs button {
-    flex: 0 0 auto;
-    padding: 0 22px;
-  }
+.book-clips {
+  max-width: 48rem;
 }
 
 .book-clips p {
@@ -15493,6 +15585,7 @@ html.native-app .recent-row {
 .book-clips-empty p {
   max-width: 42ch;
   margin: 6px 0 0;
+  font-size: 0.95rem;
 }
 
 .book-clips .book-clips-intro {
@@ -15560,6 +15653,15 @@ html.native-app .recent-row {
   color: var(--ink-soft);
 }
 
+/* The sheet's gold reads poorly on parchment. */
+.book-clip-detail .clip-row-edit {
+  color: var(--oxblood);
+}
+
+.book-clip-detail .clip-row-edit svg {
+  color: inherit;
+}
+
 .book-clip-note {
   display: -webkit-box;
   margin-top: 4px;
@@ -15617,6 +15719,10 @@ html.native-app .recent-row {
   flex-shrink: 0;
 }
 
+.book-saved-clips > svg:first-child {
+  color: var(--oxblood);
+}
+
 .book-saved-clips:focus-visible {
   outline: 2px solid var(--gold-soft);
   outline-offset: 3px;
@@ -15652,7 +15758,7 @@ html.native-app .recent-row {
   background: none;
   color: var(--on-gold);
   /* The hairline keeps the ribbon's edge on gold and orange covers. */
-  filter: drop-shadow(0 0 0.75px rgba(26, 20, 16, 0.6)) drop-shadow(0 5px 5px rgba(26, 20, 16, 0.25));
+  filter: drop-shadow(0 0 1px rgba(26, 20, 16, 0.75)) drop-shadow(0 5px 5px rgba(26, 20, 16, 0.25));
   cursor: pointer;
 }
 
@@ -15691,7 +15797,7 @@ html.native-app .recent-row {
 .native-cover-clip-notice {
   position: absolute;
   /* Hangs under the ribbon that was pressed, clear of the cover's title art. */
-  left: calc(var(--cover-left, 0px) + var(--cover-width, 100%) - 12px);
+  left: calc(var(--cover-left, 0px) + var(--cover-width, 100%) - 20px);
   top: calc(var(--cover-top, 0px) + 76px);
   transform: translateX(-100%);
   z-index: 2;
@@ -15707,9 +15813,21 @@ html.native-app .recent-row {
   background: #241b14;
   box-shadow: 0 8px 20px rgba(26, 20, 16, 0.35);
   color: #f3ead8;
-  font: 0.75rem "JetBrains Mono", monospace;
+  font: 0.8rem "JetBrains Mono", monospace;
   white-space: nowrap;
   cursor: pointer;
+}
+
+.native-cover-clip-hint {
+  width: max-content;
+  max-width: calc(var(--cover-width, 100%) - 24px);
+  border-color: rgba(217, 181, 116, 0.45);
+  border-radius: 16px;
+  font-size: 0.68rem;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  pointer-events: none;
 }
 
 .native-cover-clip-notice-action {

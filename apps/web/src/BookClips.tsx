@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronRight, LoaderCircle, Pencil, Play, Square } from "lucide-react";
+import { ChevronRight, LoaderCircle, Play, Scissors, Square } from "lucide-react";
 import { getServerStorageKey, listClips } from "./api";
 import { buildChapterSegments, chapterAtBookPosition } from "./chapters";
 import { CLIP_LEAD_SECONDS, CLIP_TAIL_SECONDS, type Clip, clipName, clipSpan, clipsForBook, pendingClipStorageKey, readPendingClips } from "./clips";
@@ -62,14 +62,14 @@ export function BookClips({ book, state, open, preview, stop, playingClipId, pre
       {!loading && !error && !supported ? <p>Update your OperaLibre server to use clips.</p> : null}
       {!loading && !error && supported && passages.length === 0 ? (
         <div className="book-clips-empty">
-          <span className="clip-ribbon-glyph" aria-hidden="true" />
+          <span className="clip-ribbon-glyph" aria-hidden="true"><Scissors size={12} /></span>
           <div>
             <strong>No clips yet</strong>
-            <p>While listening, press the gold ribbon on the cover to save the last {CLIP_LEAD_SECONDS} seconds and the next {CLIP_TAIL_SECONDS}.</p>
+            <p>In Now Playing, press the gold Clip ribbon on the cover to save the last {CLIP_LEAD_SECONDS} seconds and the next {CLIP_TAIL_SECONDS}.</p>
           </div>
         </div>
       ) : null}
-      {passages.length > 0 ? <p className="book-clips-intro">Previewing a clip leaves your place in the book where it is.</p> : null}
+      {passages.length > 0 ? <p className="book-clips-intro">Previews keep your listening place.</p> : null}
       <ul className="book-clips-list">
         {passages.map((clip) => {
           const name = clipName(clip, chapterAtBookPosition(segments, clip.startSeconds)?.title);
@@ -87,14 +87,14 @@ export function BookClips({ book, state, open, preview, stop, playingClipId, pre
                   <small>{formatTime(span.start)} – {formatTime(span.end)} · {span.length}{clip.pending ? " · Waiting to sync" : ""}</small>
                   {clip.note ? <em className="book-clip-note">{clip.note}</em> : null}
                 </span>
-                <Pencil size={15} aria-hidden="true" />
+                <span className="clip-row-edit" aria-hidden="true">Edit <ChevronRight size={16} /></span>
               </button>
             </li>
           );
         })}
       </ul>
       {previewPending ? <p role="status">Opening this book for preview…</p> : null}
-      {passages.length > 0 ? <button type="button" className="book-clips-manage" onClick={() => open()}>All clips in one list <ChevronRight size={15} /></button> : null}
+      {passages.length > 0 ? <button type="button" className="book-clips-manage" onClick={() => open()}>Manage clips <ChevronRight size={15} /></button> : null}
     </div>
   );
 }

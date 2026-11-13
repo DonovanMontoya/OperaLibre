@@ -189,7 +189,7 @@ test('Audio clips behavior preference persists and restores saved passages witho
   await expect(ribbon).toBeVisible();
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
   await page.locator('.user-menu .behavior-settings summary').click();
-  const preference = page.getByRole('switch', { name: 'Audio clips', exact: true });
+  const preference = page.getByRole('switch', { name: 'Show audio clips', exact: true });
   await expect(preference).toHaveAttribute('aria-checked', 'true');
   await preference.click();
   await expect(ribbon).toHaveCount(0);

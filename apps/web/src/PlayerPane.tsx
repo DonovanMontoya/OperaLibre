@@ -77,6 +77,8 @@ import { GiftShareAction, GiftShareDialog, useBookGiftSending } from "./GiftShar
 // borders/gaps overflow a phone screen; fall back to one continuous bar.
 const MAX_CHAPTER_SEGMENTS = 32;
 
+const CLIP_HINT_STORAGE_KEY = "operalibre.clipHintSeen";
+
 export function PlayerPane({
   activeChapter,
   activeTrackIndex,
@@ -344,6 +346,17 @@ export function PlayerPane({
     return () => { observer.disconnect(); window.removeEventListener("resize", positionRibbon); };
   }, [playbackBook?.id, nativePlayerView, isViewingPlayingBook]);
   const [contentsTab, setContentsTab] = useState<"chapters" | "clips">("chapters");
+  // The ribbon explains what it keeps until the first clip is saved on this device.
+  const [clipHintSeen, setClipHintSeen] = useState(() => {
+    try { return window.localStorage.getItem(CLIP_HINT_STORAGE_KEY) === "1"; } catch { return true; }
+  });
+  function saveClipMoment() {
+    if (!clipHintSeen) {
+      setClipHintSeen(true);
+      try { window.localStorage.setItem(CLIP_HINT_STORAGE_KEY, "1"); } catch { /* the hint shows again next time */ }
+    }
+    clips.saveMoment();
+  }
   const contentsId = useId();
   /** Chapters and clips share the book's contents area as two tabs. */
   const contentsTabbed = Boolean(capabilities.clips && readerPreferences.clippingEnabled && selectedBook && selectedBook.source !== "device");
@@ -713,10 +726,13 @@ export function PlayerPane({
                 <div className="native-now-artwork" ref={nowArtworkRef}>
                   <CoverArt book={playbackBook} size="large" />
                   {clips.visible ? (
-                    <button type="button" className={`native-cover-clip${clips.lastSavedId && !clips.error ? " saved" : ""}`} aria-label="Save a clip of the last 30 seconds and the next 10" title="Save a clip: the last 30 seconds and the next 10" onClick={clips.saveMoment}>
+                    <button type="button" className={`native-cover-clip${clips.lastSavedId && !clips.error ? " saved" : ""}`} aria-label="Save a clip of the last 30 seconds and the next 10" title="Save a clip: the last 30 seconds and the next 10" onClick={saveClipMoment}>
                       {clips.lastSavedId && !clips.error ? <Check size={17} aria-hidden="true" /> : <Scissors size={17} aria-hidden="true" />}
                       <span aria-hidden="true">{clips.lastSavedId && !clips.error ? "Saved" : "Clip"}</span>
                     </button>
+                  ) : null}
+                  {clips.visible && !clipHintSeen && !clips.error && !clips.lastSavedId ? (
+                    <span className="native-cover-clip-notice native-cover-clip-hint" aria-hidden="true">Saves the last 30s + next 10</span>
                   ) : null}
                   {clips.visible && (clips.error || clips.lastSavedId) ? (
                     <button type="button" className="native-cover-clip-notice" aria-label={clips.error ? `${clips.error} Open clips` : "Clip saved. Open clips"} onClick={() => openBookClips(playbackBook)}>

@@ -103,8 +103,8 @@ export function BookDetailsSheet({
           <button type="button" className="book-saved-clips" onClick={openClips}>
             <Scissors size={21} aria-hidden="true" />
             <span><strong>Saved clips</strong><small>{clipCount > 0
-              ? `${clipCount} ${clipCount === 1 ? "clip" : "clips"} · revisit, trim, and share`
-              : "None yet. Press the gold ribbon on the cover while listening."}</small></span>
+              ? `${clipCount} ${clipCount === 1 ? "clip" : "clips"}`
+              : "None yet. Press the gold ribbon on the cover to save one."}</small></span>
             <ChevronRight size={18} aria-hidden="true" />
           </button>
         ) : null}
