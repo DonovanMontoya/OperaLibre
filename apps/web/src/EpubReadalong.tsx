@@ -1369,10 +1369,8 @@ export function EpubReadalong({
             await rendition.display();
           }
         }
-        // Keep the saved page as the reading anchor, but do not mark the
-        // playing chapter handled. When Follow is on, chapter sync can move
-        // there immediately while a sentence map is still loading; the map
-        // refines the position afterward without delaying the first jump.
+        // Keep the saved page as the reading anchor; once the sentence map
+        // loads, Follow moves from it to the narrated sentence.
         // The chapter's pictures and web fonts arrive after the first
         // layout and push the text along, so the page epub.js first shows
         // for a remembered place is usually an earlier one. Check back while
