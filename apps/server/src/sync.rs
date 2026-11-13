@@ -3682,6 +3682,26 @@ pub(crate) fn find_alignment_cli_on_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writes a fake tool for a test to run. Tests spawn children in parallel,
+    /// and a child forked while this process holds the file open for writing
+    /// keeps that descriptor until it execs, so running the tool can fail with
+    /// "Text file busy". Copying it into place with `cp` keeps every write
+    /// descriptor out of this process.
+    #[cfg(unix)]
+    fn write_executable(path: &FsPath, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let source = path.with_extension("source");
+        std::fs::write(&source, body).unwrap();
+        let status = std::process::Command::new("cp")
+            .arg(&source)
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "cp exited with {status}");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     #[test]
     fn path_runtime_discovery_preserves_source_and_manual_precedence() {
         const CHILD: &str = "OPERALIBRE_TEST_PATH_RUNTIME";
@@ -3890,7 +3910,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn paused_generation_restores_completed_tracks_after_restart() {
-        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let (mut state, _) = crate::unit_tests::fake_libation_state(root.path());
         let epub = root.path().join("book.epub");
@@ -3900,7 +3919,7 @@ mod tests {
         let cli = root.path().join("aligner");
         // Gate the second track so pausing must interrupt an unfinished section
         // while preserving the completed first track across a restart.
-        fs::write(
+        write_executable(
             &cli,
             r#"#!/bin/sh
 [ "$1" = "align" ] || exit 2
@@ -3919,12 +3938,7 @@ case "$2" in
 esac
 printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "$4"
 "#,
-        )
-        .await
-        .unwrap();
-        fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
-            .await
-            .unwrap();
+        );
         let runtime = SyncAddonRuntime {
             cli_path: cli.clone(),
             cli_args: Vec::new(),
@@ -4117,7 +4131,6 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
     #[cfg(unix)]
     #[tokio::test]
     async fn failed_or_interrupted_generation_preserves_the_map_and_can_retry() {
-        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let (state, _) = crate::unit_tests::fake_libation_state(root.path());
         let epub = root.path().join("book.epub");
@@ -4143,8 +4156,7 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
             "#!/bin/sh\nexit 7\n",
             "#!/bin/sh\n: > \"$0.started\"\nexec sleep 60\n",
         ] {
-            std::fs::write(&cli, script).unwrap();
-            std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+            write_executable(&cli, script);
             let job = create_job(&state, "sync-fixture").await;
             let generation =
                 run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks, None);
@@ -4168,7 +4180,10 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
             }
             assert_eq!(fs::read(&destination).await.unwrap(), original);
         }
-        std::fs::write(&cli, "#!/bin/sh\nprintf '%s' '[{\"type\":\"sentence\",\"text\":\"The meadow was quiet.\",\"startTime\":1,\"endTime\":3}]' > \"$4\"\n").unwrap();
+        write_executable(
+            &cli,
+            "#!/bin/sh\nprintf '%s' '[{\"type\":\"sentence\",\"text\":\"The meadow was quiet.\",\"startTime\":1,\"endTime\":3}]' > \"$4\"\n",
+        );
         let job = create_job(&state, "sync-fixture-retry").await;
         assert_eq!(
             run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks, None)
@@ -4186,11 +4201,9 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
     #[cfg(unix)]
     #[tokio::test]
     async fn hung_audio_extraction_times_out() {
-        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let executable = root.path().join("ffmpeg");
-        std::fs::write(&executable, "#!/bin/sh\nexec sleep 60\n").unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&executable, "#!/bin/sh\nexec sleep 60\n");
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             extract_alignment_audio_with_timeout(
@@ -4215,14 +4228,13 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
     #[cfg(unix)]
     #[tokio::test]
     async fn forced_alignment_uses_the_book_language_instead_of_guessing() {
-        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let (state, _) = crate::unit_tests::fake_libation_state(root.path());
         let job_id = create_job(&state, "sync-generate").await;
         let cli = root.path().join("aligner");
         // Echogarden's own guess for a short passage can be a language eSpeak
         // cannot voice; only an explicit language avoids that failure.
-        std::fs::write(
+        write_executable(
             &cli,
             r#"#!/bin/sh
 case " $* " in
@@ -4231,9 +4243,7 @@ case " $* " in
 esac
 printf '[{"type":"sentence","text":"Kaladin ran.","startTime":0,"endTime":2}]' > "$4"
 "#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let audio = root.path().join("chapter.wav");
         std::fs::write(&audio, "").unwrap();
         let transcript = alignment::build_transcript(&[alignment::SpineSection {
@@ -4748,7 +4758,6 @@ printf '[{"type":"sentence","text":"Kaladin ran.","startTime":0,"endTime":2}]' >
     #[cfg(unix)]
     mod windowed {
         use super::*;
-        use std::os::unix::fs::PermissionsExt;
 
         const HEADING_SECONDS: f64 = 12.0;
         const SENTENCE_SECONDS: f64 = 4.0;
@@ -4786,13 +4795,6 @@ printf '[{"type":"sentence","text":"Kaladin ran.","startTime":0,"endTime":2}]' >
                 }
             }
             lines.join("\n") + "\n"
-        }
-
-        fn write_script(path: &FsPath, body: &str) {
-            std::fs::write(path, body).unwrap();
-            let mut permissions = std::fs::metadata(path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(path, permissions).unwrap();
         }
 
         const FAKE_FFMPEG: &str = r#"#!/bin/sh
@@ -4906,7 +4908,7 @@ esac
             }
             std::fs::write(&narration_path, speech).unwrap();
             let ffmpeg = root.path().join("ffmpeg");
-            write_script(&ffmpeg, FAKE_FFMPEG);
+            write_executable(&ffmpeg, FAKE_FFMPEG);
             let cli = root.path().join("echogarden");
             let script =
                 FAKE_ECHOGARDEN.replace("NARRATION_PATH", &narration_path.display().to_string());
@@ -4925,7 +4927,7 @@ esac
             } else {
                 script
             };
-            write_script(&cli, &script);
+            write_executable(&cli, &script);
 
             let book_sentence = |index| {
                 let spoken = sentence(index);
@@ -5301,9 +5303,9 @@ esac
             )
             .unwrap();
             let ffmpeg = root.path().join("ffmpeg");
-            write_script(&ffmpeg, FAKE_FFMPEG);
+            write_executable(&ffmpeg, FAKE_FFMPEG);
             let cli = root.path().join("echogarden");
-            write_script(
+            write_executable(
                 &cli,
                 &FAKE_ECHOGARDEN
                     .replace("NARRATION_PATH", &narration.display().to_string())
@@ -5347,7 +5349,6 @@ esac
     #[cfg(unix)]
     mod chapters {
         use super::*;
-        use std::os::unix::fs::PermissionsExt;
         use sync_report::{ChapterStatus, Grade};
 
         /// Times each chapter's sentence from `$0.start` seconds (1 unless
@@ -5425,8 +5426,7 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
                     std::fs::write(&track.path, b"fixture").unwrap();
                 }
                 let cli = root.path().join("aligner");
-                std::fs::write(&cli, FAKE_ALIGNER).unwrap();
-                std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+                write_executable(&cli, FAKE_ALIGNER);
                 std::fs::create_dir_all(&state.sync_dir).unwrap();
                 Self {
                     _root: root,
@@ -5940,7 +5940,6 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
     #[cfg(unix)]
     mod recognition {
         use super::*;
-        use std::os::unix::fs::PermissionsExt;
         use sync_report::{Cause, FixKind, Grade};
 
         const SENTENCES: usize = 100;
@@ -6014,11 +6013,6 @@ case "$command" in
 esac
 "#;
 
-        fn write_script(path: &FsPath, body: &str) {
-            std::fs::write(path, body).unwrap();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
         struct SpokenBook {
             _root: tempfile::TempDir,
             state: AppState,
@@ -6088,9 +6082,9 @@ esac
                     })
                     .collect();
                 let ffmpeg = root.path().join("ffmpeg");
-                write_script(&ffmpeg, FAKE_FFMPEG);
+                write_executable(&ffmpeg, FAKE_FFMPEG);
                 let cli = root.path().join("echogarden");
-                write_script(&cli, FAKE_ECHOGARDEN);
+                write_executable(&cli, FAKE_ECHOGARDEN);
                 std::fs::create_dir_all(&state.sync_dir).unwrap();
                 Self {
                     _root: root,
