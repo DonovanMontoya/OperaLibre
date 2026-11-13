@@ -2635,6 +2635,7 @@ function MainApp({
           displayBookRemainingSeconds={displayBookRemainingSeconds}
           markBookUnplayed={markBookUnplayed}
           openClips={capabilities.clips && readerPreferences.clippingEnabled && playbackBook.source !== "device" ? () => openBookClips(playbackBook) : undefined}
+          clipCount={clips.clips.length}
           openBookDetails={(bookId) => withWebViewTransition(() => openBookDetails(bookId))}
           playbackBook={playbackBook}
           playbackDescription={playbackDescription}
@@ -2677,6 +2678,7 @@ function MainApp({
           clips={{ ...clips, playClip: previewBookClip }}
           previewPending={pendingClipPreview !== null}
           close={closeNativePlayerSheet}
+          saveNow={clips.visible && playbackBook?.id === clipSheetBook.id ? clips.saveMoment : undefined}
           continueFrom={(clip) => {
             haptic("light");
             setPendingClipPreview(null);

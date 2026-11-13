@@ -16,6 +16,25 @@ export type Clip = {
 
 export type ClipRange = { startSeconds: number; endSeconds: number };
 
+export function clipLengthLabel(seconds: number) {
+  return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s` : `${seconds}s`;
+}
+
+/**
+ * Start, end, and length on whole seconds. The length is taken from the
+ * rounded ends, so the three never disagree on screen.
+ */
+export function clipSpan(range: ClipRange) {
+  const start = Math.round(range.startSeconds);
+  const end = Math.round(range.endSeconds);
+  return { start, end, length: clipLengthLabel(Math.max(1, end - start)) };
+}
+
+/** An unnamed clip goes by the chapter it starts in. */
+export function clipName(clip: Pick<Clip, "title">, chapterTitle: string | null | undefined) {
+  return clip.title || chapterTitle || "Untitled clip";
+}
+
 /**
  * A new clip reaches back further than it reaches forward: the moment worth
  * keeping has usually just been heard, and the few seconds after it are there

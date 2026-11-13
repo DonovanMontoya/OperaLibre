@@ -161,7 +161,7 @@ test('saved clips exposes loading failures and retry rather than claiming the bo
   await page.getByRole('tab', { name: 'Clips', exact: true }).click();
   const dialog = page;
   await expect(dialog.getByRole('button', { name: 'Try again' })).toBeVisible();
-  await expect(dialog.getByText(/No saved clips in this book yet/)).toHaveCount(0);
+  await expect(dialog.getByText(/No saved clips yet/)).toHaveCount(0);
   fixture.fail(false);
   await dialog.getByRole('button', { name: 'Try again' }).click();
   await expect(page.locator('.book-clip-detail').filter({ hasText: 'Passage from book 2' })).toBeVisible();
@@ -174,8 +174,8 @@ test('a book with no clips explains how to save the first passage', async ({ pag
   await page.locator('.book-row').nth(1).click();
   await page.getByRole('tab', { name: 'Clips', exact: true }).click();
   const dialog = page;
-  await expect(dialog.getByText(/No saved clips in this book yet/)).toBeVisible();
-  await expect(dialog.getByText(/Tap the gold ribbon while listening/)).toBeVisible();
+  await expect(dialog.getByText(/No saved clips yet/)).toBeVisible();
+  await expect(dialog.getByText(/tap the gold ribbon on the cover/)).toBeVisible();
   expect(fixture.writes).toEqual([]);
 });
 
@@ -319,8 +319,8 @@ test('pending removal retries a lost-response server copy after restart without 
   await page.getByRole('dialog').getByRole('button', { name: /Saved clips/ }).click();
   const dialog = page.getByRole('dialog');
   if (!await dialog.getByLabel('Name', { exact: true }).isVisible()) await dialog.locator('.clip-summary').filter({ hasText: 'A beginning' }).click();
+  await dialog.getByRole('button', { name: 'Remove clip', exact: true }).click();
   await dialog.getByRole('button', { name: 'Remove', exact: true }).click();
-  await dialog.getByRole('button', { name: 'Remove for good', exact: true }).click();
   await expect.poll(() => deleteAttempts).toBeGreaterThan(0);
   expect(fixture.clips.get(book.id)!.some(clip => clip.id === created!.id)).toBe(true);
   await page.reload();

@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronDown, CornerDownRight, LoaderCircle, Minus, Play, Plus, Scissors, Share2, Square, Trash2, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronDown, ChevronRight, CornerDownRight, LoaderCircle, Minus, Play, Plus, Scissors, Share2, Square, Trash2, X } from "lucide-react";
 import { type CSSProperties, type KeyboardEvent, type PointerEvent, useEffect, useId, useRef, useState } from "react";
 import { type ChapterSegment, chapterAtBookPosition } from "./chapters";
 import {
@@ -7,6 +7,9 @@ import {
   CLIP_TAIL_SECONDS,
   type Clip,
   type ClipRange,
+  clipLengthLabel,
+  clipName,
+  clipSpan,
   resizeClip,
   slideClip
 } from "./clips";
@@ -28,22 +31,13 @@ const DIAL_DRAG_SLOP = 3;
 const CLIP_LENGTHS = Array.from({ length: CLIP_MAX_SECONDS }, (_, index) => index + 1)
   .filter((seconds) => seconds <= 60 || seconds % 5 === 0);
 
-function lengthLabel(seconds: number) {
-  return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s` : `${seconds}s`;
-}
-
-function clipLength(range: ClipRange) {
-  return lengthLabel(Math.round(range.endSeconds - range.startSeconds));
-}
-
 /**
- * The bars are a texture, not the book's waveform: the server has no loudness
- * data to draw one from. Each is tied to its moment in the book, so the strip
- * reads as one piece of audio passing under the frame.
+ * The strip is a time ruler, not a waveform: the server has no loudness data,
+ * and invented peaks would suggest speech and silence that are not there.
+ * Every fifth tick is tall, so the ruler visibly passes under the frame.
  */
-function dialBarHeight(index: number) {
-  const noise = Math.sin(index * 12.9898) * 43758.5453;
-  return 0.26 + 0.74 * (0.6 * (noise - Math.floor(noise)) + 0.4 * Math.abs(Math.sin(index * 0.37)));
+function dialTickHeight(index: number) {
+  return index % 5 === 0 ? 0.92 : 0.46;
 }
 
 /**
@@ -171,18 +165,24 @@ function ClipDial({
                 className={inside ? (playhead !== null && second < playhead ? "played" : "kept") : undefined}
                 style={{
                   left: `${((second - viewStart) / span) * 100}%`,
-                  height: `${dialBarHeight(index) * 100}%`
+                  height: `${dialTickHeight(index) * 100}%`
                 }}
               />
             );
           })}
         </div>
+        {viewStart < 0 ? (
+          <div className="clip-dial-edge" style={{ left: `${(-viewStart / span) * 100}%` }} aria-hidden="true"><span>Start</span></div>
+        ) : null}
+        {bookDuration > 0 && viewStart + span > bookDuration ? (
+          <div className="clip-dial-edge end" style={{ left: `${((bookDuration - viewStart) / span) * 100}%` }} aria-hidden="true"><span>End</span></div>
+        ) : null}
         <div className="clip-dial-frame" aria-hidden="true" />
       </div>
       <div className="clip-dial-times" aria-hidden="true">
-        <output>{formatTime(range.startSeconds)}</output>
+        <output>{formatTime(Math.round(range.startSeconds))}</output>
         <span>Drag to move</span>
-        <output>{formatTime(range.endSeconds)}</output>
+        <output>{formatTime(Math.round(range.endSeconds))}</output>
       </div>
     </div>
   );
@@ -225,6 +225,7 @@ function ClipRow({
     || note.trim() !== (clip.note ?? "");
   // What the listener hears is the trim in front of them, saved or not.
   const shown = open ? range : clip;
+  const span = clipSpan(shown);
   const length = range.endSeconds - range.startSeconds;
   const seconds = Math.round(length);
   // One second either way, on whole seconds. A step the bounds swallow is not offered.
@@ -266,14 +267,16 @@ function ClipRow({
             setConfirmingRemoval(false);
           }}
         >
-          <strong>{clip.title ?? chapter?.title ?? "Untitled clip"}</strong>
-          <small>
-            {formatTime(shown.startSeconds)} – {formatTime(shown.endSeconds)} · {clipLength(shown)}
-            {clip.pending ? " · Waiting to sync" : ""}
-          </small>
-          {clip.note && !open ? <span className="clip-note">{clip.note}</span> : null}
+          <span className="clip-summary-text">
+            <strong>{clipName(clip, chapter?.title)}</strong>
+            <small>
+              {formatTime(span.start)} – {formatTime(span.end)} · {span.length}
+              {clip.pending ? " · Waiting to sync" : ""}
+            </small>
+            {clip.note && !open ? <span className="clip-note">{clip.note}</span> : null}
+          </span>
+          {open ? null : <ChevronRight size={18} className="clip-row-chevron" aria-hidden="true" />}
         </button>
-        <ChevronDown size={17} className="clip-row-chevron" aria-hidden="true" />
       </div>
 
       {open ? (
@@ -296,15 +299,18 @@ function ClipRow({
               >
                 <Minus size={15} />
               </button>
-              <select
-                aria-label="Clip length"
-                value={seconds}
-                onChange={(event) => resize(resizeClip(range, Number(event.currentTarget.value), bookDuration))}
-              >
-                {(CLIP_LENGTHS.includes(seconds) ? CLIP_LENGTHS : [...CLIP_LENGTHS, seconds].sort((left, right) => left - right))
-                  .filter((option) => option === seconds || bookDuration <= 0 || option <= bookDuration)
-                  .map((option) => <option key={option} value={option}>{lengthLabel(option)}</option>)}
-              </select>
+              <span className="clip-length-picker">
+                <select
+                  aria-label="Clip length"
+                  value={seconds}
+                  onChange={(event) => resize(resizeClip(range, Number(event.currentTarget.value), bookDuration))}
+                >
+                  {(CLIP_LENGTHS.includes(seconds) ? CLIP_LENGTHS : [...CLIP_LENGTHS, seconds].sort((left, right) => left - right))
+                    .filter((option) => option === seconds || bookDuration <= 0 || option <= bookDuration)
+                    .map((option) => <option key={option} value={option}>{clipLengthLabel(option)}</option>)}
+                </select>
+                <ChevronDown size={14} aria-hidden="true" />
+              </span>
               <button
                 type="button"
                 aria-label="One second longer"
@@ -321,7 +327,7 @@ function ClipRow({
             <input
               type="text"
               maxLength={200}
-              placeholder={chapter?.title ?? "Untitled clip"}
+              placeholder="Name this clip"
               value={title}
               onChange={(event) => setTitle(event.currentTarget.value)}
             />
@@ -331,17 +337,21 @@ function ClipRow({
             <textarea
               rows={2}
               maxLength={2000}
-              placeholder="Why you kept it"
+              placeholder="Why you kept it (optional)"
               value={note}
               onChange={(event) => setNote(event.currentTarget.value)}
             />
           </label>
 
           <div className="clip-actions">
-            <button type="button" className="clip-save" disabled={!edited || saving} onClick={() => void save()}>
-              {saving ? <LoaderCircle size={14} className="spin-icon" /> : null}
-              {edited ? "Save changes" : "Saved"}
-            </button>
+            {edited || saving ? (
+              <button type="button" className="clip-save" disabled={saving} onClick={() => void save()}>
+                {saving ? <LoaderCircle size={14} className="spin-icon" /> : null}
+                Save changes
+              </button>
+            ) : (
+              <span className="clip-saved-status"><Check size={14} aria-hidden="true" /> Saved</span>
+            )}
             {clips.canExportAudio ? (
               <button
                 type="button"
@@ -356,20 +366,30 @@ function ClipRow({
             <button type="button" onClick={() => continueFrom({ ...clip, ...range })}>
               <CornerDownRight size={14} /> Continue from here
             </button>
-            <button
-              type="button"
-              className="clip-remove"
-              onClick={() => {
-                if (!confirmingRemoval) {
-                  setConfirmingRemoval(true);
-                  return;
-                }
-                haptic("medium");
-                void clips.remove(clip);
-              }}
-            >
-              <Trash2 size={14} /> {confirmingRemoval ? "Remove for good" : "Remove"}
-            </button>
+          </div>
+
+          {/* Removal keeps a row of its own, so asking to confirm never moves the other actions. */}
+          <div className={`clip-removal${confirmingRemoval ? " confirming" : ""}`}>
+            {confirmingRemoval ? (
+              <>
+                <span role="status">Remove this clip for good?</span>
+                <button type="button" onClick={() => setConfirmingRemoval(false)}>Keep it</button>
+                <button
+                  type="button"
+                  className="clip-remove"
+                  onClick={() => {
+                    haptic("medium");
+                    void clips.remove(clip);
+                  }}
+                >
+                  <Trash2 size={14} /> Remove
+                </button>
+              </>
+            ) : (
+              <button type="button" className="clip-remove" onClick={() => setConfirmingRemoval(true)}>
+                <Trash2 size={14} /> Remove clip
+              </button>
+            )}
           </div>
         </div>
       ) : null}
@@ -386,7 +406,8 @@ export function ClipsSheet({
   close,
   continueFrom,
   previewPending = false,
-  initialClipId = null
+  initialClipId = null,
+  saveNow
 }: {
   book: Book;
   bookDuration: number;
@@ -398,6 +419,8 @@ export function ClipsSheet({
   initialClipId?: string | null;
   /** Move the listener's place to the clip and keep playing from there. */
   continueFrom: (clip: Clip) => void;
+  /** Present while this is the book playing: saves a clip at the current moment. */
+  saveNow?: () => void;
 }) {
   const dialogRef = useModalFocus<HTMLElement>(close);
   // The clip that brought the listener here opens ready to trim. Captured
@@ -417,19 +440,19 @@ export function ClipsSheet({
         <header>
           {selectedClip ? <button type="button" className="icon-button" aria-label="Back to clips" onClick={() => setOpenClipId(null)}><ChevronLeft size={18} /></button> : null}
           <div>
-            <span className="eyebrow"><Scissors size={13} /> Kept passages</span>
+            <span className="eyebrow"><Scissors size={13} /> {book.title}</span>
             <h2 id="clip-sheet-title">{selectedClip ? "Edit clip" : "Saved clips"}</h2>
           </div>
           <button type="button" className="icon-button" aria-label="Close" onClick={close}>
             <X size={18} />
           </button>
         </header>
-        <p className="sleep-sheet-hint">
-          {selectedClip ? book.title : count === 0
-            ? `${book.title}. Tap the gold ribbon while listening to save the last ${CLIP_LEAD_SECONDS} seconds and the next ${CLIP_TAIL_SECONDS}.`
-            : `${book.title} · ${count} ${count === 1 ? "clip" : "clips"}. Playing one brings you back to your place.`}
-        </p>
-        {clips.loading ? <p className="sleep-sheet-hint" role="status">Loading saved clips…</p> : null}
+        {!selectedClip && count > 0 ? (
+          <p className="sleep-sheet-hint">
+            {count} {count === 1 ? "clip" : "clips"}. After a preview you pick up where you left off.
+          </p>
+        ) : null}
+        {clips.loading ? <p className="sleep-sheet-hint" role="status">Loading clips…</p> : null}
         {clips.loadError ? (
           <p className="clip-load-error" role="alert">
             {clips.loadError}
@@ -438,7 +461,18 @@ export function ClipsSheet({
         ) : null}
         {!clips.supported ? <p className="sleep-sheet-hint">Update your OperaLibre server to use saved clips.</p> : null}
         {!clips.loading && !clips.loadError && clips.supported && count === 0 ? (
-          <p className="sleep-sheet-hint">No saved clips in this book yet.</p>
+          <div className="clip-empty">
+            <span className="clip-ribbon-glyph" aria-hidden="true" />
+            <div>
+              <strong>No clips yet</strong>
+              <p>While listening, press the gold ribbon on the cover to save the last {CLIP_LEAD_SECONDS} seconds and the next {CLIP_TAIL_SECONDS}.</p>
+              {saveNow ? (
+                <button type="button" className="clip-save-now" onClick={saveNow}>
+                  <Scissors size={14} aria-hidden="true" /> Save a clip now
+                </button>
+              ) : null}
+            </div>
+          </div>
         ) : null}
         {previewPending ? <p className="sleep-sheet-hint" role="status">Opening this book for preview…</p> : null}
         {clips.error ? (

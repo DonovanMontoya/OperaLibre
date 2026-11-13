@@ -8,7 +8,8 @@ import {
   RotateCcw,
   Timer,
   Volume2,
-  X
+  X,
+  Scissors
 } from "lucide-react";
 import { useLayoutEffect, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { useModalFocus } from "./useModalFocus";
@@ -33,6 +34,7 @@ export function BookDetailsSheet({
   markBookUnplayed,
   openBookDetails,
   openClips,
+  clipCount = 0,
   playbackBook,
   playbackDescription,
   setNativePlayerSheet
@@ -46,6 +48,7 @@ export function BookDetailsSheet({
   markBookUnplayed: (book: Book) => void;
   openBookDetails: (bookId: string) => void;
   openClips?: () => void;
+  clipCount?: number;
   playbackBook: Book;
   playbackDescription: string | null;
   setNativePlayerSheet: Dispatch<SetStateAction<NativePlayerSheet>>;
@@ -98,8 +101,10 @@ export function BookDetailsSheet({
 
         {openClips ? (
           <button type="button" className="book-saved-clips" onClick={openClips}>
-            <Bookmark size={21} aria-hidden="true" />
-            <span><strong>Saved clips</strong><small>Revisit, trim, and share passages from this book</small></span>
+            <Scissors size={21} aria-hidden="true" />
+            <span><strong>Saved clips</strong><small>{clipCount > 0
+              ? `${clipCount} ${clipCount === 1 ? "clip" : "clips"} · revisit, trim, and share`
+              : "None yet. Press the gold ribbon on the cover while listening."}</small></span>
             <ChevronRight size={18} aria-hidden="true" />
           </button>
         ) : null}

@@ -1,4 +1,4 @@
-import { BookClips } from "./BookClips";
+import { BookClips, useBookClips } from "./BookClips";
 import type { Clip } from "./clips";
 import { createPortal } from "react-dom";
 import { DemoMediaCredits } from "./DemoMediaCredits";
@@ -44,7 +44,8 @@ import {
   Timer,
   Users,
   Volume2,
-  X
+  X,
+  Scissors
 } from "lucide-react";
 import { CoverArt, DownloadRing } from "./CoverArt";
 import { PlaybackSpeedControl, ScrubSlider } from "./PlaybackControls";
@@ -352,6 +353,7 @@ export function PlayerPane({
     if (tab === "chapters") setChaptersOpen(true);
   }
   useEffect(() => setContentsTab("chapters"), [selectedBook?.id]);
+  const bookClips = useBookClips(contentsTabbed ? selectedBook : null, userId, clipsRefreshKey);
   const phoneWidth = usePhoneWidthWindow();
   // The books most recently in progress, offered when nothing is open.
   const resumeBooks = useMemo(() => books
@@ -711,13 +713,15 @@ export function PlayerPane({
                 <div className="native-now-artwork" ref={nowArtworkRef}>
                   <CoverArt book={playbackBook} size="large" />
                   {clips.visible ? (
-                    <button type="button" className="native-cover-clip" aria-label="Save a clip of the last 30 seconds and the next 10" onClick={clips.saveMoment}>
-                      <Bookmark size={18} aria-hidden="true" />
+                    <button type="button" className={`native-cover-clip${clips.lastSavedId && !clips.error ? " saved" : ""}`} aria-label="Save a clip of the last 30 seconds and the next 10" title="Save a clip: the last 30 seconds and the next 10" onClick={clips.saveMoment}>
+                      {clips.lastSavedId && !clips.error ? <Check size={17} aria-hidden="true" /> : <Scissors size={17} aria-hidden="true" />}
+                      <span aria-hidden="true">{clips.lastSavedId && !clips.error ? "Saved" : "Clip"}</span>
                     </button>
                   ) : null}
                   {clips.visible && (clips.error || clips.lastSavedId) ? (
                     <button type="button" className="native-cover-clip-notice" aria-label={clips.error ? `${clips.error} Open clips` : "Clip saved. Open clips"} onClick={() => openBookClips(playbackBook)}>
                       <span role="status">{clips.error ? "Clip not saved" : "Clip saved"}</span>
+                      <span className="native-cover-clip-notice-action" aria-hidden="true">{clips.error ? "Details" : "Edit"} <ChevronRight size={13} /></span>
                     </button>
                   ) : null}
                 </div>
@@ -1588,6 +1592,7 @@ export function PlayerPane({
                   }}
                   onClick={() => { haptic("light"); selectContentsTab(tab); }}>
                   {tab === "chapters" ? "Chapters" : "Clips"}
+                  {tab === "clips" && bookClips.clips.length > 0 ? <span className="book-contents-count" aria-hidden="true">{bookClips.clips.length}</span> : null}
                 </button>
               ))}
             </div>
@@ -1595,7 +1600,7 @@ export function PlayerPane({
           <div role={contentsTabbed ? "tabpanel" : undefined}
             id={`${contentsId}-panel`} aria-labelledby={`${contentsId}-${contentsTab}`}>
           {contentsTab === "clips" && contentsTabbed ? (
-            <BookClips key={selectedBook.id} book={selectedBook} userId={userId} refreshKey={clipsRefreshKey}
+            <BookClips key={selectedBook.id} book={selectedBook} state={bookClips}
               open={(clipId) => openBookClips(selectedBook, clipId)}
               preview={(clip) => previewBookClip(selectedBook, clip)} stop={clips.stopAudition}
               playingClipId={clips.playingClipId} previewPending={clipPreviewPending} />
