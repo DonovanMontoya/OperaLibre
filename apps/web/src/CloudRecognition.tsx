@@ -1,26 +1,26 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { LoaderCircle, TriangleAlert } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import {
   disableCloudRecognition,
   enableCloudRecognition,
   getCloudRecognitionStatus,
   type CloudRecognitionStatus
 } from "./api";
-import { ExperimentSection } from "./ExperimentSection";
+
+type Choice = "local" | "openai";
 
 function failureMessage(failure: unknown, fallback: string) {
   return failure instanceof Error && failure.message ? failure.message : fallback;
 }
 
 /**
- * The owner's opt-in to transcribe follow-along audio with OpenAI instead of
- * on this server. It sends book audio away, so turning it on takes a key and
- * an explicit confirmation.
+ * Where follow-along speech recognition runs. On this server is the default;
+ * OpenAI is an opt-in for owners who bring their own key.
  */
 export function CloudRecognition({ isOwner, onChange }: { isOwner: boolean; onChange: (enabled: boolean) => void }) {
   const [status, setStatus] = useState<CloudRecognitionStatus | null>(null);
+  const [choice, setChoice] = useState<Choice>("local");
   const [apiKey, setApiKey] = useState("");
-  const [understood, setUnderstood] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -30,96 +30,94 @@ export function CloudRecognition({ isOwner, onChange }: { isOwner: boolean; onCh
       .then(loaded => {
         if (cancelled) return;
         setStatus(loaded);
+        setChoice(loaded.enabled ? "openai" : "local");
         onChange(loaded.enabled);
       })
       .catch(() => undefined);
     return () => { cancelled = true; };
   }, [onChange]);
 
-  function saved(next: CloudRecognitionStatus) {
-    setStatus(next);
-    onChange(next.enabled);
-    setApiKey("");
-    setUnderstood(false);
+  async function apply(change: () => Promise<CloudRecognitionStatus>, fallback: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await change();
+      setStatus(next);
+      setChoice(next.enabled ? "openai" : "local");
+      onChange(next.enabled);
+      setApiKey("");
+    } catch (failure) {
+      setError(failureMessage(failure, fallback));
+    } finally {
+      setBusy(false);
+    }
   }
 
-  async function enable(event: FormEvent) {
+  function useOpenAi(event: FormEvent) {
     event.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      saved(await enableCloudRecognition(apiKey.trim()));
-    } catch (failure) {
-      setError(failureMessage(failure, "Could not turn on OpenAI transcription."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function disable() {
-    setBusy(true);
-    setError(null);
-    try {
-      saved(await disableCloudRecognition());
-    } catch (failure) {
-      setError(failureMessage(failure, "Could not turn off OpenAI transcription."));
-    } finally {
-      setBusy(false);
-    }
+    void apply(() => enableCloudRecognition(apiKey.trim()), "Could not save the OpenAI key.");
   }
 
   if (!status) return null;
+  const saved: Choice = status.enabled ? "openai" : "local";
+  const switching = choice !== saved;
   return (
-    <ExperimentSection title={status.enabled ? "Transcription: OpenAI" : "Transcription: on this server"}>
-      <div className="cloud-recognition">
-        <p className="cloud-recognition-warning" role="note">
-          <TriangleAlert size={15} aria-hidden="true" />
-          <span>
-            <strong>Greatly reduces privacy.</strong> With an OpenAI key, the narration of every book you
-            sync, including scheduled nightly remapping, is uploaded to OpenAI in short clips to be
-            transcribed, and OpenAI bills that key per minute of audio. OpenAI handles it under its own terms
-            and retention policies, outside your control. Book text, accounts, and listening history are not sent.
-          </span>
-        </p>
-        <p className="admin-experiment-detail">
-          OpenAI's {status.model} model can follow narration that the on-device recognizer finds hard and spares a
-          small server the work. Matching the narration to the text still happens here, so the follow-along
-          add-on is still needed. Books synced before you change this keep their maps.
-        </p>
-        {error ? <p className="admin-experiment-detail" role="alert">{error}</p> : null}
-        {!isOwner ? (
-          <p className="admin-experiment-detail">Only an owner can change this.</p>
-        ) : status.enabled ? (
-          <>
-            <div className="admin-update-actions">
-              <button type="button" disabled={busy} onClick={() => void disable()}>
-                {busy ? <LoaderCircle size={15} className="spin-icon" /> : null}
-                Transcribe on this server again
-              </button>
-            </div>
-            <p className="admin-experiment-detail">This deletes the saved key, and a book being synced stops uploading at its next clip.</p>
-          </>
-        ) : (
-          <form onSubmit={event => void enable(event)}>
-            <fieldset disabled={busy}>
-              <label>
-                <span>OpenAI API key</span>
-                <input type="password" autoComplete="off" value={apiKey} onChange={event => setApiKey(event.target.value)} required />
-              </label>
-              <label className="cloud-recognition-confirm">
-                <input type="checkbox" checked={understood} onChange={event => setUnderstood(event.target.checked)} />
-                <span>I understand that book audio will leave this server and be sent to OpenAI.</span>
-              </label>
-              <div className="admin-update-actions">
-                <button type="submit" className="danger" disabled={!understood || !apiKey.trim()}>
-                  {busy ? <LoaderCircle size={15} className="spin-icon" /> : null}
-                  Send audio to OpenAI
-                </button>
-              </div>
-            </fieldset>
-          </form>
-        )}
-      </div>
-    </ExperimentSection>
+    <fieldset className="recognition-choice" disabled={!isOwner || busy}>
+      <legend>Speech recognition</legend>
+      <label className={choice === "local" ? "selected" : undefined}>
+        <input type="radio" name="recognition" checked={choice === "local"} onChange={() => setChoice("local")} />
+        <span>
+          <strong>On this server</strong>
+          <small>Default. Audio never leaves your server.</small>
+        </span>
+      </label>
+      <label className={choice === "openai" ? "selected" : undefined}>
+        <input type="radio" name="recognition" checked={choice === "openai"} onChange={() => setChoice("openai")} />
+        <span>
+          <strong>OpenAI</strong>
+          <small>
+            {saved === "openai"
+              ? `Using your API key with ${status.model}.`
+              : "Optional. Uses your own API key; can help with hard-to-follow narration."}
+          </small>
+        </span>
+      </label>
+
+      {switching && choice === "openai" ? (
+        <form className="recognition-choice-detail" onSubmit={useOpenAi}>
+          <p>
+            Clips of each book's narration are sent to OpenAI while it syncs, and billed to your key. Book text,
+            accounts, and listening history stay here. Matching audio to text still runs on this server.
+          </p>
+          <label>
+            <span>OpenAI API key</span>
+            <input type="password" autoComplete="off" value={apiKey} onChange={event => setApiKey(event.target.value)} required />
+          </label>
+          <div className="admin-update-actions">
+            <button type="submit" disabled={!apiKey.trim()}>
+              {busy ? <LoaderCircle size={15} className="spin-icon" /> : null}
+              Use OpenAI
+            </button>
+            <button type="button" className="quiet-button" onClick={() => setChoice("local")}>Cancel</button>
+          </div>
+        </form>
+      ) : null}
+
+      {switching && choice === "local" ? (
+        <div className="recognition-choice-detail">
+          <p>Syncs go back to running entirely on this server. The saved key is deleted.</p>
+          <div className="admin-update-actions">
+            <button type="button" onClick={() => void apply(disableCloudRecognition, "Could not switch back to this server.")}>
+              {busy ? <LoaderCircle size={15} className="spin-icon" /> : null}
+              Use this server
+            </button>
+            <button type="button" className="quiet-button" onClick={() => setChoice("openai")}>Cancel</button>
+          </div>
+        </div>
+      ) : null}
+
+      {error ? <p className="admin-experiment-detail" role="alert">{error}</p> : null}
+      {!isOwner ? <p className="admin-experiment-detail">Only an owner can change this.</p> : null}
+    </fieldset>
   );
 }

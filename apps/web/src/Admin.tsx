@@ -1020,8 +1020,9 @@ export function AdminPanel({
                 <p>
                   Enables sentence highlighting, sentence seeking, and automatic page turns in the EPUB
                   reader, including existing sync maps. When disabled, only chapter sync is available.
-                  Creates precise sync maps using {cloudRecognition ? "OpenAI speech recognition" : "local speech recognition"} and forced alignment.
-                  {cloudRecognition ? " Narration is uploaded to OpenAI to be transcribed." : " Audio stays on this server."} Jobs run one at a time and can use substantial CPU, memory, and disk space. On smaller servers, generation may affect playback.
+                  {" "}{cloudRecognition
+                    ? "Creates precise sync maps using OpenAI speech recognition, with your API key, and forced alignment on this server."
+                    : "Creates precise sync maps on this server using local speech recognition and forced alignment. Audio stays on this server."} Jobs run one at a time and can use substantial CPU, memory, and disk space. On smaller servers, generation may affect playback.
                 </p>
                 {syncAddon?.packageBytes ? (
                   <p className="admin-experiment-detail">

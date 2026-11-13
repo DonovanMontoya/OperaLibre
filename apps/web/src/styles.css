@@ -24763,52 +24763,78 @@ html:not(.native-app) .book-heading .book-quick-start .book-quick-return {
   }
 }
 
-.cloud-recognition {
+.recognition-choice {
   display: grid;
-  gap: 10px;
-}
-
-.cloud-recognition-warning {
-  display: flex;
   gap: 8px;
-  align-items: flex-start;
+  min-width: 0;
+  margin: 0;
+  padding: 12px 0 0;
+  border: 0;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.12);
+}
+
+.recognition-choice legend {
+  float: left;
+  width: 100%;
+  margin-bottom: 4px;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+.recognition-choice > label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
   padding: 10px 12px;
-  border: 1px solid rgba(var(--oxblood-rgb), 0.35);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 8px;
-  background: rgba(var(--oxblood-rgb), 0.07);
+  cursor: pointer;
 }
 
-.admin-experiment-list .cloud-recognition-warning,
-.admin-experiment-list .cloud-recognition-warning strong {
-  color: var(--oxblood);
+.recognition-choice > label.selected {
+  border-color: rgba(var(--oxblood-rgb), 0.45);
+  background: rgba(var(--oxblood-rgb), 0.05);
+}
+
+.recognition-choice > label input {
+  margin: 3px 0 0;
+  accent-color: var(--oxblood);
+}
+
+.recognition-choice > label span {
+  display: grid;
+  gap: 2px;
+}
+
+.admin-experiment-list .recognition-choice > label strong {
   font: inherit;
-  font-size: 0.8rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--ink);
 }
 
-.admin-experiment-list .cloud-recognition-warning strong { font-weight: 700; }
-
-.cloud-recognition-warning svg {
-  flex: 0 0 auto;
-  margin-top: 2px;
+.recognition-choice > label small {
+  color: var(--ink-faded);
+  font-size: 0.74rem;
+  line-height: 1.4;
 }
 
-.cloud-recognition fieldset {
+.recognition-choice:disabled > label { cursor: default; }
+
+.recognition-choice-detail {
   display: grid;
   gap: 10px;
-  margin: 0;
-  padding: 0;
-  border: 0;
+  padding: 2px 0 0 34px;
 }
 
-.cloud-recognition label {
+.admin-experiment-list .recognition-choice-detail p {
+  font-size: 0.76rem;
+}
+
+.recognition-choice-detail label {
   display: grid;
   gap: 4px;
   max-width: 440px;
   font-size: 0.78rem;
-}
-
-.cloud-recognition label.cloud-recognition-confirm {
-  grid-template-columns: auto 1fr;
-  align-items: start;
-  gap: 8px;
 }
