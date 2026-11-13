@@ -665,7 +665,12 @@ async fn create_owned(
     if config.retain_sender_state {
         crate::share::prune_confirmed_recovery(&state).await?;
     }
-    input.expires_in_seconds = Some(input.expires_in_seconds.unwrap_or(900).clamp(60, 900));
+    input.expires_in_seconds = Some(
+        input
+            .expires_in_seconds
+            .unwrap_or(900)
+            .clamp(60, crate::share::GIFT_MAX_LIFETIME_SECONDS as i64),
+    );
     let Json(invitation) = crate::share::create_selected_share(
         State(state.clone()),
         Extension(auth.clone()),

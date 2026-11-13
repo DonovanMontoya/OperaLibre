@@ -59,6 +59,8 @@ Your server contacts Cloudflare once, installs the broker, creates its secrets, 
 
 If the token works for more than one Cloudflare account, open **More than one Cloudflare account?** and enter the Account ID of the one to use.
 
+For links longer than 15 minutes, update the server and recipient app, then reinstall the broker so all three support the longer lifetime. Existing shorter links keep their original expiry.
+
 After a server update that changes gifts, open **Update or reinstall the broker** and paste a token again. This also replaces the broker's secrets, so links you have already sent stop working.
 
 The Workers free plan allows about 100,000 requests a day, far more than personal gifting uses. Check [Cloudflare's current limits](https://developers.cloudflare.com/workers/platform/limits/) before relying on that; when a free limit is reached, gifts fail until the next day.
@@ -103,9 +105,9 @@ Either way, you can check the broker by opening `https://your-broker-address/gif
 
 ## 4. Send a gift
 
-1. Open a book's page and choose **Share gift**.
-2. Choose what to include. The ebook and cover are selected by default; add the audiobook or read-along timing if you want. The sheet shows the size.
-3. Add a personal message if you like, choose how long the link works (5 or 15 minutes), and choose **Create gift link**.
+1. Open a book's page and choose **More → Gift this book**.
+2. Choose what to include. The audiobook, ebook, and cover are selected by default when available. You can change the selection or add read-along timing if supported. The sheet shows the size.
+3. Add a personal message if you like, choose how long the link works (5 minutes, 15 minutes, 1 hour, 6 hours, or 24 hours), and choose **Create gift link**.
 4. Copy the link and send it privately. Anyone who has the link can claim the gift, and it can be claimed once.
 
 Keep the server running until the gift arrives. **Revoke gift** in the same sheet cancels a link that has not been used. A copy someone has already accepted cannot be taken back.
@@ -133,7 +135,7 @@ Cloudflare's hosted TURN service is not supported yet, and neither are TCP or TL
 
 ## Limits
 
-- A gift link works for at most 15 minutes and can be claimed once.
+- A gift link works for at most 24 hours and can be claimed once.
 - A gift can be up to `max_book_download_gib` in size and never more than 25 GiB, but it must finish before the link expires, so very large audiobooks may not make it on a slow connection.
 - Waiting gifts share the server's `max_concurrent_book_downloads` slots. With the default of `1`, one gift can wait at a time, and offline downloads wait while it does. Raise the setting if that gets in the way.
 - Gift links open the app with an `operalibre://` link. Another app on the phone could register the same kind of link, so recipients should cancel if anything other than OperaLibre offers to open it.
