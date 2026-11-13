@@ -260,8 +260,8 @@ pub(crate) async fn get_epub_entry(
     let (response, member) = tokio::task::spawn_blocking(move || {
         let (file, metadata) = open_contained_file(&path, &[root])
             .map_err(|_| ApiError::not_found("EPUB not found"))?;
-        let mut archive = zip::ZipArchive::new(file)
-            .map_err(|_| ApiError::bad_request("Invalid EPUB archive"))?;
+        let mut archive =
+            open_zip_file(file).map_err(|_| ApiError::bad_request("Invalid EPUB archive"))?;
         let index = archive
             .index_for_name(&entry_path)
             .ok_or(ApiError::not_found("EPUB entry not found"))?;

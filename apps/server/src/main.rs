@@ -278,6 +278,15 @@ async fn main() -> anyhow::Result<()> {
     let (shutdown_reason_sender, shutdown_reason) = tokio::sync::oneshot::channel();
     let shutdown = state.shutdown.subscribe();
     let shutdown_sender = state.shutdown.clone();
+    // Without TCP_NODELAY, a response written in more than one piece (the
+    // headers, then a body) can sit in the kernel until the client
+    // acknowledges the first piece, which clients delay by up to 40 ms. Every
+    // EPUB page, stylesheet, small JSON reply, and error paid that wait.
+    let listener = axum::serve::ListenerExt::tap_io(listener, |stream| {
+        if let Err(error) = stream.set_nodelay(true) {
+            tracing::debug!("could not set TCP_NODELAY on a connection: {error}");
+        }
+    });
     let serve = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
