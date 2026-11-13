@@ -22,8 +22,6 @@ const ATTEMPTS: u32 = 3;
 #[serde(rename_all = "camelCase")]
 struct Stored {
     api_key: String,
-    /// When the owner confirmed that book audio is sent to OpenAI.
-    acknowledged_at: String,
 }
 
 async fn load(state: &AppState) -> Option<Stored> {
@@ -39,12 +37,10 @@ async fn load(state: &AppState) -> Option<Stored> {
 /// The recognizer a new sync job should use: OpenAI when the owner saved a
 /// key, otherwise none, meaning on-device whisper.
 pub(crate) async fn configured(state: &AppState) -> Option<Arc<CloudRecognizer>> {
-    load(state).await.map(|stored| {
-        Arc::new(CloudRecognizer {
-            api_key: stored.api_key,
-            endpoint: OPENAI_TRANSCRIPTIONS_URL.into(),
-        })
-    })
+    let stored = load(state).await?;
+    CloudRecognizer::new(stored.api_key, OPENAI_TRANSCRIPTIONS_URL.into())
+        .ok()
+        .map(Arc::new)
 }
 
 /// Whether a job that started with OpenAI recognition may keep sending audio:
@@ -54,24 +50,17 @@ pub(crate) async fn still_enabled(state: &AppState) -> bool {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct CloudRecognitionStatus {
     enabled: bool,
-    model: &'static str,
-}
-
-async fn status(state: &AppState) -> CloudRecognitionStatus {
-    CloudRecognitionStatus {
-        enabled: load(state).await.is_some(),
-        model: OPENAI_MODEL,
-    }
 }
 
 pub(crate) async fn cloud_recognition_status(
     State(state): State<AppState>,
     _: AdminUser,
 ) -> Json<CloudRecognitionStatus> {
-    Json(status(&state).await)
+    Json(CloudRecognitionStatus {
+        enabled: still_enabled(&state).await,
+    })
 }
 
 #[derive(Deserialize)]
@@ -98,14 +87,13 @@ pub(crate) async fn set_cloud_recognition(
     }
     let payload = serde_json::to_string(&Stored {
         api_key: api_key.into(),
-        acknowledged_at: now_unix_string(),
     })
     .map_err(|_| ApiError::internal("Cannot save the OpenAI setting."))?;
     state
         .database
         .transaction(move |db| write_document(db, DOCUMENT, &payload))
         .await?;
-    Ok(Json(status(&state).await))
+    Ok(Json(CloudRecognitionStatus { enabled: true }))
 }
 
 /// Back to on-device recognition. The key is deleted, not kept for later.
@@ -115,25 +103,16 @@ pub(crate) async fn remove_cloud_recognition(
 ) -> Result<Json<CloudRecognitionStatus>, ApiError> {
     state
         .database
-        .transaction(|db| {
-            db.execute("DELETE FROM documents WHERE name = ?1", [DOCUMENT])?;
-            Ok(())
-        })
+        .transaction(|db| delete_document(db, DOCUMENT))
         .await?;
-    Ok(Json(status(&state).await))
+    Ok(Json(CloudRecognitionStatus { enabled: false }))
 }
 
 #[cfg(test)]
 pub(crate) async fn enable_for_test(state: &AppState) {
     state
         .database
-        .transaction(|db| {
-            write_document(
-                db,
-                DOCUMENT,
-                r#"{"apiKey":"test-key","acknowledgedAt":"0"}"#,
-            )
-        })
+        .transaction(|db| write_document(db, DOCUMENT, r#"{"apiKey":"test-key"}"#))
         .await
         .unwrap();
 }
@@ -141,6 +120,8 @@ pub(crate) async fn enable_for_test(state: &AppState) {
 pub(crate) struct CloudRecognizer {
     api_key: String,
     endpoint: String,
+    /// One client per sync job, so its windows reuse the connection.
+    client: reqwest::Client,
 }
 
 impl std::fmt::Debug for CloudRecognizer {
@@ -165,12 +146,17 @@ struct TranscribedWord {
 }
 
 impl CloudRecognizer {
+    fn new(api_key: String, endpoint: String) -> reqwest::Result<Self> {
+        Ok(Self {
+            api_key,
+            endpoint,
+            client: http_client_builder().timeout(REQUEST_TIMEOUT).build()?,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(endpoint: &str) -> Self {
-        Self {
-            api_key: "test-key".into(),
-            endpoint: endpoint.into(),
-        }
+        Self::new("test-key".into(), endpoint.into()).unwrap()
     }
 
     /// Word timings for one audio file, as the timeline the on-device
@@ -186,11 +172,13 @@ impl CloudRecognizer {
             "OpenAI transcription accepts at most 25 MB of audio at a time."
         );
         let (body, content_type) = multipart_body(&audio, upload_name(audio_path), language);
-        let client = http_client_builder().timeout(REQUEST_TIMEOUT).build()?;
+        drop(audio);
+        let body = bytes::Bytes::from(body);
         let mut attempt = 0;
         let reply = loop {
             attempt += 1;
-            let sent = client
+            let sent = self
+                .client
                 .post(&self.endpoint)
                 .bearer_auth(&self.api_key)
                 .header(CONTENT_TYPE, &content_type)

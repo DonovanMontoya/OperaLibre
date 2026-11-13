@@ -1847,10 +1847,8 @@ impl AutomaticFixes<'_> {
                 if diagnosis.fix.kind != sync_report::FixKind::Auto || diagnosis.fix.attempted {
                     break;
                 }
-                // OpenAI has no larger model to try, so a rerun would only
-                // send the same audio again.
                 if diagnosis.cause == sync_report::Cause::NoisyAudio
-                    && self.aligner.recognition.cloud.is_some()
+                    && self.aligner.recognition.larger().is_none()
                 {
                     break;
                 }
@@ -1952,7 +1950,11 @@ impl AutomaticFixes<'_> {
                 )
             }
             sync_report::Cause::NoisyAudio => {
-                recognition = self.aligner.recognition.larger();
+                recognition = self
+                    .aligner
+                    .recognition
+                    .larger()
+                    .expect("noisy audio is retried only with a larger model");
                 (
                     self.aligner.with_recognition(&recognition),
                     scope.clone(),
@@ -2367,21 +2369,29 @@ impl RecognitionSettings {
         }
     }
 
+    /// Whether rerunning with the retry model could hear anything new. The
+    /// same model on the same audio only repeats the pass, which for OpenAI
+    /// would upload and bill it again.
+    fn has_retry_model(&self) -> bool {
+        self.retry_model != self.model
+    }
+
     /// One last, slower pass for audio the usual models could not follow.
-    fn larger(&self) -> Self {
+    /// OpenAI has no larger model.
+    fn larger(&self) -> Option<Self> {
         if self.cloud.is_some() {
-            return self.clone();
+            return None;
         }
         let model = if self.language.as_deref() == Some("en") {
             "small.en"
         } else {
             "small"
         };
-        Self {
+        Some(Self {
             model,
             retry_model: model,
             ..self.clone()
-        }
+        })
     }
 }
 
@@ -2670,7 +2680,7 @@ impl<'a> Aligner<'a> {
                     .await
                 {
                     Ok(words) => words,
-                    Err(error) => {
+                    Err(error) if self.recognition.has_retry_model() => {
                         self.note_failed_retry(&error).await;
                         self.transcribe(
                             &audio,
@@ -2680,6 +2690,7 @@ impl<'a> Aligner<'a> {
                         )
                         .await?
                     }
+                    Err(error) => return Err(error),
                 };
                 if let Some(retry_start) =
                     alignment::recovery_clock_retry_start(&recognized, &transcript.text)
@@ -3085,7 +3096,7 @@ impl<'a> Aligner<'a> {
         // audio the first one handled, so keep that result rather than fail
         // the book. A pass already using the larger model goes straight to
         // shorter windows.
-        let recognized = if model == self.recognition.model {
+        let recognized = if !self.recognition.has_retry_model() {
             recognized
         } else {
             update_job_output(
@@ -3351,7 +3362,7 @@ impl<'a> Aligner<'a> {
     ) -> anyhow::Result<ScopeAlignment> {
         let mut interruptions = alignment::interrupted_passages(transcript, recognized);
         let confirmation;
-        let recognized = if interruptions.is_empty() {
+        let recognized = if interruptions.is_empty() || !self.recognition.has_retry_model() {
             recognized
         } else {
             update_job_output(
@@ -3926,12 +3937,12 @@ mod tests {
             ),
             ("tiny.en", "base.en", Some("en"))
         );
-        assert_eq!(recognition.larger().model, "small.en");
+        assert_eq!(recognition.larger().unwrap().model, "small.en");
         assert_eq!(recognition.swapped().model, "base.en");
         // Another book keeps its own label.
         let other = book_recognition(&state, "other", &epub).await;
         assert_eq!(other.language.as_deref(), Some("nl"));
-        assert_eq!(other.larger().model, "small");
+        assert_eq!(other.larger().unwrap().model, "small");
     }
 
     #[cfg(unix)]

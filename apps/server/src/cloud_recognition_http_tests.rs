@@ -7,7 +7,7 @@ async fn openai_transcription_is_owner_opt_in_behind_a_privacy_confirmation() {
     let server = TestServer::start(0).await;
     let owner = server.setup_owner().await;
     let reader = server.add_reader(&owner, "cloud-reader").await;
-    let off = serde_json::json!({"enabled":false,"model":"whisper-1"});
+    let off = serde_json::json!({"enabled":false});
     assert_eq!(server.get(ROUTE, &owner).await.json(), off);
     assert!(
         crate::cloud_recognition::configured(&server.state)
@@ -47,10 +47,7 @@ async fn openai_transcription_is_owner_opt_in_behind_a_privacy_confirmation() {
 
     let on = server.send_json("PUT", ROUTE, &owner, confirmed).await;
     assert_eq!(on.status, StatusCode::OK);
-    assert_eq!(
-        on.json(),
-        serde_json::json!({"enabled":true,"model":"whisper-1"})
-    );
+    assert_eq!(on.json(), serde_json::json!({"enabled":true}));
     assert!(!on.text().contains(key));
     assert!(!server.get(ROUTE, &owner).await.text().contains(key));
     assert!(

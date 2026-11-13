@@ -909,7 +909,6 @@ export async function setSyncAddonEnabled(enabled: boolean) {
 
 export type CloudRecognitionStatus = {
   enabled: boolean;
-  model: string;
 };
 
 const CLOUD_RECOGNITION = "/api/experimental-features/readalong-sync/cloud-recognition";

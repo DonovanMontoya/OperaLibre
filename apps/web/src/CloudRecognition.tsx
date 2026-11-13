@@ -6,12 +6,9 @@ import {
   getCloudRecognitionStatus,
   type CloudRecognitionStatus
 } from "./api";
+import { errorMessage } from "./formatting";
 
 type Choice = "local" | "openai";
-
-function failureMessage(failure: unknown, fallback: string) {
-  return failure instanceof Error && failure.message ? failure.message : fallback;
-}
 
 /**
  * Where follow-along speech recognition runs. On this server is the default;
@@ -24,30 +21,30 @@ export function CloudRecognition({ isOwner, onChange }: { isOwner: boolean; onCh
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  function accept(next: CloudRecognitionStatus) {
+    setStatus(next);
+    setChoice(next.enabled ? "openai" : "local");
+    onChange(next.enabled);
+  }
+
   useEffect(() => {
     let cancelled = false;
     void getCloudRecognitionStatus()
-      .then(loaded => {
-        if (cancelled) return;
-        setStatus(loaded);
-        setChoice(loaded.enabled ? "openai" : "local");
-        onChange(loaded.enabled);
-      })
+      .then(loaded => { if (!cancelled) accept(loaded); })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [onChange]);
+    // `onChange` is a state setter, so this runs once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function apply(change: () => Promise<CloudRecognitionStatus>, fallback: string) {
     setBusy(true);
     setError(null);
     try {
-      const next = await change();
-      setStatus(next);
-      setChoice(next.enabled ? "openai" : "local");
-      onChange(next.enabled);
+      accept(await change());
       setApiKey("");
     } catch (failure) {
-      setError(failureMessage(failure, fallback));
+      setError(errorMessage(failure, fallback));
     } finally {
       setBusy(false);
     }
@@ -76,11 +73,7 @@ export function CloudRecognition({ isOwner, onChange }: { isOwner: boolean; onCh
         <input type="radio" name="recognition" checked={choice === "openai"} onChange={() => setChoice("openai")} />
         <span>
           <strong>OpenAI</strong>
-          <small>
-            {saved === "openai"
-              ? `Narration clips go to ${status.model} with your API key`
-              : "Narration clips go to OpenAI with your own API key"}
-          </small>
+          <small>Narration clips go to OpenAI with your own API key</small>
         </span>
         <em>Optional</em>
       </label>
