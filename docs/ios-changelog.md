@@ -11,6 +11,28 @@ Entries use **version (build)** and appear newest first. iOS versions are tracke
 independently of the server releases. From 1.3.2, the build number counts
 uploads of each app version from 1, and Android uses the same build number.
 
+## 1.3.2 (5)
+
+Uploaded to App Store Connect on November 13, 2026, from main at
+[`428992ff`](https://github.com/DonovanMontoya/OperaLibre/commit/428992ff130c5f19ed8f3bcb8c1802d331075c76).
+
+- Book gifts are available as an owner-enabled experiment, with configurable link lifetimes.
+- The unfolded player, Up next list, shelf covers, and light themes have been refined.
+- EPUB pages and small responses open without the previous stalls.
+
+## 1.3.2 (4)
+
+Uploaded to App Store Connect on November 8, 2026, from main at
+[`f5f9cab8`](https://github.com/DonovanMontoya/OperaLibre/commit/f5f9cab875543a05bea604ad9dbb34583c7a9edc).
+
+- The iOS interface follows the system text size, with updated shelf and
+  playback controls.
+- Read-along stays visible when rotating an open iPhone Duo, and landscape
+  text keeps its intended size.
+- Mobile cover images stay available after opening a book.
+- CarPlay forward seeks preserve listening progress, and cancelling an iOS
+  download no longer leaves a completed file behind.
+
 ## 1.3.2 (3)
 
 Uploaded to App Store Connect on November 5, 2026, from main at
