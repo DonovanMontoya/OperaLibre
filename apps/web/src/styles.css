@@ -15805,10 +15805,10 @@ html.native-app .recent-row {
 
 .native-cover-clip-notice {
   position: absolute;
-  /* Hangs under the ribbon that was pressed, clear of the cover's title art. */
-  left: calc(var(--cover-left, 0px) + var(--cover-width, 100%) - 20px);
-  top: calc(var(--cover-top, 0px) + 76px);
-  transform: translateX(-100%);
+  /* Sits above the cover, ending at the ribbon, so it never covers the art. */
+  left: calc(var(--cover-left, 0px) + var(--cover-width, 100%));
+  top: calc(var(--cover-top, 0px) - 10px);
+  transform: translate(-100%, -100%);
   z-index: 2;
   align-self: start;
   justify-self: end;
@@ -15827,35 +15827,44 @@ html.native-app .recent-row {
   cursor: pointer;
 }
 
-/* A caption, not a control: no border, and a caret up to the ribbon it explains. */
+/* A caption, not a control: above the cover, with a caret down to the ribbon it explains. */
 .native-cover-clip-hint {
   position: absolute;
-  left: calc(var(--cover-left, 0px) + var(--cover-width, 100%) - 20px);
-  top: calc(var(--cover-top, 0px) + 80px);
+  left: calc(var(--cover-left, 0px) + var(--cover-width, 100%));
+  top: calc(var(--cover-top, 0px) - 14px);
   z-index: 2;
   width: max-content;
-  max-width: min(calc(var(--cover-width, 100%) - 32px), calc(17ch + 24px));
-  padding: 7px 12px;
-  border-radius: 10px;
-  background: rgba(36, 27, 20, 0.86);
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: #241b14;
   color: #f3ead8;
-  font: 0.7rem/1.35 "JetBrains Mono", monospace;
-  text-align: center;
-  text-wrap: balance;
-  transform: translateX(-100%);
+  font: 0.72rem/1.35 "JetBrains Mono", monospace;
+  white-space: nowrap;
+  transform: translate(-100%, -100%);
   pointer-events: none;
 }
 
+/* No room above the cover: the brief notice drops below it instead, and the
+   first-use hint is left out; the ribbon's own label says what it does. */
+.native-now-artwork[data-clip-callout="below"] .native-cover-clip-notice {
+  top: calc(var(--cover-top, 0px) + var(--cover-height, 100%) + 8px);
+  transform: translateX(-100%);
+}
+
+.native-now-artwork[data-clip-callout="below"] .native-cover-clip-hint {
+  display: none;
+}
+
+/* The ribbon's centre is 40px in from the cover's right edge. */
 .native-cover-clip-hint::before {
   content: "";
   position: absolute;
-  top: -6px;
-  right: 20px;
+  bottom: -6px;
+  right: 34px;
   border: 6px solid transparent;
-  border-top: 0;
-  border-bottom-color: rgba(36, 27, 20, 0.86);
+  border-bottom: 0;
+  border-top-color: #241b14;
 }
-
 
 .native-cover-clip-notice-action {
   display: inline-flex;

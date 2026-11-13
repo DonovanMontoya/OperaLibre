@@ -79,6 +79,8 @@ const MAX_CHAPTER_SEGMENTS = 32;
 
 const CLIP_HINT_STORAGE_KEY = "operalibre.clipHintSeen";
 const CLIP_HINT_MS = 8000;
+/** Height the notice above the cover needs: 44px pill, its gap, and the card's rounded corner. */
+const CLIP_CALLOUT_ROOM = 64;
 
 export function PlayerPane({
   activeChapter,
@@ -338,6 +340,10 @@ export function PlayerPane({
       artwork.style.setProperty("--cover-top", `${bounds.top - frame.top}px`);
       artwork.style.setProperty("--cover-width", `${bounds.width}px`);
       artwork.style.setProperty("--cover-height", `${bounds.height}px`);
+      // The clip notice and hint sit above the cover so they never cover the
+      // art. A short screen leaves no room there inside the card.
+      const card = artwork.closest(".native-now-playing")?.getBoundingClientRect() ?? frame;
+      artwork.dataset.clipCallout = bounds.top - card.top >= CLIP_CALLOUT_ROOM ? "above" : "below";
     };
     positionRibbon();
     const observer = new ResizeObserver(positionRibbon);
