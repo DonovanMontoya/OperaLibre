@@ -58,7 +58,7 @@ export const ContinueReading = memo(function ContinueReading({
       const percent = book.progress?.percentComplete;
       const progress = percent == null ? null : Math.min(100, Math.max(0, percent));
       return (
-        <li key={book.id} className="continue-reading-row">
+        <li key={book.id} className={`continue-reading-row${book.id === playbackBookId ? " is-playback-book" : ""}`}>
           <button
             type="button"
             className="continue-reading-book"
