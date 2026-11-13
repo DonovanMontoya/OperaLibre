@@ -24762,3 +24762,53 @@ html:not(.native-app) .book-heading .book-quick-start .book-quick-return {
     box-shadow: none;
   }
 }
+
+.cloud-recognition {
+  display: grid;
+  gap: 10px;
+}
+
+.cloud-recognition-warning {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid rgba(var(--oxblood-rgb), 0.35);
+  border-radius: 8px;
+  background: rgba(var(--oxblood-rgb), 0.07);
+}
+
+.admin-experiment-list .cloud-recognition-warning,
+.admin-experiment-list .cloud-recognition-warning strong {
+  color: var(--oxblood);
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.admin-experiment-list .cloud-recognition-warning strong { font-weight: 700; }
+
+.cloud-recognition-warning svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.cloud-recognition fieldset {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.cloud-recognition label {
+  display: grid;
+  gap: 4px;
+  max-width: 440px;
+  font-size: 0.78rem;
+}
+
+.cloud-recognition label.cloud-recognition-confirm {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 8px;
+}

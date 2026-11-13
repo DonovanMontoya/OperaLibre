@@ -1847,6 +1847,13 @@ impl AutomaticFixes<'_> {
                 if diagnosis.fix.kind != sync_report::FixKind::Auto || diagnosis.fix.attempted {
                     break;
                 }
+                // OpenAI has no larger model to try, so a rerun would only
+                // send the same audio again.
+                if diagnosis.cause == sync_report::Cause::NoisyAudio
+                    && self.aligner.recognition.cloud.is_some()
+                {
+                    break;
+                }
                 self.attempt(index, diagnosis.cause, grade, run).await?;
             }
         }
@@ -1934,10 +1941,14 @@ impl AutomaticFixes<'_> {
                 (
                     self.aligner.with_recognition(&recognition),
                     scope.clone(),
-                    format!(
-                        "{label} crashed the speech recognizer; trying it once more, led by the whisper {} model.",
-                        recognition.model
-                    ),
+                    if recognition.cloud.is_some() {
+                        format!("{label} crashed the aligner; trying it once more.")
+                    } else {
+                        format!(
+                            "{label} crashed the speech recognizer; trying it once more, led by the whisper {} model.",
+                            recognition.model
+                        )
+                    },
                 )
             }
             sync_report::Cause::NoisyAudio => {
@@ -2303,6 +2314,9 @@ struct RecognitionSettings {
     /// stretch.
     retry_model: &'static str,
     language: Option<String>,
+    /// Set when the owner chose OpenAI to transcribe instead of on-device
+    /// whisper. Its one model is used for every pass.
+    cloud: Option<Arc<cloud_recognition::CloudRecognizer>>,
 }
 
 impl RecognitionSettings {
@@ -2315,13 +2329,31 @@ impl RecognitionSettings {
             model: if english { "tiny.en" } else { "tiny" },
             retry_model: if english { "base.en" } else { "base" },
             language: code,
+            cloud: None,
+        }
+    }
+
+    fn with_cloud(self, cloud: Option<Arc<cloud_recognition::CloudRecognizer>>) -> Self {
+        match cloud {
+            Some(cloud) => Self {
+                model: cloud_recognition::OPENAI_MODEL,
+                retry_model: cloud_recognition::OPENAI_MODEL,
+                cloud: Some(cloud),
+                ..self
+            },
+            None => self,
         }
     }
 
     fn describe(&self) -> String {
+        let engine = if self.cloud.is_some() {
+            "OpenAI"
+        } else {
+            "whisper"
+        };
         match &self.language {
-            Some(language) => format!("whisper {}, language {language}", self.model),
-            None => format!("whisper {}, language detected", self.model),
+            Some(language) => format!("{engine} {}, language {language}", self.model),
+            None => format!("{engine} {}, language detected", self.model),
         }
     }
 
@@ -2331,12 +2363,15 @@ impl RecognitionSettings {
         Self {
             model: self.retry_model,
             retry_model: self.model,
-            language: self.language.clone(),
+            ..self.clone()
         }
     }
 
     /// One last, slower pass for audio the usual models could not follow.
     fn larger(&self) -> Self {
+        if self.cloud.is_some() {
+            return self.clone();
+        }
         let model = if self.language.as_deref() == Some("en") {
             "small.en"
         } else {
@@ -2345,7 +2380,7 @@ impl RecognitionSettings {
         Self {
             model,
             retry_model: model,
-            language: self.language.clone(),
+            ..self.clone()
         }
     }
 }
@@ -2359,6 +2394,7 @@ async fn book_recognition(
 ) -> RecognitionSettings {
     let chosen = sync_report::language_override(state, book_id).await;
     RecognitionSettings::for_language(chosen.as_deref().or(epub.language.as_deref()))
+        .with_cloud(cloud_recognition::configured(state).await)
 }
 
 /// Runs the alignment CLI for one job, sharing its temp directory and tools.
@@ -3206,6 +3242,17 @@ impl<'a> Aligner<'a> {
         window: &str,
         model: &str,
     ) -> anyhow::Result<Vec<alignment::RecognizedWord>> {
+        if let Some(cloud) = &self.recognition.cloud {
+            // Turning OpenAI off stops audio leaving at the next window.
+            anyhow::ensure!(
+                cloud_recognition::still_enabled(self.state).await,
+                "OpenAI transcription was turned off while this book was syncing. Sync it again to use on-device recognition."
+            );
+            let entries = cloud
+                .transcribe(audio_path, self.recognition.language.as_deref())
+                .await?;
+            return Ok(alignment::recognized_words(&entries));
+        }
         let output_path = self
             .temp_dir
             .join(format!("recognition-{scope_number}-{window}.json"));
@@ -4854,10 +4901,12 @@ esac
                 0.0,
                 None,
                 false,
+                None,
             )
             .await
         }
 
+        #[allow(clippy::too_many_arguments)]
         async fn align_fake_book_with_settings(
             count: usize,
             garbled: &[std::ops::Range<usize>],
@@ -4866,6 +4915,9 @@ esac
             book_offset: f64,
             empty_sentence: Option<usize>,
             crashing_retry_model: bool,
+            // Recognize with a stand-in for OpenAI at this address instead
+            // of the fake on-device recognizer, which then refuses to run.
+            cloud_endpoint: Option<&str>,
         ) -> (Vec<alignment::SyncFragment>, String) {
             let root = tempfile::tempdir().unwrap();
             let (state, _) = crate::unit_tests::fake_libation_state(root.path());
@@ -4925,6 +4977,14 @@ esac
             } else {
                 script
             };
+            let script = if cloud_endpoint.is_some() {
+                script.replace(
+                    "  transcribe)\n",
+                    "  transcribe)\n    echo local recognizer used >&2; exit 3 ;;\n  unused)\n",
+                )
+            } else {
+                script
+            };
             write_script(&cli, &script);
 
             let book_sentence = |index| {
@@ -4978,7 +5038,12 @@ esac
                 time_offset_seconds: book_offset,
                 label: "Book".into(),
             };
-            let recognition = RecognitionSettings::for_language(Some("en"));
+            let cloud = cloud_endpoint
+                .map(|endpoint| Arc::new(cloud_recognition::CloudRecognizer::for_test(endpoint)));
+            if cloud.is_some() {
+                cloud_recognition::enable_for_test(&state).await;
+            }
+            let recognition = RecognitionSettings::for_language(Some("en")).with_cloud(cloud);
             let temp_dir = tempfile::tempdir().unwrap();
             let aligner = Aligner {
                 state: &state,
@@ -5154,6 +5219,73 @@ esac
             }
         }
 
+        /// Answers like OpenAI with the scripted narration words inside the
+        /// time range the fake ffmpeg wrote into the uploaded "audio".
+        async fn fake_openai(narration: PathBuf) -> String {
+            let app = Router::new().route(
+                "/v1/audio/transcriptions",
+                post(move |body: axum::body::Bytes| {
+                    let narration = narration.clone();
+                    async move {
+                        let body = String::from_utf8_lossy(&body);
+                        let audio = body
+                            .split("Content-Type: application/octet-stream\r\n\r\n")
+                            .nth(1)
+                            .unwrap();
+                        let mut range = audio.split_whitespace().map(|value| value.parse::<f64>().unwrap());
+                        let (start, duration) = (range.next().unwrap(), range.next().unwrap());
+                        let words = std::fs::read_to_string(narration)
+                            .unwrap()
+                            .lines()
+                            .filter_map(|line| {
+                                let (time, word) = line.split_once(' ')?;
+                                let time = time.parse::<f64>().ok()? - start;
+                                (0.0..duration).contains(&time).then(|| {
+                                    serde_json::json!({"word": word, "start": time, "end": time + 0.4})
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        Json(serde_json::json!({"text": "", "words": words}))
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            format!("http://{address}/v1/audio/transcriptions")
+        }
+
+        #[tokio::test]
+        async fn openai_recognition_anchors_windows_without_the_local_recognizer() {
+            let count = 200;
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("narration.txt");
+            std::fs::write(&path, narration(count, &[])).unwrap();
+            let endpoint = fake_openai(path).await;
+            let (fragments, output) = align_fake_book_with_settings(
+                count,
+                &[],
+                None,
+                None,
+                0.0,
+                None,
+                false,
+                Some(&endpoint),
+            )
+            .await;
+            assert!(!output.contains("local recognizer used"), "{output}");
+            assert_eq!(fragments.len(), count, "{output}");
+            assert_monotonic(&fragments);
+            for (index, fragment) in fragments.iter().enumerate() {
+                assert_eq!(fragment.text, sentence(index));
+                assert!(
+                    (fragment.start_seconds - narrated_start(index)).abs() < 0.75,
+                    "sentence {index} starts at {:.2}",
+                    fragment.start_seconds
+                );
+            }
+        }
+
         #[tokio::test]
         async fn a_crashing_retry_model_falls_back_instead_of_failing_the_book() {
             let count = 400;
@@ -5166,6 +5298,7 @@ esac
                 0.0,
                 None,
                 true,
+                None,
             )
             .await;
 
@@ -5233,6 +5366,7 @@ esac
                 1000.0,
                 Some(15),
                 false,
+                None,
             )
             .await;
             assert_eq!(fragments.len(), 24, "{output}");

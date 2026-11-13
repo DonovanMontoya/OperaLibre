@@ -210,6 +210,12 @@ pub(crate) fn build_router(
             put(set_readalong_sync_addon_enabled),
         )
         .route(
+            "/api/experimental-features/readalong-sync/cloud-recognition",
+            get(crate::cloud_recognition::cloud_recognition_status)
+                .put(crate::cloud_recognition::set_cloud_recognition)
+                .delete(crate::cloud_recognition::remove_cloud_recognition),
+        )
+        .route(
             "/api/experimental-features/agent-access",
             get(agent_access_experiment),
         )

@@ -907,6 +907,29 @@ export async function setSyncAddonEnabled(enabled: boolean) {
   );
 }
 
+export type CloudRecognitionStatus = {
+  enabled: boolean;
+  model: string;
+};
+
+const CLOUD_RECOGNITION = "/api/experimental-features/readalong-sync/cloud-recognition";
+
+export async function getCloudRecognitionStatus() {
+  return request<CloudRecognitionStatus>(CLOUD_RECOGNITION);
+}
+
+/** Sends follow-along recognition audio to OpenAI with the owner's key. */
+export async function enableCloudRecognition(apiKey: string) {
+  return request<CloudRecognitionStatus>(CLOUD_RECOGNITION, {
+    method: "PUT",
+    body: JSON.stringify({ apiKey, acknowledgePrivacy: true })
+  });
+}
+
+export async function disableCloudRecognition() {
+  return request<CloudRecognitionStatus>(CLOUD_RECOGNITION, { method: "DELETE" });
+}
+
 export async function removeSyncAddon() {
   return request<SyncAddonStatus>(
     "/api/experimental-features/readalong-sync",
