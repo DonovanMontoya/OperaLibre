@@ -950,7 +950,7 @@ fn estimate_report_files(
     let map: GradedMap = serde_json::from_slice(&bytes)?;
     let identity = MapIdentity::from_bytes(map.generated_at, &bytes);
     drop(bytes);
-    let epub = alignment::parse_epub_archive(&mut zip::ZipArchive::new(epub)?)?;
+    let epub = alignment::parse_epub_archive(&mut crate::util::open_zip_file(epub)?)?;
     // A book that cannot be divided gets an empty report, so later scans do
     // not reread it until the map changes.
     let chapters = estimate_chapters(&epub, tracks, &map.fragments, &map.recovery_gaps);
