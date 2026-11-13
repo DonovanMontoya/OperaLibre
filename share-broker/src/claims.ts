@@ -1,3 +1,4 @@
+import { MAX_TTL_SECONDS } from "./limits.js";
 // Experimental claim state machine for the disabled-by-default Worker.
 export type Role = "producer" | "recipient";
 export type Claim = { room: string; role: Role; nonce: string; expiresAt: number; previousNonce?: string };
@@ -35,7 +36,7 @@ export async function claimRecipientRecovery(storage: TransactionalStorage, room
   const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret))));
   return storage.transaction(async txn => {
     const now = clock();
-    if (claim.expiresAt <= now || claim.expiresAt > now + 900 || await txn.get("revoked")) return false;
+    if (claim.expiresAt <= now || claim.expiresAt > now + MAX_TTL_SECONDS || await txn.get("revoked")) return false;
     const member = await txn.get<{ nonce: string; expiresAt: number }>("claim:recipient");
     const recovery = await txn.get<RecoveryMember>(recoveryKey);
     if (member || recovery) {

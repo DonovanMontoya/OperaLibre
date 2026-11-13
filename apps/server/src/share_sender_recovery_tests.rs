@@ -1037,3 +1037,27 @@ async fn reopened_sender_rotates_stale_offer_and_transfers_verified_zip_over_rea
     .await??;
     Ok(())
 }
+
+#[tokio::test]
+async fn full_day_sender_recovers_after_fifteen_minutes_but_not_after_expiry() {
+    let root = tempfile::tempdir().unwrap();
+    let store = RecoveryStore::open(root.path(), "server-test", 1024, 0).unwrap();
+    let at = now();
+    let mut record = record(at, b"snapshot");
+    record.expires_at = at + crate::share::GIFT_MAX_LIFETIME_SECONDS;
+    let id = store
+        .prepare(record.clone(), opened(b"snapshot"), at)
+        .await
+        .unwrap();
+    let restored = store
+        .restore(&id, &authority(&record), at + 16 * 60)
+        .await
+        .unwrap();
+    drop(restored);
+    assert!(
+        store
+            .restore(&id, &authority(&record), record.expires_at)
+            .await
+            .is_err()
+    );
+}

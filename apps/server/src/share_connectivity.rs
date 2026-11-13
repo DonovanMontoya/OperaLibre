@@ -254,7 +254,8 @@ impl Connectivity {
             "Invalid ICE invitation identity."
         );
         anyhow::ensure!(
-            expires_at > now && expires_at <= now.saturating_add(900),
+            expires_at > now
+                && expires_at <= now.saturating_add(crate::share::GIFT_MAX_LIFETIME_SECONDS),
             "Invalid ICE invitation lifetime."
         );
         let mut sender_servers = Vec::new();

@@ -1,3 +1,4 @@
+import { MAX_TTL_SECONDS } from "./limits.js";
 import { authenticateOwner, type TransactionalStorage } from "./claims.js";
 
 type Reservation = { digest: number[]; expiresAt: number };
@@ -19,7 +20,7 @@ export async function reserveRoom(storage: TransactionalStorage, input: Input, c
   const hashed = await digest(input.reservationId);
   return storage.transaction(async txn => {
     const now = clock();
-    if (input.expiresAt <= now || input.expiresAt > now + 900 || await txn.get("revoked")) return false;
+    if (input.expiresAt <= now || input.expiresAt > now + MAX_TTL_SECONDS || await txn.get("revoked")) return false;
     const existing = await txn.get<Reservation>("reservation");
     if (existing) return existing.expiresAt === input.expiresAt && await authenticateOwner(input.reservationId, Uint8Array.from(existing.digest));
     // Do not acquire a room already touched through the older broker interface.

@@ -97,7 +97,7 @@ test("size limit and integer overflow fail closed", () => {
   assert.match(giftSelectionSummary(inv, ["metadata", "ebook"]).errors.join(" "), /size limit/);
 });
 
-test("create body contains only IDs, a bounded Unicode message and short expiry", () => {
+test("create body contains only IDs, a bounded Unicode message and bounded expiry", () => {
   const inv = inventory();
   const request = selectedGiftRequest(inv, defaultGiftSelection(inv), "🎁".repeat(1000), 300);
   assert.deepEqual(Object.keys(request), ["bookId", "selectedAssetIds", "personalMessage", "expiresInSeconds"]);
@@ -106,7 +106,7 @@ test("create body contains only IDs, a bounded Unicode message and short expiry"
   assert.equal(JSON.stringify(request).includes("sha256"), false);
   assert.throws(() => selectedGiftRequest(inv, defaultGiftSelection(inv), "🎁".repeat(1001)), /1000/);
   assert.throws(() => selectedGiftRequest(inv, defaultGiftSelection(inv), "null\0byte"));
-  assert.throws(() => selectedGiftRequest(inv, defaultGiftSelection(inv), "Hello", 3600));
+  assert.throws(() => selectedGiftRequest(inv, defaultGiftSelection(inv), "Hello", 86401));
   assert.equal(selectedGiftRequest(inv, defaultGiftSelection(inv), "  ").personalMessage, undefined);
   assert.equal(selectedGiftRequest(inv, defaultGiftSelection(inv), "<script>plain text</script>").personalMessage, "<script>plain text</script>");
 });
@@ -135,4 +135,11 @@ test("the gift action follows the server's experiment and API requests use the a
   // Off, or a server without gifts, hides the action instead of failing.
   assert.ok(api.includes('request<unknown>("/api/experimental-features/book-gifts", { redirect: "error", ignoreUnauthorized: true })'));
   assert.match(api, /return BOOK_GIFTS_OFF;/);
+});
+
+test("gift lifetime accepts a full day and rejects anything beyond it", () => {
+  const inv = inventory(), selected = defaultGiftSelection(inv);
+  assert.equal(selectedGiftRequest(inv, selected, "").expiresInSeconds, 900);
+  for (const seconds of [60, 900, 3600, 21600, 86400]) assert.equal(selectedGiftRequest(inv, selected, "", seconds).expiresInSeconds, seconds);
+  for (const seconds of [59, 86401, 1.5, NaN, Infinity]) assert.throws(() => selectedGiftRequest(inv, selected, "", seconds), /expiry/);
 });

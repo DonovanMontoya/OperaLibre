@@ -134,7 +134,7 @@ The archive includes accounts, permissions, progress, per-book settings, reading
 | `PUT` | `/api/experimental-features/book-gifts/enabled` | Turn book gifts on or off with `{ "enabled": bool }`. Owner only. Turning them off stops transfers in progress and keeps the saved broker settings. Not available on Windows servers. |
 | `POST` | `/api/admin/shares/config/cloudflare` | Install the gift broker in the owner's Cloudflare account from `{ apiToken, accountId? }` and save the result. The token is used once and not stored. Owner only, over HTTPS in proxy deployment mode. |
 | `GET` | `/api/books/{book_id}/gift-inventory` | The files of a book the caller may gift, with sizes and the default selection. Returns 404 while book gifts are off, as do the other gift routes. |
-| `POST` | `/api/shares/selected` | Create a gift from `{ bookId, selectedAssetIds, personalMessage?, expiresInSeconds? }`. Returns `{ giftUrl, expiresAt, managementToken }`. The owner, or a reader when the owner allows it. |
+| `POST` | `/api/shares/selected` | Create a gift from `{ bookId, selectedAssetIds, personalMessage?, expiresInSeconds? }`. Lifetime defaults to 900 seconds and is bounded to 60–86400 seconds (24 hours). Returns `{ giftUrl, expiresAt, managementToken }`. The owner, or a reader when the owner allows it. |
 | `DELETE` | `/api/shares/{managementToken}` | Revoke a gift that has not been received. |
 | `GET` | `/api/books/{book_id}/download` | Zip download of all the book's files. Subject to `max_book_download_gib` and `max_concurrent_book_downloads`. |
 | `DELETE` | `/api/books/{book_id}/download` | Delete the server's local copy. Admin only; Libation catalog state, progress, metadata overrides, and access grants are retained for later redownload. |
