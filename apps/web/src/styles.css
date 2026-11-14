@@ -5160,6 +5160,31 @@ select:focus {
   margin: 0;
 }
 
+.auto-volume-notice {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* The settings row is drawn for the paper panels; this one sits on the dark
+   playback sheet. */
+.auto-volume-notice .settings-toggle-row strong {
+  color: var(--on-spine);
+  font-weight: 500;
+}
+
+.auto-volume-notice .settings-toggle-row small {
+  color: rgba(var(--on-spine-rgb), 0.74);
+}
+
+.auto-volume-notice .settings-switch:not([aria-checked="true"]) {
+  background: rgba(var(--on-spine-rgb), 0.24);
+}
+
+.auto-volume-notice .book-volume-hint {
+  color: rgba(var(--on-spine-rgb), 0.62);
+}
+
 /* --------- Track list --------- */
 .track-list-section {
   display: grid;

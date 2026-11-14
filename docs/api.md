@@ -142,6 +142,7 @@ The archive includes accounts, permissions, progress, per-book settings, reading
 | `PUT` | `/api/books/{book_id}/progress` | Save playback progress for the current user and book. |
 | `PUT` | `/api/books/{book_id}/completion` | Mark the book finished or unfinished for the current user. Manual changes use `{ "finished": true }`, preserve position, and do not invent a dated reading-history event. Natural completion also sends `trackId`, `positionSeconds`, `bookPositionSeconds`, and `durationSeconds` so the final position, status, and actual completion are stored atomically. |
 | `PUT` | `/api/books/{book_id}/volume` | Set the current user's playback gain for the book. Body `{ "volumeGain": number }`, a linear multiplier clamped to `0.5`–`16.0`. Returns the updated book. |
+| `PUT` | `/api/books/{book_id}/auto-volume` | Turn the suggested gain on or off for the current user's copy of the book. Body `{ "enabled": boolean }`. Turning it on also clears the user's own level for the book. Returns the updated book. |
 | `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. Admin only. |
 | `POST` | `/api/library/upload` | Upload one or more audio files as a new library folder. Admin only; multipart fields are `bookName` and one or more `files`. Subject to `max_upload_gib`. |
 | `POST` | `/api/books/{book_id}/ebook` | Pair one validated, unencrypted EPUB with an existing book. Admin only; multipart field `file`. Limited to 64 MiB or `max_upload_gib`, whichever is lower. Does not overwrite files; refuses books with an existing paired EPUB or sync map. Returns the refreshed book list. |
@@ -331,7 +332,22 @@ Progress responses may include `finishedOverride`. `true` or `false` records the
 
 #### Per-book volume
 
-Audiobooks are mastered at very different levels, so `volumeGain` is a per-listener, per-book correction rather than a device setting: it is stored beside progress (keyed by user and book) and follows the listener to every client they sign in from. Every book in `/api/books` carries the caller's own `volumeGain`; `1.0` means the file's own level and is what an untuned book reports.
+Audiobooks are mastered at very different levels, so `volumeGain` is a per-listener, per-book correction rather than a device setting: it is stored beside progress (keyed by user and book) and follows the listener to every client they sign in from. Every book in `/api/books` carries the gain the caller should play it at as `volumeGain`; `1.0` means the file's own level.
+
+`volumeGainSource` says where that gain came from: `manual` (the listener set it, including setting it back to `1.0`), `auto` (the suggested gain below), or `default`. A level the listener sets always wins. `autoVolume` is the listener's switch for the suggested gain on that book, `true` unless they turned it off.
+
+When ffmpeg is available, the server measures each book in the background after a scan, by decoding about six minutes of short samples spread across its tracks. Files are only read. Books are measured again only when their audio changes. A measured book carries `audioAnalysis`:
+
+| Field | Meaning |
+| --- | --- |
+| `integratedLufs` | Integrated loudness (EBU R128) of the samples. |
+| `truePeakDbtp` | Highest true peak found in the samples. |
+| `trackSpreadLu` | Loudest minus quietest track, for books with two or more tracks over a minute long. |
+| `channelImbalanceDb`, `louderChannel` | Left/right RMS difference and the louder side, for stereo files. `60` means one channel is silent. |
+| `flags` | Any of `quiet` (below -24 LUFS), `inconsistent` (tracks differ by more than 5 LU), and `lopsided` (channels differ by more than 3 dB). |
+| `suggestedGain` | Linear gain toward -18 LUFS, or `1.0` for books within 3 LU of it. Boosts stop where the sampled true peak would pass -1 dBTP, and the gain stays within `0.5`–`16.0`. |
+
+Without ffmpeg there is no analysis: books carry no `audioAnalysis` and play at the listener's own level or `1.0`. Channel balance is reported but not corrected.
 
 Applying it is the client's job, and above unity it needs an engine that can exceed the media element's ceiling — a Web Audio gain node, or the platform's own mixer. A client that cannot do that should still honour gains below `1.0`.
 

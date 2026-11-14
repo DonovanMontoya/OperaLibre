@@ -555,6 +555,7 @@ impl TestServer {
             },
             alignment_config: AlignmentConfig::Managed,
             faststart_tools: None,
+            audio_analysis: Arc::new(AudioAnalysisStore::new(database.clone())),
             update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
             sync_dir: data_dir.join("sync"),
             sync_schedule_lock: Arc::new(Mutex::new(())),
@@ -2881,6 +2882,188 @@ async fn one_listeners_gain_does_not_follow_another_listener() {
             < 1e-9,
         "a gain set by one listener leaked to another"
     );
+}
+
+/// Seeds a measured analysis for a book's current audio, as the background
+/// pass would have stored it.
+async fn seed_quiet_analysis(server: &TestServer, book_id: &str) {
+    let fingerprint = server
+        .state
+        .library
+        .read()
+        .await
+        .book(book_id)
+        .unwrap()
+        .audio_fingerprint
+        .clone();
+    server
+        .state
+        .audio_analysis
+        .record(
+            book_id,
+            StoredAnalysis {
+                fingerprint,
+                analyzer_version: ANALYZER_VERSION,
+                measurements: Some(Measurements {
+                    integrated_lufs: -30.0,
+                    true_peak_dbtp: -20.0,
+                    track_spread_lu: Some(1.0),
+                    channel_balance_db: Some(0.0),
+                }),
+            },
+            60.0,
+        )
+        .await
+        .unwrap();
+}
+
+fn gain_of(book: &serde_json::Value) -> f64 {
+    book["volumeGain"].as_f64().unwrap()
+}
+
+#[tokio::test]
+async fn a_quiet_book_plays_at_its_suggested_gain_until_the_listener_says_otherwise() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "other-ear").await;
+    let (book, _) = server.first_book_and_track(&owner).await;
+    seed_quiet_analysis(&server, &book).await;
+    let suggested = 10f64.powf(12.0 / 20.0);
+
+    let view = server
+        .get(&format!("/api/books/{book}"), &owner)
+        .await
+        .json();
+    assert!((gain_of(&view) - suggested).abs() < 1e-9, "{view}");
+    assert_eq!(view["volumeGainSource"], "auto");
+    assert_eq!(view["autoVolume"], true);
+    assert_eq!(view["audioAnalysis"]["flags"], serde_json::json!(["quiet"]));
+    assert_eq!(view["audioAnalysis"]["integratedLufs"], -30.0);
+
+    // "Original" chosen by hand wins over the suggestion.
+    let manual = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/volume"),
+            &owner,
+            serde_json::json!({ "volumeGain": 1.0 }),
+        )
+        .await
+        .json();
+    assert_eq!(gain_of(&manual), 1.0);
+    assert_eq!(manual["volumeGainSource"], "manual");
+    let listed = server.get("/api/books", &owner).await.json();
+    assert_eq!(listed[0]["volumeGainSource"], "manual");
+
+    // Switching automatic back on clears the listener's own level.
+    let auto = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/auto-volume"),
+            &owner,
+            serde_json::json!({ "enabled": true }),
+        )
+        .await
+        .json();
+    assert!((gain_of(&auto) - suggested).abs() < 1e-9);
+    assert_eq!(auto["volumeGainSource"], "auto");
+
+    // The off switch plays the file's own level and survives a reload.
+    let off = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/auto-volume"),
+            &owner,
+            serde_json::json!({ "enabled": false }),
+        )
+        .await;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.text());
+    let listed = server.get("/api/books", &owner).await.json();
+    assert_eq!(gain_of(&listed[0]), 1.0);
+    assert_eq!(listed[0]["volumeGainSource"], "default");
+    assert_eq!(listed[0]["autoVolume"], false);
+    // The analysis is still reported, so the switch can be turned back on.
+    assert_eq!(
+        listed[0]["audioAnalysis"]["flags"],
+        serde_json::json!(["quiet"])
+    );
+
+    // A level set while the switch is off still applies, and keeps the switch off.
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/volume"),
+            &owner,
+            serde_json::json!({ "volumeGain": 2.0 }),
+        )
+        .await;
+    let view = server
+        .get(&format!("/api/books/{book}"), &owner)
+        .await
+        .json();
+    assert_eq!(gain_of(&view), 2.0);
+    assert_eq!(view["autoVolume"], false);
+
+    // None of this followed the owner to another listener.
+    let theirs = server
+        .get(&format!("/api/books/{book}"), &reader)
+        .await
+        .json();
+    assert!((gain_of(&theirs) - suggested).abs() < 1e-9);
+    assert_eq!(theirs["volumeGainSource"], "auto");
+}
+
+#[tokio::test]
+async fn an_analysis_of_audio_that_has_since_changed_is_not_applied() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&owner).await;
+    seed_quiet_analysis(&server, &book).await;
+    server
+        .state
+        .library
+        .write()
+        .await
+        .books
+        .iter_mut()
+        .find(|candidate| candidate.id == book)
+        .unwrap()
+        .audio_fingerprint = "replaced-audio".into();
+
+    let view = server
+        .get(&format!("/api/books/{book}"), &owner)
+        .await
+        .json();
+    assert_eq!(gain_of(&view), 1.0);
+    assert_eq!(view["volumeGainSource"], "default");
+    assert!(view.get("audioAnalysis").is_none(), "{view}");
+}
+
+/// Without ffmpeg there is no analysis: a scan and a pass both finish without
+/// errors, and every book plays at the level it always did.
+#[tokio::test]
+async fn without_ffmpeg_the_analysis_is_skipped_and_books_are_untouched() {
+    let server = TestServer::start(2).await;
+    let owner = server.setup_owner().await;
+    assert!(server.state.faststart_tools.is_none());
+    rescan_library(&server.state).await.unwrap();
+    run_pass(&server.state).await;
+
+    let stored: i64 = server
+        .state
+        .database
+        .call(|connection| {
+            connection.query_row("SELECT COUNT(*) FROM audio_analysis", [], |row| row.get(0))
+        })
+        .await
+        .unwrap();
+    assert_eq!(stored, 0);
+    let books = server.get("/api/books", &owner).await.json();
+    for book in books.as_array().unwrap() {
+        assert_eq!(gain_of(book), 1.0);
+        assert_eq!(book["volumeGainSource"], "default");
+        assert!(book.get("audioAnalysis").is_none());
+    }
 }
 
 #[tokio::test]
