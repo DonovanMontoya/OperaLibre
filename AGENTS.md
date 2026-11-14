@@ -174,6 +174,26 @@ An empty library is a weak test. Build a scratch copy instead of using live stat
   data unless the flow under test needs it.
 - Copy in, never symlink. Data flows one way: into your scratch space, never back.
 
+## Audio while testing
+
+Nobody should have to listen to the demo audiobook. Unless the sound itself is
+under test (output routing, ducking, interruptions, a sound-only bug), keep
+playback silent but real: audio still goes to an output, so position, progress
+sync, and media-session behavior are exercised, and you verify them from the
+player clock and the server, not by ear.
+
+- **Browsers you drive:** launch with `--mute-audio`
+  (`chromium.launch({ args: ['--mute-audio'] })`). Media elements keep playing
+  and advancing while muted.
+- **Android emulator:** start it with `-no-audio`, which gives the guest a
+  dummy audio device.
+- **iOS Simulator and physical devices:** the simulator plays through the Mac's
+  output. Send that to a silent virtual output device if one is installed;
+  otherwise mute the Mac before starting playback, and mute a physical device.
+  Read the prior state first (`osascript -e 'output muted of (get volume
+  settings)'`) and put it back when you finish.
+- If a screen can be checked paused, do not start playback at all.
+
 ## Validation
 
 `.github/workflows/ci.yml` is the source of truth for required checks. Start with
