@@ -107,10 +107,8 @@ For repeatable web, server, and native iOS checks and before/after measurements,
 [performance test suite](script/performance/README.md). Run `npm run test:perf` for the portable suite
 or `npm run test:perf:all` on a Mac with Xcode and an iOS Simulator runtime.
 
-This project uses [Jujutsu](https://jujutsu-vcs.github.io/) (`jj`) for version control:
-
 ```bash
-jj git clone https://github.com/DonovanMontoya/OperaLibre.git
+git clone https://github.com/DonovanMontoya/OperaLibre.git
 ```
 
 The server lives in `apps/server` (Rust/axum) and the frontend in `apps/web` (React/Vite). After changing the frontend, run `npm run sync:android` or `npm run sync:ios` before rebuilding the native apps.

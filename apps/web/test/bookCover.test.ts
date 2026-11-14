@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { coverFileError, coverMediaKind, coverRevision, MAX_COVER_BYTES, mergeBookEdit } from "../src/bookCover.ts";
+import { coverFileError, coverMediaKind, coverRevision, displayCoverPath, MAX_COVER_BYTES, mergeBookEdit } from "../src/bookCover.ts";
 import { library } from "./performance/fixtures.ts";
+
+test("display artwork preserves the revision and leaves other image providers alone", () => {
+  assert.equal(displayCoverPath("/api/books/one/cover?v=abc"), "/api/books/one/cover?v=abc&size=display");
+  assert.equal(displayCoverPath("/api/books/one/cover?v=abc&size=display"), "/api/books/one/cover?v=abc&size=display");
+  for (const path of ["https://example.com/cover.jpg", "/Items/one/Images/Primary", "blob:cover", "/demo/alice/cover.svg"]) {
+    assert.equal(displayCoverPath(path), path);
+  }
+});
 
 test("cover selection accepts supported images and rejects empty, large, or unsupported files", () => {
   for (const [name, type] of [["cover.jpg", "image/jpeg"], ["cover.png", "image/png"], ["cover.webp", "image/webp"], ["COVER.JPEG", ""]]) {

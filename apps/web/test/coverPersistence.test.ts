@@ -7,7 +7,7 @@ import * as bookCover from "../src/bookCover.ts";
 import type { Book } from "../src/types.ts";
 
 const files = new Map<string, string>();
-const state = { server: "server-a", failWrites: false, files };
+const state = { server: "server-a", failWrites: false, files, probes: [] as string[] };
 Reflect.set(globalThis, "__editedCoverCache", state);
 const mocks: Record<string, string> = {
   "@capacitor/core": "export const Capacitor = { isNativePlatform: () => true, convertFileSrc: value => value };",
@@ -15,7 +15,7 @@ const mocks: Record<string, string> = {
     export const Directory = { Data: "DATA" };
     export const Filesystem = {
       mkdir: async () => {},
-      stat: async ({path}) => { if (!state.files.has(path)) throw new Error('missing'); return {type:'file', size:state.files.get(path).length}; },
+      stat: async ({path}) => { state.probes.push(path); if (!state.files.has(path)) throw new Error('missing'); return {type:'file', size:state.files.get(path).length}; },
       deleteFile: async ({path}) => { state.files.delete(path); },
       getUri: async ({path}) => ({uri:'file://' + path}),
       writeFile: async ({path,data}) => { if (state.failWrites) throw new Error('full'); state.files.set(path,data); },
@@ -147,6 +147,10 @@ test("a shelf cover is kept on the device and replaced when its revision changes
     await offline.cacheShelfCover(book, "https://server/cover?v=one&token=a");
     const first = await offline.getOfflineCoverUrl(book, false);
     assert.match(first ?? "", /cover-cache\/server-a\/.*-one\.png$/);
+    state.probes.length = 0;
+    assert.equal(await offline.getOfflineCoverUrl(book, true), first);
+    assert.equal(state.probes.some(path => path.startsWith("offline-media/")), false,
+      "a saved shelf cover needs no audio-directory probes or legacy migration");
     // A new session token is the same cover; nothing is fetched again.
     await offline.cacheShelfCover(book, "https://server/cover?v=one&token=b");
     assert.equal(fetches, 1);
@@ -156,5 +160,26 @@ test("a shelf cover is kept on the device and replaced when its revision changes
     assert.equal(await offline.getOfflineCoverUrl(book, false), null, "the earlier revision is removed");
   } finally {
     globalThis.fetch = realFetch;
+  }
+});
+
+test("switching servers while a cover is fetched cannot clean up the next server's artwork", async () => {
+  files.clear();
+  state.server = "server-a";
+  const realFetch = globalThis.fetch;
+  const otherCover = "cover-cache/server-b/book-0-previous.png";
+  files.set(otherCover, "other server artwork");
+  globalThis.fetch = (async () => {
+    state.server = "server-b";
+    return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } });
+  }) as typeof fetch;
+  try {
+    const book = { ...library(1)[0], coverArtUrl: "/cover?v=one", coverArtContentType: "image/png" };
+    await offline.cacheShelfCover(book, "https://server-a/cover?v=one");
+    assert.equal(files.get(otherCover), "other server artwork");
+    assert.equal([...files.keys()].some(path => path.startsWith("cover-cache/server-a/") && path.endsWith("-one.png")), true);
+  } finally {
+    globalThis.fetch = realFetch;
+    state.server = "server-a";
   }
 });

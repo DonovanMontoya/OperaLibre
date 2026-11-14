@@ -329,10 +329,8 @@ record of the work.
 
 ## Version control and pull requests
 
-Git and [Jujutsu](https://jujutsu-vcs.github.io/) (`jj`, colocated with Git) both
-work. Inspect the checkout first: if a `.jj` directory exists, use `jj` for
-working-copy operations and do not mix in Git staging or commits. Linked Git
-worktrees may have no `.jj`; use Git there and do not initialize a new JJ store.
+Use Git for all version-control operations, including staging, commits, branches,
+worktrees, fetches, and merges.
 
 - Do not push branches or open PRs unless the developer asks you to.
 - Branch names use a `feat/`, `fix/`, `chore/`, or `docs/` prefix and a short
@@ -361,11 +359,7 @@ worktrees may have no `.jj`; use Git there and do not initialize a new JJ store.
 
 These apply only to maintainers with write access.
 
-- Merge PRs with merge commits (`gh pr merge N --merge`). With `jj`, a successful
-  merge may still print a `--delete-branch` error because Git HEAD is detached;
-  check the PR state before retrying.
-- After `jj git fetch` following a force-push, inspect `jj st` and `jj diff`
-  before recovering with `jj new main`; abandon only revisions confirmed obsolete.
+- Merge PRs with merge commits (`gh pr merge N --merge`).
 - Before version bumps or releases, apply [Read-along mapping revisions and
   recovery](#read-along-mapping-revisions-and-recovery); state any remapping
   recommendation in the release notes.
@@ -379,3 +373,9 @@ These apply only to maintainers with write access.
   Afterward, run `node script/version.mjs set server <tag>` in a follow-up PR
   to main. A
   `docs/**` push to `main` redeploys the docs site.
+
+## Agent skills
+
+### Animatic
+
+The animatic skill's voice, renderer, style and stitcher. See `docs/agents/animatic.md`.
