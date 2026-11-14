@@ -23012,15 +23012,20 @@ html.native-app.platform-ios:not(.dark-mode) .library-pane .purchase-account-fil
     gap: 5px;
   }
 
+  /* The plan controls share the short status line rather than a row of
+     their own, so the card stays as tall as its text. */
   html.native-app:not([data-fold-active]) .native-shell > .library-pane .queue-row .continue-reading-book {
     padding-right: 54px;
-    padding-bottom: 48px;
+  }
+
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane .queue-row .continue-reading-progress {
+    padding-right: 72px;
   }
 
   html.native-app:not([data-fold-active]) .native-shell > .library-pane .queue-actions {
     top: auto;
     right: 48px;
-    bottom: 2px;
+    bottom: 0;
   }
 
   /* Headings of the reading plan and the collection sit closer, so the first
