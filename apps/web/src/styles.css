@@ -952,7 +952,7 @@ html:not(.native-app) .web-shell > .player-pane {
   letter-spacing: 0;
   color: #2a1612;
   border-radius: 999px;
-  background: #e8a99a;
+  background: var(--cv-error-light, #e8a99a);
 }
 
 .nav-alert-badge {
@@ -970,7 +970,7 @@ html:not(.native-app) .web-shell > .player-pane {
   font-style: normal;
   color: #2a1612;
   border-radius: 999px;
-  background: #e8a99a;
+  background: var(--cv-error-light, #e8a99a);
 }
 
 .account-list {
@@ -1026,7 +1026,7 @@ html:not(.native-app) .web-shell > .player-pane {
 .account-list article.warn .account-health-icon,
 .account-list article.warn .account-list-copy small,
 .account-list article.warn .account-list-copy em {
-  color: #e8a99a;
+  color: var(--cv-error-light, #e8a99a);
 }
 
 .account-list-actions {
@@ -1051,7 +1051,7 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .account-list-actions button.danger {
-  color: #e8a99a;
+  color: var(--cv-error-light, #e8a99a);
 }
 
 .audible-account-tags {
@@ -1144,7 +1144,7 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .audible-row .audible-download-action.retry {
-  color: #e8a99a;
+  color: var(--cv-error-light, #e8a99a);
   border-color: rgba(232, 169, 154, 0.34);
 }
 
@@ -1191,7 +1191,7 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .job-card.failed .job-state {
-  color: #e8a99a;
+  color: var(--cv-error-light, #e8a99a);
 }
 
 .job-card p {
@@ -1928,7 +1928,7 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .book-availability.has-device-copy {
-  border-color: rgba(122, 159, 132, 0.52);
+  border-color: rgba(var(--cv-success-rgb, 122, 159, 132), 0.52);
   background: rgba(30, 52, 42, 0.94);
 }
 
@@ -1945,7 +1945,7 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .book-availability .device-availability-icon {
-  color: #d4e6d4;
+  color: var(--cv-success-light, #d4e6d4);
 }
 
 .book-availability.server-and-device .server-availability-icon {
@@ -2169,7 +2169,7 @@ img.cover-mark {
   position: absolute;
   inset: 0 auto 0 0;
   min-width: 2px;
-  background: rgba(122, 159, 132, 0.38);
+  background: rgba(var(--cv-success-rgb, 122, 159, 132), 0.38);
 }
 
 .book-progress em {
@@ -2205,17 +2205,17 @@ img.cover-mark {
 }
 
 .book-progress.finished {
-  border-color: rgba(122, 159, 132, 0.5);
-  background: rgba(122, 159, 132, 0.22);
+  border-color: rgba(var(--cv-success-rgb, 122, 159, 132), 0.5);
+  background: rgba(var(--cv-success-rgb, 122, 159, 132), 0.22);
 }
 
 .book-progress.finished em {
-  color: #d4e6d4;
+  color: var(--cv-success-light, #d4e6d4);
 }
 
 .book-progress.finished em::before {
   content: "✓ ";
-  color: rgba(122, 159, 132, 0.85);
+  color: var(--cv-success-light, rgba(var(--cv-success-rgb, 122, 159, 132), 0.85));
 }
 
 .book-runtime-tag {
@@ -2259,7 +2259,7 @@ img.cover-mark {
 /* Someone finishing a book is the stronger signal, so it earns the accent the
    plain "still reading" list does not. */
 .book-shared-readers.has-finishers {
-  color: rgba(122, 159, 132, 0.85) !important;
+  color: var(--cv-success-light, rgba(var(--cv-success-rgb, 122, 159, 132), 0.85)) !important;
 }
 
 .book-shared-readers.has-finishers svg {
@@ -2580,12 +2580,12 @@ img.large-cover {
 }
 
 .shared-readers li.finished {
-  border-color: rgba(122, 159, 132, 0.5);
-  background: rgba(122, 159, 132, 0.14);
+  border-color: rgba(var(--cv-success-rgb, 122, 159, 132), 0.5);
+  background: rgba(var(--cv-success-rgb, 122, 159, 132), 0.14);
 }
 
 .shared-readers li.finished .shared-reader-status {
-  color: rgba(64, 104, 76, 0.9);
+  color: var(--cv-success, rgba(64, 104, 76, 0.9));
 }
 
 .book-description-wrap {
@@ -5278,7 +5278,7 @@ select:focus {
 }
 
 .empty-state.error {
-  color: #e8a99a;
+  color: var(--cv-error-light, #e8a99a);
 }
 
 .device-empty-state {
@@ -12682,8 +12682,8 @@ html.native-app .profile-back {
   font-size: 0.88rem;
 }
 
-.admin-message.error { color: #7b2018; background: rgba(160, 49, 34, 0.1); }
-.admin-message.success { color: #315b3c; background: rgba(55, 112, 71, 0.1); }
+.admin-message.error { color: var(--cv-error, #7b2018); background: rgba(160, 49, 34, 0.1); }
+.admin-message.success { color: var(--cv-success, #315b3c); background: rgba(var(--cv-success-rgb, 55, 112, 71), 0.1); }
 
 .admin-update-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .admin-update-actions button,
@@ -12879,8 +12879,8 @@ html.native-app .profile-back {
 }
 
 .admin-current-badge {
-  color: #315b3c;
-  background: rgba(55, 112, 71, 0.1);
+  color: var(--cv-success, #315b3c);
+  background: rgba(var(--cv-success-rgb, 55, 112, 71), 0.1);
 }
 
 .admin-experimental-badge {
@@ -12889,7 +12889,7 @@ html.native-app .profile-back {
   flex: 0 0 auto;
   padding: 5px 7px;
   border-radius: 999px;
-  color: #765315;
+  color: var(--cv-warning, #765315);
   background: rgba(184, 137, 58, 0.14);
   font: 600 0.56rem "JetBrains Mono", monospace;
   letter-spacing: 0.04em;
@@ -13107,7 +13107,7 @@ html.native-app .profile-back {
 }
 
 .admin-faststart-job-state.failed { color: var(--oxblood); }
-.admin-faststart-job-state.completed { color: #315b3c; }
+.admin-faststart-job-state.completed { color: var(--cv-success, #315b3c); }
 
 .admin-faststart-log {
   max-height: 200px;
@@ -17249,7 +17249,7 @@ html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.
      second shade of faded ink. Kept beside the palette the admin cards
      already use for "Enabled" and error text. */
   --sync-done: #315b3c;
-  --sync-done-bg: rgba(55, 112, 71, 0.1);
+  --sync-done-bg: rgba(var(--cv-success-rgb, 55, 112, 71), 0.1);
   --sync-fail: #b33a2e;
   --sync-fail-bg: rgba(179, 58, 46, 0.09);
   --sync-live: var(--oxblood);
@@ -22430,7 +22430,7 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
   }
 
   .queue-actions .queue-remove:hover {
-    color: #e8a99a;
+    color: var(--cv-error-light, #e8a99a);
   }
 }
 
@@ -22955,7 +22955,7 @@ html.native-app.platform-ios:not(.dark-mode) .library-pane .book-progress.inProg
 }
 
 html.native-app.platform-ios:not(.dark-mode) .library-pane .book-progress.finished em {
-  color: #2f5a3c;
+  color: var(--cv-success, #2f5a3c);
 }
 
 html.native-app.platform-ios:not(.dark-mode) .library-pane .book-availability {
@@ -22965,17 +22965,17 @@ html.native-app.platform-ios:not(.dark-mode) .library-pane .book-availability {
 }
 
 html.native-app.platform-ios:not(.dark-mode) .library-pane .book-availability.has-device-copy {
-  color: #2f5a3c;
-  background: rgba(226, 238, 228, 0.95);
+  color: var(--cv-success, #2f5a3c);
+  background: var(--cv-available-bg, rgba(226, 238, 228, 0.95));
 }
 
 /* The badge's icon colors were picked for dark glass and vanish on the light pill. */
 html.native-app.platform-ios:not(.dark-mode) .library-pane .book-availability .device-availability-icon {
-  color: #2f5a3c;
+  color: var(--cv-success, #2f5a3c);
 }
 
 html.native-app.platform-ios:not(.dark-mode) .library-pane .book-availability .offline-warning-icon {
-  color: #8a5a00;
+  color: var(--cv-warning, #8a5a00);
 }
 
 /* Get books: the account picker was a dark well on the light shelf. */
@@ -23653,7 +23653,7 @@ html.native-app .auth-card .auth-error {
 }
 
 html.native-app.dark-mode .auth-card .auth-error {
-  color: #f0b7a8;
+  color: var(--cv-error-light, #f0b7a8);
 }
 
 /* One play colour in the apps: the player's oxblood also marks play on the
@@ -24013,8 +24013,8 @@ html.native-app .mini-cover-button {
 }
 
 html.native-app.platform-ios.dark-mode .admin-current-badge {
-  color: #9fd3ac;
-  background: rgba(120, 190, 140, 0.14);
+  color: var(--cv-success-light, #9fd3ac);
+  background: rgba(var(--cv-success-rgb, 120, 190, 140), 0.14);
 }
 
 /* Accessibility text sizes (systemTextSize.ts): text grows up to 2x, so the

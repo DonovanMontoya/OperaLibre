@@ -140,6 +140,10 @@ export function SettingsPage({
     setLibroDestination
   } = purchases;
   const {
+    colorVision,
+    strongerVisualCues,
+    updateColorVision,
+    toggleStrongerVisualCues,
     appearanceMode,
     darkTheme,
     lightTheme,
@@ -219,7 +223,11 @@ export function SettingsPage({
           </details>
         </section>
 
-        {ios || rotationLockAvailable ? <DisplaySettings
+        <DisplaySettings
+          colorVision={colorVision}
+          strongerVisualCues={strongerVisualCues}
+          updateColorVision={updateColorVision}
+          toggleStrongerVisualCues={toggleStrongerVisualCues}
           appearanceMode={appearanceMode}
           darkTheme={darkTheme}
           ios={ios}
@@ -232,7 +240,7 @@ export function SettingsPage({
           updateAppearanceMode={updateAppearanceMode}
           updateDarkTheme={updateDarkTheme}
           updateLightTheme={updateLightTheme}
-        /> : null}
+        />
 
         <BehaviorSettings
           bookPreviewsAvailable={isOperaLibre && !demoMode && !localMode}

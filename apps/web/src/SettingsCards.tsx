@@ -1,3 +1,5 @@
+import type { ColorVision } from "./colorVision";
+import { ColorVisionSettings } from "./ColorVisionSettings";
 import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BehaviorSection } from "./BehaviorSection";
 import { BookPreviewSetting } from "./BookPreviewSetting";
@@ -86,6 +88,10 @@ function ThemeColumn<Id extends string>({
 }
 
 export function DisplaySettings({
+  colorVision,
+  strongerVisualCues,
+  updateColorVision,
+  toggleStrongerVisualCues,
   appearanceMode,
   darkTheme,
   ios,
@@ -99,6 +105,10 @@ export function DisplaySettings({
   updateDarkTheme,
   updateLightTheme
 }: {
+  colorVision: ColorVision;
+  strongerVisualCues: boolean;
+  updateColorVision: (mode: ColorVision) => void;
+  toggleStrongerVisualCues: () => void;
   appearanceMode: AppearanceMode;
   darkTheme: DarkTheme;
   ios: boolean;
@@ -153,6 +163,8 @@ export function DisplaySettings({
           <ThemeColumn label="Dark" themes={DARK_THEMES} selected={darkTheme} select={updateDarkTheme} />
         </div>
       </details> : null}
+      <ColorVisionSettings colorVision={colorVision} strongerVisualCues={strongerVisualCues}
+        updateColorVision={updateColorVision} toggleStrongerVisualCues={toggleStrongerVisualCues} />
       {rotationLockAvailable ? <div className="settings-toggle-row">
         <span>
           <strong>Rotation lock</strong>

@@ -1,0 +1,217 @@
+.settings-color-vision-row {
+  flex-wrap: wrap;
+}
+
+.settings-color-vision-row label {
+  flex: 1 1 220px;
+}
+
+.settings-color-vision-row label strong,
+.settings-color-vision-row label small {
+  display: block;
+}
+
+.settings-color-vision-row label small {
+  margin-top: 4px;
+  color: var(--ink-faded);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.settings-color-vision-row select {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px;
+  border: 1px solid rgba(var(--ink-rgb), 0.4);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--dark-card, var(--paper));
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+/* Palette changes affect interface tokens, leaving book artwork intact. */
+html[data-color-vision="red-green"] {
+  --cv-accent: #004f87;
+  --cv-accent-rgb: 0, 79, 135;
+  --cv-light: #90c9ff;
+  --cv-light-rgb: 144, 201, 255;
+  --cv-secondary: #f2be72;
+  --cv-success: #004f87;
+  --cv-success-rgb: 0, 79, 135;
+  --cv-success-light: #90c9ff;
+  --cv-warning: #754100;
+  --cv-warning-light: #f2be72;
+  --cv-error: #783400;
+  --cv-error-rgb: 120, 52, 0;
+  --cv-error-light: #ffc48b;
+}
+
+html[data-color-vision="blue-yellow"] {
+  --cv-accent: #902343;
+  --cv-accent-rgb: 144, 35, 67;
+  --cv-light: #ffb5be;
+  --cv-light-rgb: 255, 181, 190;
+  --cv-secondary: #87ded5;
+  --cv-success: #005e59;
+  --cv-success-rgb: 0, 94, 89;
+  --cv-success-light: #87ded5;
+  --cv-warning: #902343;
+  --cv-warning-light: #ffb5be;
+  --cv-error: #902343;
+  --cv-error-rgb: 144, 35, 67;
+  --cv-error-light: #ffb5be;
+}
+
+html[data-color-vision="monochrome"] {
+  --cv-accent: #242424;
+  --cv-accent-rgb: 36, 36, 36;
+  --cv-light: #ffffff;
+  --cv-light-rgb: 255, 255, 255;
+  --cv-secondary: #bcbcbc;
+  --cv-success: #242424;
+  --cv-success-rgb: 36, 36, 36;
+  --cv-success-light: #ffffff;
+  --cv-warning: #464646;
+  --cv-warning-light: #bcbcbc;
+  --cv-error: #242424;
+  --cv-error-rgb: 36, 36, 36;
+  --cv-error-light: #ffffff;
+}
+
+/* These tokens intentionally take precedence over all ten appearance themes. */
+html:root[data-color-vision] {
+  --cv-available-bg: var(--paper);
+  --oxblood: var(--cv-accent) !important;
+  --oxblood-deep: var(--cv-accent) !important;
+  --oxblood-rgb: var(--cv-accent-rgb) !important;
+  --oxblood-shadow-rgb: var(--cv-accent-rgb) !important;
+  --on-oxblood: #ffffff !important;
+  --gold: var(--cv-accent) !important;
+  --gold-soft: var(--cv-secondary) !important;
+  --on-gold: #1a1410 !important;
+  --spine-gold: var(--cv-light) !important;
+  --spine-gold-rgb: var(--cv-light-rgb) !important;
+}
+
+html:root.native-app.platform-ios.dark-mode[data-color-vision] {
+  --oxblood: var(--cv-light) !important;
+  --oxblood-deep: var(--cv-light) !important;
+  --oxblood-rgb: var(--cv-light-rgb) !important;
+  --gold: var(--cv-light) !important;
+  --on-oxblood: #1a1410 !important;
+  --cv-success: var(--cv-success-light);
+  --cv-success-rgb: var(--cv-light-rgb);
+  --cv-error: var(--cv-error-light);
+  --cv-warning: var(--cv-warning-light);
+}
+
+html.native-app.platform-ios:not(.dark-mode)[data-color-vision] :is(.library-pane, .mini-player, .games-shell, .sleep-sheet, .ledger-dashboard .profile-headline) {
+  --cv-success-light: var(--cv-success);
+  --spine-gold: var(--cv-accent);
+  --spine-gold-rgb: var(--cv-accent-rgb);
+}
+
+html[data-color-vision] :is(.admin-message.error, .admin-message.success, .admin-current-badge, .admin-experimental-badge) {
+  background: transparent;
+  border: 1px solid currentColor;
+}
+
+html[data-color-vision] .audible-setup-result.success {
+  background: var(--cv-accent);
+  color: #ffffff;
+}
+
+html[data-color-vision] .audible-setup-result.failure {
+  background: var(--cv-accent);
+  color: #ffffff;
+}
+
+html[data-color-vision] :is(.word-tile, .word-key).correct {
+  color: #1a1410 !important;
+  background: var(--cv-light) !important;
+  border-color: var(--cv-light) !important;
+}
+
+html[data-color-vision] :is(.word-tile, .word-key).present {
+  color: #1a1410 !important;
+  background: var(--cv-secondary) !important;
+  border: 2px dashed #1a1410 !important;
+}
+
+html[data-color-vision] .match-piece {
+  background: var(--cv-accent) !important;
+  color: #ffffff;
+  text-shadow: none;
+}
+
+html.native-app :is(.word-tile, .word-key) {
+  position: relative;
+  padding-bottom: 12px;
+}
+
+.word-feedback {
+  position: absolute;
+  bottom: 2px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font: 700 11px/1 sans-serif;
+}
+
+.word-feedback-legend {
+  margin: 8px 0;
+  color: var(--on-spine);
+  font: 0.72rem/1.5 sans-serif;
+  text-align: center;
+}
+
+/* State cues are independent of the palette so they also help in default colors. */
+html[data-stronger-cues] :is(button[aria-pressed="true"], button[aria-checked="true"], button[aria-selected="true"], button.selected, .book-row.active, .match-piece.selected) {
+  outline: 2px solid currentColor;
+  outline-offset: -3px;
+}
+
+html[data-stronger-cues] :is(a, .epub-toc button.current) {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+html[data-stronger-cues] :is(.chapter-segment.complete span, .book-progress i, .book-progressbar span, .epub-pagebar i) {
+  background-image: repeating-linear-gradient(135deg, transparent 0 4px, rgba(255, 255, 255, 0.55) 4px 6px);
+}
+
+html[data-stronger-cues] .calendar-cell {
+  display: grid;
+  place-items: center;
+  background: var(--dark-card, var(--paper)) !important;
+  color: var(--ink);
+  border: 1px solid currentColor;
+  font: 700 9px/1 sans-serif;
+  font-style: normal;
+}
+
+html[data-stronger-cues] .calendar-cell.tier-0::after { content: "–"; }
+html[data-stronger-cues] .calendar-cell.tier-1::after { content: "1"; }
+html[data-stronger-cues] .calendar-cell.tier-2::after { content: "2"; }
+html[data-stronger-cues] .calendar-cell.tier-3::after { content: "3"; }
+html[data-stronger-cues] .calendar-cell.tier-4::after { content: "4"; }
+
+.user-menu-display .settings-toggle-row {
+  align-items: start;
+  gap: 12px;
+}
+
+.user-menu-display .settings-switch {
+  flex-shrink: 0;
+}
+
+.settings-color-vision-row > small { flex-basis: 100%; }
+
+html[data-color-vision] .admin-sync-monitor {
+  --sync-done: var(--cv-success) !important;
+  --sync-done-bg: rgba(var(--cv-success-rgb), 0.14) !important;
+  --sync-fail: var(--cv-error) !important;
+  --sync-fail-bg: rgba(var(--cv-error-rgb), 0.14) !important;
+  --sync-live-bg: rgba(var(--oxblood-rgb), 0.14) !important;
+}
