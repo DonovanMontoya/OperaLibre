@@ -37,11 +37,13 @@ export function validateResults(rows, config, complete = true) {
   for (const row of rows) {
     if (!/^[\w-]{1,80}$/.test(row.id) || ids.has(row.id)) throw Error('Invalid or repeated sample id');
     ids.add(row.id);
-    if (!config.speeds.includes(row.mbps) || !config.positions.includes(row.target) || !['flat', 'bootstrap'].includes(row.kind) || !Number.isInteger(row.index) || row.index < 0 || row.index >= config.pairs) throw Error('Unexpected sample');
+    if (!config.speeds.includes(row.mbps) || !config.positions.includes(row.target) || !['flat', config.candidate ?? 'bootstrap'].includes(row.kind) || !Number.isInteger(row.index) || row.index < 0 || row.index >= config.pairs) throw Error('Unexpected sample');
     const key = `${row.mbps}/${row.target}/${row.index}/${row.kind}`;
     if (keys.has(key)) throw Error('Repeated scenario');
     keys.add(key);
+    if (row.ratePassed === false || (config.gain > 1 && !row.boostPassed)) throw Error('Playback rate or boost assertion failed');
     if (row.error) throw Error(`Sample failed: ${row.error}`);
+    if (config.embeddedCoverBytes > 0 && !row.artworkPassed) throw Error('External artwork assertion failed');
     for (const metric of ['startMs', 'firstAdvanceMs', 'advanceMs']) if (!Number.isFinite(row[metric]) || row[metric] <= 0) throw Error(`Missing ${metric}`);
     if (row.firstAdvanceMs < row.startMs || row.advanceMs < row.firstAdvanceMs) throw Error('Invalid timing order');
     const seek = row.target === 0 ? config.positions[1] : config.positions[1] / 2;
@@ -55,7 +57,7 @@ export async function startServer(root) {
   const config = JSON.parse(fs.readFileSync(path.join(root, 'fixture.json')));
   const playlist = fs.readFileSync(path.join(root, 'hls/book.m3u8'), 'utf8');
   const segments = parsePlaylist(playlist);
-  const allowed = new Set(['flat.m4a', 'hls/init.mp4', ...segments.map(s => `hls/${s.name}`)]);
+  const allowed = new Set(['flat.m4a', ...(['compact', 'packet'].includes(config.candidate) ? ['compact.m4a'] : []), 'hls/init.mp4', ...segments.map(s => `hls/${s.name}`)]);
   const token = crypto.randomBytes(24).toString('hex');
   const runs = new Map();
   const rows = [];
@@ -88,18 +90,51 @@ export async function startServer(root) {
       }
       const match = /^run\/(40|4)\/([\w-]{1,80})\/(.+)$/.exec(route);
       if (req.method !== 'GET' || !match) { res.writeHead(404).end(); return; }
-      const [, speed, id, relative] = match;
+      const [, speed, id, requested] = match;
+      const relative = requested === 'api/books/fixture/tracks/fixture/packet-stream' ? 'compact.m4a'
+        : requested === 'api/books/fixture/tracks/fixture/stream' ? 'flat.m4a' : requested;
       if (!runs.has(id)) {
         if (runs.size >= total) { res.writeHead(429).end(); return; }
         runs.set(id, { bytes: 0, requests: [], next: 0 });
       }
       const run = runs.get(id);
+      if (requested.endsWith('/packet-stream') && (config.packetFailure === 'unsupported'
+          || (config.packetFailure === 'revision' && url.searchParams.get('op') === 'range'))) {
+        const status = config.packetFailure === 'unsupported' ? 404 : 409;
+        run.requests.push({ relative: requested + url.search, status, length: 0 });
+        res.writeHead(status).end(); return;
+      }
       let source;
       let length;
       let headers = { 'Cache-Control': 'no-store' };
       let status = 200;
       const bootstrap = /^bootstrap-(\d+)\.json$/.exec(relative);
-      if (bootstrap) {
+      if (config.candidate === 'packet' && requested.endsWith('/packet-stream')) {
+        const fd = fs.openSync(path.join(root, relative), 'r');
+        let body;
+        try {
+          const size = fs.fstatSync(fd).size;
+          const operation = url.searchParams.get('op');
+          if (operation === 'bootstrap') {
+            const data = Buffer.alloc(16384);
+            const count = fs.readSync(fd, data, 0, data.length, 0);
+            body = Buffer.from(JSON.stringify({ length: size, revision: 'fixture-v1', data: data.subarray(0, count).toString('base64') }));
+            headers['Content-Type'] = 'application/json';
+          } else if (operation === 'range') {
+            const offset = Number(url.searchParams.get('offset'));
+            const count = Number(url.searchParams.get('count'));
+            if (url.searchParams.get('revision') !== 'fixture-v1' || !Number.isSafeInteger(offset) || !Number.isSafeInteger(count) || offset < 0 || count < 1 || count > 65536 || offset + count > size) { res.writeHead(400).end(); return; }
+            body = Buffer.alloc(count);
+            fs.readSync(fd, body, 0, count, offset);
+            headers['Content-Type'] = 'application/octet-stream';
+          } else { res.writeHead(400).end(); return; }
+        } finally {
+          fs.closeSync(fd);
+        }
+        body = zlib.gzipSync(body, {level:1}); length = body.length;
+        headers['Content-Encoding'] = 'gzip';
+        source = (async function* () { for(let i=0;i<body.length;i+=16384) yield body.subarray(i,i+16384); })();
+      } else if (bootstrap) {
         const target = Number(bootstrap[1]);
         if (!config.positions.includes(target)) { res.writeHead(400).end(); return; }
         const manifest = playlist.replace('#EXTM3U\n', `#EXTM3U\n#EXT-X-START:TIME-OFFSET=${target},PRECISE=YES\n`);
@@ -124,7 +159,7 @@ export async function startServer(root) {
         headers = { ...headers, 'Content-Type': 'audio/mp4', 'Accept-Ranges': 'bytes' };
         if (range) { status = 206; headers['Content-Range'] = `bytes ${start}-${end}/${size}`; }
       }
-      run.requests.push({ relative, range: req.headers.range ?? null, length });
+      run.requests.push({ relative: requested + url.search, status, range: req.headers.range ?? null, length });
       res.writeHead(status, { ...headers, 'Content-Length': length });
       await delay(config.latencyMs);
       for await (const chunk of source) {

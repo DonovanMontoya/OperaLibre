@@ -1,8 +1,9 @@
 # Native streaming benchmark
 
 This standalone simulator app compares faststart M4A with an experimental bundled
-HLS transport using the repository's unchanged `AudiobookPlayer.swift`. Nothing
-here is linked into the shipping app or server. It uses generated audio only.
+HLS transport, the server's compact MP4 index, or native packet transport, using
+the repository's current `AudiobookPlayer.swift` and `PacketAudioAsset.swift`.
+Generated audio is the default; `--source` copies a chosen file into scratch state.
 
 Requires an Apple Silicon Mac, Xcode with an iOS simulator, Python 3, Node 22+,
 and ffmpeg on PATH. From the repository root:
@@ -84,3 +85,51 @@ Run portable harness tests with:
 ```sh
 node --test script/performance/streaming/server.test.mjs
 ```
+
+## Compact MP4 indexes
+
+Pass `--transport compact` to `fixture.py prepare` to compare ordinary faststart
+with the server's compact sample-size table. This also requires Rust 1.89+.
+Preparation compiles `apps/server/src/compact_audio.rs`, applies it to the fixture,
+and verifies that the full decoded audio hashes agree. Build and run with the
+same commands above. The build metadata records the compactor source hash.
+
+The compact representation keeps timing tables, edit lists, and encoded audio,
+and omits embedded cover art that the native player receives separately.
+The index is prepared before measurement, matching a server cache hit; this does
+not measure the server's initial index preparation, authentication, or disk I/O.
+Keep these limits separate from a complete app tap-to-audio measurement.
+
+Add `--embedded-cover` to prepare a seeded JPEG inside the MP4. This run also
+requires the player to display separately supplied artwork after playback and
+seek checks. The artwork check is outside the timed startup interval.
+
+To compare two versions of the compactor, pass `--baseline-compactor /path/to/compact_audio.rs`
+alongside `--transport compact`. Preparation applies both versions to the same
+source, saves their exact source snapshots and hashes, and serves the baseline
+as `flat.m4a`. The result config identifies which baseline was used.
+
+## Native packet transport
+
+Use `--transport packet` to prepare the server's virtual constant-packet MP4.
+The HTTP fixture sends compressed bootstrap and bounded range windows through
+the production native resource loader. It materializes a padded scratch file
+for repeatable pacing; the production server generates windows directly from
+the source without writing a derivative. Source construction and cache misses
+are outside the fixture timing and must be measured separately.
+
+`--continuous` encodes the full noise duration rather than looping a short seed.
+`--source /path/book.m4b` copies real audio and derives its duration; protect the
+scratch directory and do not publish private fixtures. `--rate 1.5 --gain 2`
+exercises native time stretching and volume boost. The packet and compact modes
+check full decoded FFmpeg hashes and skip generating unused HLS fragments.
+For packet transport, AAC packet padding changes encoded-packet hashes; decoded
+PCM equality, native priming, duration, and seeks must be checked separately.
+Embedded chapter tracks can extend the original container slightly beyond its
+audio; compare the audio frames as well as presentation duration.
+
+For native failover checks, set `packetFailure` in a fresh fixture's JSON to
+`unsupported` (bootstrap 404) or `revision` (range 409). The ordinary stream
+remains available. These are functional checks: require the original resume
+position, pause/seek/checkpoint assertions, and configured rate/boost to survive;
+they are not speed measurements. Results record the failed request status.
