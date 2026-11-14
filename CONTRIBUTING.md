@@ -21,7 +21,7 @@ improvements, and features are all welcome.
 You need Node.js 22.12+, Rust 1.89 or newer, and a folder with a few audiobook files.
 
 ```bash
-git clone https://github.com/DonovanMontoya/OperaLibre.git   # or: jj git clone ...
+git clone https://github.com/DonovanMontoya/OperaLibre.git
 cd OperaLibre
 npm ci
 cp server.config.example server.config
@@ -76,8 +76,7 @@ Only one test environment runs at a time. Audible is unavailable on Windows.
    working.
 5. Use conventional commit messages: `fix: keep sleep timer across track changes`.
 
-Either Git or [Jujutsu](https://jujutsu-vcs.github.io/) works; the maintainer
-uses `jj` colocated with Git.
+Use Git for version control.
 
 ### Playback progress
 
