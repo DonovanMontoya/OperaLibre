@@ -13,6 +13,7 @@ import {
 import {
   type Clip,
   type ClipDelivery,
+  type ClipPreviewFlag,
   clipAround,
   clipFileName,
   clipsForBook,
@@ -79,12 +80,13 @@ export function useClips({
   bookPosition,
   collectionBook = book,
   enabled,
+  nativeAudio,
   pausePlayback,
   persistProgress,
   seekBookPosition,
   userId
 }: {
-  clipPreviewBookIdRef: RefObject<string | null>;
+  clipPreviewBookIdRef: ClipPreviewFlag;
   audioRef: RefObject<HTMLAudioElement | null>;
   /** The book in the player. Clips are saved from, and played in, that book. */
   book: Book | null;
@@ -93,6 +95,7 @@ export function useClips({
   /** The book whose saved clips are being browsed; opening it does not change playback. */
   collectionBook?: Book | null;
   enabled: boolean;
+  nativeAudio: boolean;
   pausePlayback: (audio: HTMLAudioElement | null | undefined) => void;
   persistProgress: () => Promise<void>;
   seekBookPosition: (value: number, autoPlay?: boolean, temporary?: boolean, nativePreview?: boolean) => void;
@@ -365,6 +368,7 @@ export function useClips({
   function finishAudition(finished: Audition) {
     setAudition(null);
     pausePlayback(audioRef.current);
+    if (nativeAudio) clipPreviewBookIdRef.returnTo(finished.returnTo);
     seekBookPosition(finished.returnTo, false, true, false);
     setReturningTo(finished.returnTo);
   }
@@ -378,10 +382,13 @@ export function useClips({
   persistProgressRef.current = persistProgress;
   useEffect(() => {
     if (returningTo === null || Math.abs(bookPosition - returningTo) > 1.5) return;
+    if (nativeAudio && clipPreviewBookIdRef.current !== null) return;
     setReturningTo(null);
-    clipPreviewBookIdRef.current = null;
-    void persistProgressRef.current();
-  }, [bookPosition, returningTo, clipPreviewBookIdRef]);
+    if (!nativeAudio) {
+      clipPreviewBookIdRef.current = null;
+      void persistProgressRef.current();
+    }
+  }, [bookPosition, returningTo, clipPreviewBookIdRef, nativeAudio]);
 
   function stopAudition() {
     if (!audition) return;

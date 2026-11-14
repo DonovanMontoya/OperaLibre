@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import { test } from "node:test";
-import { forgetInterruptedClipPreview, interruptedClipPreviewStart } from "../src/clips.ts";
+import { clipPreviewFlag, forgetInterruptedClipPreview, interruptedClipPreviewStart } from "../src/clips.ts";
 
 // The reloaded page finds nothing it can take over (paused, another track or
 // file, or a fresh launch): it loads at its restored position as before.
@@ -126,5 +126,66 @@ test("an interrupted preview cannot be adopted and stays excluded until the rest
   emit({ trackId: "track-1", positionSeconds: 731, durationSeconds: 7200,
     readyToPlay: true, positionReady: true, clipPreview: false });
   assert.equal(interruptedClipPreviewStart(storage, "server", "reader", "book"), 2);
+  detach();
+});
+
+test("native return acknowledgement protects progress from delayed preview state, ended and track changes", async () => {
+  const flag = clipPreviewFlag(null, () => ({ serverKey: "server", userId: "reader" }));
+  const audio = new ControlElement();
+  const persisted: number[] = [];
+  const trackChanges: string[] = [];
+  audio.addEventListener("timeupdate", () => {
+    if (flag.current === null) persisted.push(audio.currentTime);
+  });
+  audio.addEventListener("ended", () => {
+    if (flag.current === null) persisted.push(audio.currentTime);
+  });
+  const detach = attachNativeAudioPlayer(audio as unknown as HTMLAudioElement,
+    () => undefined, () => undefined, {
+      source: "file:///book/track-1.m4b", scopeKey: "reader:book", trackId: "track-1", bookOffsetSeconds: 0,
+      settings: () => ({ rate: 1, volume: 1 }), queue: () => [], pendingPosition: () => 731,
+      wantsPlayback: () => false, gain: () => 1, sleepTimerSeconds: () => 0, sleepAtChapterEnd: () => false,
+      clipPreview: () => flag.previewingBookId === "book", awaitingReturn: () => flag.returningBookId === "book",
+      normalPositionReady: (position) => {
+        if (flag.current === "book" && !flag.confirmReturn("book", position)) return false;
+        persisted.push(audio.currentTime);
+        return true;
+      },
+      adopted: () => assert.fail("this is an existing attachment")
+    }, (track) => { trackChanges.push(track); }, () => undefined, () => undefined, () => undefined);
+  for (let tick = 0; tick < 50 && bridge.loads.length < 2; tick += 1) await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(bridge.loads.length, 2);
+  const emit = (name: string, event: Record<string, unknown>) => {
+    for (const listener of bridge.listeners.get(name) ?? []) listener(event);
+  };
+  const state = (positionSeconds: number, clipPreview: boolean, ready = true) => ({
+    trackId: "track-1", positionSeconds, durationSeconds: 7200, isPlaying: false,
+    readyToPlay: ready, positionReady: ready, clipPreview
+  });
+  emit("state", state(731, false));
+  persisted.length = 0;
+  flag.current = "book";
+  emit("state", state(500, true));
+  flag.returnTo(731);
+  audio.currentTime = 731; // The return seek updates the UI before AVPlayer acknowledges it.
+  emit("state", state(501, true));
+  emit("ended", state(540, true));
+  emit("trackChanged", { ...state(0, true), trackId: "track-2", bookPositionSeconds: 7200 });
+  assert.equal(audio.currentTime, 731);
+  assert.equal(flag.current, "book");
+  assert.deepEqual(persisted, []);
+  assert.deepEqual(trackChanges, []);
+  emit("state", state(731, false, false));
+  assert.equal(flag.current, "book", "a pending or failed seek cannot release progress");
+  emit("state", state(600, false));
+  assert.equal(flag.current, "book", "a normal clock at the wrong position is not the return");
+  assert.deepEqual(persisted, []);
+  emit("state", state(731, false));
+  assert.equal(flag.current, null);
+  assert.deepEqual(persisted, [731]);
+  emit("state", state(502, true));
+  emit("ended", state(540, true));
+  assert.equal(audio.currentTime, 731);
+  assert.deepEqual(persisted, [731]);
   detach();
 });

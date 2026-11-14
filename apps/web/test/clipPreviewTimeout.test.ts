@@ -44,7 +44,7 @@ test("a preview seek that times out is superseded by a return to the listener's 
     const seeks: unknown[][] = [];
     let pauses = 0;
     const options = { clipPreviewBookIdRef: preview, audioRef: { current: null }, book: { id: "book" },
-      bookDuration: 7200, bookPosition: 1000, enabled: true, userId: "reader",
+      bookDuration: 7200, bookPosition: 1000, enabled: true, nativeAudio: true, userId: "reader",
       pausePlayback: () => { pauses += 1; }, persistProgress: async () => {},
       seekBookPosition: (...args: unknown[]) => { seeks.push(args); } };
     hook(options).playClip({ id: "clip", bookId: "book", startSeconds: 500, endSeconds: 540 });
@@ -56,6 +56,12 @@ test("a preview seek that times out is superseded by a return to the listener's 
     for (const effect of effects) effect();
     assert.deepEqual(seeks, [[500, true, true], [1000, false, true, false]]);
     assert.equal(pauses, 1);
+    // An optimistic render at the return target does not acknowledge native playback.
+    cursor = 0;
+    effects.length = 0;
+    hook(options);
+    for (const effect of effects) effect();
+    assert.equal(preview.returningBookId, "book");
     assert.equal(preview.current, "book", "progress stays guarded while the return seek is pending");
     assert.notEqual(clips.interruptedClipPreviewStart(storage, "server", "reader", "book"), null);
   } finally {

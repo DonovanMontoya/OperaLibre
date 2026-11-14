@@ -51,9 +51,10 @@ type NativeAudioAdoptedSession = {
 type NativeAudioRecoveryIdentity = {
   source: string;
   clipPreview?: () => boolean;
+  awaitingReturn?: () => boolean;
   allowAdoption?: boolean;
   /** A non-preview seek is ready and its native recovery checkpoint is durable. */
-  normalPositionReady?: () => void;
+  normalPositionReady?: (positionSeconds: number) => boolean | void;
   settings: () => { rate: number; volume: number };
   scopeKey: string;
   trackId: string;
@@ -142,6 +143,7 @@ interface NativeAudioPlugin {
       positionSeconds: number;
       bookPositionSeconds: number;
       isPlaying: boolean;
+      clipPreview?: boolean;
     }) => void
   ): Promise<PluginListenerHandle>;
   addListener(
@@ -461,6 +463,8 @@ export function attachNativeAudioPlayer(
 
   listenerRegistrations.push(NativeAudio.addListener("state", (state) => {
     if (disposed || fellBack || deciding) return;
+    // A queued event from the previous preview phase cannot move the live clock.
+    if (state.clipPreview !== undefined && state.clipPreview !== (recovery.clipPreview?.() ?? false)) return;
     // A clock for another queue track belongs to the element React is about
     // to mount for it, not to this one. Prefer the payload's own track id;
     // fall back to the last accepted trackChanged when the native side does
@@ -480,6 +484,7 @@ export function attachNativeAudioPlayer(
     } else if (activeNativeTrackId !== recovery.trackId) {
       return;
     }
+    let legacyLoadReady = false;
     // A pre-load tick can still belong to the native preview this page replaced.
     if (loadingPosition !== null && recovery.clipPreview?.() && state.clipPreview === true) loadingPosition = null;
     if (loadingPosition !== null) {
@@ -487,7 +492,7 @@ export function attachNativeAudioPlayer(
       if (state.clipPreview === undefined && Math.abs(state.positionSeconds - loadingPosition) > 1.5) return;
       loadingPosition = null;
       // Compatibility with a native shell that predates the preview bit.
-      if (state.clipPreview === undefined) recovery.normalPositionReady?.();
+      legacyLoadReady = state.clipPreview === undefined;
     }
     // AVPlayer remains the only running decoder. Reflect its state through
     // synthetic media events so React's existing UI stays current without
@@ -498,13 +503,12 @@ export function attachNativeAudioPlayer(
       controlClock.synchronizePosition(state.positionSeconds, state.positionReady === true);
       return;
     }
-    if (state.clipPreview === true || recovery.clipPreview?.()) normalPositionReported = false;
-    else if (!normalPositionReported && state.positionReady === true && state.clipPreview === false) {
-      normalPositionReported = true;
-      recovery.normalPositionReady?.();
-    }
+    if (state.clipPreview === true || recovery.clipPreview?.() || recovery.awaitingReturn?.()) normalPositionReported = false;
     const firstMetadata = controlClock.updateMetadata(state.durationSeconds);
     nativeIsPlaying = nativeStateSynchronizer.receive(state, nativeIsPlaying);
+    if (!normalPositionReported && state.positionReady === true && (state.clipPreview === false || legacyLoadReady) && !recovery.clipPreview?.()) {
+      normalPositionReported = recovery.normalPositionReady?.(state.positionSeconds) !== false;
+    }
     if (firstMetadata) audio.dispatchEvent(new Event("loadedmetadata"));
   }).then((handle) => {
     if (disposed) void handle.remove();
@@ -513,6 +517,7 @@ export function attachNativeAudioPlayer(
 
   listenerRegistrations.push(NativeAudio.addListener("ended", (state) => {
     if (disposed || fellBack || deciding || loadingPosition !== null || endedFromNative) return;
+    if (state.clipPreview !== undefined && state.clipPreview !== (recovery.clipPreview?.() ?? false)) return;
     endedFromNative = true;
     nativeStateSynchronizer.clear();
     nativeIsPlaying = false;
@@ -532,6 +537,7 @@ export function attachNativeAudioPlayer(
 
   listenerRegistrations.push(NativeAudio.addListener("trackChanged", (event) => {
     if (disposed || fellBack || deciding || loadingPosition !== null || !event.trackId || event.trackId === recovery.trackId) return;
+    if (event.clipPreview !== undefined && event.clipPreview !== (recovery.clipPreview?.() ?? false)) return;
     offerTrackChange({
       trackId: event.trackId,
       positionSeconds: event.positionSeconds,

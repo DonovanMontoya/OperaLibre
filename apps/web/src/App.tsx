@@ -1427,6 +1427,7 @@ function MainApp({
     : playbackBook;
   const clipSheetDuration = clipSheetBook?.durationSeconds ?? (clipSheetBook ? durationFromTracks(clipSheetBook) : 0);
   const clips = useClips({
+    nativeAudio,
     clipPreviewBookIdRef,
     audioRef,
     book: playbackBook,

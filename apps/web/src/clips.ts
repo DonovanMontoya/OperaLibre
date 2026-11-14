@@ -123,37 +123,48 @@ function clipPreviewStorageKey(serverKey: string, userId: string, bookId: string
   return `operalibre.clipPreview:${serverKey}:${userId}:${bookId}`;
 }
 
-/**
- * The book whose clip is playing as a preview, mirrored to storage. On iPhone
- * the native player keeps saving its own recovery position while a preview
- * plays, so if the app is closed mid-preview that position is the clip's, not
- * the listener's. The stored start lets the next launch tell the two apart.
- */
+type ClipPlaybackPhase = { kind: "idle" }
+  | { kind: "preview"; bookId: string }
+  | { kind: "returning"; bookId: string; positionSeconds: number };
+
+/** A return remains protected until its real native clock acknowledges the target. */
 export function clipPreviewFlag(storage: ClipStorage | null, scope: () => { serverKey: string; userId: string }) {
-  let bookId: string | null = null;
+  let phase: ClipPlaybackPhase = { kind: "idle" };
   return {
-    get current() {
-      return bookId;
+    get current(): string | null {
+      return phase.kind === "idle" ? null : phase.bookId;
+    },
+    get previewingBookId(): string | null {
+      return phase.kind === "preview" ? phase.bookId : null;
+    },
+    get returningBookId(): string | null {
+      return phase.kind === "returning" ? phase.bookId : null;
+    },
+    returnTo(positionSeconds: number) {
+      if (phase.kind !== "idle") phase = { kind: "returning", bookId: phase.bookId, positionSeconds };
+    },
+    confirmReturn(bookId: string, positionSeconds: number) {
+      if (!Number.isFinite(positionSeconds) || phase.kind !== "returning" || phase.bookId !== bookId || Math.abs(phase.positionSeconds - positionSeconds) > 1.5) return false;
+      phase = { kind: "idle" };
+      return true;
     },
     set current(next: string | null) {
-      // Going from one clip straight to another keeps the first start.
-      if (next === bookId) return;
-      bookId = next;
-      if (!storage) return;
+      if (phase.kind === "preview" && next === phase.bookId) return;
+      phase = next ? { kind: "preview", bookId: next } : { kind: "idle" };
+      if (!storage || !next) return;
       const { serverKey, userId } = scope();
       try {
         // Releasing the web gate does not prove native recovery was replaced.
-        // A normal native load clears the durable marker once its seek is ready.
-        if (next) {
-          const startedAt = interruptedClipPreviewStart(storage, serverKey, userId, next) ?? Date.now();
-          storage.setItem(clipPreviewStorageKey(serverKey, userId, next), String(startedAt));
-        }
+        const startedAt = interruptedClipPreviewStart(storage, serverKey, userId, next) ?? Date.now();
+        storage.setItem(clipPreviewStorageKey(serverKey, userId, next), String(startedAt));
       } catch {
         // The in-memory flag still keeps preview positions out of saves.
       }
     }
   };
 }
+
+export type ClipPreviewFlag = ReturnType<typeof clipPreviewFlag>;
 
 /** When a preview of this book began without the app returning from it, if one did. */
 export function interruptedClipPreviewStart(storage: ClipStorage, serverKey: string, userId: string, bookId: string): number | null {

@@ -1793,6 +1793,7 @@ test("automatic native seeks preserve preview suppression and the return seek re
   const f = fixture();
   const nativeSeeks: Array<{ position: number; preview: boolean }> = [];
   f.options.nativeAudio = true;
+  f.options.clipPreviewBookIdRef = clips.clipPreviewFlag(f.storage, () => ({ serverKey: "server", userId: "reader" }));
   f.options.clipPreviewBookIdRef.current = "book";
   const controls = loadHook("usePlaybackControls", {
     ...f.dependencies,

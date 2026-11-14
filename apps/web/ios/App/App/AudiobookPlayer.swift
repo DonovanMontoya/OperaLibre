@@ -998,6 +998,7 @@ public final class AudiobookPlayer {
         guard let trackId = recoveryTrackId, let player else { return }
         let position = finiteSeconds(player.currentTime())
         emit("trackChanged", data: [
+            "clipPreview": isClipPreview,
             "trackId": trackId,
             "positionSeconds": position,
             "bookPositionSeconds": recoveryBookOffset + position,

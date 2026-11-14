@@ -6,6 +6,7 @@ import { carPlaybackOwnsEngine } from "./carPlay";
 import { ownsPendingPlay, playbackEventOwnsPendingPlay } from "./playbackPending";
 import { pauseNativeAudio, playNativeAudio, seekNativeAudio } from "./nativeAudio";
 import { haptic } from "./native";
+import type { ClipPreviewFlag } from "./clips";
 import type { AuthUser, Book, Chapter, Progress, Track } from "./types";
 import { hasPlaybackSource } from "./nativeAudioStartup";
 import {
@@ -122,7 +123,7 @@ export function usePlaybackControls({
   volume,
   wantsAutoplayRef
 }: {
-  clipPreviewBookIdRef: RefObject<string | null>;
+  clipPreviewBookIdRef: ClipPreviewFlag;
   activeChapter: ChapterSegment | null;
   activeTrackIndex: number;
   audioRef: RefObject<HTMLAudioElement | null>;
@@ -416,7 +417,7 @@ export function usePlaybackControls({
     setNativeAudioFailed(true);
   }
 
-  function setPlaybackPosition(audio: HTMLAudioElement, value: number, clipPreview = playbackBook !== null && clipPreviewBookIdRef.current === playbackBook.id) {
+  function setPlaybackPosition(audio: HTMLAudioElement, value: number, clipPreview = playbackBook !== null && clipPreviewBookIdRef.previewingBookId === playbackBook.id) {
     const nextPosition = Math.max(0, Math.min(value, audio.duration || value));
     audio.currentTime = nextPosition;
     if (nativeAudio) {
