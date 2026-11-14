@@ -1,4 +1,5 @@
 import type { Book as EpubBook, Contents } from "epubjs";
+import type Section from "epubjs/types/section";
 import { normalizeReadalongText, normalizeSyncNeedle, parseReadalongLabel, readalongMatchScore, LABEL_MATCH_THRESHOLD } from "./readalong.ts";
 import type { Chapter, SyncFragment } from "./types";
 
@@ -171,8 +172,25 @@ function overlayGap(gaps: IllustrationGap[], named: IllustrationGap) {
 export async function findIllustrationGaps(
   book: EpubBook,
   fragments: SyncFragment[],
-  audioChapters: Chapter[] = []
+  audioChapters: Chapter[] = [],
+  signal?: AbortSignal
 ): Promise<IllustrationGap[]> {
+  signal?.throwIfAborted();
+  // Inspection must not populate or unload the renderer's shared Section cache.
+  // Keep at most one privately loaded document between inspections.
+  let cached: { section: Section; inspection: Pick<Section, "document" | "cfiFromElement"> } | null = null;
+  const inspect = async (section: Section) => {
+    signal?.throwIfAborted();
+    if (section.document) return section;
+    if (cached?.section === section) return cached.inspection;
+    cached = null;
+    const document = await book.load(section.url);
+    signal?.throwIfAborted();
+    if (!(document instanceof Document)) throw new Error("EPUB section did not contain a document");
+    const inspection = { document, cfiFromElement: section.cfiFromElement.bind(section) };
+    cached = { section, inspection };
+    return inspection;
+  };
   let gaps: IllustrationGap[] = [];
   const sortedChapters = [...audioChapters].sort((a, b) => a.startSeconds - b.startSeconds);
   const chapterStarts = sortedChapters.map((chapter) => chapter.startSeconds);
@@ -189,14 +207,15 @@ export async function findIllustrationGaps(
       try {
         const section = book.spine.get(previousText.index);
         if (!section) continue;
-        await section.load(book.load.bind(book));
-        const image = section.document?.body
-          ? imageBetweenSnippets(section.document.body, before.text, after.text)
+        const inspected = await inspect(section);
+        const image = inspected.document?.body
+          ? imageBetweenSnippets(inspected.document.body, before.text, after.text)
           : null;
         if (image) {
-          gaps.push({ startSeconds, endSeconds: after.startSeconds, href: section.href, cfi: section.cfiFromElement(image) });
+          gaps.push({ startSeconds, endSeconds: after.startSeconds, href: section.href, cfi: inspected.cfiFromElement(image) });
         }
       } catch {
+        signal?.throwIfAborted();
         // An unreadable section must not interrupt ordinary text following.
       }
       continue;
@@ -208,11 +227,12 @@ export async function findIllustrationGaps(
       for (let index = previousText.index + 1; index < nextText.index; index += 1) {
         const section = book.spine.get(index);
         if (!section) break;
-        await section.load(book.load.bind(book));
-        if (!imageOnlyBody(section.document?.body)) break;
+        const inspected = await inspect(section);
+        if (!imageOnlyBody(inspected.document?.body)) break;
         pictures.push(section.href);
       }
     } catch {
+      signal?.throwIfAborted();
       // An unreadable section must not interrupt ordinary text following.
     }
     if (pictures.length !== nextText.index - previousText.index - 1) continue;
@@ -252,11 +272,12 @@ export async function findIllustrationGaps(
       for (let sectionIndex = previousText.index + 1; sectionIndex < nextText.index; sectionIndex += 1) {
         const section = book.spine.get(sectionIndex);
         if (!section) { allPictures = false; break; }
-        await section.load(book.load.bind(book));
-        if (!imageOnlyBody(section.document?.body)) { allPictures = false; break; }
+        const inspected = await inspect(section);
+        if (!imageOnlyBody(inspected.document?.body)) { allPictures = false; break; }
         picture ??= section.href;
       }
     } catch {
+      signal?.throwIfAborted();
       allPictures = false;
     }
     if (allPictures && picture) {
@@ -286,8 +307,8 @@ export async function findIllustrationGaps(
     const previousText = lastBefore ? book.spine.get(lastBefore.href) : null;
     if (previousText && lastBefore && firstMarker - lastBefore.endSeconds <= 10) {
       try {
-        await previousText.load(book.load.bind(book));
-        const body = previousText.document?.body;
+        const inspected = await inspect(previousText);
+        const body = inspected.document?.body;
         let picture = pictureNamedByChapter(body, chapter.title);
         if (!picture && body && groupEnd - groupStart === 1) picture = imageBetweenSnippets(body, lastBefore.text);
         // Some editions place figures inside the prose but narrate their
@@ -306,11 +327,12 @@ export async function findIllustrationGaps(
             startSeconds: chapter.startSeconds,
             endSeconds,
             href: previousText.href,
-            cfi: previousText.cfiFromElement(picture)
+            cfi: inspected.cfiFromElement(picture)
           });
           continue;
         }
       } catch {
+        signal?.throwIfAborted();
         // A trailing figure is optional; try the separate-page form below.
       }
     }
@@ -319,13 +341,13 @@ export async function findIllustrationGaps(
     const illustration = nextText ? book.spine.get(nextText.index - 1) : null;
     if (!illustration) continue;
     try {
-      await illustration.load(book.load.bind(book));
-      if (!imageOnlyBody(illustration.document?.body)) continue;
-      const picture = pictureNamedByChapter(illustration.document?.body, chapter.title);
+      const inspected = await inspect(illustration);
+      if (!imageOnlyBody(inspected.document?.body)) continue;
+      const picture = pictureNamedByChapter(inspected.document?.body, chapter.title);
       if (picture) {
         gaps = overlayGap(gaps, {
           startSeconds: chapter.startSeconds, endSeconds, href: illustration.href,
-          cfi: illustration.cfiFromElement(picture)
+          cfi: inspected.cfiFromElement(picture)
         });
         continue;
       }
@@ -336,6 +358,7 @@ export async function findIllustrationGaps(
         gaps.push({ startSeconds: chapter.startSeconds, endSeconds, href: illustration.href });
       }
     } catch {
+      signal?.throwIfAborted();
       // Keep the text map when this picture cannot be read.
     }
   }
@@ -354,8 +377,8 @@ export async function findIllustrationGaps(
     const section = book.spine.get(last.href);
     if (!section) continue;
     try {
-      await section.load(book.load.bind(book));
-      const body = section.document?.body;
+      const inspected = await inspect(section);
+      const body = inspected.document?.body;
       let picture = body ? imageBetweenSnippets(body, last.text) : null;
       // Some editions place the picture earlier in the prose but read its
       // description at the end. Require one picture inside the mapped span,
@@ -375,10 +398,11 @@ export async function findIllustrationGaps(
           ? nextProse.startSeconds : endSeconds;
         gaps = overlayGap(gaps, {
           startSeconds: last.endSeconds, endSeconds: pictureEnd, href: section.href,
-          cfi: section.cfiFromElement(picture)
+          cfi: inspected.cfiFromElement(picture)
         });
       }
     } catch {
+      signal?.throwIfAborted();
       // Missing image evidence leaves ordinary narration following intact.
     }
   }
@@ -399,15 +423,17 @@ export async function findIllustrationGaps(
     if (headingStart === null || headingStart <= before.startSeconds) continue;
     const section = book.spine.get(after.href);
     if (!section) continue;
+    let inspected: Pick<Section, "document" | "cfiFromElement">;
     let hasHeading = checkedHeadings.get(after.href);
-    if (hasHeading === undefined) {
-      try {
-        await section.load(book.load.bind(book));
-        hasHeading = leadingImage(section.document?.body);
-      } catch {
-        hasHeading = false;
+    try {
+      inspected = await inspect(section);
+      if (hasHeading === undefined) {
+        hasHeading = leadingImage(inspected.document?.body);
+        checkedHeadings.set(after.href, hasHeading);
       }
-      checkedHeadings.set(after.href, hasHeading);
+    } catch {
+      signal?.throwIfAborted();
+      continue;
     }
     if (!hasHeading) continue;
     for (const gap of gaps) {
@@ -415,9 +441,9 @@ export async function findIllustrationGaps(
         gap.endSeconds = Math.max(gap.startSeconds, headingStart);
       }
     }
-    const picture = headingPicture(section.document?.body, sortedChapters.find((chapter) => chapter.startSeconds === nearMarker)?.title);
+    const picture = headingPicture(inspected.document?.body, sortedChapters.find((chapter) => chapter.startSeconds === nearMarker)?.title);
     gaps.push({ startSeconds: headingStart, endSeconds: after.startSeconds, href: after.href, heading: true,
-      ...(picture ? { cfi: section.cfiFromElement(picture) } : {}) });
+      ...(picture ? { cfi: inspected.cfiFromElement(picture) } : {}) });
   }
 
   // The aligner can start a new EPUB section before its audio chapter begins.
@@ -435,15 +461,17 @@ export async function findIllustrationGaps(
         && gap.endSeconds === firstAfter.startSeconds)) continue;
     const section = book.spine.get(firstAfter.href);
     if (!section) continue;
+    let inspected: Pick<Section, "document" | "cfiFromElement">;
     let hasHeading = checkedHeadings.get(firstAfter.href);
-    if (hasHeading === undefined) {
-      try {
-        await section.load(book.load.bind(book));
-        hasHeading = leadingImage(section.document?.body);
-      } catch {
-        hasHeading = false;
+    try {
+      inspected = await inspect(section);
+      if (hasHeading === undefined) {
+        hasHeading = leadingImage(inspected.document?.body);
+        checkedHeadings.set(firstAfter.href, hasHeading);
       }
-      checkedHeadings.set(firstAfter.href, hasHeading);
+    } catch {
+      signal?.throwIfAborted();
+      continue;
     }
     if (!hasHeading) continue;
     const existingHeading = gaps.find((gap) => gap.heading && gap.href === firstAfter.href
@@ -457,13 +485,13 @@ export async function findIllustrationGaps(
         gap.endSeconds = chapter.startSeconds;
       }
     }
-    const picture = headingPicture(section.document?.body, chapter.title);
+    const picture = headingPicture(inspected.document?.body, chapter.title);
     gaps.push({
       startSeconds: chapter.startSeconds,
       endSeconds: firstAfter.startSeconds,
       href: firstAfter.href,
       heading: true,
-      ...(picture ? { cfi: section.cfiFromElement(picture) } : {})
+      ...(picture ? { cfi: inspected.cfiFromElement(picture) } : {})
     });
   }
 
@@ -472,6 +500,7 @@ export async function findIllustrationGaps(
   // and audiobook chapter marker give that page a more reliable interval.
   try {
     const navigation = await book.loaded.navigation;
+    signal?.throwIfAborted();
     const entries: Array<{ href: string; label: string }> = [];
     const collect = (items: typeof navigation.toc) => {
       for (const item of items) {
@@ -496,10 +525,12 @@ export async function findIllustrationGaps(
       if (matches.length !== 1) continue;
       const section = book.spine.get(matches[0].href.split("#")[0]);
       if (!section) continue;
+      let inspected: Pick<Section, "document" | "cfiFromElement">;
       try {
-        await section.load(book.load.bind(book));
-        if (!imageOnlyBody(section.document?.body)) continue;
+        inspected = await inspect(section);
+        if (!imageOnlyBody(inspected.document?.body)) continue;
       } catch {
+        signal?.throwIfAborted();
         continue;
       }
       // A contents entry can point to a separate title picture while this
@@ -518,15 +549,16 @@ export async function findIllustrationGaps(
         });
         if (prose) endSeconds = Math.max(chapter.startSeconds, prose.startSeconds);
       }
-      const picture = pictureNamedByChapter(section.document?.body, chapter.title);
+      const picture = pictureNamedByChapter(inspected.document?.body, chapter.title);
       gaps = overlayGap(gaps, {
         startSeconds: chapter.startSeconds,
         endSeconds,
         href: section.href,
-        ...(picture ? { cfi: section.cfiFromElement(picture) } : {})
+        ...(picture ? { cfi: inspected.cfiFromElement(picture) } : {})
       });
     }
   } catch {
+    signal?.throwIfAborted();
     // An unavailable contents list leaves the fragment-based gaps intact.
   }
   return gaps.filter((gap) => gap.endSeconds > gap.startSeconds).sort((a, b) => a.startSeconds - b.startSeconds);

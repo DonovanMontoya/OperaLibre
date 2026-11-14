@@ -24,9 +24,9 @@ const fragments: SyncFragment[] = texts.map((text, i) => ({
   ])
 }));
 if (inline) fragments.splice(1, 0, { startSeconds: 20, endSeconds: 30, href: 'c1.xhtml', text: lastInlineSentence });
-const map: SyncMap = { version: 2, precision: 'sentence', fragments,
+export const map: SyncMap = { version: 2, precision: 'sentence', fragments,
   ...(params.has('recovery') ? { recoveryGaps: [{ startSeconds: 30, endSeconds: 60 }, { startSeconds: 80, endSeconds: 90 }] } : {}) };
-const chapters: Chapter[] = [
+export const chapters: Chapter[] = [
   ['Chapter 1', 0, 30], ['Illustration: River map', 30, 45], ['Illustration: Observatory plan', 45, 60],
   ['Chapter 2', 60, 80], ['Interruption', 80, 90], ['Chapter 3', 90, 120]
 ].map(([title, startSeconds, endSeconds], i) => ({ id: String(i), title: String(title), startSeconds: Number(startSeconds), endSeconds: Number(endSeconds), trackId: 'fixture', trackIndex: 0, source: 'embedded' }));
@@ -65,6 +65,12 @@ const bytes = privateFixture ? await fetch(privateAsset(privateFixture.epubUrl, 
   return response.arrayBuffer();
 }) : await zip.generateAsync({ type: 'arraybuffer' });
 const loadSource = async () => bytes.slice(0);
+export async function createInspectionBook() {
+  const { default: ePub } = await import('epubjs');
+  const book = ePub(bytes.slice(0));
+  await book.opened;
+  return book;
+}
 localStorage.setItem('operalibre.readerFollow', '1');
 
 export type FixtureControls = {

@@ -3,7 +3,7 @@ import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { restrictEpubContent } from "./readerContentPolicy";
 import { Capacitor } from "@capacitor/core";
 import { classifyPageGesture, narrationTextOffset, pageTurnAtEdge } from "./readerPagination";
-import { beginPageTurnDrag, pageTurnAnimates, runPageTurn, type PageTurnDirection, type PageTurnDrag } from "./readerPageTurn";
+import { beginPageTurnDrag, cancelPageTurn, pageTurnAnimates, runPageTurn, type PageTurnDirection, type PageTurnDrag } from "./readerPageTurn";
 import { type AnnotationStore, type MarkedView, pruneUntrackedHighlights, removeHighlight } from "./readerAnnotations";
 import {
   ALargeSmall,
@@ -70,11 +70,19 @@ import { errorMessage } from "./formatting";
 
 const EMPTY_ILLUSTRATION_GAPS: IllustrationGap[] = [];
 
-function flattenToc(items: NavItem[], depth = 0): Array<NavItem & { depth: number }> {
-  return items.flatMap((item) => [
-    { ...item, depth },
-    ...flattenToc(item.subitems ?? [], depth + 1)
-  ]);
+function flattenToc(items: NavItem[], book: EpubBook, depth = 0): Array<NavItem & { depth: number }> {
+  const navigationPath = book.packaging.navPath || book.packaging.ncxPath;
+  return items.flatMap((item) => {
+    let href = item.href;
+    // Contents links are relative to the navigation document; epub.js's
+    // display() expects paths relative to the package instead.
+    if (href && navigationPath) {
+      const target = new URL(href, new URL(book.resolve(navigationPath), "https://epub.invalid/"));
+      const path = book.path.relative(target.pathname);
+      href = `${book.spine.get(path)?.href ?? path}${target.hash}`;
+    }
+    return [{ ...item, href, depth }, ...flattenToc(item.subitems ?? [], book, depth + 1)];
+  });
 }
 
 type DocumentSearchIndex = {
@@ -887,7 +895,8 @@ export function EpubReadalong({
   }, [beginOverlayGesture, endOverlayGesture, handleOverlayPointerCancel, moveOverlayGesture]);
 
   useEffect(() => {
-    if (!viewerRef.current) {
+    const stage = viewerRef.current;
+    if (!stage) {
       return;
     }
 
@@ -1312,8 +1321,8 @@ export function EpubReadalong({
 
         book.loaded.navigation
           .then((navigation) => {
-            if (!cancelled) {
-              setToc(flattenToc(navigation.toc));
+            if (!cancelled && book) {
+              setToc(flattenToc(navigation.toc, book));
             }
           })
           .catch(() => {
@@ -1333,7 +1342,7 @@ export function EpubReadalong({
         if (openingChoice.enabled && !openingChoice.following) {
           try {
             const navigation = await book.loaded.navigation;
-            const target = await resolveListeningCfi(book, flattenToc(navigation.toc), openingChoice.chapter);
+            const target = await resolveListeningCfi(book, flattenToc(navigation.toc, book), openingChoice.chapter);
             if (cancelled) return;
             if (!handNavigatedRef.current && canCatchUp(startAt, target, (a, b) => new epubModule.EpubCFI().compare(a, b))) {
               writeStoredValue(returnLocationKey, startAt!);
@@ -1455,11 +1464,12 @@ export function EpubReadalong({
         setRelayoutTick((tick) => tick + 1);
       }
     });
-    resizeObserver.observe(viewerRef.current);
+    resizeObserver.observe(stage);
     void openBook();
 
     return () => {
       cancelled = true;
+      cancelPageTurn(stage);
       pendingFollowTargetRef.current = null;
       debugLog("cleanup");
       abortController.abort();
@@ -1594,14 +1604,14 @@ export function EpubReadalong({
       setIllustrationResult(null);
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
     const fragments = syncFragments;
-    void findIllustrationGaps(book, fragments, audioChapters).then((gaps) => {
-      if (!cancelled) setIllustrationResult({ url, fragments, audioChapters, toc, gaps });
+    void findIllustrationGaps(book, fragments, audioChapters, controller.signal).then((gaps) => {
+      if (!controller.signal.aborted) setIllustrationResult({ url, fragments, audioChapters, toc, gaps });
     }).catch(() => {
-      if (!cancelled) setIllustrationResult({ url, fragments, audioChapters, toc, gaps: [] });
+      if (!controller.signal.aborted) setIllustrationResult({ url, fragments, audioChapters, toc, gaps: [] });
     });
-    return () => { cancelled = true; };
+    return () => controller.abort();
   }, [audioChapters, isReady, syncFragments, toc, url]);
 
   const illustrationGapsReady = illustrationResult?.url === url
@@ -1844,7 +1854,12 @@ export function EpubReadalong({
   const goToHref = (href: string) => {
     setActiveHref(href);
     if (href) {
-      navigateByHand(() => renditionRef.current?.display(href));
+      navigateByHand(() => {
+        // A resize while the jump is queued must not restore the old chapter
+        // or keep its CFI as the saved place after the new chapter arrives.
+        anchorCfiRef.current = null;
+        return renditionRef.current?.display(href);
+      });
     }
   };
   const handleReaderKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
