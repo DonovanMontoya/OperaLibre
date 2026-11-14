@@ -1182,14 +1182,11 @@ export function EpubReadalong({
     };
 
     const openBook = async () => {
+      // The reader's code and the book's first request each cost a round
+      // trip to the server; fetch both at once rather than one after the other.
+      const epubModuleLoad = import("epubjs");
+      epubModuleLoad.catch(() => undefined);
       try {
-        const epubModule = await import("epubjs");
-        const ePub = epubModule.default;
-        epubCfiClassRef.current = epubModule.EpubCFI;
-        if (cancelled || !viewerRef.current) {
-          return;
-        }
-
         readyTimeout = window.setTimeout(() => {
           if (!cancelled) {
             setSlowToOpen(true);
@@ -1205,6 +1202,12 @@ export function EpubReadalong({
           readCached ? () => readCached(abortController.signal) : undefined,
           loadWholeFileRef.current
         );
+        const epubModule = await epubModuleLoad.catch((error: unknown) => {
+          prepared.archive?.destroy();
+          throw error;
+        });
+        const ePub = epubModule.default;
+        epubCfiClassRef.current = epubModule.EpubCFI;
         if (cancelled || !viewerRef.current) {
           prepared.archive?.destroy();
           return;
