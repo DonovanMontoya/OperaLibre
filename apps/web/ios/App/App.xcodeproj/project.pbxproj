@@ -25,6 +25,7 @@
 		A17B00152E32000100B6D001 /* NativeAudio.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00142E32000100B6D001 /* NativeAudio.swift */; };
 		A17B00172E32000100B6D001 /* BackgroundDownloadPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00162E32000100B6D001 /* BackgroundDownloadPolicy.swift */; };
 		A17B00212E32000100B6D001 /* AudiobookPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00202E32000100B6D001 /* AudiobookPlayer.swift */; };
+		A17B00312E32000100B6D001 /* PacketAudioAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00302E32000100B6D001 /* PacketAudioAsset.swift */; };
 		A17B00232E32000100B6D001 /* CarLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00222E32000100B6D001 /* CarLibrary.swift */; };
 		A17B00512E32000100B6D001 /* StoredRecords.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00502E32000100B6D001 /* StoredRecords.swift */; };
 		A17B002E2E32000100B6D001 /* CarLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B002D2E32000100B6D001 /* CarLibraryStore.swift */; };
@@ -57,6 +58,7 @@
 		A17B00142E32000100B6D001 /* NativeAudio.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAudio.swift; sourceTree = "<group>"; };
 		A17B00162E32000100B6D001 /* BackgroundDownloadPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundDownloadPolicy.swift; sourceTree = "<group>"; };
 		A17B00202E32000100B6D001 /* AudiobookPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudiobookPlayer.swift; sourceTree = "<group>"; };
+		A17B00302E32000100B6D001 /* PacketAudioAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketAudioAsset.swift; sourceTree = "<group>"; };
 		A17B00222E32000100B6D001 /* CarLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarLibrary.swift; sourceTree = "<group>"; };
 		A17B00502E32000100B6D001 /* StoredRecords.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoredRecords.swift; sourceTree = "<group>"; };
 		A17B002D2E32000100B6D001 /* CarLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarLibraryStore.swift; sourceTree = "<group>"; };
@@ -116,6 +118,7 @@
 				A17B00322E32000100B6D001 /* NativeTabs.swift */,
 				A17B00142E32000100B6D001 /* NativeAudio.swift */,
 				A17B00202E32000100B6D001 /* AudiobookPlayer.swift */,
+				A17B00302E32000100B6D001 /* PacketAudioAsset.swift */,
 				A17B00222E32000100B6D001 /* CarLibrary.swift */,
 				A17B002D2E32000100B6D001 /* CarLibraryStore.swift */,
 				A17B00242E32000100B6D001 /* CarPlayCoordinator.swift */,
@@ -252,6 +255,7 @@
 				A17B00332E32000100B6D001 /* NativeTabs.swift in Sources */,
 				A17B00152E32000100B6D001 /* NativeAudio.swift in Sources */,
 				A17B00212E32000100B6D001 /* AudiobookPlayer.swift in Sources */,
+				A17B00312E32000100B6D001 /* PacketAudioAsset.swift in Sources */,
 				A17B00232E32000100B6D001 /* CarLibrary.swift in Sources */,
 				A17B002E2E32000100B6D001 /* CarLibraryStore.swift in Sources */,
 				A17B00252E32000100B6D001 /* CarPlayCoordinator.swift in Sources */,
