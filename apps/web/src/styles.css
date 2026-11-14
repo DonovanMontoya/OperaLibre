@@ -10400,7 +10400,7 @@ html.native-app .has-native-player.native-player-view-now .native-now-playing {
     max-height: min(35vh, 100%);
   }
 
-  html.native-app .has-native-player.native-player-view-now .native-now-artwork span.large-cover {
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork span.large-cover:not(.cover-art-frame) {
     width: min(66vw, 294px);
     max-height: 100%;
   }
@@ -10413,7 +10413,7 @@ html.native-app .has-native-player.native-player-view-now .native-now-playing {
     max-height: min(29vh, 100%);
   }
 
-  html.native-app .has-native-player.native-player-view-now .native-now-artwork span.large-cover {
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork span.large-cover:not(.cover-art-frame) {
     width: min(56vw, 238px);
   }
 }
@@ -16038,7 +16038,7 @@ html.native-app.uikit-tabs {
     max-width: min(78vw, 320px);
     max-height: min(37vh, 100%);
   }
-  html.native-app .has-native-player.native-player-view-now .native-now-artwork span.large-cover {
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork span.large-cover:not(.cover-art-frame) {
     width: min(78vw, 320px);
   }
   html.native-app .native-now-play { width: 88px; height: 88px; flex-shrink: 0; }
@@ -16062,7 +16062,7 @@ html.native-app.uikit-tabs {
     max-width: min(100%, 420px);
     max-height: min(42vh, 100%);
   }
-  html.native-app .has-native-player.native-player-view-now .native-now-artwork span.large-cover {
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork span.large-cover:not(.cover-art-frame) {
     width: min(100%, 420px);
   }
 }
@@ -19404,7 +19404,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .na
   max-height: 24vh;
 }
 
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-shell .has-native-player.native-player-view-now .native-now-artwork span.large-cover {
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-shell .has-native-player.native-player-view-now .native-now-artwork span.large-cover:not(.cover-art-frame) {
   width: 24vh;
   max-width: 100%;
 }
@@ -20723,7 +20723,16 @@ html.native-app .native-shell > .player-pane.has-native-player.native-player-vie
     aspect-ratio: 1;
     object-fit: contain;
   }
-  & .native-now-artwork span.large-cover { height: 100%; }
+  & .native-now-artwork span.large-cover:not(.cover-art-frame) { height: 100%; }
+  /* Loaded artwork is a frame with no size of its own, so it is fitted to
+     the artwork's box at the image's ratio rather than stretched to fill it. */
+  & .native-now-artwork { container-type: size; }
+  & .native-now-artwork .cover-art-frame.large-cover {
+    width: min(100cqw, 294px, 100cqh * var(--cover-art-ratio, 1));
+    max-width: none;
+    max-height: none;
+    aspect-ratio: var(--cover-art-ratio, 1);
+  }
   & .native-now-copy {
     grid-area: auto;
     gap: 4px;
