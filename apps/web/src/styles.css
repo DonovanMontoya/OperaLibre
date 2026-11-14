@@ -25034,3 +25034,116 @@ html:not(.native-app) .book-heading .book-quick-start .book-quick-return {
     box-shadow: none;
   }
 }
+
+/* Chapter notes on a book's page, and their model settings. */
+.chapter-notes {
+  display: grid;
+  gap: 10px;
+  max-width: 760px;
+}
+
+.chapter-notes-head,
+.chapter-notes-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chapter-notes-actions {
+  justify-content: flex-start;
+}
+
+.chapter-notes-head .quiet-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chapter-notes-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chapter-notes-list > li {
+  border: 1px solid rgba(var(--ink-rgb), 0.14);
+  background: rgba(var(--ink-rgb), 0.03);
+}
+
+.chapter-notes-list > li.current {
+  border-color: rgba(var(--ink-rgb), 0.34);
+}
+
+.chapter-notes-list summary {
+  display: grid;
+  gap: 3px;
+  padding: 9px 12px;
+  cursor: pointer;
+}
+
+.chapter-notes-list summary strong {
+  font-size: 0.86rem;
+  color: var(--ink);
+}
+
+.chapter-notes-list summary em,
+.chapter-notes-source {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  font-style: normal;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faded);
+}
+
+.chapter-notes-list summary span,
+.chapter-notes-empty,
+.chapter-notes-status {
+  font-size: 0.8rem;
+  color: var(--ink-faded);
+  margin: 0;
+}
+
+.chapter-notes-list details > :not(summary) {
+  margin: 0 12px 10px;
+  font-size: 0.84rem;
+}
+
+.chapter-notes-list h4 {
+  margin: 10px 12px 4px;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.chapter-notes-list details ul {
+  padding-left: 18px;
+}
+
+.chapter-notes-hidden {
+  font-style: italic;
+  color: var(--ink-faded);
+}
+
+.chapter-notes-provider fieldset {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 12px 0 0;
+  border: 0;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.12);
+}
+
+.chapter-notes-provider label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.78rem;
+}
+
+.chapter-notes-head .quiet-button {
+  font-size: 0.74rem;
+}

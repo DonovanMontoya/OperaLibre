@@ -533,11 +533,42 @@ pub(crate) fn build_router(
             auth_middleware,
         ));
 
+    // The chapter notes experiment, gated like book gifts.
+    let chapter_notes_routes = Router::new()
+        .route(
+            "/api/books/{book_id}/chapter-notes",
+            get(crate::chapter_notes::get_book_chapter_notes)
+                .post(crate::chapter_notes::generate_book_chapter_notes)
+                .delete(crate::chapter_notes::delete_book_chapter_notes),
+        )
+        .route(
+            "/api/experimental-features/chapter-notes/provider",
+            put(crate::chapter_notes::set_chapter_notes_provider)
+                .delete(crate::chapter_notes::remove_chapter_notes_provider),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::chapter_notes::require_experiment,
+        ))
+        .route(
+            "/api/experimental-features/chapter-notes",
+            get(crate::chapter_notes::chapter_notes_experiment),
+        )
+        .route(
+            "/api/experimental-features/chapter-notes/enabled",
+            put(crate::chapter_notes::set_chapter_notes_enabled),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
     // Added before the web app's static files, which stay open during an
     // update trial so a reloaded page can load and wait for the API.
     let mut app = public_routes
         .merge(public_share_routes)
         .merge(protected_share_routes)
+        .merge(chapter_notes_routes)
         .merge(protected_routes)
         .merge(long_running_routes)
         .merge(agent_routes)

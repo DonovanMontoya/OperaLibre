@@ -73,6 +73,7 @@ import { SyncJobMonitor } from "./SyncJobMonitor";
 import { LibroImports } from "./LibroImports";
 import { LibroCatalog } from "./LibroCatalog";
 import { BookGiftsExperiment } from "./BookGiftsExperiment";
+import { ChapterNotesExperiment } from "./ChapterNotesExperiment";
 import { getServerType } from "./api";
 import { isDemoMode } from "./demo";
 
@@ -1074,6 +1075,7 @@ export function AdminPanel({
               </article>
               <AgentAccessExperiment isOwner={currentUser.isOwner} />
               {currentUser.isOwner && !isDemoMode() && getServerType() === "operalibre" ? <BookGiftsExperiment /> : null}
+              {!isDemoMode() && getServerType() === "operalibre" ? <ChapterNotesExperiment isOwner={currentUser.isOwner} /> : null}
             </div>
           </section>
         </div>

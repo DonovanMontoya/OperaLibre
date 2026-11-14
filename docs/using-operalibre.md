@@ -334,7 +334,17 @@ Other assistants that accept an MCP server address with a bearer token connect t
 
 Apart from getting books, an assistant can only read. It cannot change your progress or anything else, it never sees other listeners' activity, and it sees no more than you can in the app: if an administrator narrows your access, the assistant's narrows with it. Whatever it reads is sent to the company that runs the assistant. Remove an assistant from the **AI assistants** card to disconnect it. Assistants are also disconnected when someone else resets your password, when your account is removed, and when the owner restores a backup. If the owner turns the experiment off, connected assistants stop working until it is turned back on.
 
-Recaps need a book with its text and a follow-along map (see [Read along with the ebook](#read-along-with-the-ebook)), because the map marks exactly where you are in the text. The assistant gets nothing past that point, and it is asked not to fill in the plot from its own knowledge of the book.
+Recaps need a book with its text and a follow-along map (see [Read along with the ebook](#read-along-with-the-ebook)), because the map marks exactly where you are in the text, or a book transcribed for [chapter notes](#chapter-notes). The assistant gets nothing past that point, and it is asked not to fill in the plot from its own knowledge of the book.
+
+### Chapter notes
+
+Chapter notes give each chapter a spoiler-free synopsis, a full summary, and the people and places in it, including for books that have no ebook. They are an experiment the owner turns on under **Administration → Experiments**.
+
+Notes start from the book's words. A book with a follow-along map uses its own text. Any other book is transcribed on your server by the follow-along sync add-on, so install that first. Writing the notes needs a language model, which the owner chooses on the same card: paste an Anthropic API key, or give the address of any OpenAI-compatible endpoint, such as Ollama or LM Studio on your own network. With no model chosen, books are only transcribed, and a connected assistant writes its own recap from the transcript.
+
+An administrator makes a book's notes from the book's page with **Make notes** (or **Transcribe**). Transcribing takes a while on modest hardware, and one book is worked on at a time. A chapter's text goes to the model you chose only then, and running it again sends only chapters that changed. **Remove** deletes the book's notes and transcripts.
+
+Notes appear on the book's page and in the player's details. Summaries of chapters you have not finished stay hidden until you choose **Show spoilers**. Assistants with **Book text so far** can read them the same way: everything for chapters you have heard, only the synopsis for the chapter you are in, and nothing later unless you ask the assistant to spoil it.
 
 ## Import Audible books with Libation (optional)
 
