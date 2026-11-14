@@ -20,6 +20,8 @@ test('selects preroll/current/next using timestamps, including exact boundaries'
 
 test('failed, incomplete, duplicate and empty-work samples cannot pass', () => {
   validateResults([sample], config, false);
+  assert.throws(() => validateResults([sample], { ...config, embeddedCoverBytes: 100 }, false));
+  validateResults([{ ...sample, artworkPassed: true }], { ...config, embeddedCoverBytes: 100 }, false);
   assert.throws(() => validateResults([sample], config));
   assert.throws(() => validateResults([sample, sample], config, false));
   for (const patch of [{ error: 'timeout' }, { network: { bytes: 0 } }, { checkpointPosition: 0 }, { firstAdvanceMs: 0.5 }, { seekPlaybackPassed: false }]) {
@@ -31,15 +33,18 @@ test('fixture server restricts paths, serves ranges and bundles, preserves failu
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stream-bench-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'hls'));
-  await fs.writeFile(path.join(root, 'fixture.json'), JSON.stringify(config));
+  await fs.writeFile(path.join(root, 'fixture.json'), JSON.stringify({ ...config, candidate: 'compact' }));
   await fs.writeFile(path.join(root, 'hls/book.m3u8'), playlist);
-  for (const file of ['flat.m4a', 'hls/init.mp4', ...[0, 1, 2, 3].map(i => `hls/book${i}.m4s`)]) await fs.writeFile(path.join(root, file), '0123456789');
+  for (const file of ['flat.m4a', 'compact.m4a', 'hls/init.mp4', ...[0, 1, 2, 3].map(i => `hls/book${i}.m4s`)]) await fs.writeFile(path.join(root, file), '0123456789');
   const { server, base } = await startServer(root);
   t.after(() => { server.closeAllConnections(); server.close(); });
   const range = await fetch(`${base}/run/40/sample/flat.m4a`, { headers: { Range: 'bytes=2-4' } });
   assert.equal(range.status, 206);
   assert.equal(range.headers.get('content-range'), 'bytes 2-4/10');
   assert.equal(await range.text(), '234');
+  const compact = await fetch(`${base}/run/40/sample/compact.m4a`, { headers: { Range: 'bytes=2-4' } });
+  assert.equal(compact.status, 206);
+  assert.equal(await compact.text(), '234');
   assert.equal((await fetch(`${base}/run/40/sample/fixture.json`)).status, 404);
   const bundle = await (await fetch(`${base}/run/40/sample/bootstrap-2.json`)).json();
   assert.ok(Buffer.from(bundle['book.m3u8'], 'base64').toString().includes('TIME-OFFSET=2'));
@@ -69,8 +74,35 @@ test('report CLI accepts complete runs and rejects incomplete or failed runs', a
   assert.equal(success.status, 0, success.stderr);
   assert.match(success.stdout, /firstAdvanceMs/);
   assert.match(success.stdout, /not production readiness/);
+  const compactRows = rows.map(row => ({ ...row, kind: row.kind === 'bootstrap' ? 'compact' : row.kind }));
+  const compact = await invoke({ config: { ...config, candidate: 'compact' }, rows: compactRows, complete: true });
+  assert.equal(compact.status, 0, compact.stderr);
+  assert.match(compact.stdout, /Candidate: compact/);
+  assert.throws(() => validateResults(compactRows, config));
   assert.notEqual((await invoke({ config, rows: rows.slice(1), complete: true })).status, 0);
   assert.notEqual((await invoke({ config, rows, complete: false })).status, 0);
   rows[0].error = 'timeout';
   assert.notEqual((await invoke({ config, rows, complete: true })).status, 0);
+});
+
+test('packet windows are compressed, bounded, and revision-pinned', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'packet-bench-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, 'hls'));
+  await fs.writeFile(path.join(root, 'fixture.json'), JSON.stringify({ ...config, candidate: 'packet' }));
+  await fs.writeFile(path.join(root, 'hls/book.m3u8'), playlist);
+  await fs.writeFile(path.join(root, 'compact.m4a'), '0123456789');
+  const { server, base } = await startServer(root);
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const endpoint = `${base}/run/40/sample/api/books/fixture/tracks/fixture/packet-stream`;
+  const response = await fetch(`${endpoint}?op=bootstrap`);
+  assert.equal(response.headers.get('content-encoding'), 'gzip');
+  const bootstrap = await response.json();
+  assert.equal(bootstrap.length, 10);
+  assert.equal(Buffer.from(bootstrap.data, 'base64').toString(), '0123456789');
+  const range = `${endpoint}?op=range&offset=3&count=4&revision=${bootstrap.revision}`;
+  assert.equal(await (await fetch(range)).text(), '3456');
+  assert.equal((await fetch(range.replace('count=4', 'count=65537'))).status, 400);
+  assert.equal((await fetch(range.replace('offset=3', 'offset=9'))).status, 400);
+  assert.equal((await fetch(range.replace(bootstrap.revision, 'stale'))).status, 400);
 });

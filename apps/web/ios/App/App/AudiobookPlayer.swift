@@ -3,6 +3,32 @@ import Foundation
 import MediaPlayer
 import UIKit
 
+/// Older servers ignore this hint. File URLs and other server APIs keep their
+/// existing sources; OperaLibre may return a smaller, equivalent MP4 index.
+func compactAudioSource(_ source: URL) -> URL {
+    guard var components = URLComponents(url: source, resolvingAgainstBaseURL: false),
+          components.scheme == "http" || components.scheme == "https" else { return source }
+    let path = Array(components.path.split(separator: "/").suffix(6))
+    guard path.count == 6, path[0] == "api", path[1] == "books",
+          path[3] == "tracks", path[5] == "stream" else { return source }
+    var query = components.queryItems ?? []
+    query.removeAll { $0.name == "compact" }
+    query.append(URLQueryItem(name: "compact", value: "1"))
+    components.queryItems = query
+    return components.url ?? source
+}
+
+func packetAudioSource(_ source: URL) -> URL? {
+    guard var components = URLComponents(url: source, resolvingAgainstBaseURL: false) else { return nil }
+    let path = Array(components.path.split(separator: "/").suffix(6))
+    guard path.count == 6, path[0] == "api", path[1] == "books",
+          path[3] == "tracks", path[5] == "stream",
+          components.scheme == "http" || components.scheme == "https" else { return nil }
+    components.path = String(components.path.dropLast("stream".count)) + "packet-stream"
+    components.queryItems = components.queryItems?.filter { $0.name != "compact" }
+    return components.url
+}
+
 struct NativeAudioCheckpoint: Codable {
     let scopeKey: String
     let trackId: String
@@ -196,6 +222,7 @@ public final class AudiobookPlayer {
     private var queuedTracks: [NativeAudioQueuedTrack] = []
     private var queuedItems: [AVPlayerItem] = []
     private var activeQueueIndex = 0
+    private var packetAudio: PacketAudioAsset?
     private var initialSeekComplete = false
     /// The active item has reached a real position since loading. Until then a
     /// seek that never lands must keep reporting the resume target, not 0:00.
@@ -261,7 +288,11 @@ public final class AudiobookPlayer {
     // MARK: - Transport
 
     func load(_ request: AudiobookLoadRequest) {
-        let url = request.url
+        load(request, allowsPacketAudio: true)
+    }
+
+    private func load(_ request: AudiobookLoadRequest, allowsPacketAudio: Bool) {
+        let url = compactAudioSource(request.url)
         let position = max(0, request.positionSeconds)
         let rate = clampedRate(request.rate)
         let volume = clampedVolume(request.volume)
@@ -270,7 +301,11 @@ public final class AudiobookPlayer {
         let scopeKey = request.recoveryScopeKey
         let trackId = request.recoveryTrackId
         let bookOffset = max(0, request.recoveryBookOffsetSeconds)
-        var requestedQueue = request.queue
+        var requestedQueue = request.queue.map { track in
+            var track = track
+            track.url = compactAudioSource(track.url)
+            return track
+        }
         let currentTrackId = trackId ?? requestedQueue.first?.trackId ?? "current-track"
         if requestedQueue.first?.trackId == currentTrackId {
             requestedQueue[0].url = url
@@ -289,7 +324,7 @@ public final class AudiobookPlayer {
             )
         }
 
-        DispatchQueue.main.async { [weak self] in
+        let install = { [weak self] in
             guard let self else { return }
 
             // A shelf Resume tap can reach play() while React is still
@@ -324,12 +359,21 @@ public final class AudiobookPlayer {
             self.finishedDurationSeconds = nil
             self.installSessionObserversIfNeeded()
 
-            let items = requestedQueue.map { track in
+            let items = requestedQueue.enumerated().map { index, track in
+                var asset = AVURLAsset(url: track.url)
+                if index == 0, allowsPacketAudio, let source = packetAudioSource(track.url) {
+                    let packet = PacketAudioAsset(source: source) { [weak self] in
+                        guard let self, self.generation == loadGeneration else { return }
+                        _ = self.retryWithoutPacketAudio()
+                    }
+                    self.packetAudio = packet
+                    asset = packet.asset
+                }
                 // The URL initializer waits for asset duration before readiness.
                 // Start decoding without that extra prerequisite; duration is
                 // fetched after readiness and published when it becomes available.
                 let item = AVPlayerItem(
-                    asset: AVURLAsset(url: track.url),
+                    asset: asset,
                     automaticallyLoadedAssetKeys: []
                 )
                 // Apple's time-domain algorithm is designed for spoken audio and
@@ -351,6 +395,11 @@ public final class AudiobookPlayer {
             self.lastKnownPosition = position
             self.configureRemoteCommandsIfNeeded()
             self.installObservers(player: player, item: items[0], generation: loadGeneration)
+        }
+        if !allowsPacketAudio && Thread.isMainThread {
+            install()
+        } else {
+            DispatchQueue.main.async(execute: install)
         }
     }
 
@@ -792,6 +841,7 @@ public final class AudiobookPlayer {
                         self.seekCurrentItem(player, item: item, to: self.pendingPosition, completion: ready)
                     }
                 case .failed:
+                    if self.retryWithoutPacketAudio() { return }
                     self.emitError(item.error?.localizedDescription ?? "The audio track could not be loaded.")
                 default:
                     break
@@ -835,6 +885,7 @@ public final class AudiobookPlayer {
                 // explicitly fail over instead of leaving Play waiting forever.
                 guard let currentItem = player.currentItem else {
                     if !self.initialSeekComplete {
+                        if self.retryWithoutPacketAudio() { return }
                         self.emitError("The audio track could not be loaded.")
                     }
                     return
@@ -843,6 +894,9 @@ public final class AudiobookPlayer {
                     let index = self.queuedItems.firstIndex(where: { $0 === currentItem }),
                     index != self.activeQueueIndex
                 else { return }
+                if !self.initialSeekComplete, self.packetAudio != nil {
+                    if self.retryWithoutPacketAudio() { return }
+                }
                 self.activateQueuedTrack(at: index)
                 self.initialSeekComplete = true
                 self.positionEstablished = true
@@ -945,6 +999,10 @@ public final class AudiobookPlayer {
 
     private func activateQueuedTrack(at index: Int) {
         guard queuedTracks.indices.contains(index) else { return }
+        if index > 0 {
+            packetAudio?.cancel()
+            packetAudio = nil
+        }
         let track = queuedTracks[index]
         activeQueueIndex = index
         // Loading track metadata for every queued item competes with startup
@@ -1294,6 +1352,35 @@ public final class AudiobookPlayer {
         }
     }
 
+    @discardableResult private func retryWithoutPacketAudio() -> Bool {
+        guard packetAudio != nil, let item = queuedItems.first else { return false }
+        return retryInitialItem(item)
+    }
+
+    /// The queue may already have discarded this item when its failure arrives.
+    /// Keep its clock paired with its track, including during teardown's checkpoint.
+    @discardableResult func retryInitialItem(_ item: AVPlayerItem) -> Bool {
+        precondition(Thread.isMainThread)
+        guard let player, activeQueueIndex == 0, queuedItems.first === item,
+              let track = queuedTracks.first else { return false }
+        let position = stablePosition(item.currentTime())
+        let request = AudiobookLoadRequest(
+            url: track.url, positionSeconds: position,
+            rate: Double(desiredRate), volume: Double(player.volume), gain: Double(boostGain),
+            autoplay: shouldAutoplay, recoveryScopeKey: recoveryScopeKey,
+            recoveryTrackId: recoveryTrackId, recoveryBookOffsetSeconds: recoveryBookOffset,
+            queue: queuedTracks, keepsPendingIntentionalSeek: true)
+        pendingPosition = position
+        lastKnownPosition = position
+        initialSeekComplete = false
+        packetAudio?.cancel()
+        self.packetAudio = nil
+        // Invalidate late item/queue callbacks before rebuilding the player.
+        generation += 1
+        load(request, allowsPacketAudio: false)
+        return true
+    }
+
     /// iOS restarted its audio services, which leaves the existing AVPlayer
     /// silent for good. Rebuild it from the queue it held, at the position it
     /// had reached, and keep playing only if it was. A book that already
@@ -1504,7 +1591,7 @@ public final class AudiobookPlayer {
         durationSeconds: Double? = nil
     ) {
         guard
-            let player,
+            player != nil,
             let scopeKey = recoveryScopeKey,
             let trackId = recoveryTrackId
         else { return }
@@ -1512,7 +1599,8 @@ public final class AudiobookPlayer {
         if !force && now - lastCheckpointWrite < 2_000 { return }
         let position = positionSeconds ?? stablePlayerPosition()
         lastKnownPosition = position
-        let duration = durationSeconds ?? finiteSeconds(player.currentItem?.duration ?? .invalid)
+        let item = queuedItems.indices.contains(activeQueueIndex) ? queuedItems[activeQueueIndex] : nil
+        let duration = durationSeconds ?? finiteSeconds(item?.duration ?? .invalid)
         let checkpoint = NativeAudioCheckpoint(
             scopeKey: scopeKey,
             trackId: trackId,
@@ -1739,6 +1827,8 @@ public final class AudiobookPlayer {
     }
 
     private func tearDownPlayer() {
+        packetAudio?.cancel()
+        packetAudio = nil
         persistCheckpoint(
             force: true,
             positionSeconds: finishedPositionSeconds,
@@ -1809,8 +1899,12 @@ public final class AudiobookPlayer {
     }
 
     private func stablePlayerPosition() -> Double {
+        stablePosition(player?.currentTime() ?? .invalid)
+    }
+
+    private func stablePosition(_ time: CMTime) -> Double {
         if !initialSeekComplete { return pendingPosition }
-        guard let current = validSeconds(player?.currentTime() ?? .invalid) else {
+        guard let current = validSeconds(time) else {
             return lastKnownPosition
         }
         // A route swap can expose the replacement renderer's initial 0:00
