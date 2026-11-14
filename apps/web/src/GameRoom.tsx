@@ -29,6 +29,16 @@ type WordSave = { word: string; guesses: string[] };
 const WORD_SAVE_KEY = "operalibre.games.word-grid";
 const MATCH_SAVE_KEY = "operalibre.games.chapter-match";
 
+const LETTER_FEEDBACK = {
+  correct: { symbol: "✓", label: "correct position" },
+  present: { symbol: "↔", label: "different position" },
+  absent: { symbol: "×", label: "not in the word" }
+} satisfies Record<LetterResult, { symbol: string; label: string }>;
+
+function LetterFeedback({ result }: { result: LetterResult | undefined }) {
+  return result ? <small className="word-feedback" aria-hidden="true">{LETTER_FEEDBACK[result].symbol}</small> : null;
+}
+
 function isPlayableGuess(value: unknown): value is string {
   return typeof value === "string" && value.length === WORD_LENGTH && /^[a-z]+$/.test(value);
 }
@@ -159,15 +169,23 @@ function WordGrid() {
         // the same word is offered twice.
         const drafting = row === save.guesses.length;
         return <div className={`word-row ${drafting && rejections ? "rejected" : ""}`} key={drafting ? `draft-${rejections}` : row}>
-          {Array.from({ length: WORD_LENGTH }, (_, col) => <span className={`word-tile ${result[col] ?? ""}`} key={col}>{word[col]?.toUpperCase() ?? ""}</span>)}
+          {Array.from({ length: WORD_LENGTH }, (_, col) => <span className={`word-tile ${result[col] ?? ""}`} key={col}
+            role={result[col] ? "img" : undefined}
+            aria-label={result[col] ? `${word[col]?.toUpperCase()}, ${LETTER_FEEDBACK[result[col]].label}` : undefined}>
+            {word[col]?.toUpperCase() ?? ""}<LetterFeedback result={result[col]} />
+          </span>)}
         </div>;
       })}
     </div></div>
+    <p className="word-feedback-legend">✓ Correct position · ↔ Different position · × Not in word</p>
     <div className="word-keys" aria-label="Letter keyboard">
       {KEY_ROWS.map((rowKeys, rowIndex) => <div className="word-keys-row" key={rowIndex}>
         {rowIndex === 2 && <button type="button" className="word-key wide" disabled={finished || draft.length !== WORD_LENGTH || dictionary === "loading"} onClick={() => pressKey("enter")} aria-label="Submit guess">Enter</button>}
         {rowKeys.split("").map((letter) => (
-          <button type="button" className={`word-key ${keyResults[letter] ?? ""}`} disabled={finished} onClick={() => pressKey(letter)} key={letter}>{letter.toUpperCase()}</button>
+          <button type="button" className={`word-key ${keyResults[letter] ?? ""}`} disabled={finished} onClick={() => pressKey(letter)} key={letter}
+            aria-label={keyResults[letter] ? `${letter.toUpperCase()}, ${LETTER_FEEDBACK[keyResults[letter]].label}` : letter.toUpperCase()}>
+            {letter.toUpperCase()}<LetterFeedback result={keyResults[letter]} />
+          </button>
         ))}
         {rowIndex === 2 && <button type="button" className="word-key wide" disabled={finished || !draft.length} onClick={() => pressKey("back")} aria-label="Delete letter">⌫</button>}
       </div>)}

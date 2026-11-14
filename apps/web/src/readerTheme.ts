@@ -1,3 +1,4 @@
+import type { ColorVision } from "./colorVision.ts";
 import { prefersDarkQuery } from "./appearance.ts";
 
 /**
@@ -86,6 +87,30 @@ export const READER_THEME_COLORS: Record<ReaderTheme, { page: string; ink: strin
 
 type ThemeOverrides = { override(name: string, value: string, priority?: boolean): void };
 
+export function readerAccent(theme: ReaderTheme, mode: ColorVision): string {
+  const night = theme === "night";
+  switch (mode) {
+    case "default": return READER_THEME_COLORS[theme].link;
+    case "red-green": return night ? "#90c9ff" : "#004f87";
+    case "blue-yellow": return night ? "#ffb5be" : "#902343";
+    case "monochrome": return night ? "#ffffff" : "#242424";
+  }
+}
+
+export function sentenceHighlightStyle(theme: ReaderTheme, mode: ColorVision, strongerCues: boolean) {
+  const night = theme === "night";
+  return {
+    fill: mode === "default" ? (night ? "#e8b64c" : "#d9a441") : readerAccent(theme, mode),
+    "fill-opacity": night ? "0.4" : mode === "default" ? "0.32" : "0.2",
+    "mix-blend-mode": night ? "screen" : "multiply",
+    ...(strongerCues || mode !== "default" ? {
+      stroke: readerAccent(theme, mode),
+      "stroke-width": "1.5",
+      "stroke-opacity": "1"
+    } : {})
+  };
+}
+
 /**
  * Colours the chapter for `theme` through the custom properties the shared
  * page stylesheet reads. epub.js keeps every stylesheet it has injected, so
@@ -93,9 +118,9 @@ type ThemeOverrides = { override(name: string, value: string, priority?: boolean
  * added wins for good; overriding variables changes the one sheet in place
  * and carries over to chapters opened later.
  */
-export function applyReaderThemeColors(themes: ThemeOverrides, theme: ReaderTheme): void {
+export function applyReaderThemeColors(themes: ThemeOverrides, theme: ReaderTheme, mode: ColorVision = "default"): void {
   const colors = READER_THEME_COLORS[theme];
   themes.override("--reader-page", colors.page);
   themes.override("--reader-ink", colors.ink);
-  themes.override("--reader-link", colors.link);
+  themes.override("--reader-link", readerAccent(theme, mode));
 }

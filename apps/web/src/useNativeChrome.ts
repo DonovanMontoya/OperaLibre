@@ -70,7 +70,7 @@ export function useNativeChrome({
     };
     read();
     const observer = new MutationObserver(read);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-dark-theme", "data-light-theme"] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-dark-theme", "data-light-theme", "data-color-vision"] });
     return () => observer.disconnect();
   }, [native, nativeTab, shelfLayout, shellRef]);
   const { ready: nativeTabsReady, shown: nativeTabsShown, settled: nativeTabsSettled } = useNativeTabs({

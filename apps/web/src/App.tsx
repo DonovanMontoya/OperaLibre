@@ -2073,6 +2073,7 @@ function MainApp({
   const shelfPull = usePullToRefresh(native, refreshShelf);
 
   const userMenu = renderUserMenu({
+    displaySettings,
     continueReadingAutoplay,
     toggleContinueReadingAutoplay,
     bookPreviewsEnabled,
