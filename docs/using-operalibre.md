@@ -358,6 +358,12 @@ The milestones are books finished (1, then 10, 25, and 100), a finished book of 
 
 The installed iPhone and Android apps include a **Games** tab. **Word Grid** is a five-letter word puzzle: it starts on the day's word, takes six guesses, and can be replaced with another word. **Chapter Match** is a board where you swap adjacent symbols to line up three or more. The tab is in the bottom navigation by default. Turn it off with **Games tab** under **Settings → Behavior**. The games run on the device and send nothing to the server.
 
+## Color vision
+
+Under **Settings → Display → Color vision** in the apps, or **Account menu → Display** on the web, choose **Red–green**, **Blue–yellow**, or **Monochrome** to change interface accents and status colors. The choice stays on this device and works offline. Covers and book illustrations keep their original colors; ebook links and narrated-sentence highlights follow the selected palette.
+
+Turn on **Stronger visual cues** for outlined selections, underlined links, patterned listening progress, and a numbered listening calendar (1–4, from less to more). It works with any palette, including **Default colors**. Word Grid always labels its feedback with symbols: ✓ for the correct position, ↔ for a different position, and × for a letter absent from the word. Chapter Match uses a different symbol for each piece.
+
 ## Light and dark themes
 
 The iPhone and iPad apps can turn dark with your device or stay light or dark all the time; choose under **Settings → Display → Appearance**. **Themes**, just below it, sets how each appearance looks, with the light themes (**Parchment**, **Linen**, **Sage**, **Harbor**, **Pure White**) beside the dark ones (**Warm**, **Graphite**, **Midnight**, **Reading Room**, **True Black**). Each choice is remembered on the device and applies only while the app is in that appearance, so with **System** you can pick one of each. The Shelf and Games follow the appearance like every other screen.

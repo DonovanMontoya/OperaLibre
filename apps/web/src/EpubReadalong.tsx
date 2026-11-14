@@ -1,3 +1,5 @@
+import { useColorVision } from "./useColorVision";
+import { sentenceHighlightStyle } from "./readerTheme";
 import { isBookPosture, isFlatSidePosture, useDeviceFold } from "./deviceFold";
 import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { restrictEpubContent } from "./readerContentPolicy";
@@ -40,7 +42,6 @@ import {
   applyReaderThemeColors,
   currentAppPrefersDark,
   READER_THEME_CHOICES,
-  type ReaderTheme,
   type ReaderThemeChoice,
   readReaderThemeChoice,
   resolveReaderTheme,
@@ -248,14 +249,6 @@ function caretAtPoint(doc: Document, x: number, y: number): { node: Node; offset
   return null;
 }
 
-/** Marker colours for the narrated sentence, per reading theme. */
-function sentenceHighlightStyle(theme: ReaderTheme) {
-  // The night page is dark, so the marker must lighten instead of darken.
-  return theme === "night"
-    ? { fill: "#e8b64c", "fill-opacity": "0.4", "mix-blend-mode": "screen" }
-    : { fill: "#d9a441", "fill-opacity": "0.32", "mix-blend-mode": "multiply" };
-}
-
 /** Erases narrated-sentence marks that a relayout drew twice and orphaned. */
 function pruneReadalongMarks(rendition: Rendition) {
   const views = rendition.views() as unknown as MarkedView[] | { all(): MarkedView[] };
@@ -342,7 +335,7 @@ export function EpubReadalong({
   const fragmentRangesRef = useRef<{ doc: Document; href: string; ranges: FragmentRange[] } | null>(null);
   const highlightCfiRef = useRef<string | null>(null);
   const narratedRangeRef = useRef<{ index: DocumentSearchIndex; start: number; length: number; contents: Contents } | null>(null);
-  const highlightThemeRef = useRef<ReaderTheme | null>(null);
+  const highlightStyleRef = useRef("");
   const highlightedFragmentRef = useRef(-1);
   const autoNavHrefRef = useRef<string | null>(null);
   const lastLocationRef = useRef<Location | null>(null);
@@ -439,6 +432,7 @@ export function EpubReadalong({
       return next;
     });
   }, []);
+  const { mode: colorVision, strongerCues } = useColorVision();
   const [readerThemeChoice, setReaderThemeChoice] = useState<ReaderThemeChoice>(() =>
     readReaderThemeChoice()
   );
@@ -460,11 +454,13 @@ export function EpubReadalong({
   const [fontScale, setFontScale] = useState(() => readStoredFontScale(fontScaleBucket, readStoredValue));
   // The look a freshly opened book is styled with, and what the open one has
   // been given so far, so a change re-styles it exactly once.
+  const colorVisionRef = useRef(colorVision);
+  colorVisionRef.current = colorVision;
   const readerThemeRef = useRef(readerTheme);
   readerThemeRef.current = readerTheme;
   const fontScaleRef = useRef(fontScale);
   fontScaleRef.current = fontScale;
-  const appliedThemeRef = useRef<ReaderTheme | null>(null);
+  const appliedReaderColorsRef = useRef("");
   const appliedFontScaleRef = useRef<number | null>(null);
   const fontScaleBucketRef = useRef(fontScaleBucket);
   const fontScaleBucketChanged = fontScaleBucketRef.current !== fontScaleBucket;
@@ -1274,7 +1270,7 @@ export function EpubReadalong({
             hyphens: "auto"
           },
           "p, li, blockquote, div": { "text-align": "left !important" },
-          a: { color: "var(--reader-link) !important" },
+          a: { color: "var(--reader-link) !important", "text-decoration": "underline !important" },
           img: { "max-width": "100% !important", height: "auto !important" },
           ...readerLockRules
         });
@@ -1284,9 +1280,9 @@ export function EpubReadalong({
         // still scrolled to the old page, which then shows earlier words than
         // the remembered place, and that earlier page gets saved in its turn.
         rendition.themes.select("operalibre");
-        applyReaderThemeColors(rendition.themes, readerThemeRef.current);
+        applyReaderThemeColors(rendition.themes, readerThemeRef.current, colorVisionRef.current);
+        appliedReaderColorsRef.current = `${readerThemeRef.current}:${colorVisionRef.current}`;
         rendition.themes.fontSize(`${fontScaleRef.current}%`);
-        appliedThemeRef.current = readerThemeRef.current;
         appliedFontScaleRef.current = fontScaleRef.current;
 
         bookRef.current = book;
@@ -1546,11 +1542,12 @@ export function EpubReadalong({
 
   useEffect(() => {
     const rendition = renditionRef.current;
-    if (isReady && rendition && appliedThemeRef.current !== readerTheme) {
-      applyReaderThemeColors(rendition.themes, readerTheme);
-      appliedThemeRef.current = readerTheme;
+    const key = `${readerTheme}:${colorVision}`;
+    if (isReady && rendition && appliedReaderColorsRef.current !== key) {
+      applyReaderThemeColors(rendition.themes, readerTheme, colorVision);
+      appliedReaderColorsRef.current = key;
     }
-  }, [isReady, readerTheme]);
+  }, [isReady, readerTheme, colorVision]);
 
   useEffect(() => {
     // The first render after a screen/orientation change still carries the
@@ -1651,7 +1648,8 @@ export function EpubReadalong({
   // it on screen, following page turns and chapter boundaries.
   useEffect(() => {
     const rendition = renditionRef.current;
-    const sentenceStyle = sentenceHighlightStyle(readerTheme);
+    const sentenceStyle = sentenceHighlightStyle(readerTheme, colorVision, strongerCues);
+    const sentenceStyleKey = `${readerTheme}:${colorVision}:${strongerCues}`;
     // followRef, not the follow state: a page turned by hand stops following
     // at once (see navigateByHand), but this effect can still re-run once
     // more — retriggered by the turn's own relocation — before React
@@ -1697,7 +1695,7 @@ export function EpubReadalong({
     if (highlightedFragmentRef.current !== fragmentIndex) {
       removeAnnotation(highlightCfiRef.current);
       highlightCfiRef.current = null;
-      highlightThemeRef.current = null;
+      highlightStyleRef.current = "";
       narratedRangeRef.current = null;
       lastKeepRef.current = null;
     }
@@ -1757,7 +1755,7 @@ export function EpubReadalong({
     };
     if (highlightedFragmentRef.current === fragmentIndex) {
       const relaid = handledRelayoutRef.current !== relayoutTick;
-      if ((highlightThemeRef.current !== readerTheme || relaid) && highlightCfiRef.current) {
+      if ((highlightStyleRef.current !== sentenceStyleKey || relaid) && highlightCfiRef.current) {
         // Redraw against the current layout.
         removeAnnotation(highlightCfiRef.current);
         rendition.annotations.highlight(
@@ -1767,7 +1765,7 @@ export function EpubReadalong({
           "readalong-highlight",
           sentenceStyle
         );
-        highlightThemeRef.current = readerTheme;
+        highlightStyleRef.current = sentenceStyleKey;
         handledRelayoutRef.current = relayoutTick;
       }
       if (highlightCfiRef.current) {
@@ -1814,9 +1812,9 @@ export function EpubReadalong({
     );
     narratedRangeRef.current = { index, start: found.endOffset - needle.length, length: needle.length, contents };
     highlightCfiRef.current = cfi;
-    highlightThemeRef.current = readerTheme;
+    highlightStyleRef.current = sentenceStyleKey;
     keepOnPage(spokenCfi() ?? cfi);
-  }, [ensureSearchIndex, follow, followLeadSeconds, followRequest, followTakesPage, syncFragments, fragmentIndex, illustrationGap, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, tapFragment]);
+  }, [ensureSearchIndex, follow, followLeadSeconds, followRequest, followTakesPage, syncFragments, fragmentIndex, illustrationGap, isReady, location, positionSeconds, readerTheme, colorVision, strongerCues, relayoutTick, removeAnnotation, tapFragment]);
 
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
