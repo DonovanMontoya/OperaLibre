@@ -10,6 +10,8 @@ const params = new URLSearchParams(location.search);
 // ?tracker=<origin> makes chapter 1 reference that host every way a page can,
 // beside an image and stylesheet the book carries itself.
 const tracker = params.get("tracker");
+const nestedToc = params.has("nested-toc");
+const navPath = nestedToc ? "navigation/contents.xhtml" : "nav.xhtml";
 const trackedHead = tracker ? `<link rel="preconnect" href="${tracker}"/><link rel="prefetch" href="${tracker}/prefetch"/><link rel="stylesheet preconnect" href="${tracker}"/><link rel="Stylesheet DNS-Prefetch" href="${tracker}"/><meta http-equiv="refresh" content="0;url=${tracker}/refresh"/><link rel="stylesheet" href="${tracker}/sheet.css"/><link rel="stylesheet" href="own.css"/><style>@import url("${tracker}/import.css"); @font-face { font-family: tracked; src: url("${tracker}/font.woff2"); } body { background-image: url("${tracker}/background.png"); } p { font-family: tracked; }</style>` : "";
 const trackerMarkup = params.get("trackerMarkup") ?? "standard";
 const trackedFrames = tracker ? ({
@@ -25,13 +27,13 @@ const trackedBody = tracker ? `<img id="own" src="own.png" alt=""/><img src="${t
 const zip = new JSZip();
 zip.file("mimetype", "application/epub+zip");
 zip.file("META-INF/container.xml", '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>');
-zip.file("book.opf", `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">catch-up-fixture</dc:identifier><dc:title>Catch-up fixture</dc:title><dc:language>en</dc:language></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>${[1, 2, 3].map(n => `<item id="c${n}" href="c${n}.xhtml" media-type="application/xhtml+xml"/>`).join("")}${tracker ? '<item id="own-png" href="own.png" media-type="image/png"/><item id="own-css" href="own.css" media-type="text/css"/>' : ""}</manifest><spine>${[1, 2, 3].map(n => `<itemref idref="c${n}"/>`).join("")}</spine></package>`);
-zip.file("nav.xhtml", `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol>${[1, 2, 3].map(n => `<li><a href="c${n}.xhtml#start">Chapter ${n}</a></li>`).join("")}</ol></nav></body></html>`);
+zip.file("book.opf", `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">catch-up-fixture</dc:identifier><dc:title>Catch-up fixture</dc:title><dc:language>en</dc:language></metadata><manifest><item id="nav" href="${navPath}" media-type="application/xhtml+xml" properties="nav"/>${[1, 2, 3].map(n => `<item id="c${n}" href="c${n}.xhtml" media-type="application/xhtml+xml"/>`).join("")}${tracker ? '<item id="own-png" href="own.png" media-type="image/png"/><item id="own-css" href="own.css" media-type="text/css"/>' : ""}</manifest><spine>${[1, 2, 3].map(n => `<itemref idref="c${n}"/>`).join("")}</spine></package>`);
+zip.file(navPath, `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol>${[1, 2, 3].map(n => `<li><a href="${nestedToc ? "../" : ""}c${n}.xhtml#start">Chapter ${n}</a></li>`).join("")}</ol></nav></body></html>`);
 if (tracker) {
   zip.file("own.png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", { base64: true });
   zip.file("own.css", "h1 { text-decoration: underline; }");
 }
-for (const n of [1, 2, 3]) zip.file(`c${n}.xhtml`, `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter ${n}</title>${n === 1 ? trackedHead + trackedLinks : ""}</head><body><h1 id="start">Chapter ${n}</h1>${n === 1 ? trackedBody + trackedFrames : ""}${Array.from({ length: 30 }, (_, i) => `<p>Chapter ${n}, paragraph ${i + 1}. The reader keeps this page while the narrator continues along the river. Returning to an earlier passage should always be possible.</p>`).join("")}</body></html>`);
+for (const n of [1, 2, 3]) zip.file(`c${n}.xhtml`, `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter ${n}</title>${n === 1 ? trackedHead + trackedLinks : ""}</head><body><h1 id="start">Chapter ${n}</h1>${n === 1 ? trackedBody + trackedFrames : ""}${Array.from({ length: params.has("long-chapters") ? 180 : 30 }, (_, i) => `<p>Chapter ${n}, paragraph ${i + 1}. The reader keeps this page while the narrator continues along the river. Returning to an earlier passage should always be possible.</p>`).join("")}</body></html>`);
 const bytes = await zip.generateAsync({ type: "arraybuffer" });
 
 const narration = params.has("narration");

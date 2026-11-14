@@ -1,6 +1,12 @@
 import { test, expect, type Page } from '@playwright/test';
 import { createServer, type ViteDevServer } from 'vite';
 
+declare global { interface Window { __operalibreReader: { rendition: {
+  next(): Promise<unknown>;
+  currentLocation(): { start: { cfi: string; href: string } };
+  q: { enqueue(action: () => void): Promise<void> };
+} }; pendingTurn: { release(): void; turns(): number }; } }
+
 let server: ViteDevServer;
 let url: string;
 test.beforeAll(async () => {
@@ -96,3 +102,60 @@ for (const gap of [60, 100]) {
     await expect(page.locator('.epub-reader')).toHaveCount(0);
   });
 }
+
+test('rapid forward swipes retain every page turn and release the transition animations', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const reference = await page.context().newPage();
+  await reference.setViewportSize({ width: 390, height: 844 });
+  try {
+    for (const target of [page, reference]) {
+      await target.goto(`${url}test/reader-catch-up.html?immersive&long-chapters${target === page ? '&page-turn' : ''}`);
+      await expect(target.frameLocator('.epub-stage iframe').locator('p').first()).toBeVisible();
+    }
+    const zone = (await page.locator('.epub-tapzones').boundingBox())!;
+    const y = zone.y + zone.height / 2;
+    for (let index = 0; index < 20; index++) {
+      await page.mouse.move(zone.x + zone.width * .85, y);
+      await page.mouse.down();
+      await page.mouse.move(zone.x + zone.width * .15, y, { steps: 4 });
+      await page.mouse.up();
+    }
+    const expected = await reference.evaluate(async () => {
+      const { rendition } = window.__operalibreReader;
+      for (let index = 0; index < 20; index++) await rendition.next();
+      await rendition.q.enqueue(() => undefined);
+      return rendition.currentLocation().start.cfi;
+    });
+    await expect(page.locator('html[data-page-turn]')).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() =>
+      window.__operalibreReader.rendition.currentLocation().start.cfi)).toBe(expected);
+    expect(await page.evaluate(() => document.getAnimations().filter(animation =>
+      (animation.effect as KeyframeEffect | null)?.pseudoElement?.includes('(reader-page')).length)).toBe(0);
+  } finally { await reference.close(); }
+});
+
+test('closing the reader cancels a transition before its pending page turn runs', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${url}test/reader-catch-up.html?immersive&page-turn`);
+  await expect(page.frameLocator('.epub-stage iframe').locator('p').first()).toBeVisible();
+  await page.evaluate(async () => {
+    const modulePath = '/src/readerPageTurn.ts';
+    const { runPageTurn }: typeof import('../../src/readerPageTurn') = await import(modulePath);
+    const start = document.startViewTransition.bind(document);
+    let release = () => {};
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    document.startViewTransition = update => start(async () => {
+      await gate;
+      if (typeof update === 'function') await update();
+    });
+    let turns = 0;
+    const target = document.querySelector<HTMLElement>('.epub-stage')!;
+    runPageTurn(target, 'next', () => { turns++; return Promise.resolve(); });
+    window.pendingTurn = { release, turns: () => turns };
+    document.querySelector<HTMLButtonElement>('[aria-label="Close the reader"]')!.click();
+  });
+  await expect(page.locator('.epub-reader')).toHaveCount(0);
+  await page.evaluate(() => window.pendingTurn.release());
+  await expect(page.locator('html[data-page-turn]')).toHaveCount(0);
+  expect(await page.evaluate(() => window.pendingTurn.turns())).toBe(0);
+});

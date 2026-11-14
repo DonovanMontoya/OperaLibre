@@ -31,7 +31,7 @@ type PageTurnDocument = Document & {
   startViewTransition?: (update: () => void | Promise<void>) => PageTurnTransition;
 };
 
-let activePageTurn: PageTurnTransition | null = null;
+let activePageTurn: { stage: HTMLElement; transition: PageTurnTransition; cancel(): void } | null = null;
 
 // A chapter boundary loads a new document. The old page is held for it, but
 // never long enough to leave the reader frozen if the turn fails to report.
@@ -68,6 +68,9 @@ function startPageTurn(
   dragged: boolean,
   turn: () => PromiseLike<unknown> | null | undefined
 ): PageTurnTransition {
+  // Retire the old snapshots before capturing another page. Skipping a
+  // transition still runs its pending page turn, so rapid swipes are retained.
+  activePageTurn?.transition.skipTransition();
   const view = document.defaultView!;
   const root = document.documentElement;
   // The curl is drawn by the transition, which cannot see the reader's theme
@@ -89,7 +92,9 @@ function startPageTurn(
   } else {
     delete root.dataset.pageTurnDrag;
   }
+  let cancelled = false;
   const transition = document.startViewTransition!(async () => {
+    if (cancelled) return;
     let hold = 0;
     try {
       await Promise.race([
@@ -102,10 +107,10 @@ function startPageTurn(
       view.clearTimeout(hold);
     }
   });
-  activePageTurn = transition;
+  activePageTurn = { stage, transition, cancel() { cancelled = true; transition.skipTransition(); } };
   const cleanUp = () => {
     // A second turn started mid-flight owns the attributes now.
-    if (activePageTurn !== transition) return;
+    if (activePageTurn?.transition !== transition) return;
     activePageTurn = null;
     delete root.dataset.pageTurn;
     delete root.dataset.pageTurnDrag;
@@ -115,7 +120,13 @@ function startPageTurn(
     root.style.removeProperty("--page-turn-paper");
   };
   void transition.finished.then(cleanUp, cleanUp);
+  void transition.ready.catch(() => undefined);
   return transition;
+}
+
+/** Closing the reader must not turn a rendition that is being destroyed. */
+export function cancelPageTurn(stage: HTMLElement): void {
+  if (activePageTurn?.stage === stage) activePageTurn.cancel();
 }
 
 /**
@@ -184,6 +195,28 @@ export function beginPageTurnDrag(
   let settling = false;
   let turned = false;
   let ended = false;
+  let frame = 0;
+  let finishing = false;
+
+  const finish = async () => {
+    if (finishing) return;
+    finishing = true;
+    if (released === false && turned) {
+      let hold = 0;
+      try {
+        await Promise.race([
+          undo(),
+          new Promise((resolve) => { hold = view.setTimeout(resolve, PAGE_TURN_MAX_HOLD_MS); })
+        ]);
+      } catch {
+        // The reader is left on the page it turned to.
+      } finally {
+        view.clearTimeout(hold);
+      }
+      if (!ended) await new Promise((resolve) => { view.requestAnimationFrame(resolve); });
+    }
+    if (!ended) transition.skipTransition();
+  };
 
   const show = () => {
     if (ended) return;
@@ -193,34 +226,24 @@ export function beginPageTurnDrag(
     }
   };
   const settle = () => {
+    if (ended) {
+      if (released === false) void finish();
+      return;
+    }
     if (settling || released === null || animations === null) return;
     settling = true;
     const complete = released;
-    const finish = async () => {
-      if (!complete && turned) {
-        try {
-          await Promise.race([
-            undo(),
-            new Promise((resolve) => { view.setTimeout(resolve, PAGE_TURN_MAX_HOLD_MS); })
-          ]);
-        } catch {
-          // The reader is left on the page it turned to.
-        }
-        // The reader redraws the page a frame after it reports the turn.
-        await new Promise((resolve) => { view.requestAnimationFrame(resolve); });
-      }
-      transition.skipTransition();
-    };
     const from = progress;
     const to = complete ? 1 : 0;
     const duration = animations.length ? 140 + 280 * Math.abs(to - from) : 0;
     const startedAt = view.performance.now();
     const step = () => {
+      if (ended) return;
       const elapsed = duration > 0 ? Math.min(1, (view.performance.now() - startedAt) / duration) : 1;
       progress = from + (to - from) * (1 - (1 - elapsed) ** 3);
       show();
       if (elapsed < 1) {
-        view.requestAnimationFrame(step);
+        frame = view.requestAnimationFrame(step);
       } else {
         void finish();
       }
@@ -237,15 +260,19 @@ export function beginPageTurnDrag(
   // while they stay paused. Stop steering them and let them run.
   const end = () => {
     ended = true;
+    view.cancelAnimationFrame(frame);
     for (const animation of animations ?? []) {
       if (animation.playState === "paused") animation.play();
     }
+    animations = null;
+    if (released === false) void finish();
   };
   void transition.finished.then(end, end);
   transition.ready.then(
     () => {
       // Already replaced by a newer turn: its animations are not ours to hold.
-      animations = ended ? [] : document.getAnimations().filter((animation) =>
+      if (ended) return;
+      animations = document.getAnimations().filter((animation) =>
         (animation.effect as KeyframeEffect | null)?.pseudoElement?.includes("(reader-page"));
       for (const animation of animations) animation.pause();
       show();
@@ -253,6 +280,7 @@ export function beginPageTurnDrag(
     },
     () => {
       // The transition was abandoned before it could draw; nothing to move.
+      if (ended) return;
       animations = [];
       settle();
     }
@@ -260,7 +288,7 @@ export function beginPageTurnDrag(
 
   return {
     move(share) {
-      if (released !== null) return;
+      if (ended || released !== null) return;
       progress = Math.max(0, Math.min(1, share / PAGE_CURL_TRAVEL));
       show();
     },
