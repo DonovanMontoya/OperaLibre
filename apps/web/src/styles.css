@@ -22995,9 +22995,9 @@ html.native-app.platform-ios:not(.dark-mode) .library-pane .purchase-account-fil
   }
 
   html.native-app:not([data-fold-active]) .native-shell > .library-pane .continue-reading-book {
-    grid-template-columns: 36px minmax(0, 1fr);
-    gap: 10px;
-    padding-block: 8px;
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 14px;
+    padding-block: 12px;
   }
 
   html.native-app:not([data-fold-active]) .native-shell > .library-pane .continue-reading-book .cover-mark {
@@ -23006,7 +23006,18 @@ html.native-app.platform-ios:not(.dark-mode) .library-pane .purchase-account-fil
   }
 
   html.native-app:not([data-fold-active]) .native-shell > .library-pane .continue-reading-copy {
-    gap: 2px;
+    gap: 5px;
+  }
+
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane .queue-row .continue-reading-book {
+    padding-right: 54px;
+    padding-bottom: 48px;
+  }
+
+  html.native-app:not([data-fold-active]) .native-shell > .library-pane .queue-actions {
+    top: auto;
+    right: 48px;
+    bottom: 2px;
   }
 
   /* Headings of the reading plan and the collection sit closer, so the first
