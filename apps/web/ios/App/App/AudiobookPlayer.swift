@@ -1353,15 +1353,27 @@ public final class AudiobookPlayer {
     }
 
     @discardableResult private func retryWithoutPacketAudio() -> Bool {
-        guard let packetAudio, let player, activeQueueIndex == 0,
+        guard packetAudio != nil, let item = queuedItems.first else { return false }
+        return retryInitialItem(item)
+    }
+
+    /// The queue may already have discarded this item when its failure arrives.
+    /// Keep its clock paired with its track, including during teardown's checkpoint.
+    @discardableResult func retryInitialItem(_ item: AVPlayerItem) -> Bool {
+        precondition(Thread.isMainThread)
+        guard let player, activeQueueIndex == 0, queuedItems.first === item,
               let track = queuedTracks.first else { return false }
+        let position = stablePosition(item.currentTime())
         let request = AudiobookLoadRequest(
-            url: track.url, positionSeconds: stablePlayerPosition(),
+            url: track.url, positionSeconds: position,
             rate: Double(desiredRate), volume: Double(player.volume), gain: Double(boostGain),
             autoplay: shouldAutoplay, recoveryScopeKey: recoveryScopeKey,
             recoveryTrackId: recoveryTrackId, recoveryBookOffsetSeconds: recoveryBookOffset,
             queue: queuedTracks, keepsPendingIntentionalSeek: true)
-        packetAudio.cancel()
+        pendingPosition = position
+        lastKnownPosition = position
+        initialSeekComplete = false
+        packetAudio?.cancel()
         self.packetAudio = nil
         // Invalidate late item/queue callbacks before rebuilding the player.
         generation += 1
@@ -1579,7 +1591,7 @@ public final class AudiobookPlayer {
         durationSeconds: Double? = nil
     ) {
         guard
-            let player,
+            player != nil,
             let scopeKey = recoveryScopeKey,
             let trackId = recoveryTrackId
         else { return }
@@ -1587,7 +1599,8 @@ public final class AudiobookPlayer {
         if !force && now - lastCheckpointWrite < 2_000 { return }
         let position = positionSeconds ?? stablePlayerPosition()
         lastKnownPosition = position
-        let duration = durationSeconds ?? finiteSeconds(player.currentItem?.duration ?? .invalid)
+        let item = queuedItems.indices.contains(activeQueueIndex) ? queuedItems[activeQueueIndex] : nil
+        let duration = durationSeconds ?? finiteSeconds(item?.duration ?? .invalid)
         let checkpoint = NativeAudioCheckpoint(
             scopeKey: scopeKey,
             trackId: trackId,
@@ -1886,8 +1899,12 @@ public final class AudiobookPlayer {
     }
 
     private func stablePlayerPosition() -> Double {
+        stablePosition(player?.currentTime() ?? .invalid)
+    }
+
+    private func stablePosition(_ time: CMTime) -> Double {
         if !initialSeekComplete { return pendingPosition }
-        guard let current = validSeconds(player?.currentTime() ?? .invalid) else {
+        guard let current = validSeconds(time) else {
             return lastKnownPosition
         }
         // A route swap can expose the replacement renderer's initial 0:00
