@@ -373,3 +373,9 @@ These apply only to maintainers with write access.
   Afterward, run `node script/version.mjs set server <tag>` in a follow-up PR
   to main. A
   `docs/**` push to `main` redeploys the docs site.
+
+## Agent skills
+
+### Animatic
+
+The animatic skill's voice, renderer, style and stitcher. See `docs/agents/animatic.md`.
