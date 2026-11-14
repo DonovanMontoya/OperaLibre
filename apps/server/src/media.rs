@@ -106,6 +106,18 @@ pub(crate) async fn get_cover_art(
     } else {
         COVER_CACHE_CONTROL
     };
+    let mut cover = cover.clone();
+    drop(library);
+    if query
+        .as_deref()
+        .is_some_and(|query| query.split('&').any(|pair| pair == "size=display"))
+    {
+        // Unsupported originals remain available rather than breaking artwork
+        // that the browser can display but our bounded raster decoder cannot.
+        if let Ok(display) = covers::display_cover(&state.covers_dir, &book_id, &cover).await {
+            cover = display;
+        }
+    }
 
     if if_none_match_matches(&headers, &cover.etag) {
         return Ok(Response::builder()
@@ -117,11 +129,9 @@ pub(crate) async fn get_cover_art(
 
     // Streamed from the extracted file rather than copied out of a map that
     // held every cover in the library resident.
-    let cover = cover.clone();
     let file = fs::File::open(&cover.path)
         .await
         .map_err(|_| ApiError::not_found("Cover art not found"))?;
-    drop(library);
 
     Ok(Response::builder()
         .status(StatusCode::OK)
