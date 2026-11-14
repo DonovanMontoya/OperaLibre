@@ -8112,6 +8112,26 @@ async fn only_current_cover_revisions_are_cacheable_without_revalidation() {
     assert_eq!(revalidated.status, StatusCode::NOT_MODIFIED);
     assert_eq!(revalidated.header(header::CACHE_CONTROL), immutable);
 
+    let display_url = format!("{url}&size=display");
+    let display = server.get(&display_url, &owner).await;
+    assert_eq!(display.status, StatusCode::OK);
+    assert_eq!(display.header(header::CONTENT_TYPE), "image/jpeg");
+    assert_eq!(display.header(header::CACHE_CONTROL), immutable);
+    assert_ne!(display.header(header::ETAG), versioned.header(header::ETAG));
+    assert!(image::load_from_memory(&display.body).is_ok());
+    let display_revalidated = server
+        .send(
+            Request::builder()
+                .uri(&display_url)
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::IF_NONE_MATCH, display.header(header::ETAG))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(display_revalidated.status, StatusCode::NOT_MODIFIED);
+    assert_eq!(server.get(&url, &owner).await.body, versioned.body);
+
     let unversioned = format!("/api/books/{id}/cover");
     for path in [
         unversioned.clone(),
@@ -8139,6 +8159,12 @@ async fn only_current_cover_revisions_are_cacheable_without_revalidation() {
         .as_str()
         .unwrap()
         .to_string();
+    let replaced_display = server.get(&format!("{current}&size=display"), &owner).await;
+    assert_eq!(replaced_display.status, StatusCode::OK);
+    assert_ne!(
+        replaced_display.header(header::ETAG),
+        display.header(header::ETAG)
+    );
     assert_eq!(
         server
             .get(&current, &owner)

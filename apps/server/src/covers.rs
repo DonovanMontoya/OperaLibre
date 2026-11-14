@@ -149,7 +149,9 @@ pub(crate) async fn remove_cover_override(
     .map_err(|error| ApiError::internal(format!("Cover removal failed: {error}")))?
 }
 
-pub(crate) fn normalize_cover(bytes: &[u8]) -> Result<Vec<u8>, ApiError> {
+fn decode_cover(
+    bytes: &[u8],
+) -> Result<(image::DynamicImage, image::metadata::Orientation), ApiError> {
     let invalid = || ApiError::bad_request("Choose a readable JPEG, PNG, or WebP image.");
     let format = image::guess_format(bytes).map_err(|_| invalid())?;
     if !matches!(
@@ -189,6 +191,12 @@ pub(crate) fn normalize_cover(bytes: &[u8]) -> Result<Vec<u8>, ApiError> {
     decoder.set_limits(limits).map_err(|_| invalid())?;
     let orientation = decoder.orientation().map_err(|_| invalid())?;
     let decoded = image::DynamicImage::from_decoder(decoder).map_err(|_| invalid())?;
+    Ok((decoded, orientation))
+}
+
+pub(crate) fn normalize_cover(bytes: &[u8]) -> Result<Vec<u8>, ApiError> {
+    let (decoded, orientation) = decode_cover(bytes)?;
+    let (width, height) = (decoded.width(), decoded.height());
     // Re-encoding strips metadata, animation, and trailing/polyglot payloads;
     // only raster pixels reach the browser. Bound permanent disk/cache cost.
     let mut resized = if width > 1600 || height > 1600 {
@@ -204,8 +212,113 @@ pub(crate) fn normalize_cover(bytes: &[u8]) -> Result<Vec<u8>, ApiError> {
     let mut output = io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(resized)
         .write_to(&mut output, ImageFormat::Png)
-        .map_err(|_| invalid())?;
+        .map_err(|_| ApiError::bad_request("Could not encode the cover image."))?;
     Ok(output.into_inner())
+}
+
+// Serialize misses so opening a large shelf cannot start many raster decoders
+// at once. Hold admission inside the blocking task even after disconnection.
+static DISPLAY_COVER_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+pub(crate) async fn display_cover(
+    covers_dir: &FsPath,
+    book_id: &str,
+    original: &CachedCover,
+) -> Result<CachedCover, ApiError> {
+    let directory = covers_dir
+        .join("display")
+        .join(hex_digest(Sha256::digest(book_id.as_bytes())));
+    let revision = hex_digest(Sha256::digest(
+        format!("display-v1:{}", original.etag).as_bytes(),
+    ));
+    let path = directory.join(format!("{revision}.jpg"));
+    let etag = format!("\"{revision}\"");
+    let cached = || async {
+        let metadata = fs::metadata(&path).await.ok()?;
+        (metadata.is_file() && metadata.len() > 0).then(|| CachedCover {
+            path: path.clone(),
+            etag: etag.clone(),
+            len: metadata.len(),
+            mime_type: "image/jpeg".into(),
+        })
+    };
+    if let Some(cover) = cached().await {
+        return Ok(cover);
+    }
+    let permit = DISPLAY_COVER_WORKERS
+        .acquire()
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    if let Some(cover) = cached().await {
+        return Ok(cover);
+    }
+    let source = original.path.clone();
+    let expected = original.etag.clone();
+    let (bytes, permit) = tokio::task::spawn_blocking(move || {
+        let mut bytes = Vec::new();
+        let file = std::fs::File::open(source)?;
+        std::io::Read::read_to_end(&mut file.take(MAX_STORED_COVER_BYTES + 1), &mut bytes)?;
+        if bytes.len() as u64 > MAX_STORED_COVER_BYTES {
+            return Err(ApiError::bad_request(
+                "Cover is too large for a display copy.",
+            ));
+        }
+        if bytes_etag(&bytes) != expected {
+            return Err(ApiError::conflict(
+                "Cover changed while making its display copy.",
+            ));
+        }
+        Ok((encode_display_cover(&bytes)?, permit))
+    })
+    .await
+    .map_err(|error| ApiError::internal(error.to_string()))??;
+    let _permit = permit;
+    create_private_directory(&directory)?;
+    write_bytes_atomic(&path, &bytes).await?;
+    // Retain only the current display revision for this book.
+    let mut entries = fs::read_dir(&directory).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|extension| extension == "jpg")
+            && entry.path() != path
+        {
+            let _ = fs::remove_file(entry.path()).await;
+        }
+    }
+    Ok(CachedCover {
+        path,
+        etag,
+        len: bytes.len() as u64,
+        mime_type: "image/jpeg".into(),
+    })
+}
+
+fn encode_display_cover(bytes: &[u8]) -> Result<Vec<u8>, ApiError> {
+    let (decoded, orientation) = decode_cover(bytes)?;
+    let mut small = if decoded.width() > 960 || decoded.height() > 960 {
+        let small = decoded.thumbnail(960, 960);
+        drop(decoded);
+        small
+    } else {
+        decoded
+    };
+    small.apply_orientation(orientation);
+    let rgba = small.to_rgba8();
+    drop(small);
+    let rgb = image::RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
+        let pixel = rgba.get_pixel(x, y);
+        let alpha = u32::from(pixel[3]);
+        image::Rgb([0, 1, 2].map(|channel| {
+            ((u32::from(pixel[channel]) * alpha + 255 * (255 - alpha) + 127) / 255) as u8
+        }))
+    });
+    let mut output = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, 82)
+        .encode_image(&image::DynamicImage::ImageRgb8(rgb))
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    Ok(output)
 }
 
 fn cover_prefix(book_id: &str) -> String {
@@ -364,6 +477,66 @@ mod tests {
         .write_to(&mut bytes, format)
         .unwrap();
         bytes.into_inner()
+    }
+
+    #[tokio::test]
+    async fn display_copy_is_smaller_preserves_proportions_and_is_reused() {
+        let root = tempfile::tempdir().unwrap();
+        let image = image::RgbImage::from_fn(1600, 1200, |x, y| {
+            let value = x.wrapping_mul(73856093) ^ y.wrapping_mul(19349663);
+            image::Rgb(value.to_le_bytes()[..3].try_into().unwrap())
+        });
+        let mut original = io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image)
+            .write_to(&mut original, ImageFormat::Png)
+            .unwrap();
+        let bytes = original.into_inner();
+        let source = root.path().join("source.png");
+        std::fs::write(&source, &bytes).unwrap();
+        let original = CachedCover {
+            path: source.clone(),
+            etag: bytes_etag(&bytes),
+            len: bytes.len() as u64,
+            mime_type: "image/png".into(),
+        };
+        let display = display_cover(root.path(), "book", &original).await.unwrap();
+        let copy = std::fs::read(&display.path).unwrap();
+        let decoded = image::load_from_memory(&copy).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (960, 720));
+        assert_eq!(display.mime_type, "image/jpeg");
+        assert_ne!(display.etag, original.etag);
+        assert!(
+            display.len < original.len / 4,
+            "display {} original {}",
+            display.len,
+            original.len
+        );
+        assert_eq!(
+            std::fs::read(&source).unwrap(),
+            bytes,
+            "original artwork stays intact"
+        );
+        // A hit must not need the source or another decode.
+        std::fs::remove_file(source).unwrap();
+        let again = display_cover(root.path(), "book", &original).await.unwrap();
+        assert_eq!(again.path, display.path);
+        assert_eq!(again.etag, display.etag);
+    }
+
+    #[test]
+    fn display_transparency_is_composited_on_white_and_small_covers_are_not_enlarged() {
+        let transparent = image::DynamicImage::ImageRgba8(image::RgbaImage::new(23, 17));
+        let mut bytes = io::Cursor::new(Vec::new());
+        transparent.write_to(&mut bytes, ImageFormat::Png).unwrap();
+        let display = image::load_from_memory(&encode_display_cover(bytes.get_ref()).unwrap())
+            .unwrap()
+            .to_rgb8();
+        assert_eq!(display.dimensions(), (23, 17));
+        assert!(
+            display
+                .pixels()
+                .all(|pixel| pixel.0.iter().all(|channel| *channel >= 250))
+        );
     }
 
     #[test]
