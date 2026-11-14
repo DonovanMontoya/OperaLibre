@@ -280,6 +280,93 @@ final class PerformanceTests: XCTestCase {
         XCTAssertEqual(observer.intentionalSeekCount, 0)
     }
 
+    @MainActor
+    func testInitialItemRetryKeepsItsPositionAfterQueueAdvances() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        var wav = Data()
+        func u16(_ value: UInt16) { var v = value.littleEndian; withUnsafeBytes(of: &v) { wav.append(contentsOf: $0) } }
+        func u32(_ value: UInt32) { var v = value.littleEndian; withUnsafeBytes(of: &v) { wav.append(contentsOf: $0) } }
+        wav.append(Data("RIFF".utf8)); u32(160_036); wav.append(Data("WAVEfmt ".utf8)); u32(16)
+        u16(1); u16(1); u32(8000); u32(16000); u16(2); u16(16)
+        wav.append(Data("data".utf8)); u32(160_000); wav.append(Data(repeating: 0, count: 160_000))
+        try wav.write(to: url)
+        let nextURL = url.deletingPathExtension().appendingPathExtension("next.wav")
+        var next = wav
+        next.append(Data(repeating: 0, count: 160_000))
+        func bytes(_ value: UInt32) -> [UInt8] { withUnsafeBytes(of: value.littleEndian) { Array($0) } }
+        next.replaceSubrange(4..<8, with: bytes(320_036))
+        next.replaceSubrange(40..<44, with: bytes(320_000))
+        try next.write(to: nextURL)
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: nextURL)
+        }
+
+        func until(_ name: String, _ predicate: @escaping () -> Bool) {
+            if predicate() { return }
+            let done = expectation(description: name)
+            let timer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { timer in
+                MainActor.assumeIsolated {
+                    if predicate() { timer.invalidate(); done.fulfill() }
+                }
+            }
+            defer { timer.invalidate() }
+            wait(for: [done], timeout: 10)
+        }
+        for pendingSeek in [false, true] {
+            let original = SeekControlledQueuePlayer()
+            let replacement = SeekControlledQueuePlayer()
+            replacement.holdNextSeek = true
+            var loads = 0
+            let engine = AudiobookPlayer(makeQueuePlayer: { items in
+                let player = loads == 0 ? original : replacement
+                loads += 1
+                for item in items { player.insert(item, after: nil) }
+                return player
+            })
+            defer { engine.stopOnMainThread(releaseSession: true) }
+            let scope = "item-retry-" + UUID().uuidString
+            let tracks = ["retry-first", "retry-next"].enumerated().map { index, id in
+                NativeAudioQueuedTrack(url: index == 0 ? url : nextURL, trackId: id, bookOffsetSeconds: Double(index) * 10,
+                    title: id, artist: "Fixture", album: "Queue", chapters: [])
+            }
+            engine.load(AudiobookLoadRequest(url: url, positionSeconds: 3, rate: 1.5,
+                volume: 0, gain: 1, autoplay: true, recoveryScopeKey: scope,
+                recoveryTrackId: "retry-first", recoveryBookOffsetSeconds: 0, queue: tracks))
+            until("first item playing") { engine.status.isPlaying && original.currentTime().seconds > 3.1 }
+            engine.pause()
+            until("first item paused") { !engine.status.isPlaying }
+            let failedItem = try XCTUnwrap(original.currentItem)
+            if pendingSeek {
+                original.holdNextSeek = true
+                engine.seek(toPositionSeconds: 7)
+                until("pending seek held") { original.heldSeek != nil }
+            }
+            let expected = pendingSeek ? 7.0 : failedItem.currentTime().seconds
+            // Stay on this main-queue turn, ahead of the queued current-item observer.
+            original.advanceToNextItem()
+            original.reportedTime = CMTime(seconds: 0.5, preferredTimescale: 600)
+            XCTAssertFalse(original.currentItem === failedItem)
+            XCTAssertTrue(engine.retryInitialItem(failedItem))
+            XCTAssertEqual(loads, 2)
+            let saved = try XCTUnwrap(UserDefaults.standard.data(forKey: "operalibre.native-audio-checkpoint.v1"))
+            let checkpoint = try JSONDecoder().decode(NativeAudioCheckpoint.self, from: saved)
+            XCTAssertEqual(checkpoint.scopeKey, scope)
+            XCTAssertEqual(checkpoint.trackId, "retry-first")
+            XCTAssertEqual(checkpoint.durationSeconds ?? -1, 10, accuracy: 0.01)
+            XCTAssertEqual(checkpoint.positionSeconds, expected, accuracy: 0.01)
+            until("retry resume seek held") { replacement.heldSeek != nil }
+            XCTAssertEqual(engine.status.trackId, "retry-first")
+            XCTAssertEqual(engine.status.positionSeconds, expected, accuracy: 0.01)
+            XCTAssertEqual(engine.recoveryState(forScope: scope)?.positionSeconds ?? -1, expected, accuracy: 0.01)
+            guard abs(engine.status.positionSeconds - expected) < 0.01 else { return }
+            replacement.releaseHeldSeek()
+            until("retry reaches its own position") { abs(replacement.currentTime().seconds - expected) < 0.01 }
+            XCTAssertEqual(engine.playbackRate, 1.5)
+            XCTAssertFalse(engine.status.isPlaying)
+        }
+    }
+
     func testInterruptedSeekOnSameItemRestoresReadiness() throws {
         let queuePlayer = SeekControlledQueuePlayer()
         let engine = AudiobookPlayer(makeQueuePlayer: { items in
@@ -440,6 +527,8 @@ private final class StartupStateObserver: AudiobookPlayerObserver {
 
 private final class SeekControlledQueuePlayer: AVQueuePlayer {
     var holdNextSeek = false
+    var reportedTime: CMTime?
+    override func currentTime() -> CMTime { reportedTime ?? super.currentTime() }
     var cancelNextSeekByAdvancing = false
     var heldSeek: (() -> Void)?
     var cancelledSeekCount = 0
