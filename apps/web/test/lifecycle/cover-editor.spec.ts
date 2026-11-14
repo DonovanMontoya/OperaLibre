@@ -13,6 +13,37 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await server?.close(); });
 
+test('artwork stays behind its placeholder until loaded and requests the display copy', async ({ page }, testInfo) => {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let imageUrl = '';
+  await page.route('**/api/books/*/cover?*', async route => {
+    imageUrl = route.request().url();
+    await held;
+    await route.fulfill({ contentType: 'image/png', body: png });
+  });
+  await page.goto(`${url}test/cover-editor.html`, { waitUntil: 'domcontentloaded' });
+  const frame = page.getByTestId('current-cover').locator('.cover-art-frame');
+  await expect(frame).toBeVisible();
+  await expect(frame).not.toHaveClass(/is-loaded/);
+  await expect(frame.locator('img')).toHaveCSS('opacity', '0');
+  await expect(frame.locator('.cover-art-placeholder')).toBeVisible();
+  await expect.poll(() => imageUrl).toContain('size=display');
+  await page.screenshot({ path: testInfo.outputPath('cover-loading.png') });
+  release();
+  await expect(frame).toHaveClass(/is-loaded/);
+  await expect(frame.locator('img')).toHaveCSS('opacity', '1');
+  await expect(frame.locator('.cover-art-placeholder')).toBeHidden();
+  const ratio = await frame.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    return bounds.width / bounds.height;
+  });
+  expect(ratio).toBeCloseTo(2 / 3, 2);
+  await page.screenshot({ path: testInfo.outputPath('cover-loaded.png') });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect(frame.locator('img')).toHaveCSS('transition-duration', '0s');
+});
+
 async function setup(page: Page, options: { override?: boolean; failCover?: boolean; pauseMetadata?: Promise<void>; native?: boolean } = {}) {
   const books = library(2).map(book => ({ ...book, coverArtUrl: `/api/books/${book.id}/cover?v=original`, coverArtContentType: 'image/png', hasCoverOverride: !!options.override }));
   const writes: { method: string; path: string; body: string | null }[] = [];

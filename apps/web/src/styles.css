@@ -1568,7 +1568,7 @@ html:not(.native-app) .web-shell > .player-pane {
   object-fit: contain;
 }
 
-.continue-reading-book img.cover-mark {
+.continue-reading-book .cover-art-frame.cover-mark {
   height: auto;
   max-height: 58px;
 }
@@ -2095,8 +2095,8 @@ html:not(.native-app) .web-shell > .player-pane {
 
 /* As with the hero cover, artwork sets its own ratio; the 2:3 spine shape
    above is for the fallback glyph. */
-img.cover-mark {
-  aspect-ratio: auto;
+.cover-art-frame.cover-mark {
+  aspect-ratio: var(--cover-art-ratio, 1);
   height: auto;
 }
 
@@ -2346,11 +2346,11 @@ img.cover-mark {
 /* Real artwork keeps its own proportions. Audiobook covers are square, so the
    2:3 spine frame — which stays for the placeholder below — would crop a third
    of the art away. */
-img.large-cover {
-  aspect-ratio: auto;
+.cover-art-frame.large-cover {
+  aspect-ratio: var(--cover-art-ratio, 1);
   height: auto;
   object-fit: contain;
-  display: block;
+  display: flex;
 }
 
 .large-cover::after {
@@ -6138,7 +6138,7 @@ html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-readin
   height: 84px;
 }
 
-html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-book img.cover-mark {
+html:not(.native-app) .web-shell.shelf-expanded > .library-pane .continue-reading-book .cover-art-frame.cover-mark {
   height: auto;
   max-height: 112px;
 }
@@ -10393,8 +10393,8 @@ html.native-app .has-native-player.native-player-view-now .native-now-playing {
     align-items: center;
   }
 
-  html.native-app .has-native-player.native-player-view-now .native-now-artwork img.large-cover {
-    width: auto;
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork .cover-art-frame.large-cover {
+    width: min(66vw, 294px, calc(35vh * var(--cover-art-ratio, 1)));
     height: auto;
     max-width: min(66vw, 294px);
     max-height: min(35vh, 100%);
@@ -10407,7 +10407,8 @@ html.native-app .has-native-player.native-player-view-now .native-now-playing {
 }
 
 @media (orientation: portrait) and (max-height: 740px) {
-  html.native-app .has-native-player.native-player-view-now .native-now-artwork img.large-cover {
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork .cover-art-frame.large-cover {
+    width: min(56vw, 238px, calc(29vh * var(--cover-art-ratio, 1)));
     max-width: min(56vw, 238px);
     max-height: min(29vh, 100%);
   }
@@ -16032,7 +16033,8 @@ html.native-app.uikit-tabs {
 /* Spend the room above and below the phone player on its artwork and controls.
    The artwork's existing shrinkable grid track still protects short screens. */
 @media (min-height: 660px) and (max-width: 719px) and (orientation: portrait) {
-  html.native-app .has-native-player.native-player-view-now .native-now-artwork img.large-cover {
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork .cover-art-frame.large-cover {
+    width: min(78vw, 320px, calc(37vh * var(--cover-art-ratio, 1)));
     max-width: min(78vw, 320px);
     max-height: min(37vh, 100%);
   }
@@ -16055,7 +16057,8 @@ html.native-app.uikit-tabs {
   html.native-app .native-now-time-row { font-size: 0.78rem; }
 }
 @media (min-width: 720px) and (orientation: portrait) {
-  html.native-app .has-native-player.native-player-view-now .native-now-artwork img.large-cover {
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork .cover-art-frame.large-cover {
+    width: min(100%, 420px, calc(42vh * var(--cover-art-ratio, 1)));
     max-width: min(100%, 420px);
     max-height: min(42vh, 100%);
   }
@@ -18664,7 +18667,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li img.cover-mark {
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-lead > li .cover-art-frame.cover-mark {
   height: 68px;
   max-height: none;
 }
@@ -18747,7 +18750,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li img.cover-mark {
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane:not(.purchase-browsing) .continue-reading-rest > li .cover-art-frame.cover-mark {
   height: 52px;
   max-height: none;
 }
@@ -18823,7 +18826,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li img.cover-mark {
+  .native-shell:is(.library-book-open, .tab-reading) .continue-reading-rest > li .cover-art-frame.cover-mark {
   height: 40px;
   max-height: none;
 }
@@ -19395,8 +19398,8 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .na
   row-gap: clamp(8px, 1.6vh, 14px);
 }
 
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-shell .has-native-player.native-player-view-now .native-now-artwork img.large-cover {
-  width: auto;
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-shell .has-native-player.native-player-view-now .native-now-artwork .cover-art-frame.large-cover {
+  width: min(100%, calc(24vh * var(--cover-art-ratio, 1)));
   max-width: 100%;
   max-height: 24vh;
 }
@@ -24089,7 +24092,7 @@ html.native-app[data-text-large] .native-shell.has-mini-player .word-board {
 
 /* Audiobook art is square: the apps' listening and Up next rows draw it in a
    square frame, filled edge to edge, instead of letterboxing it in a spine. */
-html.native-app .continue-reading-book img.cover-mark {
+html.native-app .continue-reading-book .cover-art-frame.cover-mark {
   aspect-ratio: 1;
   object-fit: cover;
 }
@@ -25043,5 +25046,42 @@ html:not(.native-app) .book-heading .book-quick-start .book-quick-return {
 
   html:not(.native-app) .library-pane:not(.open) {
     box-shadow: none;
+  }
+}
+
+/* Artwork keeps a quiet, solid cover until the complete image is available. */
+.cover-art-frame {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.cover-art-frame > .cover-art-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: inherit;
+  opacity: 0;
+}
+
+.cover-art-frame.is-loaded > .cover-art-image {
+  opacity: 1;
+  transition: opacity 140ms ease-out;
+}
+
+.cover-art-frame.is-loaded > .cover-art-placeholder,
+.cover-art-frame.is-loaded::after {
+  visibility: hidden;
+}
+
+.cover-art-pending {
+  aspect-ratio: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cover-art-frame.is-loaded > .cover-art-image {
+    transition: none;
   }
 }
