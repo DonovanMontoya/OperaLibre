@@ -9,6 +9,10 @@ import { readPageTurnAnimation, writePageTurnAnimation } from "./readerPageTurn"
 import { selectionHaptic } from "./native";
 
 export function useReaderPreferences() {
+  const [clippingEnabled, setClippingEnabled] = useState(() => {
+    try { return window.localStorage.getItem("operalibre.clippingEnabled") !== "0"; }
+    catch { return true; }
+  });
   const [followAggressiveness, setFollowAggressiveness] = useState(readFollowAggressiveness);
   const [pageTurnAnimation, setPageTurnAnimation] = useState(readPageTurnAnimation);
 
@@ -25,7 +29,17 @@ export function useReaderPreferences() {
     setPageTurnAnimation(enabled);
   }
 
+  function toggleClippingEnabled() {
+    const enabled = !clippingEnabled;
+    try { window.localStorage.setItem("operalibre.clippingEnabled", enabled ? "1" : "0"); }
+    catch { /* Keep the choice usable when device storage is unavailable. */ }
+    setClippingEnabled(enabled);
+    selectionHaptic("change");
+  }
+
   return {
+    clippingEnabled,
+    toggleClippingEnabled,
     followAggressiveness,
     // The phone apps only; the setting lives in their Settings page.
     pageTurnAnimation: pageTurnAnimation && Capacitor.isNativePlatform(),

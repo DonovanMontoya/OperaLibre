@@ -11223,6 +11223,10 @@ html:not(.native-app) .native-player-return-icon {
     text-align: left;
   }
 
+  html:not(.native-app) .native-now-copy.has-clipper {
+    padding-left: 0;
+  }
+
   html:not(.native-app) .native-now-copy h2 {
     max-width: none;
     margin: 0;
@@ -14952,10 +14956,934 @@ html.native-app .recent-row {
   letter-spacing: 0.05em;
 }
 
+.clip-sheet {
+  max-height: min(82dvh, 720px);
+  padding-bottom: max(28px, calc(16px + env(safe-area-inset-bottom)));
+}
+
+/* The title block sits beside Back rather than centring between the buttons. */
+.clip-sheet header > div {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (min-width: 720px) {
+  /* A centred dialog cannot be dragged, so it does not show a handle. */
+  .clip-sheet .sleep-sheet-grabber {
+    display: none;
+  }
+
+  .clip-sheet:has(.clip-empty) {
+    max-width: 560px;
+  }
+}
+
+.clip-sheet header .eyebrow {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clip-ribbon-glyph {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  padding-top: 5px;
+  color: var(--on-gold);
+  width: 22px;
+  height: 30px;
+  margin-top: 3px;
+  background: linear-gradient(90deg, #c9a15a, var(--gold-soft) 45%, #cfa862);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% calc(100% - 7px), 0 100%);
+}
+
+.clip-save-now {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 8px 16px;
+  border: 1px solid var(--gold-soft);
+  border-radius: 999px;
+  color: var(--on-gold);
+  background: var(--gold-soft);
+  font: 600 0.68rem "JetBrains Mono", monospace;
+  letter-spacing: 0.03em;
+}
+
+.clip-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(214, 120, 96, 0.4);
+  border-radius: 12px;
+  color: #f3c3b4;
+  background: rgba(139, 46, 31, 0.24);
+  font-family: "Fraunces", serif;
+  font-size: 0.86rem;
+}
+
+.clip-error button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  padding: 4px;
+  color: inherit;
+}
+
+.clip-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid rgba(241, 231, 208, 0.13);
+  list-style: none;
+}
+
+.clip-row {
+  border-bottom: 1px solid rgba(241, 231, 208, 0.13);
+}
+
+.clip-row.open {
+  border-bottom: 0;
+}
+
+.clip-row:not(.open) .clip-summary:hover {
+  background: rgba(255, 250, 237, 0.04);
+}
+
+.clip-summary {
+  border-radius: 10px;
+}
+
+.clip-summary:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  outline-offset: 2px;
+}
+
+.clip-row-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 62px;
+  padding: 8px 3px;
+}
+
+.clip-play {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(217, 181, 116, 0.32);
+  border-radius: 999px;
+  color: var(--gold-soft);
+  background: rgba(217, 181, 116, 0.08);
+}
+
+.clip-row.playing .clip-play {
+  color: var(--on-gold);
+  background: var(--gold-soft);
+}
+
+.clip-summary {
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: rgba(255, 250, 237, 0.88);
+  text-align: left;
+}
+
+.clip-summary-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.clip-summary strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Fraunces", serif;
+  font-size: 1rem;
+  font-weight: 400;
+}
+
+.clip-row.playing .clip-summary strong {
+  color: var(--gold-soft);
+}
+
+.clip-summary small {
+  color: rgba(241, 231, 208, 0.74);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.05em;
+}
+
+.clip-note {
+  display: -webkit-box;
+  overflow: hidden;
+  color: rgba(243, 234, 216, 0.78);
+  font-family: "Fraunces", serif;
+  font-size: 0.84rem;
+  font-style: italic;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.clip-row-chevron {
+  flex: 0 0 auto;
+  color: rgba(217, 181, 116, 0.85);
+  transition: transform 0.18s ease;
+}
+
+.clip-row.open .clip-row-chevron {
+  transform: rotate(180deg);
+}
+
+.clip-editor {
+  display: grid;
+  gap: 12px;
+  padding: 2px 3px 18px;
+}
+
+.clip-dial-block {
+  display: grid;
+  gap: 5px;
+}
+
+/* The frame stays put and the audio is dragged beneath it. Vertical swipes
+   still scroll the sheet. */
+.clip-dial {
+  position: relative;
+  height: 78px;
+  border-radius: 16px;
+  cursor: grab;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.clip-dial.dragging {
+  cursor: grabbing;
+}
+
+.clip-dial:focus-visible {
+  outline: 2px solid rgba(217, 181, 116, 0.6);
+  outline-offset: 3px;
+}
+
+.clip-dial-audio {
+  position: absolute;
+  inset: 8px 0 12px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 13%, #000 87%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 13%, #000 87%, transparent);
+}
+
+.clip-dial-audio i {
+  position: absolute;
+  bottom: 0;
+  width: 1.5px;
+  height: 30%;
+  border-radius: 1px;
+  background: rgba(241, 231, 208, 0.26);
+}
+
+.clip-dial-audio i.major {
+  width: 2px;
+  height: 56%;
+}
+
+.clip-dial-audio b {
+  position: absolute;
+  top: 0;
+  color: rgba(241, 231, 208, 0.8);
+  font: 400 0.7rem "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.clip-dial-audio i.kept {
+  background: rgba(255, 250, 237, 0.86);
+}
+
+.clip-dial-audio i.played {
+  background: var(--gold-soft);
+}
+
+/* Where the book starts or ends inside the dial's view. */
+.clip-dial-edge {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  border-left: 1px dashed rgba(217, 181, 116, 0.7);
+  pointer-events: none;
+}
+
+.clip-dial-edge span {
+  position: absolute;
+  top: -2px;
+  left: 5px;
+  color: var(--gold-soft);
+  font: 600 0.56rem "JetBrains Mono", monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.clip-dial-edge.end span {
+  left: auto;
+  right: 5px;
+}
+
+/* Matches the share of the dial the clip is drawn across. */
+.clip-dial-frame {
+  position: absolute;
+  inset: 0 20%;
+  border: 2px solid var(--gold-soft);
+  border-radius: 16px;
+  background: rgba(217, 181, 116, 0.07);
+  pointer-events: none;
+}
+
+.clip-dial-hint {
+  margin: 0;
+  color: rgba(241, 231, 208, 0.74);
+  font: 0.72rem/1.4 "JetBrains Mono", monospace;
+  text-wrap: balance;
+  text-align: center;
+}
+
+.clip-editor-hint {
+  margin: 0;
+  color: rgba(241, 231, 208, 0.7);
+  font: italic 0.9rem "Fraunces", serif;
+}
+
+.clip-row-edit {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: rgba(217, 181, 116, 0.9);
+  font: 600 0.66rem "JetBrains Mono", monospace;
+  letter-spacing: 0.04em;
+}
+
+.clip-dial-times {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-inline: 20%;
+  color: rgba(241, 231, 208, 0.66);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+/* Each time is centred on the edge of the frame it belongs to. */
+.clip-dial-times output {
+  width: 0;
+  display: flex;
+  justify-content: center;
+  color: var(--paper);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.clip-length {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.clip-length > span,
+.clip-field > span {
+  color: rgba(241, 231, 208, 0.74);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.clip-length > div {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The length opens the platform's own picker, a wheel on a phone. The
+   chevron says so, since the native arrow is hidden. */
+.clip-length-picker {
+  position: relative;
+  display: inline-flex;
+}
+
+.clip-length-picker svg {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  color: var(--gold-soft);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.clip-length select {
+  min-width: 96px;
+  height: 44px;
+  padding: 0 30px 0 14px;
+  border: 1px solid rgba(217, 181, 116, 0.32);
+  border-radius: 999px;
+  color: var(--paper);
+  background: rgba(217, 181, 116, 0.08);
+  font-family: "JetBrains Mono", monospace;
+  /* Below 16px iOS zooms the page when the field takes focus. */
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  text-align-last: center;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.clip-length button {
+  min-width: 52px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  font: 600 0.72rem "JetBrains Mono", monospace;
+  border: 1px solid rgba(241, 231, 208, 0.16);
+  border-radius: 999px;
+  color: rgba(255, 250, 237, 0.88);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.clip-length button:disabled,
+.clip-actions button:disabled {
+  opacity: 0.4;
+}
+
+.clip-field {
+  display: grid;
+  gap: 6px;
+}
+
+.clip-field input,
+.clip-field textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(241, 231, 208, 0.16);
+  border-radius: 12px;
+  color: var(--paper);
+  background: rgba(255, 255, 255, 0.05);
+  font-family: "Fraunces", serif;
+  /* Below 16px iOS zooms the page when the field takes focus. */
+  font-size: 1rem;
+  resize: none;
+}
+
+.clip-field textarea {
+  min-height: 76px;
+  field-sizing: content;
+}
+
+.clip-field input::placeholder,
+.clip-field textarea::placeholder {
+  color: rgba(241, 231, 208, 0.58);
+}
+
+.clip-field input:focus,
+.clip-field textarea:focus {
+  border-color: rgba(217, 181, 116, 0.6);
+  outline: none;
+}
+
+.clip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.clip-actions button,
+.clip-removal button {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border: 1px solid rgba(241, 231, 208, 0.16);
+  border-radius: 999px;
+  color: rgba(255, 250, 237, 0.88);
+  background: rgba(255, 255, 255, 0.05);
+  font: 600 0.68rem "JetBrains Mono", monospace;
+  letter-spacing: 0.03em;
+}
+
+.clip-saved-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--gold-soft);
+  font: 600 0.68rem "JetBrains Mono", monospace;
+  letter-spacing: 0.03em;
+}
+
+/* On a phone the actions fill their rows instead of leaving ragged gaps,
+   and the sheet takes most of the screen so the editor fits without
+   scrolling its header away. */
+@media (max-width: 520px) {
+  .clip-sheet {
+    max-height: 94dvh;
+  }
+
+  .clip-actions > * {
+    flex: 1 1 auto;
+    justify-content: center;
+    white-space: nowrap;
+  }
+}
+
+.clip-actions .clip-save:not(:disabled) {
+  color: var(--on-gold);
+  border-color: var(--gold-soft);
+  background: var(--gold-soft);
+}
+
+.clip-removal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 57px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(241, 231, 208, 0.1);
+  scroll-margin-bottom: 16px;
+}
+
+@media (max-width: 520px) {
+  .clip-removal.confirming > span {
+    flex: 0 0 100%;
+  }
+
+  .clip-removal.confirming {
+    justify-content: space-between;
+  }
+}
+
+.clip-removal.confirming {
+  padding: 12px;
+  border: 1px solid rgba(214, 120, 96, 0.32);
+  border-radius: 12px;
+  background: rgba(139, 46, 31, 0.18);
+}
+
+.clip-removal > span {
+  flex: 1 1 auto;
+  color: #f3c3b4;
+  font-family: "Fraunces", serif;
+  font-size: 0.95rem;
+}
+
+.clip-removal .clip-remove {
+  color: #f3c3b4;
+  border-color: rgba(214, 120, 96, 0.4);
+}
+
+.clip-removal.confirming .clip-remove {
+  color: #fff6ef;
+  border-color: #a8442f;
+  background: #8b2e1f;
+}
+
+.clip-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 18px 0 10px;
+  border-top: 1px solid rgba(241, 231, 208, 0.1);
+}
+
+.clip-empty strong {
+  display: block;
+  color: var(--paper);
+  font: 400 1.15rem "Fraunces", serif;
+}
+
+.clip-empty p {
+  max-width: 42ch;
+  margin: 6px 0 0;
+  color: rgba(241, 231, 208, 0.74);
+  font-family: "Fraunces", serif;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.clip-sheet-footnote {
+  margin-bottom: 0;
+}
+
+.book-contents-tabs {
+  display: flex;
+  margin: 24px 0 16px;
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.18);
+}
+
+.book-contents-tabs {
+  gap: 8px;
+}
+
+/* Two short words do not need half the page each. */
+.book-contents-tabs button {
+  flex: 0 0 auto;
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 20px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ink-soft);
+  font: 400 1rem "Fraunces", serif;
+}
+
+.book-contents-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--oxblood);
+  color: var(--oxblood);
+  font-weight: 500;
+}
+
+.book-contents-count {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border: 1px solid rgba(var(--ink-rgb), 0.35);
+  border-radius: 999px;
+  color: var(--ink-soft);
+  font: 0.7rem "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.book-clips {
+  max-width: 40rem;
+}
+
+.book-clips p {
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.book-clips-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 8px 0 4px;
+}
+
+.book-clips-empty strong {
+  display: block;
+  color: var(--ink);
+  font: 500 1.15rem "Fraunces", serif;
+}
+
+.book-clips-empty p {
+  max-width: 42ch;
+  margin: 6px 0 0;
+  font-size: 0.95rem;
+}
+
+.book-clips .book-clips-intro {
+  margin: 0 0 4px;
+  font-size: 0.86rem;
+  font-style: italic;
+}
+
+.book-clips-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.book-clips-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.14);
+  padding: 8px 0;
+}
+
+.book-clip-play {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(var(--ink-rgb), 0.3);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--oxblood);
+}
+
+.book-clip-detail {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 1;
+  min-width: 0;
+  min-height: 52px;
+  gap: 12px;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.book-clip-detail strong {
+  display: block;
+  overflow-wrap: anywhere;
+  font: 500 1.05rem "Fraunces", serif;
+}
+
+.book-clip-detail small {
+  display: block;
+  margin-top: 5px;
+  color: var(--ink-soft);
+  font: 0.7rem "JetBrains Mono", monospace;
+}
+
+.book-clip-detail svg {
+  flex-shrink: 0;
+  color: var(--ink-soft);
+}
+
+/* The sheet's gold reads poorly on parchment. */
+.book-clip-detail .clip-row-edit {
+  color: var(--oxblood);
+}
+
+.book-clip-detail .clip-row-edit svg {
+  color: inherit;
+}
+
+.book-clip-note {
+  display: -webkit-box;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font: italic 0.8rem "Fraunces", serif;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.book-clips-manage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  border: 0;
+  padding: 12px 0;
+  background: transparent;
+  color: var(--oxblood);
+}
+
+.book-saved-clips {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 72px;
+  margin: 14px 0;
+  padding: 14px 18px;
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
+  border-radius: 14px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.45);
+  text-align: left;
+  cursor: pointer;
+}
+
+.book-saved-clips > span {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+}
+
+.book-saved-clips strong {
+  font: 500 1.05rem "Fraunces", serif;
+}
+
+.book-saved-clips small {
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--ink-soft);
+}
+
+.book-saved-clips > svg {
+  flex-shrink: 0;
+}
+
+.book-saved-clips > svg:first-child {
+  color: var(--oxblood);
+}
+
+.book-saved-clips:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  outline-offset: 3px;
+}
+
+.clip-load-error {
+  display: grid;
+  gap: 12px;
+  color: var(--paper);
+}
+
+/* Position against the measured cover without changing its adaptive sizing. */
+.native-now-artwork {
+  position: relative;
+}
+
+.native-cover-clip {
+  position: absolute;
+  left: calc(var(--cover-left, 0px) + var(--cover-width, 100%) - 66px);
+  top: calc(var(--cover-top, 0px) - 2px);
+  z-index: 2;
+  align-self: start;
+  justify-self: end;
+  width: 52px;
+  height: 70px;
+  margin: 0;
+  padding: 11px 0 0;
+  display: grid;
+  gap: 3px;
+  justify-items: center;
+  align-content: start;
+  border: 0;
+  background: none;
+  color: var(--on-gold);
+  /* The hairline keeps the ribbon's edge on gold and orange covers. */
+  filter: drop-shadow(0 0 1px rgba(26, 20, 16, 0.75)) drop-shadow(0 5px 5px rgba(26, 20, 16, 0.25));
+  cursor: pointer;
+}
+
+.native-cover-clip:hover {
+  transform: translateY(2px);
+}
+
+.native-cover-clip:focus-visible {
+  outline: 2px solid var(--oxblood);
+  outline-offset: 2px;
+}
+
+.native-cover-clip::before {
+  content: "";
+  position: absolute;
+  inset: 0 6px;
+  background: linear-gradient(90deg, #c9a15a, var(--gold-soft) 45%, #cfa862);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% calc(100% - 10px), 0 100%);
+}
+
+.native-cover-clip svg,
+.native-cover-clip span {
+  position: relative;
+}
+
+.native-cover-clip span {
+  font: 700 0.62rem "JetBrains Mono", monospace;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.native-cover-clip:active {
+  transform: translateY(2px);
+}
+
+.native-cover-clip-notice {
+  position: absolute;
+  /* Sits above the cover, ending at the ribbon, so it never covers the art. */
+  left: calc(var(--cover-left, 0px) + var(--cover-width, 100%));
+  top: calc(var(--cover-top, 0px) - 10px);
+  transform: translate(-100%, -100%);
+  z-index: 2;
+  align-self: start;
+  justify-self: end;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px 8px 16px;
+  border: 1px solid rgba(217, 181, 116, 0.7);
+  border-radius: 999px;
+  background: #241b14;
+  box-shadow: 0 8px 20px rgba(26, 20, 16, 0.35);
+  color: #f3ead8;
+  font: 0.8rem "JetBrains Mono", monospace;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* A caption, not a control: above the cover, with a caret down to the ribbon it explains. */
+.native-cover-clip-hint {
+  position: absolute;
+  left: calc(var(--cover-left, 0px) + var(--cover-width, 100%));
+  top: calc(var(--cover-top, 0px) - 14px);
+  z-index: 2;
+  width: max-content;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: #241b14;
+  color: #f3ead8;
+  font: 0.72rem/1.35 "JetBrains Mono", monospace;
+  white-space: nowrap;
+  transform: translate(-100%, -100%);
+  pointer-events: none;
+}
+
+/* Room for the notice above the cover on screens too short to have it. */
+.native-now-artwork.has-clips .large-cover {
+  transform: scale(var(--clip-cover-scale, 1));
+  transform-origin: 50% 100%;
+}
+
+/* The ribbon's centre is 40px in from the cover's right edge. */
+.native-cover-clip-hint::before {
+  content: "";
+  position: absolute;
+  bottom: -6px;
+  right: 34px;
+  border: 6px solid transparent;
+  border-bottom: 0;
+  border-top-color: #241b14;
+}
+
+.native-cover-clip-notice-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--gold-soft);
+  font-weight: 600;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sleep-sheet,
   .sleep-sheet-scrim {
     animation: none;
+  }
+
+  .clip-row-chevron {
+    transition: none;
   }
 }
 
@@ -17984,6 +18912,11 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
 }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
+  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-copy.has-clipper {
+  padding-left: 0;
+}
+
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell
   .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-controls {
   grid-row: 3;
   padding: 16px max(24px, env(safe-area-inset-right)) calc(var(--tabs-h) + 12px)
@@ -20754,6 +21687,7 @@ html.native-app .native-shell > .player-pane.has-native-player.native-player-vie
     }
     & .native-now-copy h2 { font-size: 1.15rem; }
     & .native-now-copy { text-align: left; }
+    & .native-now-copy.has-clipper { padding-left: 0; }
     & .native-now-copy h2 { margin-inline: 0; }
     & .native-now-playing:not(.has-reader) { gap: 8px; }
   }

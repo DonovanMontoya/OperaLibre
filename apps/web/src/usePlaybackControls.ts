@@ -6,6 +6,7 @@ import { carPlaybackOwnsEngine } from "./carPlay";
 import { ownsPendingPlay, playbackEventOwnsPendingPlay } from "./playbackPending";
 import { pauseNativeAudio, playNativeAudio, seekNativeAudio } from "./nativeAudio";
 import { haptic } from "./native";
+import type { ClipPreviewFlag } from "./clips";
 import type { AuthUser, Book, Chapter, Progress, Track } from "./types";
 import { hasPlaybackSource } from "./nativeAudioStartup";
 import {
@@ -49,6 +50,7 @@ const START_OVER_PROGRESS_CHECK_MS = 2_500;
  * playing book, over either the web audio element or the native player.
  */
 export function usePlaybackControls({
+  clipPreviewBookIdRef,
   activeChapter,
   activeTrackIndex,
   audioRef,
@@ -121,6 +123,7 @@ export function usePlaybackControls({
   volume,
   wantsAutoplayRef
 }: {
+  clipPreviewBookIdRef: ClipPreviewFlag;
   activeChapter: ChapterSegment | null;
   activeTrackIndex: number;
   audioRef: RefObject<HTMLAudioElement | null>;
@@ -264,6 +267,7 @@ export function usePlaybackControls({
       setRestoredPlaybackBookId(resolvedBookId);
     }
     if (deliberateSeek && bookId) {
+      if (clipPreviewBookIdRef.current === bookId) clipPreviewBookIdRef.current = null;
       recordProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, bookId, seekTargetBookPosition);
       intentionalSeekGenerationRef.current.set(
         bookId,
@@ -413,12 +417,12 @@ export function usePlaybackControls({
     setNativeAudioFailed(true);
   }
 
-  function setPlaybackPosition(audio: HTMLAudioElement, value: number) {
+  function setPlaybackPosition(audio: HTMLAudioElement, value: number, clipPreview = playbackBook !== null && clipPreviewBookIdRef.previewingBookId === playbackBook.id) {
     const nextPosition = Math.max(0, Math.min(value, audio.duration || value));
     audio.currentTime = nextPosition;
     if (nativeAudio) {
       const shouldResume = nativePlaybackPlayingRef.current;
-      void seekNativeAudio(nextPosition).catch((error) => {
+      void seekNativeAudio(nextPosition, clipPreview).catch((error) => {
         nativePlaybackPlayingRef.current = false;
         audio.muted = false;
         stageWebAudioFallback(audio, shouldResume, nextPosition);
@@ -509,7 +513,7 @@ export function usePlaybackControls({
     void persistProgress();
   }
 
-  function seekBookPositionInBook(book: Book, value: number, autoPlay = false, preview?: PreviewPosition, deliberateSeek = true) {
+  function seekBookPositionInBook(book: Book, value: number, autoPlay = false, preview?: PreviewPosition, deliberateSeek = true, nativePreview = false) {
     const targetBookDuration = book.durationSeconds ?? durationFromTracks(book);
     const clampedValue = Math.max(0, Math.min(value, targetBookDuration || value));
     const location = preview ?? resolveBookPosition(book.tracks, clampedValue);
@@ -521,7 +525,7 @@ export function usePlaybackControls({
     setPlaybackBookId(book.id);
 
     if (playbackBook?.id === book.id && targetTrack.id === currentTrack?.id && audioRef.current) {
-      const nextPosition = setPlaybackPosition(audioRef.current, trackPosition);
+      const nextPosition = setPlaybackPosition(audioRef.current, trackPosition, nativePreview);
       setPosition(nextPosition);
       void persistProgress();
       if (autoPlay) {
@@ -537,12 +541,12 @@ export function usePlaybackControls({
     wantsAutoplayRef.current = autoPlay;
   }
 
-  function seekBookPosition(value: number, autoPlay = false) {
+  function seekBookPosition(value: number, autoPlay = false, temporary = false, nativePreview = temporary) {
     if (!playbackBook) {
       return;
     }
 
-    seekBookPositionInBook(playbackBook, value, autoPlay);
+    seekBookPositionInBook(playbackBook, value, autoPlay, undefined, !temporary, nativePreview);
   }
 
   // Start when the active engine has a source. The native control element
@@ -860,7 +864,10 @@ export function usePlaybackControls({
       playWhenTrackLoads.current = false;
       setPlayPending(false);
       setIsPlaying(false);
-      if (playbackBook && currentTrack) {
+      // A preview only stops short of the end while the page runs. A locked
+      // iPhone can play on to it, and the preview then returns the listener
+      // to their place instead of finishing the book.
+      if (playbackBook && currentTrack && clipPreviewBookIdRef.current !== playbackBook.id) {
         const mediaDuration = audioRef.current?.duration;
         const finalTrackPosition = Math.max(
           0,

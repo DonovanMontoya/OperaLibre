@@ -42,6 +42,7 @@ struct AudiobookLoadRequest {
     /// Set when the player rebuilds itself in place: a lock-screen seek the
     /// web layer has not been told about yet is still owed to it.
     var keepsPendingIntentionalSeek = false
+    var clipPreview = false
 }
 
 struct AudiobookNowPlayingRequest {
@@ -200,6 +201,8 @@ public final class AudiobookPlayer {
     /// The active item has reached a real position since loading. Until then a
     /// seek that never lands must keep reporting the resume target, not 0:00.
     private var positionEstablished = false
+    /// Preview clocks never become recovery or car-session progress.
+    private(set) var isClipPreview = false
     private var seekSerial = 0
     private var finishedWhileInactive = false
     private var finishedPositionSeconds: Double?
@@ -301,6 +304,7 @@ public final class AudiobookPlayer {
             let retainedPlayIntent =
                 self.shouldAutoplay && playIntentAge <= Self.playIntentGraceSeconds
             self.tearDownPlayer()
+            self.isClipPreview = request.clipPreview
             self.generation += 1
             let loadGeneration = self.generation
             self.desiredRate = rate
@@ -405,21 +409,27 @@ public final class AudiobookPlayer {
         }
     }
 
-    func seek(toPositionSeconds requested: Double) {
+    func seek(toPositionSeconds requested: Double, clipPreview: Bool = false) {
         let position = max(0, requested)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.performSeek(to: position, intentional: false)
+            // Bank the listener's place before the first temporary seek.
+            if clipPreview && !self.isClipPreview { self.persistCheckpoint(force: true) }
+            let returningFromPreview = self.isClipPreview && !clipPreview
+            self.isClipPreview = clipPreview
+            self.performSeek(to: position, intentional: false, requiresExactPosition: returningFromPreview)
         }
     }
 
     /// All seek sources share readiness and cancellation handling. A lock-screen
     /// seek can supersede the initial resume seek while the item is still loading.
-    private func performSeek(to position: Double, intentional: Bool) {
+    private func performSeek(to position: Double, intentional: Bool, requiresExactPosition: Bool = false) {
+        let leavingPreview = requiresExactPosition || (intentional && isClipPreview)
         pendingPosition = position
         initialSeekComplete = false
         guard let player, let item = player.currentItem else { return }
         if intentional {
+            isClipPreview = false
             pendingRemoteIntentionalSeek = true
             monitor?.audiobookPlayerDidSeekDeliberately(self)
         }
@@ -428,7 +438,8 @@ public final class AudiobookPlayer {
             // A seek that never lands leaves the audio where it was. Once this
             // item has a real position, follow that audio rather than freezing
             // the clock and checkpoints at the unreached target.
-            guard reached || self.positionEstablished else {
+            guard reached || (self.positionEstablished && !leavingPreview) else {
+                if leavingPreview { self.isClipPreview = true }
                 self.failUnreachedResumeSeek()
                 return
             }
@@ -445,8 +456,8 @@ public final class AudiobookPlayer {
             if UIApplication.shared.applicationState == .active {
                 self.emitRemoteIntentionalSeek()
             }
-            self.emitState()
             self.persistCheckpoint(force: true)
+            self.emitState()
             if self.shouldAutoplay, player.timeControlStatus != .playing {
                 // Seeking may finish while the activation kicked off by Play
                 // is still waiting on AVAudioSession. Request activation here
@@ -609,6 +620,7 @@ public final class AudiobookPlayer {
                 let self,
                 let player = self.player,
                 player.timeControlStatus != .paused,
+                !self.isClipPreview,
                 self.initialSeekComplete,
                 player.currentItem?.status == .readyToPlay,
                 self.recoveryScopeKey == scopeKey,
@@ -772,6 +784,7 @@ public final class AudiobookPlayer {
                         if UIApplication.shared.applicationState == .active {
                             self.emitRemoteIntentionalSeek()
                         }
+                        self.persistCheckpoint(force: true)
                         self.emitState()
                         if self.shouldAutoplay {
                             self.activateAudioSession { [weak self] activated in
@@ -783,7 +796,6 @@ public final class AudiobookPlayer {
                         }
                         item.asset.loadValuesAsynchronously(forKeys: ["duration"]) {}
                         self.prepareBoostForNextQueuedItem()
-                        self.persistCheckpoint(force: true)
                         self.updateNowPlayingInfo()
                     }
                     if self.pendingPosition == 0 {
@@ -986,6 +998,7 @@ public final class AudiobookPlayer {
         guard let trackId = recoveryTrackId, let player else { return }
         let position = finiteSeconds(player.currentTime())
         emit("trackChanged", data: [
+            "clipPreview": isClipPreview,
             "trackId": trackId,
             "positionSeconds": position,
             "bookPositionSeconds": recoveryBookOffset + position,
@@ -1326,7 +1339,8 @@ public final class AudiobookPlayer {
             recoveryTrackId: recoveryTrackId,
             recoveryBookOffsetSeconds: recoveryBookOffset,
             queue: remaining,
-            keepsPendingIntentionalSeek: true
+            keepsPendingIntentionalSeek: true,
+            clipPreview: isClipPreview
         ))
     }
 
@@ -1504,6 +1518,7 @@ public final class AudiobookPlayer {
         durationSeconds: Double? = nil
     ) {
         guard
+            !isClipPreview,
             let player,
             let scopeKey = recoveryScopeKey,
             let trackId = recoveryTrackId
@@ -1637,7 +1652,8 @@ public final class AudiobookPlayer {
             "durationSeconds": durationSeconds,
             "isPlaying": isPlaying,
             "readyToPlay": initialSeekComplete && player?.currentItem?.status == .readyToPlay,
-            "positionReady": initialSeekComplete
+            "positionReady": initialSeekComplete,
+            "clipPreview": isClipPreview
         ]
         if let trackId = recoveryTrackId {
             data["trackId"] = trackId

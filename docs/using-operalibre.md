@@ -35,6 +35,18 @@ Safari and other WebKit web players currently allow reductions only because rout
 
 **Nightfall**, on the book’s own page and behind the timer button in the phone player, offers the usual 5, 15, 30, 45, and 60 minute stops. **End of chapter** stops when the chapter you are listening to finishes, however long that takes; if you skip or pick another chapter, it waits for the end of the one you land in. It appears for books that have chapter markers. Choose **Custom** and type any length from 1 to 600 minutes when none of those matches the chapter you are in the middle of. Durations you type are kept on that device — the three most recent sit alongside the presets — so a length you use often is one tap away the next night. The countdown only runs while the book is playing.
 
+### Keep a passage as a clip
+
+Tap the gold ribbon on the cover’s top-right corner in the player when you hear something worth keeping. It saves the last 30 seconds and the next 10, so the line you just heard is in it along with enough around it to make sense later. Nothing else happens: the book keeps playing and your place does not move.
+
+Open a book from your Library and choose the **Clips** tab on its details page to browse its passages. The **Chapters** tab returns to the chapter list. The player’s **Details** menu also has a **Saved clips** entry. Browsing, naming, or sharing a saved clip leaves your current playback alone until you choose to preview it. Use the play button beside a passage for a preview. Tap its name to trim it, name it, or share it. Drag the audio strip beneath the gold frame to choose the passage; letting go plays a preview. Choose **Length** to keep between one second and five minutes, and use the minus and plus buttons for one-second adjustments. You can also give it a name or add a note, then choose **Save changes**. Previewing a clip opens its book and returns to your listening place in that book, paused, when it ends or you stop it. **Continue from here** moves your place to the clip and keeps playing beyond it.
+
+**Share audio** sends the clip as a small audio file through the phone’s share sheet, or saves it as a download in a browser. The server cuts the file on request, which needs [ffmpeg](configuration.md#optional-mp4-faststart-conversion); without it the button is not shown.
+
+To hide clipping on this device, turn off **Audio clips** under **Behavior** in Settings (or the account menu in a browser). Turn it back on to see your saved passages again.
+
+Clips are private to the reader who saved them and are kept on the server, so they appear on every device you sign in from. A clip saved with no connection waits on the device and is sent the next time the server is reachable. Clips are available with an OperaLibre server, not with Jellyfin, books imported onto the device, or the demo.
+
 ## Add books to the library
 
 You can add books in either of these ways:

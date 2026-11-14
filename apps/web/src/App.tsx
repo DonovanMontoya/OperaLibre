@@ -140,6 +140,8 @@ import {
   SpeedSheet,
   type NativePlayerSheet
 } from "./PlayerSheets";
+import { ClipsSheet } from "./ClipsSheet";
+import { clipPreviewFlag, type Clip } from "./clips";
 import { AudiobookUploadDialog, EbookUploadDialog } from "./UploadDialogs";
 import { MetadataEditorDialog } from "./MetadataEditorDialog";
 import { CompletionConfirmationDialog, SyncConfirmationDialog, UnplayedConfirmationDialog, type DeviceNotice } from "./ConfirmDialogs";
@@ -160,6 +162,7 @@ import type { LibraryProgressReplay, PendingSeek, QueuedProgressSave } from "./p
 import { useReadalong } from "./useReadalong";
 import { useOfflineDownloads } from "./useOfflineDownloads";
 import { useBookCompletion } from "./useBookCompletion";
+import { useClips } from "./useClips";
 import { useMediaSession } from "./useMediaSession";
 import { useStartupReveal } from "./useStartupReveal";
 import { NativeLaunchCover } from "./LaunchCover";
@@ -662,6 +665,10 @@ function MainApp({
   // Mirrored in a ref so persistProgress (called from pagehide/visibility
   // listeners holding stale closures) always sees the live value.
   const pendingSeekRef = useRef<PendingSeek | null>(null);
+  const clipPreviewBookIdRef = useMemo(
+    () => clipPreviewFlag(progressSeekStorage(), () => ({ serverKey: getServerStorageKey(), userId: currentUser.id })),
+    [currentUser.id]
+  );
   const setPendingSeek = (value: PendingSeek | null) => {
     pendingSeekRef.current = value;
     setPendingSeekState(value);
@@ -731,6 +738,10 @@ function MainApp({
   // that pushes the gain across.
   const playbackGainRef = useRef(BOOK_GAIN_DEFAULT);
   const gainChainRef = useRef<PlaybackGainChain | null>(null);
+  const [clipSheetBookId, setClipSheetBookId] = useState<string | null>(null);
+  const [clipSheetOpenId, setClipSheetOpenId] = useState<string | null>(null);
+  const [pendingClipPreview, setPendingClipPreview] = useState<Clip | null>(null);
+  const pendingClipPreviewInlineRef = useRef(false);
   const [nativePlayerSheet, setNativePlayerSheet] = useState<NativePlayerSheet>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -964,6 +975,7 @@ function MainApp({
     storeCanonicalServerProgress,
     updateBookProgress
   } = useProgressSync({
+    clipPreviewBookIdRef,
     acknowledgedSeekGenerationRef,
     acknowledgedServerPositionRef,
     activeTrackIndex,
@@ -1337,6 +1349,7 @@ function MainApp({
     updateBookGain,
     updateSpeed
   } = usePlaybackControls({
+    clipPreviewBookIdRef,
     activeChapter,
     activeTrackIndex,
     audioRef,
@@ -1409,6 +1422,67 @@ function MainApp({
     volume,
     wantsAutoplayRef
   });
+  const clipSheetBook = nativePlayerSheet === "clips"
+    ? books.find((book) => book.id === clipSheetBookId) ?? playbackBook
+    : playbackBook;
+  const clipSheetDuration = clipSheetBook?.durationSeconds ?? (clipSheetBook ? durationFromTracks(clipSheetBook) : 0);
+  const clips = useClips({
+    nativeAudio,
+    clipPreviewBookIdRef,
+    audioRef,
+    book: playbackBook,
+    collectionBook: clipSheetBook,
+    bookDuration,
+    bookPosition,
+    enabled: capabilities.clips && readerPreferences.clippingEnabled,
+    pausePlayback,
+    persistProgress,
+    seekBookPosition,
+    userId: currentUser.id
+  });
+  useEffect(() => {
+    if (!readerPreferences.clippingEnabled) {
+      setPendingClipPreview(null);
+      if (nativePlayerSheet === "clips") setNativePlayerSheet(null);
+    }
+  }, [readerPreferences.clippingEnabled, nativePlayerSheet]);
+  function openBookClips(book: Book, clipId?: string) {
+    setClipSheetOpenId(clipId ?? null);
+    haptic("light");
+    setClipSheetBookId(book.id);
+    setNativePlayerSheet("clips");
+  }
+
+  function previewBookClip(clip: Clip, previewBook = clipSheetBook) {
+    if (playbackBook?.id === clip.bookId && restoredPlaybackBookId === clip.bookId && pendingSeek === null) {
+      clips.playClip(clip);
+    } else if (previewBook) {
+      pendingClipPreviewInlineRef.current = nativePlayerSheet !== "clips";
+      // Restore this book's listening place before previewing a passage, so
+      // stopping the preview returns there even when another book was playing.
+      // Its pending media seek must land before the clip can take over.
+      resumeSelectedBook(previewBook, false);
+      if (nativePlayerSheet !== "clips") {
+        setNativePlayerView(nativePlayerView);
+        setNativeTab(nativeTab);
+      }
+      setPendingClipPreview(clip);
+    }
+  }
+  const playClipRef = useRef(clips.playClip);
+  playClipRef.current = clips.playClip;
+  useEffect(() => {
+    if (!pendingClipPreview) return;
+    const stillOpen = pendingClipPreviewInlineRef.current
+      ? selectedBook?.id === pendingClipPreview.bookId
+      : nativePlayerSheet === "clips" && clipSheetBook?.id === pendingClipPreview.bookId;
+    if (!stillOpen) {
+      setPendingClipPreview(null);
+    } else if (playbackBook?.id === pendingClipPreview.bookId && restoredPlaybackBookId === pendingClipPreview.bookId && pendingSeek === null) {
+      setPendingClipPreview(null);
+      playClipRef.current(pendingClipPreview);
+    }
+  }, [pendingClipPreview, nativePlayerSheet, selectedBook?.id, clipSheetBook?.id, playbackBook?.id, restoredPlaybackBookId, pendingSeek]);
   later.pausePlayback = pausePlayback;
   later.showMediaClock = showMediaClock;
   // Timer and native-event callbacks run after later renders may have landed;
@@ -1718,6 +1792,7 @@ function MainApp({
   });
 
   useAudioElement({
+    clipPreviewBookIdRef,
     activeTrackIndex,
     applyPlaybackVolume,
     audioRef,
@@ -2377,6 +2452,7 @@ function MainApp({
         chapterSegments={chapterSegments}
         chaptersListRef={chaptersListRef}
         chaptersOpen={chaptersOpen}
+        clips={clips}
         closeReadalong={closeReadalong}
         completionError={completionError}
         completionPendingBookId={completionPendingBookId}
@@ -2405,6 +2481,11 @@ function MainApp({
         nativeTab={nativeTab}
         nextChapter={nextChapter}
         offlineDownloads={offlineDownloads}
+        openBookClips={openBookClips}
+        previewBookClip={(book, clip) => previewBookClip(clip, book)}
+        clipPreviewPending={pendingClipPreview !== null}
+        clipsRefreshKey={nativePlayerSheet}
+        userId={currentUser.id}
         openNativePlayerSheet={openNativePlayerSheet}
         openPlaybackView={openPlaybackView}
         previewBookId={previewBook?.id ?? null}
@@ -2555,6 +2636,8 @@ function MainApp({
           completionPendingBookId={completionPendingBookId}
           displayBookRemainingSeconds={displayBookRemainingSeconds}
           markBookUnplayed={markBookUnplayed}
+          openClips={capabilities.clips && readerPreferences.clippingEnabled && playbackBook.source !== "device" ? () => openBookClips(playbackBook) : undefined}
+          clipCount={clips.clips.length}
           openBookDetails={(bookId) => withWebViewTransition(() => openBookDetails(bookId))}
           playbackBook={playbackBook}
           playbackDescription={playbackDescription}
@@ -2583,6 +2666,31 @@ function MainApp({
           jumpToChapterFromSheet={jumpToChapterFromSheet}
           playbackBook={playbackBook}
           setNativePlayerSheet={setNativePlayerSheet}
+        />
+      ) : null}
+
+      {nativePlayerSheet === "clips" && clipSheetBook && capabilities.clips && readerPreferences.clippingEnabled ? (
+        <ClipsSheet
+          key={`${clipSheetBook.id}:${clipSheetOpenId ?? "list"}`}
+          initialClipId={clipSheetOpenId}
+          book={clipSheetBook}
+          bookDuration={clipSheetDuration}
+          bookPosition={playbackBook?.id === clipSheetBook.id ? bookPosition : 0}
+          chapterSegments={buildChapterSegments(clipSheetBook.chapters, clipSheetDuration)}
+          clips={{ ...clips, playClip: previewBookClip }}
+          previewPending={pendingClipPreview !== null}
+          close={closeNativePlayerSheet}
+          saveNow={clips.visible && playbackBook?.id === clipSheetBook.id ? clips.saveMoment : undefined}
+          continueFrom={(clip) => {
+            haptic("light");
+            setPendingClipPreview(null);
+            if (playbackBook?.id === clip.bookId) clips.continueFrom(clip);
+            else {
+              void persistProgress();
+              seekBookPositionInBook(clipSheetBook, clip.startSeconds, true);
+            }
+            setNativePlayerSheet(null);
+          }}
         />
       ) : null}
 

@@ -8,6 +8,8 @@ import {
   setNativeAudioGain
 } from "./nativeAudio";
 import { playbackEventOwnsPendingPlay, playbackIntentBelongsToBook } from "./playbackPending";
+import { getServerStorageKey } from "./api";
+import { forgetInterruptedClipPreview, interruptedClipPreviewStart, type ClipPreviewFlag } from "./clips";
 import { nativeAudioRecoveryScope } from "./appStorage";
 import { trackOffsetSeconds } from "./formatting";
 import { shouldAcceptNativeTrackChange } from "./startup";
@@ -26,6 +28,7 @@ export function useAudioElement({
   applyPlaybackVolume,
   audioRef,
   carPlaybackBookId,
+  clipPreviewBookIdRef,
   currentTrack,
   currentTrackKey,
   currentUser,
@@ -78,6 +81,7 @@ export function useAudioElement({
   applyPlaybackVolume: (audio: HTMLAudioElement) => void;
   audioRef: RefObject<HTMLAudioElement | null>;
   carPlaybackBookId: string | null;
+  clipPreviewBookIdRef: ClipPreviewFlag;
   currentTrack: Track | null;
   currentTrackKey: string | null;
   currentUser: AuthUser;
@@ -166,6 +170,8 @@ export function useAudioElement({
     nativeAudioAttachedRef.current = true;
     const actionVersionAtAttach = playbackActionVersionRef.current;
     const pendingSeekAtAttach = pendingSeekRef.current;
+    const serverKey = getServerStorageKey();
+    const previewStartedAt = interruptedClipPreviewStart(window.localStorage, serverKey, currentUser.id, playbackBook.id);
     return attachNativeAudioPlayer(
       audio,
       (message) => {
@@ -188,6 +194,20 @@ export function useAudioElement({
         // also seed AVPlayer; using the separately resolved control source can
         // overwrite a just-downloaded local chapter with its old remote URL.
         source: nativeAttachmentSource,
+        clipPreview: () => clipPreviewBookIdRef.previewingBookId === playbackBook.id,
+        awaitingReturn: () => clipPreviewBookIdRef.returningBookId === playbackBook.id,
+        allowAdoption: previewStartedAt === null,
+        normalPositionReady: (positionSeconds) => {
+          if (clipPreviewBookIdRef.current === playbackBook.id) {
+            if (!clipPreviewBookIdRef.confirmReturn(playbackBook.id, trackOffsetSeconds(playbackBook, activeTrackIndex) + positionSeconds)) return false;
+            void persistProgressRef.current();
+          }
+          const startedAt = interruptedClipPreviewStart(window.localStorage, serverKey, currentUser.id, playbackBook.id);
+          if (startedAt !== null && clipPreviewBookIdRef.current !== playbackBook.id) {
+            forgetInterruptedClipPreview(window.localStorage, serverKey, currentUser.id, playbackBook.id, startedAt);
+          }
+          return true;
+        },
         settings: () => playbackSettingsRef.current,
         scopeKey: nativeAudioRecoveryScope(currentUser.id, playbackBook.id),
         trackId: currentTrack.id,

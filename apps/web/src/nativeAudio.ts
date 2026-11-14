@@ -14,6 +14,7 @@ type NativeAudioState = {
   isPlaying: boolean;
   readyToPlay: boolean;
   positionReady?: boolean;
+  clipPreview?: boolean;
   /** The queue track the clock belongs to, once the native side reports it. */
   trackId?: string;
 };
@@ -49,6 +50,11 @@ type NativeAudioAdoptedSession = {
 
 type NativeAudioRecoveryIdentity = {
   source: string;
+  clipPreview?: () => boolean;
+  awaitingReturn?: () => boolean;
+  allowAdoption?: boolean;
+  /** A non-preview seek is ready and its native recovery checkpoint is durable. */
+  normalPositionReady?: (positionSeconds: number) => boolean | void;
   settings: () => { rate: number; volume: number };
   scopeKey: string;
   trackId: string;
@@ -87,6 +93,7 @@ interface NativeAudioPlugin {
     volume: number;
     gain: number;
     autoplay: boolean;
+    clipPreview?: boolean;
     recoveryScopeKey: string;
     recoveryTrackId: string;
     recoveryBookOffsetSeconds: number;
@@ -94,7 +101,7 @@ interface NativeAudioPlugin {
   }): Promise<void>;
   play(): Promise<void>;
   pause(): Promise<void>;
-  seek(options: { positionSeconds: number }): Promise<void>;
+  seek(options: { positionSeconds: number; clipPreview?: boolean }): Promise<void>;
   setRate(options: { rate: number }): Promise<void>;
   setVolume(options: { volume: number }): Promise<void>;
   setGain(options: { gain: number }): Promise<void>;
@@ -136,6 +143,7 @@ interface NativeAudioPlugin {
       positionSeconds: number;
       bookPositionSeconds: number;
       isPlaying: boolean;
+      clipPreview?: boolean;
     }) => void
   ): Promise<PluginListenerHandle>;
   addListener(
@@ -268,8 +276,8 @@ export function getNativeAudioSleepTimer(): Promise<number> {
   return NativeAudio.getSleepTimer().then((result) => Math.max(0, result.remainingSeconds));
 }
 
-export function seekNativeAudio(positionSeconds: number) {
-  return NativeAudio.seek({ positionSeconds });
+export function seekNativeAudio(positionSeconds: number, clipPreview = false) {
+  return NativeAudio.seek({ positionSeconds, clipPreview });
 }
 
 export async function getNativeAudioRecovery(scopeKey: string): Promise<NativeAudioRecoveryState | null> {
@@ -329,11 +337,13 @@ export function attachNativeAudioPlayer(
   // tears down only a player it owns. One disposed while still deciding must
   // not stop the player the next attachment is about to take over.
   let engaged = false;
-  const askToAdopt = firstAttachmentOfPage;
+  const askToAdopt = firstAttachmentOfPage && recovery.allowAdoption !== false;
   // Until the decision, AVPlayer's ticks belong to a player this page has not
   // claimed; applying one would announce metadata and let React's restored
   // pending seek drag the live player back.
-  let deciding = askToAdopt;
+  let deciding = true;
+  let loadingPosition: number | null = null;
+  let normalPositionReported = false;
   // The queue track AVPlayer is on, as far as this attachment knows. After an
   // accepted trackChanged, React remounts the media element and re-attaches
   // for the new track; until then this element still represents the previous
@@ -412,9 +422,14 @@ export function attachNativeAudioPlayer(
     const settings = recovery.settings();
     applyNativePlaybackSettings(audio, settings);
     engaged = true;
+    const positionSeconds = nativeStartupPosition(recovery.pendingPosition(), audio.currentTime);
+    loadingPosition = recovery.allowAdoption === false ? positionSeconds : null;
+    deciding = false;
+    firstAttachmentOfPage = false;
     safely(NativeAudio.load({
       url,
-      positionSeconds: nativeStartupPosition(recovery.pendingPosition(), audio.currentTime),
+      positionSeconds,
+      clipPreview: recovery.clipPreview?.() ?? false,
       rate: settings.rate,
       volume: settings.volume,
       gain: recovery.gain(),
@@ -448,6 +463,8 @@ export function attachNativeAudioPlayer(
 
   listenerRegistrations.push(NativeAudio.addListener("state", (state) => {
     if (disposed || fellBack || deciding) return;
+    // A queued event from the previous preview phase cannot move the live clock.
+    if (state.clipPreview !== undefined && state.clipPreview !== (recovery.clipPreview?.() ?? false)) return;
     // A clock for another queue track belongs to the element React is about
     // to mount for it, not to this one. Prefer the payload's own track id;
     // fall back to the last accepted trackChanged when the native side does
@@ -467,6 +484,16 @@ export function attachNativeAudioPlayer(
     } else if (activeNativeTrackId !== recovery.trackId) {
       return;
     }
+    let legacyLoadReady = false;
+    // A pre-load tick can still belong to the native preview this page replaced.
+    if (loadingPosition !== null && recovery.clipPreview?.() && state.clipPreview === true) loadingPosition = null;
+    if (loadingPosition !== null) {
+      if (!state.readyToPlay || state.positionReady !== true || state.clipPreview === true) return;
+      if (state.clipPreview === undefined && Math.abs(state.positionSeconds - loadingPosition) > 1.5) return;
+      loadingPosition = null;
+      // Compatibility with a native shell that predates the preview bit.
+      legacyLoadReady = state.clipPreview === undefined;
+    }
     // AVPlayer remains the only running decoder. Reflect its state through
     // synthetic media events so React's existing UI stays current without
     // starting or stopping the muted HTML decoder during app transitions.
@@ -476,8 +503,12 @@ export function attachNativeAudioPlayer(
       controlClock.synchronizePosition(state.positionSeconds, state.positionReady === true);
       return;
     }
+    if (state.clipPreview === true || recovery.clipPreview?.() || recovery.awaitingReturn?.()) normalPositionReported = false;
     const firstMetadata = controlClock.updateMetadata(state.durationSeconds);
     nativeIsPlaying = nativeStateSynchronizer.receive(state, nativeIsPlaying);
+    if (!normalPositionReported && state.positionReady === true && (state.clipPreview === false || legacyLoadReady) && !recovery.clipPreview?.()) {
+      normalPositionReported = recovery.normalPositionReady?.(state.positionSeconds) !== false;
+    }
     if (firstMetadata) audio.dispatchEvent(new Event("loadedmetadata"));
   }).then((handle) => {
     if (disposed) void handle.remove();
@@ -485,7 +516,8 @@ export function attachNativeAudioPlayer(
   }));
 
   listenerRegistrations.push(NativeAudio.addListener("ended", (state) => {
-    if (disposed || fellBack || endedFromNative) return;
+    if (disposed || fellBack || deciding || loadingPosition !== null || endedFromNative) return;
+    if (state.clipPreview !== undefined && state.clipPreview !== (recovery.clipPreview?.() ?? false)) return;
     endedFromNative = true;
     nativeStateSynchronizer.clear();
     nativeIsPlaying = false;
@@ -504,7 +536,8 @@ export function attachNativeAudioPlayer(
   }));
 
   listenerRegistrations.push(NativeAudio.addListener("trackChanged", (event) => {
-    if (disposed || fellBack || !event.trackId || event.trackId === recovery.trackId) return;
+    if (disposed || fellBack || deciding || loadingPosition !== null || !event.trackId || event.trackId === recovery.trackId) return;
+    if (event.clipPreview !== undefined && event.clipPreview !== (recovery.clipPreview?.() ?? false)) return;
     offerTrackChange({
       trackId: event.trackId,
       positionSeconds: event.positionSeconds,

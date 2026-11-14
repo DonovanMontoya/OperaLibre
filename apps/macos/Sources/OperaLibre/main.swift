@@ -103,7 +103,7 @@ final class BundledWebServer {
 /// How long a page that finished loading has to show the app before it counts as failed.
 private let frontendStartTimeout: TimeInterval = 15
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKDownloadDelegate {
     private var window: NSWindow?
     private var webView: WKWebView?
     private var webServer: BundledWebServer?
@@ -433,6 +433,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 self.lastFrontendError ?? "The page loaded, but the app did not appear.",
                 timedOut: true
             )
+        }
+    }
+
+    // A link marked for download, such as a shared clip saved as a file, would
+    // otherwise do nothing here: a web view has no downloads of its own.
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        preferences: WKWebpagePreferences,
+        decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void
+    ) {
+        decisionHandler(navigationAction.shouldPerformDownload ? .download : .allow, preferences)
+    }
+
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    func download(
+        _ download: WKDownload,
+        decideDestinationUsing response: URLResponse,
+        suggestedFilename: String,
+        completionHandler: @escaping (URL?) -> Void
+    ) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedFilename
+        panel.canCreateDirectories = true
+        let finish: (NSApplication.ModalResponse) -> Void = { result in
+            guard result == .OK, let url = panel.url else {
+                completionHandler(nil)
+                return
+            }
+            // The panel already asked before replacing a file, and WebKit
+            // refuses a destination that exists.
+            try? FileManager.default.removeItem(at: url)
+            completionHandler(url)
+        }
+        if let window {
+            panel.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            finish(panel.runModal())
         }
     }
 

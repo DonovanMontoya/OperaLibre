@@ -8,7 +8,8 @@ import {
   RotateCcw,
   Timer,
   Volume2,
-  X
+  X,
+  Scissors
 } from "lucide-react";
 import { useLayoutEffect, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { useModalFocus } from "./useModalFocus";
@@ -21,7 +22,7 @@ import { BookVolumeControl, PlaybackSpeedControl } from "./PlaybackControls";
 import { formatSleepTimerMinutes, SLEEP_TIMER_MAX_MINUTES, SLEEP_TIMER_MIN_MINUTES } from "./sleepTimer";
 import type { Book, Chapter } from "./types";
 
-export type NativePlayerSheet = "speed" | "sleep" | "chapters" | "details" | null;
+export type NativePlayerSheet = "speed" | "sleep" | "chapters" | "details" | "clips" | null;
 
 export function BookDetailsSheet({
   activeChapter,
@@ -32,6 +33,8 @@ export function BookDetailsSheet({
   displayBookRemainingSeconds,
   markBookUnplayed,
   openBookDetails,
+  openClips,
+  clipCount = 0,
   playbackBook,
   playbackDescription,
   setNativePlayerSheet
@@ -44,6 +47,8 @@ export function BookDetailsSheet({
   displayBookRemainingSeconds: number | null;
   markBookUnplayed: (book: Book) => void;
   openBookDetails: (bookId: string) => void;
+  openClips?: () => void;
+  clipCount?: number;
   playbackBook: Book;
   playbackDescription: string | null;
   setNativePlayerSheet: Dispatch<SetStateAction<NativePlayerSheet>>;
@@ -92,6 +97,16 @@ export function BookDetailsSheet({
                 : "Progress unavailable"}
             </small>
           </div>
+        ) : null}
+
+        {openClips ? (
+          <button type="button" className="book-saved-clips" onClick={openClips}>
+            <Scissors size={21} aria-hidden="true" />
+            <span><strong>Saved clips</strong><small>{clipCount > 0
+              ? `${clipCount} ${clipCount === 1 ? "clip" : "clips"}`
+              : "None yet. Press the gold ribbon on the cover to save one."}</small></span>
+            <ChevronRight size={18} aria-hidden="true" />
+          </button>
         ) : null}
 
         <div className="details-sheet-facts">

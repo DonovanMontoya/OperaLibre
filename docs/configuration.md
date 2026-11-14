@@ -158,7 +158,7 @@ MP4-family files written without a leading `moov` index start playing slowly ove
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `ffmpeg_path` | *(empty)* | Path to the ffmpeg binary used for faststart conversion. |
+| `ffmpeg_path` | *(empty)* | Path to the ffmpeg binary used for faststart conversion and for sharing clips as audio. |
 | `ffprobe_path` | *(empty)* | Path to the ffprobe binary used to verify converted files. |
 
 ## Environment variables

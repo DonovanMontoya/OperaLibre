@@ -97,6 +97,23 @@ CREATE TABLE IF NOT EXISTS book_settings (
     PRIMARY KEY (user_id, book_id)
 );
 
+-- Added without a schema bump: an older build opens this database and never
+-- touches the table, so moving between release channels stays possible.
+CREATE TABLE IF NOT EXISTS clips (
+    user_id       TEXT NOT NULL,
+    id            TEXT NOT NULL,
+    book_id       TEXT NOT NULL,
+    -- Whole-book seconds, like progress.book_position_seconds.
+    start_seconds REAL NOT NULL,
+    end_seconds   REAL NOT NULL,
+    title         TEXT,
+    note          TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (user_id, id)
+);
+CREATE INDEX IF NOT EXISTS clips_book ON clips (user_id, book_id);
+
 CREATE TABLE IF NOT EXISTS activity (
     user_id TEXT NOT NULL,
     day     TEXT NOT NULL,

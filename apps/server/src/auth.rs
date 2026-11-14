@@ -1684,6 +1684,7 @@ pub(crate) async fn delete_user(
     revoke_agent_tokens_for_user(&state, &user_id).await?;
     state.progress.remove_user(&user_id).await?;
     state.book_settings.remove_user(&user_id).await?;
+    remove_user_clips(&state.database, &user_id).await?;
     state
         .activity
         .mutate(|activity| {

@@ -37,6 +37,7 @@ async function setup(page: Page, platform: 'ios' | 'android' | 'web', admin = tr
     else if (path === '/api/books') body = books;
     else if (path === '/api/libation/status') body = { accounts: [], configured: false, available: false };
     else if (path === '/api/me/libro') body = { connected: false, accounts: [], books: [], jobs: [] };
+    else if (path.endsWith('/clips')) body = { clips: [], canExportAudio: false };
     else if (path.endsWith('/completion')) {
       const book = books.find(book => path === `/api/books/${book.id}/completion`)!;
       const { finished } = request.postDataJSON();
