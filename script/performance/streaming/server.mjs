@@ -110,21 +110,27 @@ export async function startServer(root) {
       let status = 200;
       const bootstrap = /^bootstrap-(\d+)\.json$/.exec(relative);
       if (config.candidate === 'packet' && requested.endsWith('/packet-stream')) {
-        const file = path.join(root, relative);
-        const size = fs.statSync(file).size;
-        const operation = url.searchParams.get('op');
+        const fd = fs.openSync(path.join(root, relative), 'r');
         let body;
-        if (operation === 'bootstrap') {
-          const fd = fs.openSync(file, 'r'); const data = Buffer.alloc(16384);
-          const count = fs.readSync(fd, data, 0, data.length, 0); fs.closeSync(fd);
-          body = Buffer.from(JSON.stringify({length:size, revision:'fixture-v1',data:data.subarray(0,count).toString('base64')}));
-          headers['Content-Type'] = 'application/json';
-        } else if (operation === 'range') {
-          const offset = Number(url.searchParams.get('offset')); const count = Number(url.searchParams.get('count'));
-          if (url.searchParams.get('revision') !== 'fixture-v1' || !Number.isSafeInteger(offset) || !Number.isSafeInteger(count) || offset < 0 || count < 1 || count > 65536 || offset + count > size) { res.writeHead(400).end(); return; }
-          body = Buffer.alloc(count); const fd = fs.openSync(file, 'r'); fs.readSync(fd, body, 0, count, offset); fs.closeSync(fd);
-          headers['Content-Type'] = 'application/octet-stream';
-        } else { res.writeHead(400).end(); return; }
+        try {
+          const size = fs.fstatSync(fd).size;
+          const operation = url.searchParams.get('op');
+          if (operation === 'bootstrap') {
+            const data = Buffer.alloc(16384);
+            const count = fs.readSync(fd, data, 0, data.length, 0);
+            body = Buffer.from(JSON.stringify({ length: size, revision: 'fixture-v1', data: data.subarray(0, count).toString('base64') }));
+            headers['Content-Type'] = 'application/json';
+          } else if (operation === 'range') {
+            const offset = Number(url.searchParams.get('offset'));
+            const count = Number(url.searchParams.get('count'));
+            if (url.searchParams.get('revision') !== 'fixture-v1' || !Number.isSafeInteger(offset) || !Number.isSafeInteger(count) || offset < 0 || count < 1 || count > 65536 || offset + count > size) { res.writeHead(400).end(); return; }
+            body = Buffer.alloc(count);
+            fs.readSync(fd, body, 0, count, offset);
+            headers['Content-Type'] = 'application/octet-stream';
+          } else { res.writeHead(400).end(); return; }
+        } finally {
+          fs.closeSync(fd);
+        }
         body = zlib.gzipSync(body, {level:1}); length = body.length;
         headers['Content-Encoding'] = 'gzip';
         source = (async function* () { for(let i=0;i<body.length;i+=16384) yield body.subarray(i,i+16384); })();
