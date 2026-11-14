@@ -183,6 +183,10 @@ pub(crate) fn build_router(
             get(stream_track),
         )
         .route(
+            "/abs/api/books/{book_id}/tracks/{track_id}/packet-stream",
+            get(packet_stream_track),
+        )
+        .route(
             "/abs/api/items/{item_id}/play",
             post(abs_play).get(abs_play),
         )
@@ -373,6 +377,10 @@ pub(crate) fn build_router(
         .route(
             "/api/books/{book_id}/tracks/{track_id}/stream",
             get(stream_track),
+        )
+        .route(
+            "/api/books/{book_id}/tracks/{track_id}/packet-stream",
+            get(packet_stream_track),
         )
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

@@ -2138,6 +2138,7 @@ async fn book_access_grants_are_enforced_on_every_book_route() {
         format!("/api/books/{denied}"),
         format!("/api/books/{denied}/cover"),
         format!("/api/books/{denied}/tracks/{denied_track}/stream"),
+        format!("/api/books/{denied}/tracks/{denied_track}/packet-stream?op=bootstrap"),
     ] {
         let response = server.get(&uri, &reader).await;
         assert!(
@@ -2295,6 +2296,104 @@ async fn an_audio_stream_is_never_compressed_even_when_the_client_accepts_it() {
     assert_eq!(response.header(header::CONTENT_ENCODING), "");
     assert_eq!(response.header(header::CONTENT_LENGTH), "100");
     assert_eq!(response.body, whole[100..200]);
+}
+
+#[tokio::test]
+async fn compact_audio_stream_ranges_use_the_compact_representation() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&token).await;
+    let original = compact_audio::tests::fixture(true, true);
+    let path = server.state.library_root.join("compact.m4b");
+    fs::write(&path, &original).await.unwrap();
+    server
+        .state
+        .library
+        .write()
+        .await
+        .track_paths
+        .insert(track.clone(), path);
+    let route = format!("/api/books/{book}/tracks/{track}/stream");
+    assert_eq!(server.get(&route, &token).await.body, original);
+    let compact = server.get(&format!("{route}?compact=1"), &token).await;
+    assert_eq!(compact.status, StatusCode::OK);
+    assert_eq!(compact.body.len(), original.len() - 8);
+    assert_eq!(compact.header(header::CACHE_CONTROL), "private");
+    assert_eq!(compact.header(header::CONTENT_TYPE), "audio/mp4");
+    assert!(compact.body.windows(4).any(|bytes| bytes == b"stz2"));
+    assert_eq!(&compact.body[compact.body.len() - 14..], b"abcdefghijklmn");
+    let length = compact.body.len();
+    for (range, start, end) in [
+        ("bytes=0-1".to_string(), 0, 1),
+        ("bytes=10-31".to_string(), 10, 31),
+        (
+            format!("bytes={}-{}", length - 22, length - 5),
+            length - 22,
+            length - 5,
+        ),
+        (format!("bytes={}-", length - 7), length - 7, length - 1),
+        ("bytes=-3".to_string(), length - 3, length - 1),
+    ] {
+        let response = server
+            .send(
+                Request::builder()
+                    .uri(format!("{route}?compact=1"))
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::RANGE, range)
+                    .header(header::ACCEPT_ENCODING, "gzip")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.header(header::CONTENT_RANGE),
+            format!("bytes {start}-{end}/{length}")
+        );
+        assert_eq!(
+            response.header(header::CONTENT_LENGTH),
+            (end - start + 1).to_string()
+        );
+        assert_eq!(response.header(header::CONTENT_ENCODING), "");
+        assert_eq!(response.body, compact.body[start..=end]);
+    }
+    let response = server
+        .send(
+            Request::builder()
+                .uri(format!("{route}?compact=1"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::RANGE, format!("bytes={length}-"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(
+        response.header(header::CONTENT_RANGE),
+        format!("bytes */{length}")
+    );
+    assert_eq!(
+        server.get(&format!("{route}?compact=0"), &token).await.body,
+        original
+    );
+    // WAV and malformed MP4 inputs keep the exact existing response bytes.
+    fs::write(
+        server
+            .state
+            .library
+            .read()
+            .await
+            .track_paths
+            .get(&track)
+            .unwrap(),
+        fixture_wav(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        server.get(&format!("{route}?compact=1"), &token).await.body,
+        fixture_wav()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -10708,4 +10807,102 @@ async fn a_burst_of_six_legitimate_logins_can_wait_for_password_workers() {
             .expect("a bounded legitimate burst can wait");
         assert!(!token.is_empty());
     }
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn packet_audio_stream_is_bounded_private_and_pins_the_source() {
+    use std::io::Read;
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&owner).await;
+    let original = packet_audio::tests::fixture();
+    let path = server.state.library_root.join("packet.m4b");
+    fs::write(&path, &original).await.unwrap();
+    server
+        .state
+        .library
+        .write()
+        .await
+        .track_paths
+        .insert(track.clone(), path.clone());
+    let media = media_token_for_session(&owner);
+    fn decoded(response: &TestResponse) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        flate2::read::GzDecoder::new(response.body.as_slice())
+            .read_to_end(&mut bytes)
+            .unwrap();
+        bytes
+    }
+    let route = format!("/api/books/{book}/tracks/{track}/packet-stream");
+    let get = |uri: String| Request::builder().uri(uri).body(Body::empty()).unwrap();
+    assert_eq!(
+        server
+            .send(get(format!("{route}?op=bootstrap")))
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    let mut revision = String::new();
+    let mut expected = Vec::new();
+    for prefix in ["/api", "/abs/api"] {
+        let response = server
+            .send(get(format!(
+                "{prefix}/books/{book}/tracks/{track}/packet-stream?op=bootstrap&token={media}"
+            )))
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+        assert_eq!(response.header(header::CACHE_CONTROL), "private, no-store");
+        assert_eq!(response.header(header::CONTENT_ENCODING), "gzip");
+        let json: serde_json::Value = serde_json::from_slice(&decoded(&response)).unwrap();
+        revision = json["revision"].as_str().unwrap().into();
+        expected = general_purpose::STANDARD
+            .decode(json["data"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(json["length"].as_u64().unwrap(), expected.len() as u64);
+    }
+    let range = format!("{route}?op=range&offset=3&count=20&revision={revision}&token={media}");
+    let response = server.send(get(range.clone())).await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(decoded(&response), expected[3..23]);
+    for suffix in [
+        "count=65537&offset=0",
+        "count=1&offset=18446744073709551615",
+        "count=0&offset=0",
+    ] {
+        let response = server
+            .send(get(format!(
+                "{route}?op=range&{suffix}&revision={revision}&token={media}"
+            )))
+            .await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(
+        server
+            .send(get(format!(
+                "{route}?op=range&offset=0&count=1&revision=old&token={media}"
+            )))
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
+    let mut replaced = original.clone();
+    *replaced.last_mut().unwrap() = b'X';
+    fs::write(&path, &replaced).await.unwrap();
+    assert_eq!(server.send(get(range)).await.status, StatusCode::CONFLICT);
+    assert_eq!(
+        server
+            .get(&format!("/api/books/{book}/tracks/{track}/stream"), &owner)
+            .await
+            .body,
+        replaced
+    );
+    fs::write(&path, b"not an MP4").await.unwrap();
+    assert_eq!(
+        server
+            .send(get(format!("{route}?op=bootstrap&token={media}")))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
 }

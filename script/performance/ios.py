@@ -19,7 +19,7 @@ def add(kind, fields):
 
 def quote(value): return json.dumps(str(value))
 files = [ROOT / 'apps/web/ios/App/App' / name for name in
-         ['NativeAudio.swift', 'AudiobookPlayer.swift', 'CarLibrary.swift', 'CarLibraryStore.swift',
+         ['NativeAudio.swift', 'AudiobookPlayer.swift', 'PacketAudioAsset.swift', 'CarLibrary.swift', 'CarLibraryStore.swift',
           'CarPlayCoordinator.swift', 'BackgroundDownloads.swift', 'BackgroundDownloadPolicy.swift',
           'StoredRecords.swift']]
 files += [ROOT / 'apps/web/ios/Tests/PerformanceTests.swift']

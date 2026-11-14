@@ -1,5 +1,6 @@
 import AVFoundation
 import UIKit
+import MediaPlayer
 
 @MainActor final class BenchController: UIViewController {
   let label = UITextView()
@@ -10,6 +11,11 @@ import UIKit
   let base = Bundle.main.object(forInfoDictionaryKey: "BenchmarkBase") as! String
   let pairs = Bundle.main.object(forInfoDictionaryKey: "BenchmarkPairs") as! Int
   let midpoint = Bundle.main.object(forInfoDictionaryKey: "BenchmarkMidpoint") as! Double
+  let candidate = Bundle.main.object(forInfoDictionaryKey: "BenchmarkCandidate") as? String ?? "bootstrap"
+  let baseline = Bundle.main.object(forInfoDictionaryKey: "BenchmarkBaseline") as? String ?? "faststart"
+  let speeds = Bundle.main.object(forInfoDictionaryKey: "BenchmarkSpeeds") as? [Int] ?? [40, 4]
+  let playbackRate = Bundle.main.object(forInfoDictionaryKey: "BenchmarkRate") as? Double ?? 1
+  let playbackGain = Bundle.main.object(forInfoDictionaryKey: "BenchmarkGain") as? Double ?? 1
   override func viewDidLoad() {
     super.viewDidLoad()
     view.backgroundColor = .systemBackground
@@ -29,7 +35,7 @@ import UIKit
       stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
     ])
     label.text =
-      "OperaLibre native streaming experiment\nActual AudiobookPlayer.swift\nGenerated AAC: faststart / bundled HLS\n40ms simulated response delay\nFresh URL and player per sample\nAlternating order per pair"
+      "OperaLibre native streaming experiment\nActual AudiobookPlayer.swift\nGenerated AAC: \(baseline) / \(candidate)\n40ms simulated response delay\nFresh URL and player per sample\nAlternating order per pair"
   }
   func log(_ text: String) {
     lines.append(text)
@@ -40,7 +46,7 @@ import UIKit
     button.isEnabled = false
     Task { await run() }
   }
-  func wait(_ name: String, limit: Double = 30, _ condition: () -> Bool) async throws {
+  func wait(_ name: String, limit: Double = 90, _ condition: () -> Bool) async throws {
     let deadline = ProcessInfo.processInfo.systemUptime + limit
     while !condition() {
       if let item = queue?.currentItem, item.status == .failed {
@@ -55,10 +61,10 @@ import UIKit
     }
   }
   func run() async {
-    for speed in [40, 4] {
+    for speed in speeds {
       for position in [0.0, midpoint] {
         for index in 0..<pairs {
-          for kind in (index % 2 == 0 ? ["flat", "bootstrap"] : ["bootstrap", "flat"]) {
+          for kind in (index % 2 == 0 ? ["flat", candidate] : [candidate, "flat"]) {
             let id = UUID().uuidString
             var row: [String: Any] = [
               "id": id, "mbps": speed, "target": position, "index": index, "kind": kind,
@@ -67,7 +73,8 @@ import UIKit
                 ?? UIDevice.current.model,
             ]
             log("\(speed)Mb \(kind) @\(Int(position)) #\(index+1)")
-            let path = "flat.m4a"
+            let path = kind == "packet" ? "api/books/fixture/tracks/fixture/stream"
+              : kind == "compact" ? "compact.m4a" : "flat.m4a"
             var url = URL(string: "\(base)/run/\(speed)/\(id)/\(path)")!
             let engine = AudiobookPlayer(makeQueuePlayer: { [weak self] items in
               let p = AVQueuePlayer(items: items)
@@ -87,10 +94,15 @@ import UIKit
               }
               engine.load(
                 AudiobookLoadRequest(
-                  url: url, positionSeconds: position, rate: 1, volume: 0, gain: 1, autoplay: true,
+                  url: url, positionSeconds: position, rate: playbackRate, volume: 0, gain: playbackGain, autoplay: true,
                   recoveryScopeKey: id, recoveryTrackId: "fixture", recoveryBookOffsetSeconds: 0,
                   queue: []))
               try await wait("playing") { self.queue?.timeControlStatus == .playing }
+              row["ratePassed"] = abs(Double(self.queue!.rate) - playbackRate) < 0.01
+              if playbackGain > 1 {
+                try await wait("volume boost mix") { self.queue?.currentItem?.audioMix != nil }
+                row["boostPassed"] = true
+              }
               row["startMs"] = (ProcessInfo.processInfo.systemUptime - t) * 1000
               try await wait("first movement") {
                 (self.queue?.currentTime().seconds ?? -1) > position + 0.001
@@ -120,6 +132,18 @@ import UIKit
               row["seekPlaybackPassed"] = true
               let checkpoint = engine.recoveryState(forScope: id)
               row["checkpointPosition"] = checkpoint?.positionSeconds
+              if let cover = Bundle.main.url(forResource: "cover", withExtension: "jpg") {
+                engine.setNowPlaying(AudiobookNowPlayingRequest(
+                  title: "Fixture chapter", artist: "Fixture", album: "Streaming",
+                  artworkSource: cover.absoluteString, chapterStartSeconds: nil,
+                  chapterDurationSeconds: nil, chapters: []))
+                try await wait("external artwork") {
+                  let info = MPNowPlayingInfoCenter.default().nowPlayingInfo
+                  return info?[MPMediaItemPropertyTitle] as? String == "Fixture chapter"
+                    && info?[MPMediaItemPropertyArtwork] is MPMediaItemArtwork
+                }
+                row["artworkPassed"] = true
+              }
               log(String(format: "  %.0f ms; pause/seek OK", row["startMs"] as! Double))
             } catch {
               row["error"] = error.localizedDescription
@@ -147,7 +171,7 @@ import UIKit
         }
       }
     }
-    log("COMPLETE: \(pairs * 8) samples. Results saved.")
+    log("COMPLETE: \(pairs * speeds.count * 4) samples. Results saved.")
     button.setTitle("Tests complete", for: .normal)
   }
 }

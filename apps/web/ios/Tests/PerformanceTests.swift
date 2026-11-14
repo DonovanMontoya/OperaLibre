@@ -7,6 +7,26 @@ import UIKit
 /// Compiled alongside the actual plugin sources in an isolated simulator test bundle.
 /// These tests never install over the user's OperaLibre app or touch its sandbox.
 final class PerformanceTests: XCTestCase {
+    func testCompactAudioSourceKeepsCredentialsAndOtherSources() throws {
+        let source = try XCTUnwrap(URL(string: "https://server.test/prefix/api/books/book/tracks/track/stream?token=private%2Bvalue&compact=0"))
+        let compact = compactAudioSource(source)
+        let query = try XCTUnwrap(URLComponents(url: compact, resolvingAgainstBaseURL: false)?.queryItems)
+        XCTAssertEqual(query.filter { $0.name == "compact" }.map(\.value), ["1"])
+        XCTAssertEqual(query.first { $0.name == "token" }?.value, "private+value")
+        XCTAssertEqual(compactAudioSource(compact), compact)
+        XCTAssertTrue(sameAudioSource(source, compact))
+        let packet = try XCTUnwrap(packetAudioSource(source))
+        XCTAssertEqual(packet.path, "/prefix/api/books/book/tracks/track/packet-stream")
+        let packetQuery = try XCTUnwrap(URLComponents(url: packet, resolvingAgainstBaseURL: false)?.queryItems)
+        XCTAssertEqual(packetQuery.first { $0.name == "token" }?.value, "private+value")
+        XCTAssertFalse(packetQuery.contains { $0.name == "compact" })
+        for path in ["file:///downloads/book.m4b", "https://server.test/Audio/id/stream", "https://server.test/api/books/book/download"] {
+            let url = try XCTUnwrap(URL(string: path))
+            XCTAssertEqual(compactAudioSource(url), url)
+            XCTAssertNil(packetAudioSource(url))
+        }
+    }
+
     private func call(_ method: (CAPPluginCall) -> Void, name: String, options: [String: Any] = [:]) {
         let done = expectation(description: name)
         let call = CAPPluginCall(callbackId: "performance", methodName: name, options: options,
@@ -59,11 +79,11 @@ final class PerformanceTests: XCTestCase {
             UIColor.blue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 1024, height: 1024))
         }
         try XCTUnwrap(image.pngData()).write(to: cover)
-        call(plugin.load, name: "load", options: ["url": audio.absoluteString, "autoplay": false,
+        call(plugin.load, name: "load", options: ["url": audio.absoluteString, "positionSeconds": 0.0, "autoplay": false,
             "recoveryScopeKey": "performance", "recoveryTrackId": "fixture"])
         defer { call(plugin.stop, name: "stop") }
         let options: [String: Any] = ["title": "Chapter", "artist": "Fixture", "album": "Performance",
-            "artworkUrl": cover.absoluteString, "chapterStartSeconds": 0, "chapterDurationSeconds": 10]
+            "artworkUrl": cover.absoluteString, "chapterStartSeconds": 0.0, "chapterDurationSeconds": 10.0]
         call(plugin.setNowPlaying, name: "setNowPlaying", options: options)
         waitForArtwork(title: "Chapter")
         let measureOptions = XCTMeasureOptions(); measureOptions.iterationCount = 5
