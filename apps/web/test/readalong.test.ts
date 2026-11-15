@@ -5,7 +5,6 @@ import {
   anchorAfterRelocation,
   describeCompanion,
   findActiveFragmentIndex,
-  findTocHrefForChapterTitle,
   groupCompanions,
   hasExtras,
   inSyncRecoveryGap,
@@ -14,7 +13,6 @@ import {
   readalongMatchScore,
   repeatedNarratedPageTurn,
   shouldTurnToIllustration,
-  shouldOpenPlayingChapter,
   syncMapPrecision
 } from "../src/readalong.ts";
 import type { Book, CompanionFile, SyncFragment, SyncMap } from "../src/types.ts";
@@ -69,8 +67,7 @@ describe("chapter labels", () => {
   });
 
   it("matches numbered contents entries with an omitted separator", () => {
-    const toc = [{ href: "crossing.xhtml", label: "16 The Crossing" }];
-    assert.equal(findTocHrefForChapterTitle(toc, "Chapter 16 - The Crossing"), "crossing.xhtml");
+    assert.ok(readalongMatchScore(parseReadalongLabel("Chapter 16 - The Crossing"), parseReadalongLabel("16 The Crossing")) >= 70);
     assert.equal(parseReadalongLabel("16 The Crossing").key, "the crossing");
     assert.equal(parseReadalongLabel("16th Crossing").number, null);
     assert.equal(parseReadalongLabel("Seven Swans").number, null);
@@ -92,17 +89,6 @@ describe("chapter labels", () => {
     assert.equal(readalongMatchScore(target, parseReadalongLabel("Title Page")), 0);
     const named = parseReadalongLabel("03 - Owl Post");
     assert.equal(readalongMatchScore(named, parseReadalongLabel("Chapter 3: Owl Post")), 180);
-  });
-
-  it("picks the table-of-contents entry for the playing chapter", () => {
-    const toc = [
-      { href: "title.xhtml", label: "Title Page" },
-      { href: "c1.xhtml", label: "One: The Meadow" },
-      { href: "c2.xhtml", label: "Two: The River" }
-    ];
-    assert.equal(findTocHrefForChapterTitle(toc, "Chapter 2"), "c2.xhtml");
-    assert.equal(findTocHrefForChapterTitle(toc, "The Meadow"), "c1.xhtml");
-    assert.equal(findTocHrefForChapterTitle(toc, "End Credits"), null);
   });
 });
 
@@ -155,10 +141,10 @@ describe("sync maps", () => {
     const epub = { id: "e", fileName: "b.epub", extension: "epub", contentType: "", url: "" };
     assert.equal(readAlongMode({ readingFile: null, syncFile: null }), null);
     assert.equal(readAlongMode({ readingFile: { ...epub, extension: "pdf" }, syncFile: null }), "text");
-    assert.equal(readAlongMode({ readingFile: epub, syncFile: null }), "chapter");
+    assert.equal(readAlongMode({ readingFile: epub, syncFile: null }), "unsynced");
     assert.equal(
       readAlongMode({ readingFile: epub, syncFile: { fileName: "", source: "estimated", url: "" } }),
-      "chapter"
+      "unsynced"
     );
     assert.equal(
       readAlongMode({ readingFile: epub, syncFile: { fileName: "", source: "generated", url: "" } }),
@@ -171,14 +157,14 @@ describe("sync maps", () => {
       ),
       "sentence"
     );
-    // An estimated map that reached the device falls back to chapter sync
+    // An estimated map that reached the device is not followable
     // even though the book still advertises an alignment.
     assert.equal(
       readAlongMode(
         { readingFile: epub, syncFile: { fileName: "", source: "generated", url: "" } },
         { version: 2, precision: "estimated", fragments }
       ),
-      "chapter"
+      "unsynced"
     );
   });
 });
@@ -278,25 +264,6 @@ describe("remembered place", () => {
   });
 });
 
-describe("following the chapter being played", () => {
-  it("opens the chapter when the narration moves to a new one", () => {
-    assert.equal(shouldOpenPlayingChapter(true, "ch-4", "ch-3"), true);
-    assert.equal(shouldOpenPlayingChapter(true, "ch-4", null), true);
-  });
-
-  it("leaves the page alone once that chapter has been opened", () => {
-    assert.equal(shouldOpenPlayingChapter(true, "ch-4", "ch-4"), false);
-  });
-
-  it("stays where the listener is reading when following is off", () => {
-    assert.equal(shouldOpenPlayingChapter(false, "ch-4", "ch-3"), false);
-  });
-
-  it("does nothing when no chapter is playing", () => {
-    assert.equal(shouldOpenPlayingChapter(true, null, null), false);
-  });
-});
-
 describe("narrated page-turn dedupe", () => {
   it("dedupes within one layout but retries after the page is relaid out", () => {
     const last = { cfi: "spoken", from: "page-start", layout: 3 };
@@ -332,7 +299,7 @@ describe("is the remembered place on this page", () => {
 
 it("disabled sentence experiment caps existing and cached EPUB maps at chapter sync", () => {
   const book = { readingFile: { extension: "epub" }, syncFile: { source: "generated" } } as Parameters<typeof readAlongMode>[0];
-  assert.equal(readAlongMode(book, null, false), "chapter");
-  assert.equal(readAlongMode(book, { version: 1, precision: "sentence", fragments: [] }, false), "chapter");
+  assert.equal(readAlongMode(book, null, false), "unsynced");
+  assert.equal(readAlongMode(book, { version: 1, precision: "sentence", fragments: [] }, false), "unsynced");
   assert.equal(readAlongMode(book, null, true), "sentence");
 });

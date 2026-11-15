@@ -1,3 +1,5 @@
+export const GIFT_MAX_LIFETIME_SECONDS = 24 * 60 * 60;
+
 export type GiftAssetKind = "metadata" | "ebook" | "cover" | "audio" | "alignment";
 export type GiftInventoryAsset = { id: string; kind: GiftAssetKind; fileName: string; sizeBytes: number; available: boolean; disabledReason?: string | null; requiresAssetIds?: string[] };
 export type GiftInventory = { bookId: string; title: string; assets: GiftInventoryAsset[]; defaultSelectedAssetIds: string[]; maxBytes: number };
@@ -57,9 +59,9 @@ export function alignmentGiftSelection(inventory: GiftInventory, alignmentId: st
 export function defaultGiftSelection(inventory: GiftInventory): string[] {
   const selected = new Set(inventory.defaultSelectedAssetIds.filter(id => {
     const asset = inventory.assets.find(item => item.id === id)!;
-    return !giftAssetDisabledReason(asset) && asset.kind !== "audio";
+    return !giftAssetDisabledReason(asset);
   }));
-  for (const asset of inventory.assets) if (asset.kind === "metadata") selected.add(asset.id);
+  for (const asset of inventory.assets) if (asset.kind === "metadata" || (asset.kind === "audio" && !giftAssetDisabledReason(asset))) selected.add(asset.id);
   for (const kind of ["ebook", "cover"]) {
     if (![...selected].some(id => inventory.assets.find(asset => asset.id === id)?.kind === kind)) {
       const asset = inventory.assets.find(asset => asset.kind === kind && !giftAssetDisabledReason(asset));
@@ -100,7 +102,7 @@ export function selectedGiftRequest(inventory: GiftInventory, selectedIds: strin
   if (summary.errors.length) throw new Error(summary.errors[0]);
   if (Array.from(message).length > 1000) throw new Error("The personal message must be at most 1000 characters.");
   if (message.includes("\0")) throw new Error("The personal message contains an unsupported character.");
-  if (!Number.isSafeInteger(expiresInSeconds) || expiresInSeconds < 60 || expiresInSeconds > 900) throw new Error("Choose an expiry between one and fifteen minutes.");
+  if (!Number.isSafeInteger(expiresInSeconds) || expiresInSeconds < 60 || expiresInSeconds > GIFT_MAX_LIFETIME_SECONDS) throw new Error("Choose an expiry between one minute and 24 hours.");
   return { bookId: inventory.bookId, selectedAssetIds: summary.assets.map(asset => asset.id), ...(message.trim() ? { personalMessage: message } : {}), expiresInSeconds };
 }
 

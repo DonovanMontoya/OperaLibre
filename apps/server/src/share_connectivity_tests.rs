@@ -244,7 +244,11 @@ fn derives_distinct_expiring_credentials_and_only_serializes_recipient_projectio
             .is_err()
     );
     assert!(config.validate_invitation(GIFT, 201, 100).is_err());
-    for (gift, expiry) in [("invalid", 200), (GIFT, 100), (GIFT, 1001)] {
+    for (gift, expiry) in [
+        ("invalid", 200),
+        (GIFT, 100),
+        (GIFT, 100 + crate::share::GIFT_MAX_LIFETIME_SECONDS + 1),
+    ] {
         assert!(owner.for_invitation(gift, expiry, 100).is_err());
     }
     let next = owner.for_invitation(GIFT, 200, 100).unwrap();
@@ -465,4 +469,21 @@ async fn configured_local_turn_authenticates_and_relays_actual_rust_peer_bytes()
     assert!(server.relayed.load(Ordering::SeqCst) > 0);
     assert_eq!(server.bad_integrity.load(Ordering::SeqCst), 0);
     Ok(())
+}
+
+#[test]
+fn full_day_connectivity_credentials_keep_the_invitation_expiry() {
+    let expiry = 100 + crate::share::GIFT_MAX_LIFETIME_SECONDS;
+    let connection = turn().for_invitation(GIFT, expiry, 100).unwrap();
+    assert!(
+        connection
+            .validate_invitation(GIFT, expiry, 100 + 16 * 60)
+            .is_ok()
+    );
+    assert!(
+        connection
+            .validate_invitation(GIFT, expiry, expiry)
+            .is_err()
+    );
+    assert!(turn().for_invitation(GIFT, expiry + 1, 100).is_err());
 }

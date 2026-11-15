@@ -41,9 +41,8 @@ describes per-allocation data-rate limits around 50–100 Mbps, with packet drop
 above limits, not a guaranteed throughput. Its [FAQ](https://developers.cloudflare.com/realtime/turn/faq/)
 includes data-channel use and recommends handling allocation disruption. This
 does not establish a contractual large-file SLA or a verified OperaLibre relay.
-The current broker caps a session at 15 minutes: the 25 GiB archive safety ceiling
-is not a promise that an archive that large can finish before expiry. Credential
-renewal, longer-transfer expiry policy and live relay testing remain unresolved.
+The current broker caps a session at 24 hours: the 25 GiB archive safety ceiling
+is not a promise that an archive that large can finish before expiry. Live relay testing remains unresolved; an invitation never renews its expiry.
 
 Arbitrary owner domains cannot be assumed to open an installed native app.
 Universal/App Links require app-owned association files and domain control.
@@ -188,7 +187,7 @@ commit. Recovery keeps the original gift URL and pinned identity, clears stale
 signaling in a new generation, and never extends expiry. A separate owner opt-in
 authorizes automatic startup recovery; retention alone does not. The startup
 supervisor waits for a ready library, rechecks saved authorization, retries at
-30-second intervals for at most 15 minutes, and pauses peers on shutdown.
+30-second intervals for at most 24 hours, and pauses peers on shutdown.
 It also retries already-durable revocations without abandoning valid dormant
 gifts. Its production gate remains off, so saved configuration cannot activate
 startup egress in released binaries.
@@ -373,7 +372,7 @@ CSPRNG and encodes them as canonical unpadded base64url. Over a confidential
 channel it presents that secret with an owner-signed initial recipient claim.
 After signature verification, `claimMailbox` atomically consumes the mailbox
 membership and stores only SHA-256 of the secret, together with the room,
-recipient nonce, exact expiry, and state. Claim lifetime is at most 900 seconds.
+recipient nonce, exact expiry, and state. Claim lifetime is at most 86400 seconds.
 The initial bearer link can still be stolen and claimed first; it cannot read
 the mailbox after a different recipient has claimed it without that recipient's
 secret. A lost claim response requires the recipient to retain its secret; the
@@ -416,7 +415,7 @@ a 32-byte reservation ID from its owner credential, invitation digest and fresh
 random room, then encodes it as unpadded base64url. The server persists the room
 and expiry before sending the request, and derives the same ID for retry without
 persisting the owner credential. Expiry is Unix
-seconds, at most 15 minutes ahead. A 204 reserves the previously untouched room;
+seconds, at most 24 hours ahead. A 204 reserves the previously untouched room;
 409 means unavailable or expired. Retrying the exact request after a lost
 response returns 204 while live. A different secret or expiry cannot acquire it.
 

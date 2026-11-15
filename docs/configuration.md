@@ -146,7 +146,7 @@ Libation is available when the server finds its CLI at the configured path or on
 
 ### Optional readalong alignment
 
-Owners of managed release installations can install and enable the generator under **Administration → Experiments**; no configuration entry is needed. Sentence following requires an aligned map, the experiment to be enabled, and the reader to press Follow in the ebook, including for user-provided and previously generated `.sync.json` maps. Disabling it keeps those maps and listening progress and leaves chapter sync available. Development and manually managed installations can configure an existing echogarden executable here instead; that explicit configuration takes priority over the managed add-on. See [Library Layout](library-layout.md#sync-maps-following-the-narration) for the sync-map workflow.
+Owners of managed release installations can install and enable the generator under **Administration → Experiments**; no configuration entry is needed. Sentence following requires an aligned map, the experiment to be enabled, and the reader to press Follow in the ebook, including for user-provided and previously generated `.sync.json` maps. Disabling it keeps those maps and listening progress; EPUBs stay readable beside the audio. Development and manually managed installations can configure an existing echogarden executable here instead; that explicit configuration takes priority over the managed add-on. See [Library Layout](library-layout.md#sync-maps-following-the-narration) for the sync-map workflow.
 
 | Key | Default | Description |
 | --- | --- | --- |

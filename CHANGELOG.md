@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Owners who turn on book gifts can set up the gift broker by pasting a Cloudflare token, and can reinstall it after an update or connect an existing broker by hand. ([#469](https://github.com/DonovanMontoya/OperaLibre/pull/469))
+- The Up next heading on the Shelf can collapse the queue, and the choice stays on this device. ([#455](https://github.com/DonovanMontoya/OperaLibre/pull/455))
+- Book gifts, an experiment the owner turns on under Administration → Experiments, send a book as a one-time link that the iPhone and Android apps can open and keep without an account. Each phone asks before opening its first gift and can turn receiving off in Settings. ([#430](https://github.com/DonovanMontoya/OperaLibre/pull/430))
 - Settings → Display on iPhone and iPad offers five dark themes: Warm, Graphite, Midnight, Reading Room, and True Black. ([#412](https://github.com/DonovanMontoya/OperaLibre/pull/412))
 - Settings → Display on iPhone and iPad also offers five light themes: Parchment, Linen, Sage, Harbor, and Pure White. ([#416](https://github.com/DonovanMontoya/OperaLibre/pull/416))
 - Refreshing Get books asks Audible for new purchases instead of only rereading the last Libation scan. ([#417](https://github.com/DonovanMontoya/OperaLibre/pull/417))
@@ -84,6 +87,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- On an unfolded iPhone Duo, the Listening page no longer repeats the playing book on the left, and the player page uses lighter type. ([#473](https://github.com/DonovanMontoya/OperaLibre/pull/473))
+- Gifting a book moved into More → Gift this book, gift availability updates without a reload, and the audiobook files are selected by default. ([#471](https://github.com/DonovanMontoya/OperaLibre/pull/471))
+- The iPhone app follows the system text size, the Shelf header gathers import, upload, and refresh into one Add button, and the playback and sleep timer sheets follow the chosen theme. ([#452](https://github.com/DonovanMontoya/OperaLibre/pull/452))
+- Updates keep only the most recent completed backup of the server, web app, and follow-along add-on instead of every earlier copy. ([#447](https://github.com/DonovanMontoya/OperaLibre/pull/447))
 - App fonts (Fraunces, Instrument Serif, and JetBrains Mono) load from the app instead of Google Fonts. ([#405](https://github.com/DonovanMontoya/OperaLibre/pull/405))
 - A rebuilt follow-along map is picked up right away instead of keeping an older cached copy. ([#400](https://github.com/DonovanMontoya/OperaLibre/pull/400))
 - Settings, sign-in, and the account menu link to the privacy policy, and the policy describes what an assistant can be allowed to read. ([#386](https://github.com/DonovanMontoya/OperaLibre/pull/386))
@@ -135,6 +142,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Secondary text, gold accents, series names, and the Games boards read clearly on the iPhone light themes. ([#474](https://github.com/DonovanMontoya/OperaLibre/pull/474))
+- The Pick up where you left off cards on the empty player open the book at its saved position. ([#468](https://github.com/DonovanMontoya/OperaLibre/pull/468))
+- The web app's layout holds up at every window size, from a phone on its side to a wide monitor. ([#462](https://github.com/DonovanMontoya/OperaLibre/pull/462))
+- The server and launcher bundle a patched SQLite that fixes a security advisory. ([#459](https://github.com/DonovanMontoya/OperaLibre/pull/459))
+- The iPhone and Android apps keep a copy of each Shelf cover, so covers still show after signing in again, switching addresses, or losing the server. ([#456](https://github.com/DonovanMontoya/OperaLibre/pull/456))
+- Shelf badge icons stay visible in the iPhone light themes. ([#454](https://github.com/DonovanMontoya/OperaLibre/pull/454))
+- Rotating an open iPhone Duo in the read-along no longer flashes the player and library over the book. ([#453](https://github.com/DonovanMontoya/OperaLibre/pull/453))
+- The Games room takes the colors of the Linen, Sage, Harbor, and Pure White light themes. ([#450](https://github.com/DonovanMontoya/OperaLibre/pull/450))
+- Covers already seen load from the app's cache, and a cover that fails to load is retried when the network returns. ([#449](https://github.com/DonovanMontoya/OperaLibre/pull/449))
+- Owners can turn a follow-along runtime found on the server's PATH off and on again in Administration → Experiments. ([#448](https://github.com/DonovanMontoya/OperaLibre/pull/448))
+- Deleting an account also removes its listening activity, so it no longer shows up in backups or on a new account. ([#445](https://github.com/DonovanMontoya/OperaLibre/pull/445))
+- A forward seek from CarPlay or the lock screen can no longer let a stray 0:00 overwrite saved progress. ([#442](https://github.com/DonovanMontoya/OperaLibre/pull/442))
+- The server start scripts no longer print a fixed localhost address that may not be where the server listens. ([#440](https://github.com/DonovanMontoya/OperaLibre/pull/440))
+- Wrong sign-in guesses can no longer keep an account's owner locked out or block every new sign-in, and http://localhost is no longer a trusted app origin. ([#437](https://github.com/DonovanMontoya/OperaLibre/pull/437))
+- An unreadable follow-along checkpoint restarts that book instead of failing the job. ([#436](https://github.com/DonovanMontoya/OperaLibre/pull/436))
+- A server download on iPhone that finishes just after it was cancelled no longer leaves a stray file behind. ([#435](https://github.com/DonovanMontoya/OperaLibre/pull/435))
+- When a failed update is rolled back, the database and library identities it upgraded are restored too. ([#434](https://github.com/DonovanMontoya/OperaLibre/pull/434))
+- Android downloads only follow links on the connected server, so the access token is not sent anywhere else. ([#433](https://github.com/DonovanMontoya/OperaLibre/pull/433))
+- Closing a browser tab saves the last listening position more reliably. ([#432](https://github.com/DonovanMontoya/OperaLibre/pull/432))
+- Progress carried over from older installs is protected from an accidental reset to 0:00 like any other saved position. ([#431](https://github.com/DonovanMontoya/OperaLibre/pull/431))
+- The macOS app rolls back to the previous web app when an updated one fails to start. ([#429](https://github.com/DonovanMontoya/OperaLibre/pull/429))
 - The library reconnects on its own when the first request at launch fails. ([#421](https://github.com/DonovanMontoya/OperaLibre/pull/421))
 - Playback continues when the iOS app's page reloads instead of loading the book again. ([#422](https://github.com/DonovanMontoya/OperaLibre/pull/422))
 - iOS keeps saved downloads and CarPlay sessions it cannot read, instead of dropping them on save. ([#425](https://github.com/DonovanMontoya/OperaLibre/pull/425))
@@ -308,6 +336,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The ebook reader no longer offers chapter sync: a book without a sync map shows no Follow button and says it is not synced. ([#475](https://github.com/DonovanMontoya/OperaLibre/pull/475))
 - The library header no longer says The Collection. ([#307](https://github.com/DonovanMontoya/OperaLibre/pull/307))
 - The reader no longer draws a separate word-by-word highlight. Follow-along marks the current sentence. ([#82](https://github.com/DonovanMontoya/OperaLibre/pull/82))
 - Audible accounts are no longer added by pasting a browser URL into OperaLibre. Account setup for that release belonged to Libation. ([#65](https://github.com/DonovanMontoya/OperaLibre/pull/65))

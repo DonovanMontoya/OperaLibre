@@ -254,8 +254,7 @@ export function renderEpubReader({
   } = readalong;
   const {
     followAggressiveness,
-    pageTurnAnimation,
-    readalongEnabled
+    pageTurnAnimation
   } = readerPreferences;
   const {
     sleepAtChapterEnd,
@@ -279,11 +278,6 @@ export function renderEpubReader({
         loadCachedSource={(signal) => getCachedEpubBytes(selectedBook, activeCompanion, signal)}
         loadWholeFile={(companionUrl, signal) =>
           loadCompanionBytes(selectedBook, activeCompanion, companionUrl, signal)
-        }
-        syncTarget={
-          readalongEnabled && activeCompanionIsBook && !(narrationFollowActive && selectedSyncFragments) && isViewingPlayingBook && activeChapter
-            ? activeChapter
-            : null
         }
         syncFragments={narrationFollowActive && activeCompanionIsBook ? selectedSyncFragments : null}
         syncRecoveryGaps={narrationFollowActive && activeCompanionIsBook ? selectedSyncRecoveryGaps : undefined}

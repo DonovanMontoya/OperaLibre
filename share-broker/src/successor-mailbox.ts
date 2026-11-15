@@ -1,3 +1,4 @@
+import { MAX_TTL_SECONDS } from "./limits.js";
 // Isolated prototype. No Worker route invokes this module.
 import { authenticateOwner, type Claim, type TransactionalStorage } from "./claims.js";
 
@@ -24,7 +25,7 @@ export async function claimMailbox(storage: TransactionalStorage, room: string, 
   const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret))));
   return storage.transaction(async txn => {
     const now = clock();
-    if (claim.expiresAt <= now || claim.expiresAt > now + 900 || await txn.get("revoked") || await txn.get(key)) return false;
+    if (claim.expiresAt <= now || claim.expiresAt > now + MAX_TTL_SECONDS || await txn.get("revoked") || await txn.get(key)) return false;
     await txn.put(key, { room, nonce: claim.nonce, expiresAt: claim.expiresAt, digest, state: "empty" } satisfies Member);
     return true;
   });

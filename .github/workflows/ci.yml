@@ -235,7 +235,7 @@ jobs:
         run: node --experimental-strip-types --test script/dev_proxy.test.mjs
 
       - name: Test performance runner
-        run: node --test script/performance/run.test.mjs
+        run: node --test script/performance/run.test.mjs script/performance/streaming/server.test.mjs
 
       - name: Test browser lifecycle without the server
         run: |

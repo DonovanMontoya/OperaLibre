@@ -425,10 +425,7 @@ pub(crate) async fn delete_configuration(
     crate::share::ensure_no_pending_broker_rooms(&state).await?;
     state
         .database
-        .transaction(|db| {
-            db.execute("DELETE FROM documents WHERE name = ?1", [DOCUMENT])?;
-            Ok(())
-        })
+        .transaction(|db| delete_document(db, DOCUMENT))
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -665,7 +662,12 @@ async fn create_owned(
     if config.retain_sender_state {
         crate::share::prune_confirmed_recovery(&state).await?;
     }
-    input.expires_in_seconds = Some(input.expires_in_seconds.unwrap_or(900).clamp(60, 900));
+    input.expires_in_seconds = Some(
+        input
+            .expires_in_seconds
+            .unwrap_or(900)
+            .clamp(60, crate::share::GIFT_MAX_LIFETIME_SECONDS as i64),
+    );
     let Json(invitation) = crate::share::create_selected_share(
         State(state.clone()),
         Extension(auth.clone()),

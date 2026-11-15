@@ -710,6 +710,7 @@ export async function cacheShelfCover(book: Book, url: string) {
   if (!Capacitor.isNativePlatform() || isDemoMode()) return;
   const path = shelfCoverPath(book);
   if (!path || shelfCoverWrites.has(path)) return;
+  const directory = coverCacheDirectory();
   shelfCoverWrites.add(path);
   try {
     if (await nonemptyNativeFile(path)) return;
@@ -718,7 +719,6 @@ export async function cacheShelfCover(book: Book, url: string) {
     if (!response.ok || !type.startsWith("image/")) return;
     const data = await response.arrayBuffer();
     if (!data.byteLength || data.byteLength > MAX_COVER_BYTES) return;
-    const directory = coverCacheDirectory();
     await ensureMediaDirectory(directory);
     await Filesystem.writeFile({ path, directory: MEDIA_DIRECTORY, data: toBase64(data) });
     // A replaced cover leaves its earlier revision behind; keep only the newest.
@@ -739,10 +739,14 @@ export async function getOfflineCoverUrl(book: Book, allowLegacy = navigator.onL
   // Restoring a book that has no embedded art must not resurrect a cached override.
   if (!book.coverArtUrl && book.hasCoverOverride !== undefined && book.source !== "device") return null;
   if (Capacitor.isNativePlatform()) {
+    // Most shelf books are not downloaded. Check their saved artwork before
+    // migrating/probing audio directories or enumerating older cover files.
+    const shelfPath = shelfCoverPath(book);
+    const shelfUrl = shelfPath ? await nativeFileUrl(shelfPath) : null;
+    if (shelfUrl) return shelfUrl;
     const path = await nativeCoverPath(book, allowLegacy);
     if (path) return nativeFileUrl(path);
-    const shelfPath = shelfCoverPath(book);
-    return shelfPath ? nativeFileUrl(shelfPath) : null;
+    return null;
   }
   const record = await webCoverRecord(book, allowLegacy);
   return record ? URL.createObjectURL(record.blob) : null;

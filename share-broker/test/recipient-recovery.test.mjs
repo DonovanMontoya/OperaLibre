@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import broker, { SecureRoom } from "../dist-test/index.js";
 import { recipientRecoverySuccessor } from "../dist-test/claims.js";
 
-async function fixture() {
+async function fixture(lifetime = 300) {
   const objects = new Map(), stores = new Map();
   const owner = "owner-only-test-secret", digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(owner)));
   const env = { EXPERIMENTAL_ENABLED: "true", SIGNING_SECRET: "s".repeat(32), OWNER_SECRET_DIGEST_HEX: Buffer.from(digest).toString("hex") };
@@ -15,7 +15,7 @@ async function fixture() {
     }
     return objects.get(name);
   } };
-  const room = "recovery_room___1", expiresAt = Math.floor(Date.now() / 1000) + 300;
+  const room = "recovery_room___1", expiresAt = Math.floor(Date.now() / 1000) + lifetime;
   const secret = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
   const call = (route, body, authenticated = false) => broker.fetch(new Request(`https://broker.test/${route}`, { method: "POST", headers: authenticated ? { authorization: `Bearer ${owner}` } : {}, body: JSON.stringify(body) }), env);
   const issue = async (role = "recipient", nonce = "recipient_nonce1", target = room) => {
@@ -95,4 +95,20 @@ test("expiry is rechecked after cryptography before a successor is stored", asyn
   let now = f.expiresAt - 1;
   const result = await recipientRecoverySuccessor(f.store(), f.room, JSON.parse(f.current.payload), f.secret, async next => { now = f.expiresAt; return { payload: JSON.stringify(next), signature: "a".repeat(64) }; }, () => now);
   assert.equal(result, null); assert.equal((await f.store().get("recovery:recipient")).successor, undefined);
+});
+
+test("a 24-hour recipient can claim and recover after fifteen minutes but never after expiry", async () => {
+  const realNow = Date.now;
+  let time = realNow();
+  Date.now = () => time;
+  try {
+    const f = await fixture(86400);
+    const excess = await f.call("issue", { room: f.room, role: "recipient", nonce: "another_nonce___", expiresAt: f.expiresAt + 1 }, true);
+    assert.equal(excess.status, 400);
+    time += 16 * 60 * 1000;
+    assert.equal((await f.call(`recovery-claim/${f.room}`, { ...f.current, recoverySecret: f.secret })).status, 204);
+    assert.equal((await f.call(`recovery-successor/${f.room}`, { ...f.current, recoverySecret: f.secret })).status, 200);
+    time = f.expiresAt * 1000;
+    assert.equal((await f.call(`recovery-successor/${f.room}`, { ...f.current, recoverySecret: f.secret })).status, 403);
+  } finally { Date.now = realNow; }
 });

@@ -164,28 +164,17 @@
 .gift-share-note + small { display: block; margin-top: 6px; }
 .gift-share-note + small[data-over] { color: var(--oxblood, #8b2e1f); }
 
-.gift-share-segments {
-  display: inline-grid;
-  grid-auto-flow: column;
-  padding: 3px;
-  border-radius: 999px;
-  background: rgba(var(--ink-rgb, 26, 20, 16), 0.07);
-}
-.gift-share-segments label { position: relative; cursor: pointer; }
-.gift-share-segments input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
-.gift-share-segments span {
-  display: block;
-  padding: 9px 16px;
-  border-radius: 999px;
-  font-size: 0.92rem;
-  white-space: nowrap;
-}
-.gift-share-segments input:checked + span {
+.gift-share-expiry {
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--gs-line);
+  border-radius: 8px;
   background: rgb(var(--lift-rgb, 255, 252, 244));
-  box-shadow: 0 1px 3px rgba(14, 10, 7, 0.16);
-  font-weight: 600;
+  color: inherit;
+  font: inherit;
 }
-.gift-share-segments input:focus-visible + span { outline: 3px solid var(--oxblood, #8b2e1f); outline-offset: 1px; }
 
 .gift-share-quiet { color: var(--gs-faded); font-size: 0.85rem; }
 .gift-share-body .gift-share-alert {
@@ -259,7 +248,7 @@
 }
 .gift-share-danger { color: var(--oxblood, #8b2e1f); }
 .gift-share-dialog button:disabled { cursor: not-allowed; opacity: 0.55; }
-.gift-share-dialog :is(button, textarea):focus-visible,
+.gift-share-dialog :is(button, textarea, select):focus-visible,
 .gift-share-asset input:focus-visible {
   outline: 3px solid var(--oxblood, #8b2e1f);
   outline-offset: 2px;
