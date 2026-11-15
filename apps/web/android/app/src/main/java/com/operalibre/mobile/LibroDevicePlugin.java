@@ -200,6 +200,8 @@ public class LibroDevicePlugin extends Plugin {
             Arrays.sort(sources, Comparator.comparing(File::getName));
             for (File source : sources) {
                 if (source.getName().endsWith(".m4b")) {
+                    BookDownloadBudget.check(total, source.length(), LIMIT);
+                    total += source.length();
                     files.put(new JSONObject().put("name", source.getName()).put("path", source.toURI().toString())); continue;
                 }
                 if (!source.getName().endsWith(".zip")) continue;

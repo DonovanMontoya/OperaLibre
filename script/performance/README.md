@@ -25,7 +25,7 @@ The Rust fixture creates two small real WAV files per book in a temporary direct
 
 Results are under `output/performance/runs/<label>/` (gitignored):
 
-- `run.json`: source revision (Jujutsu, falling back to Git), environment/tool versions, workload, check status, completion marker. The runner fails if neither revision command succeeds; unavailable optional tools are recorded as `null`.
+- `run.json`: source revision (Git HEAD), environment/tool versions, workload, check status, completion marker. The runner fails if the Git revision command fails or returns an invalid revision; unavailable optional tools are recorded as `null`.
 - `browser-results.json`: browser measurements and assertions; failure screenshots/traces in `browser/`.
 - `server.json`: warmed samples, median/p95 handler time and full response sizes.
 - `ios/*.xcresult`: native XCTest results, CPU/wall-clock/memory measurements.
@@ -84,3 +84,8 @@ Coverage to extend with the optimization: artwork reload/fetch counts, a success
 native download-recovery scenario for any new batched status API, and React profiling for shelf
 memoization. Those are not claimed by the current timing measurements. Avoid adding a duplicate
 server model or testing newly invented helpers that production never calls.
+
+## Native streaming
+
+The [standalone streaming benchmark](streaming/README.md) compares prepared
+M4A and experimental bundled HLS using the native iOS player in a simulator.

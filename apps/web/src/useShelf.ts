@@ -63,6 +63,7 @@ export function useShelf({
   native,
   playbackFold,
   sentenceFollowAvailable,
+  sentenceFollowAvailableForBook,
   shelfExpanded
 }: {
   books: Book[];
@@ -74,6 +75,7 @@ export function useShelf({
   native: boolean;
   playbackFold: DeviceFoldState;
   sentenceFollowAvailable: boolean;
+  sentenceFollowAvailableForBook?: (book: Book) => boolean;
   shelfExpanded: boolean;
 }) {
   const [sortMode, setSortMode] = useState<SortMode>(() => readStoredSortMode("local"));
@@ -253,14 +255,14 @@ export function useShelf({
         || book.source === "device"
         || !!book.deviceBookId
         || downloadedBookIds.has(book.id),
-      readAlong: bookMatchesShelfReading(book, shelfFilters.reading, sentenceFollowAvailable),
+      readAlong: bookMatchesShelfReading(book, shelfFilters.reading, sentenceFollowAvailableForBook?.(book) ?? (book.source !== "device" && sentenceFollowAvailable)),
       genres: bookMatchesFacet(book, "genres", shelfFilters.genres),
       tags: bookMatchesFacet(book, "tags", shelfFilters.tags)
     })).map((match) => ({
       ...match,
       downloaded: bookMatchesShelfDownload(match.availableOnDevice, shelfFilters.downloadedOnly)
     }));
-  }, [books, demoMode, downloadedBookIds, localMode, searchQuery, sentenceFollowAvailable, shelfFilters]);
+  }, [books, demoMode, downloadedBookIds, localMode, searchQuery, sentenceFollowAvailable, sentenceFollowAvailableForBook, shelfFilters]);
 
   const shelfFacets = useMemo(() => {
     const forGenres: Book[] = [];
@@ -284,7 +286,7 @@ export function useShelf({
         downloadedCount += 1;
       }
       if (match.search && match.status && match.genres && match.tags && match.downloaded) {
-        const availability = bookReadingAvailability(match.book, sentenceFollowAvailable);
+        const availability = bookReadingAvailability(match.book, sentenceFollowAvailableForBook?.(match.book) ?? (match.book.source !== "device" && sentenceFollowAvailable));
         if (availability !== "none") readingCounts[availability] += 1;
       }
     }
@@ -295,7 +297,7 @@ export function useShelf({
       downloadedCount,
       readingCounts
     };
-  }, [allShelfFacets, sentenceFollowAvailable, shelfMatches]);
+  }, [allShelfFacets, sentenceFollowAvailable, sentenceFollowAvailableForBook, shelfMatches]);
 
   const activeShelfFilterCount = countActiveShelfFilters(shelfFilters);
   // Genres, tags and progress are all things only your own shelf records; the
@@ -455,6 +457,7 @@ export function useShelf({
     selectSortMode,
     selectViewMode,
     sentenceFollowAvailable,
+    sentenceFollowAvailableForBook,
     setFiltersOpen,
     setSearchQuery,
     setShelfFilters,

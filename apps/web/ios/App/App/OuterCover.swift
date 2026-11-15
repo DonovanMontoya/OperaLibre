@@ -85,7 +85,7 @@ final class OuterCoverController {
         let configuration = UISceneConfiguration(name: "OperaLibre Outer Cover", sessionRole: .windowCameraCaptureAccessory)
         configuration.delegateClass = OuterCoverSceneDelegate.self
         let registration = host.registerSceneAccessory(
-            UISceneAccessory.cameraCapture(sceneConfiguration: configuration, userInfo: nil)
+            UISceneAccessory.cameraCapture(sceneConfiguration: configuration, userInfo: [:])
         )
         registration.isEnabled = isEnabled
         self.registration = registration

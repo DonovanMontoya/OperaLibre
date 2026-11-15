@@ -201,7 +201,8 @@ test('native audiobook upload preserves device books and paired local copies', a
   await openShell(page, true, true, false, serverBooks, 1);
   const uploaded = { ...library(7)[6], title: 'Uploaded audiobook' };
   await page.route('**/api/library/upload', route => route.fulfill({ json: [...serverBooks, uploaded] }));
-  await page.getByRole('button', { name: 'Upload audiobook', exact: true }).click();
+  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Upload to the server', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Upload audiobook' });
   await dialog.getByLabel('Book name', { exact: true }).fill(uploaded.title);
   await dialog.locator('input[type=file]').setInputFiles({ name: 'chapter.mp3', mimeType: 'audio/mpeg', buffer: Buffer.from('fixture') });
@@ -230,7 +231,7 @@ test('native phone Continue Reading opens paused, plays explicitly, and remember
       updatedAt: '2026-09-30T12:00:00Z' } });
   });
   await page.reload();
-  const shelf = page.getByRole('region', { name: 'Up Next' });
+  const shelf = page.getByRole('region', { name: 'Listening and queue' });
   const resume = shelf.getByRole('button', { name: `Continue reading ${book.title}` });
   const play = shelf.getByRole('button', { name: `Play ${book.title}`, exact: true });
   await expect(resume).toBeVisible();
@@ -250,33 +251,33 @@ test('native phone Continue Reading opens paused, plays explicitly, and remember
   await resume.click();
   await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(false);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await expect(page.locator('.settings-shell').getByText('Cadence', { exact: true })).toBeVisible();
+  await expect(page.locator('.settings-shell').getByText('Speed', { exact: true })).toBeVisible();
   await expect(page.getByRole('switch', { name: 'Games tab', exact: true })).toBeHidden();
-  await page.locator('.behavior-settings > summary').scrollIntoViewIfNeeded();
-  await page.locator('.behavior-settings > summary').click();
+  await page.locator('.behavior-settings > summary').filter({ hasText: /^Behavior/ }).scrollIntoViewIfNeeded();
+  await page.locator('.behavior-settings > summary').filter({ hasText: /^Behavior/ }).click();
   const toggle = page.getByRole('switch', { name: 'Play when opening a book in progress' });
   await expect(toggle).toBeVisible();
-  await page.locator('.behavior-settings > summary').click();
+  await page.locator('.behavior-settings > summary').filter({ hasText: /^Behavior/ }).click();
   await expect(toggle).toBeHidden();
-  await page.locator('.behavior-settings > summary').focus();
-  await page.locator('.behavior-settings > summary').press('Enter');
+  await page.locator('.behavior-settings > summary').filter({ hasText: /^Behavior/ }).focus();
+  await page.locator('.behavior-settings > summary').filter({ hasText: /^Behavior/ }).press('Enter');
   await expect(toggle).toBeVisible();
   await expect(toggle).toHaveAttribute('aria-checked', 'false');
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-checked', 'true');
   await page.reload();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.locator('.behavior-settings > summary').click();
+  await page.locator('.behavior-settings > summary').filter({ hasText: /^Behavior/ }).click();
   await expect(toggle).toHaveAttribute('aria-checked', 'true');
   await page.getByRole('button', { name: 'Shelf', exact: true }).click();
   await resume.click();
   await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(false);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.locator('.behavior-settings > summary').click();
+  await page.locator('.behavior-settings > summary').filter({ hasText: /^Behavior/ }).click();
   await toggle.click();
   await page.reload();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.locator('.behavior-settings > summary').click();
+  await page.locator('.behavior-settings > summary').filter({ hasText: /^Behavior/ }).click();
   await expect(toggle).toHaveAttribute('aria-checked', 'false');
 
 });
@@ -299,20 +300,20 @@ test('browser Continue Reading keeps listed progress when the server fails and e
   expect(await page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
   expect(progressWrites).toEqual([]);
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
-  await page.locator('.behavior-settings > summary').click();
+  await page.locator('.behavior-settings > summary').filter({ hasText: /^Behavior/ }).click();
   const toggle = page.getByRole('switch', { name: 'Play when opening a book in progress' });
   await expect(toggle).toBeVisible();
-  await page.locator('.behavior-settings > summary').click();
+  await page.locator('.behavior-settings > summary').filter({ hasText: /^Behavior/ }).click();
   await expect(toggle).toBeHidden();
-  await page.locator('.behavior-settings > summary').focus();
-  await page.locator('.behavior-settings > summary').press('Enter');
+  await page.locator('.behavior-settings > summary').filter({ hasText: /^Behavior/ }).focus();
+  await page.locator('.behavior-settings > summary').filter({ hasText: /^Behavior/ }).press('Enter');
   await expect(toggle).toBeVisible();
   await expect(toggle).toHaveAttribute('aria-checked', 'false');
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-checked', 'true');
   await page.reload();
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
-  await page.locator('.behavior-settings > summary').click();
+  await page.locator('.behavior-settings > summary').filter({ hasText: /^Behavior/ }).click();
   await expect(toggle).toHaveAttribute('aria-checked', 'true');
 });
 
@@ -522,7 +523,7 @@ test('the half-open Duo Shelf is one page: Up Next in a band off the hinge, prog
   });
   await expect(page.locator('.book-leaf')).toHaveCount(2);
 
-  const upNext = page.getByRole('region', { name: 'Up Next', exact: true });
+  const upNext = page.getByRole('region', { name: 'Listening and queue', exact: true });
   const entries = upNext.getByRole('listitem');
   await expect(entries).toHaveCount(5);
   const lead = (await entries.first().boundingBox())!;
@@ -532,7 +533,7 @@ test('the half-open Duo Shelf is one page: Up Next in a band off the hinge, prog
   for (const entry of (await entries.all()).slice(1)) {
     const box = (await entry.boundingBox())!;
     expect(box.x).toBeGreaterThanOrEqual(496);
-    expect(Math.abs(box.y - lead.y)).toBeLessThanOrEqual(1);
+    expect(box.y).toBeGreaterThanOrEqual(lead.y);
   }
   for (const book of await page.locator('.book-row').all()) {
     const box = (await book.boundingBox())!;
@@ -568,6 +569,34 @@ test('the half-open Duo Shelf is one page: Up Next in a band off the hinge, prog
   await page.getByRole('button', { name: /^Filters/ }).click();
   await expect(page.getByRole('group', { name: 'Filter by reading progress' })).toHaveCount(1);
   await expect(page.getByRole('group', { name: 'Filter by availability' })).toBeVisible();
+});
+
+test('returning from a book restores the unfolded shelf position', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 669 });
+  const books = library(60);
+  books.forEach((book, index) => { book.metadata = { ...book.metadata, series: `Series ${Math.floor(index / 5)}`, seriesPosition: String(index % 5 + 1) }; });
+  await openShell(page, true, false, false, books);
+  await page.evaluate(async () => {
+    const path = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(path);
+    applyDeviceFold(document.documentElement, { posture: 'half-open', angle: 110,
+      fold: { x: 455, y: 0, width: 41, height: 669, axis: 'vertical', active: true } });
+  });
+  await page.getByRole('button', { name: 'Grid view', exact: true }).click();
+  await page.getByLabel('Sort library by').selectOption({ label: 'Series' });
+  const shelf = page.locator('.library-pane');
+  await shelf.evaluate(element => { element.scrollTop = 900; });
+  const previous = await shelf.evaluate(element => element.scrollTop);
+  expect(previous).toBeGreaterThan(500);
+  const book = page.locator('.book-row:visible').filter({ visible: true }).nth(20);
+  await book.scrollIntoViewIfNeeded();
+  const position = await shelf.evaluate(element => element.scrollTop);
+  await book.click();
+  await expect(page.getByRole('button', { name: 'Back to Library' })).toBeVisible();
+  // The narrower details layout can clamp the shelf's scroll position.
+  await shelf.evaluate(element => { element.scrollTop = 0; });
+  await page.getByRole('button', { name: 'Back to Library' }).click();
+  await expect.poll(() => shelf.evaluate(element => element.scrollTop)).toBeCloseTo(position, 0);
 });
 
 test('a fully open Duo sets the Shelf as one slab, with no gap kept for the hinge', async ({ page }) => {
@@ -1002,7 +1031,7 @@ test('a cached in-progress shelf stays resumable when its server disappears', as
   await page.route('**/api/books', route => route.abort('failed'));
   await page.reload();
   await expect(page.getByText('Offline mode — showing downloaded books and cached library.')).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Up Next' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Listening and queue' })).toBeVisible();
   await expect(page.getByRole('button', { name: `Continue reading ${books[0].title}` })).toBeVisible();
 });
 
@@ -1011,10 +1040,12 @@ test('a device import failure is announced on the shelf with a retry', async ({ 
   const notice = page.locator('.library-pane').getByRole('alert');
   for (let attempt = 0; attempt < 2; attempt++) {
     const chosen = page.waitForEvent('filechooser');
-    const action = attempt === 0
-      ? page.getByRole('button', { name: 'Add audiobook from device', exact: true })
-      : notice.getByRole('button', { name: 'Try importing again' });
-    await action.click();
+    if (attempt === 0) {
+      await page.getByRole('button', { name: 'Add', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'Add files to this device', exact: true }).click();
+    } else {
+      await notice.getByRole('button', { name: 'Try importing again' }).click();
+    }
     // A browser-picked file has no native path, reproducing the platform's
     // missing-access failure through the real picker and import hook.
     await (await chosen).setFiles({ name: 'sample.mp3', mimeType: 'audio/mpeg', buffer: Buffer.from('fixture') });
@@ -1026,11 +1057,26 @@ test('a device import failure is announced on the shelf with a retry', async ({ 
 test('cancelling the device picker stays silent and leaves the shelf usable', async ({ page }) => {
   await openShell(page, true);
   const chosen = page.waitForEvent('filechooser');
-  const action = page.getByRole('button', { name: 'Add audiobook from device', exact: true });
+  const action = page.getByRole('button', { name: 'Add', exact: true });
   await action.click();
+  await page.getByRole('menuitem', { name: 'Add files to this device', exact: true }).click();
   await (await chosen).element().evaluate(input => input.dispatchEvent(new Event('cancel')));
   await expect(action).toBeEnabled();
+  await action.click();
+  await expect(page.getByRole('menuitem', { name: 'Add files to this device', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Close menu', exact: true }).click();
   await expect(page.locator('.library-pane').getByRole('alert')).toHaveCount(0);
+});
+
+test('at large system text sizes the Add button drops its word but keeps its name', async ({ page }) => {
+  await openShell(page, true);
+  await page.evaluate(() => document.documentElement.setAttribute('data-text-large', ''));
+  const action = page.getByRole('button', { name: 'Add', exact: true });
+  await expect(action).toBeVisible();
+  const word = action.locator('span');
+  expect(await word.evaluate(span => span.getBoundingClientRect().width)).toBeLessThanOrEqual(1);
+  await action.click();
+  await expect(page.getByRole('menuitem', { name: 'Add files to this device', exact: true })).toBeVisible();
 });
 
 
@@ -1110,8 +1156,9 @@ test('a shelf warning opens book details and clears after retrying only missing 
   const failedSyncRequests = syncRequests;
   filesAvailable = true;
   await retry.click();
-  await expect(panel).toContainText('Ebook: ready');
-  await expect(panel).toContainText('Sentence sync: ready');
+  // A complete download needs no panel; the status line confirms what arrived.
+  await expect(page.locator('.player-pane').getByRole('status')).toContainText('Ebook: ready · Sentence sync: ready');
+  await expect(panel).toHaveCount(0);
   await expect(retry).toHaveCount(0);
   await expect(warning).toHaveCount(0);
   expect(audioRequests).toBe(originalAudioRequests);

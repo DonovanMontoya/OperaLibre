@@ -11,11 +11,12 @@ function fixture(nativeAudio = true) {
   const timers = new Map<number, { at: number; run: () => void }>();
   let nextTimer = 0;
   let saves = 0;
+  const saveOptions: Array<{ keepalive?: boolean } | undefined> = [];
   let clockRefreshes = 0;
   const adoptions: string[] = [];
   const actionsFor = (book: string) => ({
     nativeAudio,
-    async persistProgress() { saves += 1; },
+    async persistProgress(options?: { keepalive?: boolean }) { saves += 1; saveOptions.push(options); },
     async adoptNewerServerProgress() { adoptions.push(book); },
     refreshClock() { clockRefreshes += 1; }
   });
@@ -39,6 +40,7 @@ function fixture(nativeAudio = true) {
   return {
     sync, gate, adoptions, timers,
     saves: () => saves,
+    saveOptions,
     clockRefreshes: () => clockRefreshes,
     updateBook(book: string) { actions = actionsFor(book); },
     fallBack() { actions = { ...actions, nativeAudio: false }; },
@@ -149,5 +151,13 @@ test("a native failure during the wait allows the fallback retry", () => {
   f.fallBack();
   f.advance(5000);
   assert.deepEqual(f.adoptions, ["original"]);
+  f.sync.dispose();
+});
+
+test("hiding or closing the page asks for a save that can outlive it", () => {
+  const f = fixture(false);
+  f.visibility("hidden");
+  f.pagehide();
+  assert.deepEqual(f.saveOptions, [{ keepalive: true }, { keepalive: true }]);
   f.sync.dispose();
 });

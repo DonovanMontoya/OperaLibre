@@ -140,7 +140,7 @@ personal home directories may be inaccessible. See
 
 ### Browse stores and connect more accounts
 
-In **Get books**, choose **All accounts** to browse Audible and Libro.fm purchases
+In **Get books**, choose **All stores** to browse Audible and Libro.fm purchases
 on the same screen. Search applies to both store sections. You can still select
 an individual store and filter purchases by account. Choose a purchase to see its
 details, such as the description, runtime, and owning accounts, and to add it to
@@ -157,7 +157,7 @@ Server connections remain private to your OperaLibre user. Device connections us
 iOS Keychain or Android encrypted storage and are shared by users of that app on
 that device. Server and device connections are separate.
 
-With **All accounts** selected, the purchase account filter includes both Audible and
+With **All stores** selected, the purchase account filter includes both Audible and
 Libro.fm accounts, grouped and labeled by store. Choosing an account shows only
 that account's purchases; **All accounts** restores both stores. The individual
 store views keep their own account filters.

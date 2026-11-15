@@ -448,12 +448,35 @@ pub(crate) async fn save_queue(
 
 pub(crate) async fn restore_queue(state: &AppState) -> Result<(), ApiError> {
     let _schedule_guard = state.sync_schedule_lock.lock().await;
-    let bytes = match fs::read(state.database_path.with_file_name("sync-jobs.json")).await {
+    let path = state.database_path.with_file_name("sync-jobs.json");
+    let bytes = match fs::read(&path).await {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    let entries: Vec<JobStatus> = serde_json::from_slice(&bytes)?;
+    // The server starts without a queue it cannot read, such as one written by
+    // a newer version before a downgrade, so read-along work never keeps
+    // listening and progress sync offline. The file is kept beside the empty
+    // queue that replaces it, for the owner to recover. A file kept by an
+    // earlier start is never replaced.
+    let entries: Vec<JobStatus> = match serde_json::from_slice(&bytes) {
+        Ok(entries) => entries,
+        Err(error) => {
+            let mut kept = path.with_extension("json.unreadable");
+            let mut copy = 1;
+            while fs::try_exists(&kept).await? {
+                kept = path.with_extension(format!("json.unreadable.{copy}"));
+                copy += 1;
+            }
+            tracing::error!(
+                ?error,
+                kept = %kept.display(),
+                "the read-along queue could not be read; starting with an empty queue"
+            );
+            fs::rename(&path, &kept).await?;
+            return Ok(());
+        }
+    };
     let mut jobs = state.jobs.write().await;
     for mut job in entries {
         if job.kind != SYNC_GENERATE_JOB_KIND {
@@ -494,7 +517,7 @@ pub(crate) async fn resume_queue(state: &AppState) {
     {
         return;
     }
-    let mut pending: Vec<_> = state
+    let pending: Vec<_> = state
         .jobs
         .read()
         .await
@@ -507,12 +530,16 @@ pub(crate) async fn resume_queue(state: &AppState) {
     if pending.is_empty()
         || state
             .update_manager
-            .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+            .sync_addon_runtime(&state.alignment_config)
             .await
             .is_none()
     {
         return;
     }
+    resume_pending_jobs(state, pending).await;
+}
+
+pub(crate) async fn resume_pending_jobs(state: &AppState, mut pending: Vec<JobStatus>) {
     pending.sort_by_key(sync_queue_order);
     for job in pending {
         let Some(book_id) = job.target_id else {
@@ -588,7 +615,7 @@ pub(crate) async fn alignment_status(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let runtime = state
         .update_manager
-        .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+        .sync_addon_runtime(&state.alignment_config)
         .await;
     Ok(Json(serde_json::json!({
         "enabled": runtime.is_some(),
@@ -666,13 +693,21 @@ async fn rerun_request_chapters(
         tracks.to_vec(),
         chapters.to_vec(),
     );
+    let allowed_roots = vec![state.library_root.clone(), state.sync_dir.clone()];
     tokio::task::spawn_blocking(move || {
         let epub = alignment::parse_epub_file(&epub_path).map_err(|_| sync_report::BOOK_CHANGED)?;
         let plan =
             plan_scopes(&epub, &tracks, chapter_slicing).map_err(|_| sync_report::BOOK_CHANGED)?;
         let spans = sync_report::chapter_spans(&epub, &tracks, &plan.scopes);
-        sync_report::rerun_base(&sync_dir, &book_id, &map_path, &spans, &chapters)
-            .map(|base| base.chapters)
+        sync_report::rerun_base(
+            &sync_dir,
+            &book_id,
+            &map_path,
+            &spans,
+            &chapters,
+            &allowed_roots,
+        )
+        .map(|base| base.chapters)
     })
     .await
     .map_err(|error| ApiError::internal(error.to_string()))?
@@ -704,7 +739,7 @@ pub(crate) async fn enqueue_sync_batch(
         })?;
     if state
         .update_manager
-        .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+        .sync_addon_runtime(&state.alignment_config)
         .await
         .is_none()
     {
@@ -820,12 +855,17 @@ async fn enqueue_sync_map_inner(
         })?;
     let Some(mut runtime) = state
         .update_manager
-        .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+        .sync_addon_runtime(&state.alignment_config)
         .await
     else {
-        return Err(ApiError::bad_request(
-            "Follow-along sync generation is not enabled. An owner can install and enable it under Administration → Experimental features.",
-        ));
+        let message = "Follow-along sync generation is not enabled. An owner can install and enable it under Administration → Experimental features.";
+        // The runtime can be disabled after recovery's availability check.
+        // Keep accepted jobs pending until it is available again.
+        return Err(if resume_id.is_some() {
+            ApiError::conflict(message)
+        } else {
+            ApiError::bad_request(message)
+        });
     };
     runtime.ffmpeg_path = runtime.ffmpeg_path.or_else(|| {
         state
@@ -1271,8 +1311,9 @@ pub(crate) async fn run_sync_generation(
                 spans.clone(),
                 chapters.to_vec(),
             );
+            let allowed_roots = vec![state.library_root.clone(), state.sync_dir.clone()];
             let base = tokio::task::spawn_blocking(move || {
-                sync_report::rerun_base(&sync_dir, &book, &path, &spans, &chapters)
+                sync_report::rerun_base(&sync_dir, &book, &path, &spans, &chapters, &allowed_roots)
             })
             .await?
             .map_err(|message| anyhow::anyhow!(message))?;
@@ -1338,21 +1379,15 @@ pub(crate) async fn run_sync_generation(
         },
         outcomes: Vec::new(),
     };
-    match fs::read(&checkpoint_path).await {
-        Ok(bytes) => {
-            let checkpoint: SyncCheckpoint = serde_json::from_slice(&bytes)?;
-            if checkpoint.fingerprint == run.fingerprint
-                && checkpoint.completed_scopes <= selected.len()
-            {
-                run = checkpoint;
-                done_weight = selected[..run.completed_scopes]
-                    .iter()
-                    .map(|&index| scope_weights[index])
-                    .sum();
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+    if let Some(checkpoint) = read_checkpoint(&checkpoint_path).await?
+        && checkpoint.fingerprint == run.fingerprint
+        && checkpoint.completed_scopes <= selected.len()
+    {
+        run = checkpoint;
+        done_weight = selected[..run.completed_scopes]
+            .iter()
+            .map(|&index| scope_weights[index])
+            .sum();
     }
     let mut attempted = selected[..run.completed_scopes]
         .iter()
@@ -1686,6 +1721,28 @@ async fn align_unless_paused(
     }
 }
 
+/// A checkpoint only saves time, so one that cannot be parsed (a torn write
+/// from an older version, or a newer format after a downgrade) is treated
+/// like a changed input: the book starts over instead of the job failing.
+async fn read_checkpoint(path: &FsPath) -> anyhow::Result<Option<SyncCheckpoint>> {
+    let bytes = match fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(checkpoint) => Ok(Some(checkpoint)),
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                path = %path.display(),
+                "discarding a read-along checkpoint that could not be read"
+            );
+            Ok(None)
+        }
+    }
+}
+
 async fn save_checkpoint(path: &FsPath, checkpoint: &SyncCheckpoint) -> anyhow::Result<()> {
     fs::create_dir_all(path.parent().unwrap()).await?;
     write_bytes_atomic(path, &serde_json::to_vec(checkpoint)?)
@@ -1790,6 +1847,11 @@ impl AutomaticFixes<'_> {
                 if diagnosis.fix.kind != sync_report::FixKind::Auto || diagnosis.fix.attempted {
                     break;
                 }
+                if diagnosis.cause == sync_report::Cause::NoisyAudio
+                    && self.aligner.recognition.larger().is_none()
+                {
+                    break;
+                }
                 self.attempt(index, diagnosis.cause, grade, run).await?;
             }
         }
@@ -1877,14 +1939,22 @@ impl AutomaticFixes<'_> {
                 (
                     self.aligner.with_recognition(&recognition),
                     scope.clone(),
-                    format!(
-                        "{label} crashed the speech recognizer; trying it once more, led by the whisper {} model.",
-                        recognition.model
-                    ),
+                    if recognition.cloud.is_some() {
+                        format!("{label} crashed the aligner; trying it once more.")
+                    } else {
+                        format!(
+                            "{label} crashed the speech recognizer; trying it once more, led by the whisper {} model.",
+                            recognition.model
+                        )
+                    },
                 )
             }
             sync_report::Cause::NoisyAudio => {
-                recognition = self.aligner.recognition.larger();
+                recognition = self
+                    .aligner
+                    .recognition
+                    .larger()
+                    .expect("noisy audio is retried only with a larger model");
                 (
                     self.aligner.with_recognition(&recognition),
                     scope.clone(),
@@ -2246,6 +2316,9 @@ struct RecognitionSettings {
     /// stretch.
     retry_model: &'static str,
     language: Option<String>,
+    /// Set when the owner chose OpenAI to transcribe instead of on-device
+    /// whisper. Its one model is used for every pass.
+    cloud: Option<Arc<cloud_recognition::CloudRecognizer>>,
 }
 
 impl RecognitionSettings {
@@ -2258,13 +2331,31 @@ impl RecognitionSettings {
             model: if english { "tiny.en" } else { "tiny" },
             retry_model: if english { "base.en" } else { "base" },
             language: code,
+            cloud: None,
+        }
+    }
+
+    fn with_cloud(self, cloud: Option<Arc<cloud_recognition::CloudRecognizer>>) -> Self {
+        match cloud {
+            Some(cloud) => Self {
+                model: cloud_recognition::OPENAI_MODEL,
+                retry_model: cloud_recognition::OPENAI_MODEL,
+                cloud: Some(cloud),
+                ..self
+            },
+            None => self,
         }
     }
 
     fn describe(&self) -> String {
+        let engine = if self.cloud.is_some() {
+            "OpenAI"
+        } else {
+            "whisper"
+        };
         match &self.language {
-            Some(language) => format!("whisper {}, language {language}", self.model),
-            None => format!("whisper {}, language detected", self.model),
+            Some(language) => format!("{engine} {}, language {language}", self.model),
+            None => format!("{engine} {}, language detected", self.model),
         }
     }
 
@@ -2274,22 +2365,33 @@ impl RecognitionSettings {
         Self {
             model: self.retry_model,
             retry_model: self.model,
-            language: self.language.clone(),
+            ..self.clone()
         }
     }
 
+    /// Whether rerunning with the retry model could hear anything new. The
+    /// same model on the same audio only repeats the pass, which for OpenAI
+    /// would upload and bill it again.
+    fn has_retry_model(&self) -> bool {
+        self.retry_model != self.model
+    }
+
     /// One last, slower pass for audio the usual models could not follow.
-    fn larger(&self) -> Self {
+    /// OpenAI has no larger model.
+    fn larger(&self) -> Option<Self> {
+        if self.cloud.is_some() {
+            return None;
+        }
         let model = if self.language.as_deref() == Some("en") {
             "small.en"
         } else {
             "small"
         };
-        Self {
+        Some(Self {
             model,
             retry_model: model,
-            language: self.language.clone(),
-        }
+            ..self.clone()
+        })
     }
 }
 
@@ -2302,6 +2404,7 @@ async fn book_recognition(
 ) -> RecognitionSettings {
     let chosen = sync_report::language_override(state, book_id).await;
     RecognitionSettings::for_language(chosen.as_deref().or(epub.language.as_deref()))
+        .with_cloud(cloud_recognition::configured(state).await)
 }
 
 /// Runs the alignment CLI for one job, sharing its temp directory and tools.
@@ -2577,7 +2680,7 @@ impl<'a> Aligner<'a> {
                     .await
                 {
                     Ok(words) => words,
-                    Err(error) => {
+                    Err(error) if self.recognition.has_retry_model() => {
                         self.note_failed_retry(&error).await;
                         self.transcribe(
                             &audio,
@@ -2587,6 +2690,7 @@ impl<'a> Aligner<'a> {
                         )
                         .await?
                     }
+                    Err(error) => return Err(error),
                 };
                 if let Some(retry_start) =
                     alignment::recovery_clock_retry_start(&recognized, &transcript.text)
@@ -2992,7 +3096,7 @@ impl<'a> Aligner<'a> {
         // audio the first one handled, so keep that result rather than fail
         // the book. A pass already using the larger model goes straight to
         // shorter windows.
-        let recognized = if model == self.recognition.model {
+        let recognized = if !self.recognition.has_retry_model() {
             recognized
         } else {
             update_job_output(
@@ -3149,6 +3253,17 @@ impl<'a> Aligner<'a> {
         window: &str,
         model: &str,
     ) -> anyhow::Result<Vec<alignment::RecognizedWord>> {
+        if let Some(cloud) = &self.recognition.cloud {
+            // Turning OpenAI off stops audio leaving at the next window.
+            anyhow::ensure!(
+                cloud_recognition::still_enabled(self.state).await,
+                "OpenAI transcription was turned off while this book was syncing. Sync it again to use on-device recognition."
+            );
+            let entries = cloud
+                .transcribe(audio_path, self.recognition.language.as_deref())
+                .await?;
+            return Ok(alignment::recognized_words(&entries));
+        }
         let output_path = self
             .temp_dir
             .join(format!("recognition-{scope_number}-{window}.json"));
@@ -3247,7 +3362,7 @@ impl<'a> Aligner<'a> {
     ) -> anyhow::Result<ScopeAlignment> {
         let mut interruptions = alignment::interrupted_passages(transcript, recognized);
         let confirmation;
-        let recognized = if interruptions.is_empty() {
+        let recognized = if interruptions.is_empty() || !self.recognition.has_retry_model() {
             recognized
         } else {
             update_job_output(
@@ -3480,7 +3595,7 @@ impl<'a> Aligner<'a> {
 
 /// Echogarden's launcher reports a crashed worker as a clean exit, so a
 /// missing result is the only sign the command failed.
-async fn read_cli_output(path: &FsPath, what: &str) -> anyhow::Result<String> {
+pub(crate) async fn read_cli_output(path: &FsPath, what: &str) -> anyhow::Result<String> {
     fs::read_to_string(path).await.map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             anyhow::anyhow!(
@@ -3492,7 +3607,7 @@ async fn read_cli_output(path: &FsPath, what: &str) -> anyhow::Result<String> {
     })
 }
 
-async fn run_alignment_cli(
+pub(crate) async fn run_alignment_cli(
     cli_path: &FsPath,
     cli_args: &[String],
     ffmpeg_path: Option<&FsPath>,
@@ -3530,7 +3645,7 @@ fn stderr_tail(output: &std::process::Output) -> String {
     lines[lines.len().saturating_sub(12)..].join("\n")
 }
 
-async fn extract_alignment_audio(
+pub(crate) async fn extract_alignment_audio(
     ffmpeg_path: &FsPath,
     source_path: &FsPath,
     output_path: &FsPath,
@@ -3600,18 +3715,21 @@ async fn extract_alignment_audio_with_timeout(
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct AlignmentConfig {
-    pub(crate) cli_path: Option<PathBuf>,
+pub(crate) enum AlignmentConfig {
+    Manual(PathBuf),
+    Path(PathBuf),
+    Managed,
 }
 
 impl AlignmentConfig {
     pub(crate) fn from_server_config(config: &ServerConfig) -> Self {
-        let cli_path = config
+        config
             .alignment_cli_path
             .clone()
             .filter(|path| path.is_file())
-            .or_else(find_alignment_cli_on_path);
-        Self { cli_path }
+            .map(Self::Manual)
+            .or_else(|| find_alignment_cli_on_path().map(Self::Path))
+            .unwrap_or(Self::Managed)
     }
 }
 
@@ -3622,6 +3740,80 @@ pub(crate) fn find_alignment_cli_on_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writes a fake tool for a test to run. Tests spawn children in parallel,
+    /// and a child forked while this process holds the file open for writing
+    /// keeps that descriptor until it execs, so running the tool can fail with
+    /// "Text file busy". Copying it into place with `cp` keeps every write
+    /// descriptor out of this process.
+    #[cfg(unix)]
+    fn write_executable(path: &FsPath, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let source = path.with_extension("source");
+        std::fs::write(&source, body).unwrap();
+        let status = std::process::Command::new("cp")
+            .arg(&source)
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "cp exited with {status}");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn path_runtime_discovery_preserves_source_and_manual_precedence() {
+        const CHILD: &str = "OPERALIBRE_TEST_PATH_RUNTIME";
+        if let Some(expected_path) = std::env::var_os(CHILD) {
+            let config = ServerConfig::load().unwrap();
+            let alignment = AlignmentConfig::from_server_config(&config);
+            match (config.alignment_cli_path, alignment) {
+                (None, AlignmentConfig::Path(path)) => {
+                    assert_eq!(path, PathBuf::from(expected_path))
+                }
+                (Some(expected), AlignmentConfig::Manual(path)) => assert_eq!(path, expected),
+                (configured, actual) => {
+                    panic!("Unexpected runtime source: {configured:?}, {actual:?}")
+                }
+            }
+            return;
+        }
+        // Isolate PATH in a child process so parallel tests never see it.
+        let root = tempfile::tempdir().unwrap();
+        let cli = root.path().join("echogarden");
+        let manual = root.path().join("manual-cli");
+        std::fs::write(&cli, []).unwrap();
+        std::fs::write(&manual, []).unwrap();
+        let config = root.path().join("fixture.config");
+        for explicit in [false, true] {
+            std::fs::write(
+                &config,
+                if explicit {
+                    "alignment_cli_path=manual-cli\n"
+                } else {
+                    ""
+                },
+            )
+            .unwrap();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "sync::tests::path_runtime_discovery_preserves_source_and_manual_precedence",
+                    "--nocapture",
+                ])
+                .env("PATH", root.path())
+                .env("OPERALIBRE_SERVER_CONFIG", &config)
+                .env(CHILD, &cli)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
+
     #[tokio::test]
     async fn checkpoint_rejects_changed_runtime_components_at_the_same_paths() {
         let root = tempfile::tempdir().unwrap();
@@ -3765,18 +3957,17 @@ mod tests {
             ),
             ("tiny.en", "base.en", Some("en"))
         );
-        assert_eq!(recognition.larger().model, "small.en");
+        assert_eq!(recognition.larger().unwrap().model, "small.en");
         assert_eq!(recognition.swapped().model, "base.en");
         // Another book keeps its own label.
         let other = book_recognition(&state, "other", &epub).await;
         assert_eq!(other.language.as_deref(), Some("nl"));
-        assert_eq!(other.larger().model, "small");
+        assert_eq!(other.larger().unwrap().model, "small");
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn paused_generation_restores_completed_tracks_after_restart() {
-        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let (mut state, _) = crate::unit_tests::fake_libation_state(root.path());
         let epub = root.path().join("book.epub");
@@ -3786,7 +3977,7 @@ mod tests {
         let cli = root.path().join("aligner");
         // Gate the second track so pausing must interrupt an unfinished section
         // while preserving the completed first track across a restart.
-        fs::write(
+        write_executable(
             &cli,
             r#"#!/bin/sh
 [ "$1" = "align" ] || exit 2
@@ -3805,12 +3996,7 @@ case "$2" in
 esac
 printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "$4"
 "#,
-        )
-        .await
-        .unwrap();
-        fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
-            .await
-            .unwrap();
+        );
         let runtime = SyncAddonRuntime {
             cli_path: cli.clone(),
             cli_args: Vec::new(),
@@ -4003,7 +4189,6 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
     #[cfg(unix)]
     #[tokio::test]
     async fn failed_or_interrupted_generation_preserves_the_map_and_can_retry() {
-        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let (state, _) = crate::unit_tests::fake_libation_state(root.path());
         let epub = root.path().join("book.epub");
@@ -4029,8 +4214,7 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
             "#!/bin/sh\nexit 7\n",
             "#!/bin/sh\n: > \"$0.started\"\nexec sleep 60\n",
         ] {
-            std::fs::write(&cli, script).unwrap();
-            std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+            write_executable(&cli, script);
             let job = create_job(&state, "sync-fixture").await;
             let generation =
                 run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks, None);
@@ -4054,7 +4238,10 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
             }
             assert_eq!(fs::read(&destination).await.unwrap(), original);
         }
-        std::fs::write(&cli, "#!/bin/sh\nprintf '%s' '[{\"type\":\"sentence\",\"text\":\"The meadow was quiet.\",\"startTime\":1,\"endTime\":3}]' > \"$4\"\n").unwrap();
+        write_executable(
+            &cli,
+            "#!/bin/sh\nprintf '%s' '[{\"type\":\"sentence\",\"text\":\"The meadow was quiet.\",\"startTime\":1,\"endTime\":3}]' > \"$4\"\n",
+        );
         let job = create_job(&state, "sync-fixture-retry").await;
         assert_eq!(
             run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks, None)
@@ -4072,11 +4259,9 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
     #[cfg(unix)]
     #[tokio::test]
     async fn hung_audio_extraction_times_out() {
-        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let executable = root.path().join("ffmpeg");
-        std::fs::write(&executable, "#!/bin/sh\nexec sleep 60\n").unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&executable, "#!/bin/sh\nexec sleep 60\n");
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             extract_alignment_audio_with_timeout(
@@ -4101,14 +4286,13 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
     #[cfg(unix)]
     #[tokio::test]
     async fn forced_alignment_uses_the_book_language_instead_of_guessing() {
-        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let (state, _) = crate::unit_tests::fake_libation_state(root.path());
         let job_id = create_job(&state, "sync-generate").await;
         let cli = root.path().join("aligner");
         // Echogarden's own guess for a short passage can be a language eSpeak
         // cannot voice; only an explicit language avoids that failure.
-        std::fs::write(
+        write_executable(
             &cli,
             r#"#!/bin/sh
 case " $* " in
@@ -4117,9 +4301,7 @@ case " $* " in
 esac
 printf '[{"type":"sentence","text":"Kaladin ran.","startTime":0,"endTime":2}]' > "$4"
 "#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let audio = root.path().join("chapter.wav");
         std::fs::write(&audio, "").unwrap();
         let transcript = alignment::build_transcript(&[alignment::SpineSection {
@@ -4634,7 +4816,6 @@ printf '[{"type":"sentence","text":"Kaladin ran.","startTime":0,"endTime":2}]' >
     #[cfg(unix)]
     mod windowed {
         use super::*;
-        use std::os::unix::fs::PermissionsExt;
 
         const HEADING_SECONDS: f64 = 12.0;
         const SENTENCE_SECONDS: f64 = 4.0;
@@ -4672,13 +4853,6 @@ printf '[{"type":"sentence","text":"Kaladin ran.","startTime":0,"endTime":2}]' >
                 }
             }
             lines.join("\n") + "\n"
-        }
-
-        fn write_script(path: &FsPath, body: &str) {
-            std::fs::write(path, body).unwrap();
-            let mut permissions = std::fs::metadata(path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(path, permissions).unwrap();
         }
 
         const FAKE_FFMPEG: &str = r#"#!/bin/sh
@@ -4740,10 +4914,12 @@ esac
                 0.0,
                 None,
                 false,
+                None,
             )
             .await
         }
 
+        #[allow(clippy::too_many_arguments)]
         async fn align_fake_book_with_settings(
             count: usize,
             garbled: &[std::ops::Range<usize>],
@@ -4752,6 +4928,9 @@ esac
             book_offset: f64,
             empty_sentence: Option<usize>,
             crashing_retry_model: bool,
+            // Recognize with a stand-in for OpenAI at this address instead
+            // of the fake on-device recognizer, which then refuses to run.
+            cloud_endpoint: Option<&str>,
         ) -> (Vec<alignment::SyncFragment>, String) {
             let root = tempfile::tempdir().unwrap();
             let (state, _) = crate::unit_tests::fake_libation_state(root.path());
@@ -4792,7 +4971,7 @@ esac
             }
             std::fs::write(&narration_path, speech).unwrap();
             let ffmpeg = root.path().join("ffmpeg");
-            write_script(&ffmpeg, FAKE_FFMPEG);
+            write_executable(&ffmpeg, FAKE_FFMPEG);
             let cli = root.path().join("echogarden");
             let script =
                 FAKE_ECHOGARDEN.replace("NARRATION_PATH", &narration_path.display().to_string());
@@ -4811,7 +4990,15 @@ esac
             } else {
                 script
             };
-            write_script(&cli, &script);
+            let script = if cloud_endpoint.is_some() {
+                script.replace(
+                    "  transcribe)\n",
+                    "  transcribe)\n    echo local recognizer used >&2; exit 3 ;;\n  unused)\n",
+                )
+            } else {
+                script
+            };
+            write_executable(&cli, &script);
 
             let book_sentence = |index| {
                 let spoken = sentence(index);
@@ -4864,7 +5051,12 @@ esac
                 time_offset_seconds: book_offset,
                 label: "Book".into(),
             };
-            let recognition = RecognitionSettings::for_language(Some("en"));
+            let cloud = cloud_endpoint
+                .map(|endpoint| Arc::new(cloud_recognition::CloudRecognizer::for_test(endpoint)));
+            if cloud.is_some() {
+                cloud_recognition::enable_for_test(&state).await;
+            }
+            let recognition = RecognitionSettings::for_language(Some("en")).with_cloud(cloud);
             let temp_dir = tempfile::tempdir().unwrap();
             let aligner = Aligner {
                 state: &state,
@@ -5040,6 +5232,73 @@ esac
             }
         }
 
+        /// Answers like OpenAI with the scripted narration words inside the
+        /// time range the fake ffmpeg wrote into the uploaded "audio".
+        async fn fake_openai(narration: PathBuf) -> String {
+            let app = Router::new().route(
+                "/v1/audio/transcriptions",
+                post(move |body: axum::body::Bytes| {
+                    let narration = narration.clone();
+                    async move {
+                        let body = String::from_utf8_lossy(&body);
+                        let audio = body
+                            .split("Content-Type: application/octet-stream\r\n\r\n")
+                            .nth(1)
+                            .unwrap();
+                        let mut range = audio.split_whitespace().map(|value| value.parse::<f64>().unwrap());
+                        let (start, duration) = (range.next().unwrap(), range.next().unwrap());
+                        let words = std::fs::read_to_string(narration)
+                            .unwrap()
+                            .lines()
+                            .filter_map(|line| {
+                                let (time, word) = line.split_once(' ')?;
+                                let time = time.parse::<f64>().ok()? - start;
+                                (0.0..duration).contains(&time).then(|| {
+                                    serde_json::json!({"word": word, "start": time, "end": time + 0.4})
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        Json(serde_json::json!({"text": "", "words": words}))
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            format!("http://{address}/v1/audio/transcriptions")
+        }
+
+        #[tokio::test]
+        async fn openai_recognition_anchors_windows_without_the_local_recognizer() {
+            let count = 200;
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("narration.txt");
+            std::fs::write(&path, narration(count, &[])).unwrap();
+            let endpoint = fake_openai(path).await;
+            let (fragments, output) = align_fake_book_with_settings(
+                count,
+                &[],
+                None,
+                None,
+                0.0,
+                None,
+                false,
+                Some(&endpoint),
+            )
+            .await;
+            assert!(!output.contains("local recognizer used"), "{output}");
+            assert_eq!(fragments.len(), count, "{output}");
+            assert_monotonic(&fragments);
+            for (index, fragment) in fragments.iter().enumerate() {
+                assert_eq!(fragment.text, sentence(index));
+                assert!(
+                    (fragment.start_seconds - narrated_start(index)).abs() < 0.75,
+                    "sentence {index} starts at {:.2}",
+                    fragment.start_seconds
+                );
+            }
+        }
+
         #[tokio::test]
         async fn a_crashing_retry_model_falls_back_instead_of_failing_the_book() {
             let count = 400;
@@ -5052,6 +5311,7 @@ esac
                 0.0,
                 None,
                 true,
+                None,
             )
             .await;
 
@@ -5119,6 +5379,7 @@ esac
                 1000.0,
                 Some(15),
                 false,
+                None,
             )
             .await;
             assert_eq!(fragments.len(), 24, "{output}");
@@ -5187,9 +5448,9 @@ esac
             )
             .unwrap();
             let ffmpeg = root.path().join("ffmpeg");
-            write_script(&ffmpeg, FAKE_FFMPEG);
+            write_executable(&ffmpeg, FAKE_FFMPEG);
             let cli = root.path().join("echogarden");
-            write_script(
+            write_executable(
                 &cli,
                 &FAKE_ECHOGARDEN
                     .replace("NARRATION_PATH", &narration.display().to_string())
@@ -5233,7 +5494,6 @@ esac
     #[cfg(unix)]
     mod chapters {
         use super::*;
-        use std::os::unix::fs::PermissionsExt;
         use sync_report::{ChapterStatus, Grade};
 
         /// Times each chapter's sentence from `$0.start` seconds (1 unless
@@ -5311,8 +5571,7 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
                     std::fs::write(&track.path, b"fixture").unwrap();
                 }
                 let cli = root.path().join("aligner");
-                std::fs::write(&cli, FAKE_ALIGNER).unwrap();
-                std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+                write_executable(&cli, FAKE_ALIGNER);
                 std::fs::create_dir_all(&state.sync_dir).unwrap();
                 Self {
                     _root: root,
@@ -5550,6 +5809,20 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
             assert_eq!(report.chapters[0].status, ChapterStatus::Failed);
             assert!(report.chapters[0].error.is_some());
             assert_eq!(report.chapters[1].status, ChapterStatus::Aligned);
+        }
+
+        #[tokio::test]
+        async fn an_unreadable_checkpoint_restarts_the_book_instead_of_failing_the_job() {
+            let book = ChapterBook::new(2);
+            let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
+            let checkpoint = sync_checkpoint_path(&book.state, &job);
+            std::fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+            std::fs::write(&checkpoint, b"{\"fingerprint\": tru").unwrap();
+
+            let generated = book.run_job(&job, None).await.unwrap();
+            assert!(generated.failed.is_empty());
+            assert_eq!(book.calls(), ["1.wav", "2.wav"]);
+            assert_eq!(starts(&book.map()).len(), 2);
         }
 
         fn gaps_of(gaps: &[alignment::RecoveryGap]) -> Vec<(f64, f64)> {
@@ -5812,7 +6085,6 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
     #[cfg(unix)]
     mod recognition {
         use super::*;
-        use std::os::unix::fs::PermissionsExt;
         use sync_report::{Cause, FixKind, Grade};
 
         const SENTENCES: usize = 100;
@@ -5886,11 +6158,6 @@ case "$command" in
 esac
 "#;
 
-        fn write_script(path: &FsPath, body: &str) {
-            std::fs::write(path, body).unwrap();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
         struct SpokenBook {
             _root: tempfile::TempDir,
             state: AppState,
@@ -5960,9 +6227,9 @@ esac
                     })
                     .collect();
                 let ffmpeg = root.path().join("ffmpeg");
-                write_script(&ffmpeg, FAKE_FFMPEG);
+                write_executable(&ffmpeg, FAKE_FFMPEG);
                 let cli = root.path().join("echogarden");
-                write_script(&cli, FAKE_ECHOGARDEN);
+                write_executable(&cli, FAKE_ECHOGARDEN);
                 std::fs::create_dir_all(&state.sync_dir).unwrap();
                 Self {
                     _root: root,

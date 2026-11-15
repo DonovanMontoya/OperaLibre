@@ -13,7 +13,7 @@ import type { MetadataField } from "./types";
  * live in a `moov` box that is a few hundred kilobytes at one end of it.
  */
 
-export type ByteSource = {
+type ByteSource = {
   /** Total file length, once known. Range reads learn it from the response. */
   readonly size: number | null;
   /** Reads up to `length` bytes; a short read means end of file. */
@@ -25,7 +25,7 @@ export type EmbeddedCover = {
   contentType: string;
 };
 
-export type EmbeddedChapter = {
+type EmbeddedChapter = {
   title: string;
   startSeconds: number;
 };

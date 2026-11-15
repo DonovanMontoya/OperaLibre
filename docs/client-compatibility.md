@@ -9,6 +9,11 @@ OperaLibre provides an Audiobookshelf API subset at `/abs` and an OPDS 1.2 catal
 
 Clients using the [native progress API](api.md#playback-progress) should retain the server revision with offline checkpoints. A matching revision permits older recorded listening to sync. Optional recording identifiers and sequence numbers let an updated app recover its own saves after a lost confirmation; another client's write still invalidates that recording. Clients that omit this metadata keep revision and timestamp ordering. This recovery requires both the updated app and server.
 
+Track streams return original file bytes unless the client requests `?compact=1`.
+Compact MP4 streams preserve audio and timing but may omit embedded artwork;
+clients should use the cover endpoint. Byte ranges apply to the returned stream,
+so clients must keep original and compact representations separate in their cache.
+
 ## BookPlayer
 
 Choose **Audiobookshelf** in BookPlayer, use `https://your-server/abs`, and sign in with your OperaLibre username and password. A reverse proxy must forward `/abs/` to the server. BookPlayer's inspected source has Audiobookshelf and Jellyfin integrations but no OPDS implementation.
@@ -79,3 +84,8 @@ Read-along map metadata includes an optional `mappingRevision`, and book sync su
 ## OperaLibre Audible imports
 
 Libation status includes optional setup and automatic-import information. Existing catalog and download endpoints remain compatible. After a server restart, reload the job list or approval requests to obtain recovered job IDs.
+
+The iPhone client can use a small-index AAC transport on supported servers. It
+keeps the original track URL for playback recovery and falls back to ordinary
+streaming if the server or file does not support it. Downloads, Jellyfin, and
+other clients continue to use their existing streams.

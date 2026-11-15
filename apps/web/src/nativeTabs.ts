@@ -4,7 +4,7 @@ import type { ShelfLayout } from "./shelfSort";
 export type NativeTab = "shelf" | "reading" | "games" | "ledger" | "admin" | "settings";
 /** A book store group in Settings that another screen can send the listener to. */
 export type StoreSettingsTarget = "audible" | "libro";
-export type NativeTabItem = { id: NativeTab; title: string; symbol: string; badge?: string };
+type NativeTabItem = { id: NativeTab; title: string; symbol: string; badge?: string };
 export type NativeTabsState = {
   tabs: NativeTabItem[];
   selected: NativeTab;
@@ -17,21 +17,35 @@ export type NativeTabsState = {
   /** `#rrggbb` tint for the floating bar's glass, so it passes for a pane of
    *  the page it floats over. */
   bar?: string;
+  /** `#rrggbb` for the selected tab on a light screen, so a light theme's
+   *  accent carries into the bar. Dark screens keep the brass. */
+  accent?: string;
+  /** Change the bar's visibility without holding the last frame over the
+   *  page, for a page that fills the screen and does not reflow with it. */
+  uncovered?: boolean;
 };
 
 /** The shell publishes each screen's tones as custom properties. Reading them
  *  back keeps the colors in the stylesheet with the rest of the palette. */
 export function nativeShellColor(shell: Element | null, name: string): string | undefined {
   if (!shell) return undefined;
-  const value = getComputedStyle(shell).getPropertyValue(name).trim();
-  return /^#[0-9a-f]{6}$/i.test(value) ? value : undefined;
+  return longHexColor(getComputedStyle(shell).getPropertyValue(name));
+}
+
+/** UIKit takes `#rrggbb`, but the minifier shortens tones such as #ffffff and
+ *  #000000 to three digits. */
+export function longHexColor(value: string): string | undefined {
+  const text = value.trim();
+  if (/^#[0-9a-f]{6}$/i.test(text)) return text;
+  const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(text);
+  return short ? `#${short[1]}${short[1]}${short[2]}${short[2]}${short[3]}${short[3]}` : undefined;
 }
 
 // Administration is a destination within Settings, keeping UIKit at five tabs.
 export function nativeTabItems(games: boolean, ledger: boolean, alerts: number): NativeTabItem[] {
   return [
     { id: "shelf", title: "Shelf", symbol: "books.vertical", ...(alerts > 0 ? { badge: String(alerts) } : {}) },
-    { id: "reading", title: "Reading", symbol: "headphones" },
+    { id: "reading", title: "Listening", symbol: "headphones" },
     ...(games ? [{ id: "games" as const, title: "Games", symbol: "gamecontroller" }] : []),
     ...(ledger ? [{ id: "ledger" as const, title: "Ledger", symbol: "list.bullet.rectangle" }] : []),
     { id: "settings", title: "Settings", symbol: "gearshape" }
@@ -41,7 +55,7 @@ export function nativeTabItems(games: boolean, ledger: boolean, alerts: number):
 /**
  * The tab the listener is on. An iPad wide enough for the spread shows the
  * collection and the player together under either route, so there Shelf means
- * the collection alone and Reading means the spread, whichever route the page
+ * the collection alone and Listening means the spread, whichever route the page
  * was opened through.
  */
 export function spreadTab(tab: NativeTab, spread: boolean, layout: ShelfLayout): NativeTab {

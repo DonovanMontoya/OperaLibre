@@ -49,6 +49,7 @@ final class CarArtworkHost: UIResponder, UIApplicationDelegate {
 # Compile the actual store and models; the tests replace only network image I/O.
 files = [ROOT / 'apps/web/ios/App/App/CarLibrary.swift',
          ROOT / 'apps/web/ios/App/App/CarLibraryStore.swift',
+         ROOT / 'apps/web/ios/App/App/StoredRecords.swift',
          ROOT / 'apps/web/ios/Tests/CarArtworkTests.swift']
 refs = [add('PBXFileReference', f'lastKnownFileType = sourcecode.swift; path = {quote(p)}; sourceTree = "<absolute>";') for p in files]
 builds = [add('PBXBuildFile', f'fileRef = {ref};') for ref in refs]

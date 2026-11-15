@@ -8,6 +8,9 @@ improvements, and features are all welcome.
 - **Bugs:** search existing issues first. A good report includes your OperaLibre
   version, server OS, the client (web browser, iPhone, Android, macOS, or a
   third-party app), steps to reproduce, and relevant server logs.
+- **Private support and beta feedback:** email
+  [operalibre@agentmail.to](mailto:operalibre@agentmail.to). Use GitHub Issues
+  when the report or discussion can be public.
 - **Features and larger changes:** open an issue to discuss the approach before
   writing a lot of code, so your work fits the project's direction.
 - **Security issues:** do not open a public issue. Report privately through
@@ -18,7 +21,7 @@ improvements, and features are all welcome.
 You need Node.js 22.12+, Rust 1.89 or newer, and a folder with a few audiobook files.
 
 ```bash
-git clone https://github.com/DonovanMontoya/OperaLibre.git   # or: jj git clone ...
+git clone https://github.com/DonovanMontoya/OperaLibre.git
 cd OperaLibre
 npm ci
 cp server.config.example server.config
@@ -73,8 +76,7 @@ Only one test environment runs at a time. Audible is unavailable on Windows.
    working.
 5. Use conventional commit messages: `fix: keep sleep timer across track changes`.
 
-Either Git or [Jujutsu](https://jujutsu-vcs.github.io/) works; the maintainer
-uses `jj` colocated with Git.
+Use Git for version control.
 
 ### Playback progress
 

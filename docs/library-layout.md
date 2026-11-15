@@ -7,6 +7,8 @@ nav_order: 5
 
 The server scans `library_root` and groups files into books. The rules are simple, but knowing them helps you organize for the best metadata and readalong matching.
 
+Symbolic links inside the library are skipped. Keep audio, companion files, artwork, and metadata sidecars inside the library folder. If an audio file disappears or becomes unreadable during a scan, the previous catalogue stays available; restore access and rescan.
+
 ## The two book shapes
 
 ### Folder books
@@ -52,7 +54,11 @@ Chapters are discovered in this order:
 
 If a single `.m4b` has internal chapters, those win. If not, you get one chapter per file.
 
+Embedded tags have an 8 MiB budget per track; MP4 container tables have a separate 64 MiB allowance so long recordings still work. Malformed, compressed, or oversized tags are skipped without rewriting the audio. Text fields keep at most 16 KiB, the first 100 raw fields and genres are retained, and chapter tracks are limited to 10,000 entries. If the combined imported track metadata exceeds 128 MiB, the scan stops and the previous catalogue stays available. Reduce oversized tags and rescan.
+
 ## Cover art
+
+Embedded covers use the same 8 MiB, 16-million-pixel and 8192-pixel-per-side limits as uploaded covers. JPEG, PNG and WebP artwork is saved as a resized PNG; invalid or oversized art is omitted while the audio remains available.
 
 Cover art initially comes from the artwork embedded in the audio files' tags; the server extracts it during a scan and caches it under `data_dir/covers/`. A book with no embedded art falls back to a generic tile. Loose image files such as `cover.jpg` beside the tracks are not used as covers.
 
@@ -102,7 +108,7 @@ To keep scans and uploads responsive, EPUB analysis stops after processing 100,0
 
 ### Sync maps (following the narration)
 
-When a book has an EPUB companion, a *sync map* lets the reader follow the audio sentence by sentence. With the server’s follow-along experiment enabled and an aligned map available, tapping a mapped sentence plays from there. Pressing **Follow** also highlights the narrated sentence and turns the page with the audio. Without an aligned map, chapter sync remains available; the server does not create estimated sentence timings.
+When a book has an EPUB companion, a *sync map* lets the reader follow the audio sentence by sentence. With the server’s follow-along experiment enabled and an aligned map available, tapping a mapped sentence plays from there. Pressing **Follow** also highlights the narrated sentence and turns the page with the audio. Without an aligned map the EPUB still opens beside the audio, but there is no **Follow** button; the server does not create estimated sentence timings.
 
 Sentence timings come from a matching `.sync.json` sidecar or the optional generator, which aligns the audio against the text. Owners can install and enable it under **Administration → Experiments**, then administrators can choose **Improve sync** in the reader. Manual installations can set `alignment_cli_path` to an existing echogarden executable. Generated maps live under `data_dir/sync/`. A sidecar takes priority unless a current generated map replaces an outdated OperaLibre-generated sidecar. Existing outdated maps remain usable while you regenerate them; current maps and third-party maps do not need remapping just because the application was updated. Disabling or removing the generator keeps those maps but disables sentence following until the experiment is enabled again.
 

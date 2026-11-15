@@ -3,7 +3,7 @@ import { useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 
 export type FoldPosture = "closed" | "half-open" | "flat" | "unknown";
-export type FoldAxis = "vertical" | "horizontal";
+type FoldAxis = "vertical" | "horizontal";
 export type DeviceFoldState = {
   posture: FoldPosture;
   /** Hinge angle in degrees, when the device reports one. */
@@ -17,6 +17,7 @@ interface DeviceFoldPlugin {
   addListener(event: "change", listener: (state: DeviceFoldState) => void): Promise<PluginListenerHandle>;
 }
 const DeviceFold = registerPlugin<DeviceFoldPlugin>("DeviceFold");
+
 
 // The last state published, for layouts that must be told in script (the
 // reader's page spread) rather than by the stylesheet.
@@ -43,6 +44,40 @@ export function useDeviceFold(): DeviceFoldState {
 /** Half open with the hinge down the middle, like a book held open. */
 export function isBookPosture(state: DeviceFoldState): boolean {
   return usesFoldLayout(state) && state.fold?.axis === "vertical";
+}
+
+/** Laid fully open on its side, the fold top to bottom but no crease to keep off. */
+export function isFlatSidePosture(state: DeviceFoldState): boolean {
+  return !isBookPosture(state) && state.posture === "flat" && state.fold?.axis === "vertical";
+}
+
+// The halves count as parted past the first angle and closed again only
+// below the second, so a hinge reporting angles around one cutoff while it
+// opens cannot flip the screen back and forth.
+const hingePartEnterAngle = 20;
+const hingePartExitAngle = 10;
+
+/**
+ * The halves have parted, as when a folded phone stands on its edges like a
+ * tent. The cover layout can still be showing; it treats narrow angles as
+ * closed. Pass the previous answer so it holds between the two cutoffs.
+ */
+export function isHingeParted(state: DeviceFoldState, wasParted = false): boolean {
+  if (state.angle !== undefined) return state.angle >= (wasParted ? hingePartExitAngle : hingePartEnterAngle);
+  return state.posture === "half-open" || state.posture === "flat";
+}
+
+// Wider than a tent: the phone is being opened to use the inner screen.
+const tentWidestAngle = 70;
+
+/**
+ * While a folded phone opens, iOS can hand the app to the inner screen for a
+ * moment before settling back on the cover. Within a tent's angles, a page
+ * that had the cover sideways keeps the cover's screen through that handoff
+ * rather than flashing the inner screen's layout.
+ */
+export function holdsCoverThroughHandoff(state: DeviceFoldState, coverWasSideways: boolean): boolean {
+  return coverWasSideways && state.angle !== undefined && state.angle > 0 && state.angle < tentWidestAngle;
 }
 
 export function usesFoldLayout(state: DeviceFoldState): boolean {
@@ -123,12 +158,15 @@ export function applyDeviceFold(root: HTMLElement, state: DeviceFoldState): void
   // second web snapshot animation there competes with the system transition;
   // matched geometry is reserved for poses on the same inner display.
   const staysOnInnerDisplay = previous.posture !== "closed" && layoutState.posture !== "closed";
+  // The full-screen reader stays put while the page behind it changes. The
+  // animated snapshots of that page would be drawn over the book.
   const shouldAnimate = !!document
     && !!view
     && root.classList?.contains("platform-ios")
     && !reducedMotion
     && staysOnInnerDisplay
-    && isFoldTransitionChange(previous, layoutState);
+    && isFoldTransitionChange(previous, layoutState)
+    && !document.querySelector(".epub-reader.immersive");
 
   if (!shouldAnimate) {
     publishDeviceFold(root, layoutState);

@@ -549,11 +549,14 @@ async fn finish(state: &AppState, job: &str, result: Result<(), ApiError>) {
 }
 
 pub(crate) async fn import_libro_purchase(
-    State(state): State<AppState>,
+    // `.0` instead of a `State(state)` pattern keeps CodeQL from treating the
+    // configured library root as request input; see `install_update`.
+    state: State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Path(isbn): Path<String>,
     Query(selection): Query<AccountSelection>,
 ) -> Result<Json<JobCreated>, ApiError> {
+    let state = state.0;
     let _guard = account_guard(&state, &auth.id).await;
     let accounts = read_account(&state, &auth.id).await?;
     let (token, book) = accounts
@@ -1003,9 +1006,9 @@ async fn acquire_book_with_api(
     Ok(())
 }
 
-pub(crate) fn libro_metadata_for_group(path: &FsPath) -> Option<LibroBook> {
+pub(crate) fn libro_metadata_for_group_in(root: &ScanRoot, path: &FsPath) -> Option<LibroBook> {
     let sidecar = path.join(BOOK_SIDECAR);
-    let (file, metadata) = open_contained_file(&sidecar, &[path.to_path_buf()]).ok()?;
+    let (file, metadata) = root.open(&sidecar).ok()?;
     if metadata.len() > MAX_JSON as u64 {
         return None;
     }

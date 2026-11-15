@@ -7,6 +7,12 @@ export type ProgressWriteOptions = {
   intentionalRegression?: boolean;
   intentionalSeek?: boolean;
   signal?: AbortSignal;
+  /**
+   * Let the save outlive a closing page. Browsers cap all outstanding
+   * keepalive bodies together at 64 KB and keep a timed-out one open, so only
+   * the save queued when the page hides or closes asks for it.
+   */
+  keepalive?: boolean;
 };
 
 /** The client contract. Server protocols and credential formats stay in adapters. */

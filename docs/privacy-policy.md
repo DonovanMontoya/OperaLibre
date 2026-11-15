@@ -6,7 +6,7 @@ nav_order: 10
 # OperaLibre Privacy Policy
 
 **Effective date:** July 18, 2026  
-**Last updated:** September 3, 2026
+**Last updated:** November 9, 2026
 
 OperaLibre is an audiobook player that can use audio files stored on your device or connect to an OperaLibre or Jellyfin server chosen by you. This Privacy Policy explains how the OperaLibre application (the **“App”**) handles information.
 
@@ -66,7 +66,7 @@ The App may receive or create:
 
 When you use a connected server, this information is exchanged directly with that server as necessary to browse your library, stream or download audio, display artwork, and synchronize playback progress. Some information is also cached on your device to provide the App’s features.
 
-If the server owner installs and enables the optional follow-along sync generator, the selected OperaLibre server processes audiobook audio and EPUB text locally to create sentence timing maps. Audiobook contents are not sent to the developer or to a speech-recognition service. Installing the add-on and its first use download software and model files from their upstream hosts, which may receive ordinary request information such as the server's IP address and request time.
+If the server owner installs and enables the optional follow-along sync generator, the selected OperaLibre server processes audiobook audio and EPUB text locally to create sentence timing maps. Audiobook contents are not sent to the developer or to a speech-recognition service, unless the owner chooses OpenAI speech recognition with their own API key. In that case, the server uploads the narration of each book it syncs to OpenAI in short clips, using the owner's own OpenAI API key, and OpenAI handles that audio under its own terms; book text, accounts, listening progress, and history are not sent. Switching back deletes the key and stops further uploads, but does not recall audio already sent. Installing the add-on and its first use download software and model files from their upstream hosts, which may receive ordinary request information such as the server's IP address and request time.
 
 ### Files selected from your device
 
@@ -104,9 +104,29 @@ Server settings, authentication tokens, playback preferences, cached metadata, l
 
 An OperaLibre server may store usernames, password hashes, session tokens, library metadata, audiobook and readalong files, per-user listening progress, and a per-user reading log.
 
-The reading log is more detailed than a playback position: it records when a reader was listening and for how long, which over time describes their daily routine. It is stored on the server the reader signs in to, is never sent anywhere else, and is readable only by that reader — an administrator's own view of other readers remains limited to the optional shared-progress feature, which shows a percentage and a status by mutual opt-in.
+The reading log is more detailed than a playback position: it records when a reader was listening and for how long, which over time describes their daily routine. It is stored on the server the reader signs in to. The app limits access to the reader, including an assistant the reader explicitly authorizes as described below. An administrator's own view of other readers remains limited to the optional shared-progress feature, which shows a percentage and a status by mutual opt-in. The server operator also controls the underlying storage and backups.
 
 The server operator controls retention. An OperaLibre administrator can remove a reader account, which deletes its progress and reading log. The server operator can remove library files and other stored data directly from the server.
+
+### Optional assistant access
+
+An OperaLibre server owner can enable optional assistant access. This does not by itself give an assistant access to your account. You must create a named access token, choose its permissions, and supply the server address and token to an assistant you choose. Review the selected permissions before connecting; read permissions are initially selected, while permission to get books requires a separate opt-in. This integration reads from your OperaLibre server, not a device-only library or Jellyfin server.
+
+Depending on the permissions you grant, the assistant can receive:
+
+- library titles, authors, series, and descriptions;
+- your current books and listening progress;
+- your listening history, including session dates and times, books, duration, playback speed and client type, finished books, statistics, and achievements;
+- book text up to the sentence you have reached, where a follow-along map or a chapter-notes transcript is available, and chapter notes for the chapters you have reached; and
+- with the separate permission to get books, information about books you own on Audible or Libro.fm and the ability to request or start adding them to your server, subject to your account's access rules.
+
+These permissions support features such as recommendations and recaps. The assistant cannot change your listening progress or access other readers' activity. Information it retrieves leaves your server and goes to the assistant you connect, including the company operating it if you use a hosted service. OperaLibre does not choose that recipient for you. Review the recipient's privacy, processing, retention, and deletion terms before sharing access; it may retain retrieved information in conversation history, logs, or other storage under its own policies.
+
+You can remove an assistant in Settings (or the account menu's assistant controls on the web) to revoke its token and prevent subsequent authenticated requests with that token. Revocation does not recall information already retrieved, cancel a request already authorized, or delete copies held by the assistant or its provider. Deleting server data likewise does not delete those external copies. Use the recipient's own controls or contact it to request deletion. An owner can disable assistant access for the server; this stops access while disabled, but does not revoke existing tokens.
+
+### Optional chapter notes
+
+An OperaLibre server owner can enable optional chapter notes and choose a language model to write them, either a hosted provider such as Anthropic or an endpoint the owner runs. When an administrator makes notes for a book, that book's text or a transcript of its narration is sent from the server to the chosen model, under that provider's own terms. The book's title and author are included; your account, listening progress, and history are not. Transcripts are made on the server itself. Notes and transcripts are kept in the server's data directory until an administrator removes them.
 
 ### On a Jellyfin server
 
@@ -117,8 +137,8 @@ When you connect to Jellyfin, account, library, session, and playback informatio
 The App sends information only as needed to services you choose or that are required to deliver the App:
 
 - **Your selected OperaLibre or Jellyfin server.** Information described above is sent directly to that server for app functionality.
+- **Your chosen assistant.** If you connect one, the selected assistant and its provider can receive the information permitted by your token, as described under Optional assistant access. Their own practices govern processing and retention of received copies.
 - **Apple.** Apple may process App Store, download, purchase, diagnostic, or device information independently under Apple’s own privacy policies. The developer does not control information Apple processes independently.
-- **Google Fonts.** Current versions of the App may request font files from Google when network access is available. Those requests may reveal standard network information, including your IP address, to Google. Google processes that information under its own privacy terms.
 
 The App does not integrate third-party advertising networks, data brokers, or behavioral analytics services. The developer does not sell or rent personal information.
 

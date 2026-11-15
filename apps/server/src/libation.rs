@@ -83,6 +83,10 @@ pub(crate) struct LibationAutoImport {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PendingLibationDownload {
     pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) initiated_by: Option<String>,
+    #[serde(default)]
+    pub(crate) job_id: Option<String>,
     pub(crate) profile_id: Option<String>,
     pub(crate) asin: String,
     pub(crate) grant_to_user: Option<String>,
@@ -1354,7 +1358,7 @@ pub(crate) async fn attach_approved_libation_download(
     )
     .await
     {
-        Ok(created) => created.0,
+        Ok((created, _)) => created.0,
         Err(error) => {
             state
                 .libation_requests
@@ -2396,8 +2400,8 @@ async fn liberate_book_directly(
             "This account must request approval for Libation downloads.",
         ));
     }
-    let grant_to_user = (!auth.is_admin).then_some(auth.id);
-    start_libation_download(state, profile_id, asin, grant_to_user).await
+    let grant_to_user = (!auth.is_admin).then_some(auth.id.clone());
+    start_libation_download(state, profile_id, asin, grant_to_user, Some(auth.id)).await
 }
 
 /// The catalogue book carrying `asin`, compared case-insensitively.
@@ -2469,8 +2473,9 @@ pub(crate) async fn start_libation_download(
     profile_id: Option<String>,
     asin: String,
     grant_to_user: Option<String>,
+    initiated_by: Option<String>,
 ) -> Result<Json<JobCreated>, ApiError> {
-    crate::libation_recovery::start(state, profile_id, asin, grant_to_user).await
+    crate::libation_recovery::start(state, profile_id, asin, grant_to_user, initiated_by).await
 }
 
 pub(crate) async fn start_libation_download_inner(
@@ -2478,7 +2483,7 @@ pub(crate) async fn start_libation_download_inner(
     profile_id: Option<String>,
     asin: String,
     grant_to_user: Option<String>,
-) -> Result<Json<JobCreated>, ApiError> {
+) -> Result<(Json<JobCreated>, String), ApiError> {
     if !state.libation_config.enabled() {
         return Err(ApiError::bad_request(
             "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH.",
@@ -2541,7 +2546,12 @@ pub(crate) async fn start_libation_download_inner(
                     }
                 }
             });
-            return Ok(Json(JobCreated { job_id }));
+            return Ok((
+                Json(JobCreated {
+                    job_id: job_id.clone(),
+                }),
+                job_id,
+            ));
         }
     }
 
@@ -2573,9 +2583,12 @@ pub(crate) async fn start_libation_download_inner(
             ),
         ));
     }
-    Ok(Json(JobCreated {
-        job_id: reported_job_id,
-    }))
+    Ok((
+        Json(JobCreated {
+            job_id: reported_job_id,
+        }),
+        job_id,
+    ))
 }
 
 /// One liberation run: download the book through the profile's Libation
@@ -3277,7 +3290,17 @@ pub(crate) async fn start_all_libation_downloads(
     Ok(Json(JobCreated { job_id }))
 }
 
+#[cfg(test)]
 pub(crate) fn libation_sidecar_for_group(
+    group_key: &FsPath,
+    grouped_files: &[PathBuf],
+    listings: &mut DirectoryFiles,
+) -> Option<LibationSidecarMetadata> {
+    let root = ScanRoot::new(grouped_files.first()?.parent()?).ok()?;
+    libation_sidecar_for_group_in(&root, group_key, grouped_files, listings)
+}
+pub(crate) fn libation_sidecar_for_group_in(
+    root: &ScanRoot,
     group_key: &FsPath,
     grouped_files: &[PathBuf],
     listings: &mut DirectoryFiles,
@@ -3315,11 +3338,17 @@ pub(crate) fn libation_sidecar_for_group(
     let mut parsed = candidates
         .into_iter()
         .filter_map(|path| {
-            let metadata = std::fs::metadata(&path).ok()?;
+            let (file, metadata) = root.open(&path).ok()?;
             if metadata.len() > MAX_LIBATION_METADATA_BYTES {
                 return None;
             }
-            let contents = std::fs::read_to_string(&path).ok()?;
+            let mut contents = String::new();
+            file.take(MAX_LIBATION_METADATA_BYTES + 1)
+                .read_to_string(&mut contents)
+                .ok()?;
+            if contents.len() as u64 > MAX_LIBATION_METADATA_BYTES {
+                return None;
+            }
             Some((path, parse_libation_sidecar(&contents)?))
         })
         .collect::<Vec<_>>();

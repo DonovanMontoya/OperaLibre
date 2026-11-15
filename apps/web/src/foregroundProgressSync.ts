@@ -2,7 +2,7 @@ import { NativeForegroundSyncGate } from "./nativeAudioState.ts";
 
 type SyncActions = {
   nativeAudio: boolean;
-  persistProgress(): Promise<void>;
+  persistProgress(options?: { keepalive?: boolean }): Promise<void>;
   adoptNewerServerProgress(): Promise<void>;
   /**
    * Redraw the progress bar from the media element's live clock. Web audio
@@ -37,7 +37,11 @@ export function createForegroundProgressSync(
     }
     void current.adoptNewerServerProgress();
   };
-  const save = () => { void actions().persistProgress(); };
+  // Hiding or closing the page may be the last chance to save, so this save
+  // may outlive the page. Routine saves stay cancellable: a timed-out
+  // keepalive request stays open in the browser, and a stalled server would
+  // otherwise pile them up against the shared keepalive budget.
+  const save = () => { void actions().persistProgress({ keepalive: true }); };
   const visibilityChanged = () => {
     if (documentRef.visibilityState === "hidden") {
       gate.backgrounded();

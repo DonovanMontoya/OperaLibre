@@ -99,7 +99,10 @@ impl IntoResponse for ApiError {
             Json(serde_json::json!({ "message": message })),
         )
             .into_response();
-        if self.status == StatusCode::SERVICE_UNAVAILABLE {
+        if matches!(
+            self.status,
+            StatusCode::SERVICE_UNAVAILABLE | StatusCode::TOO_MANY_REQUESTS
+        ) {
             response.headers_mut().insert(
                 axum::http::header::RETRY_AFTER,
                 HeaderValue::from(SERVICE_UNAVAILABLE_RETRY_AFTER_SECONDS),

@@ -4,7 +4,15 @@ import * as nativeTabs from "../src/nativeTabs.ts";
 import * as shelfOnScreen from "../src/shelfOnScreen.ts";
 import { loadHook } from "./hookHarness.ts";
 
-const { nativeTabItems, fullShelfMustYield, nativeTabSelection, spreadTab } = nativeTabs;
+const { nativeTabItems, fullShelfMustYield, longHexColor, nativeTabSelection, spreadTab } = nativeTabs;
+
+test("minified screen tones still reach UIKit as six-digit hex", () => {
+  assert.equal(longHexColor(" #f1e7d0 "), "#f1e7d0");
+  assert.equal(longHexColor("#fff"), "#ffffff");
+  assert.equal(longHexColor("#000"), "#000000");
+  assert.equal(longHexColor("rgb(0, 0, 0)"), undefined);
+  assert.equal(longHexColor(""), undefined);
+});
 
 test("native tabs keep Administration inside Settings and never need More", () => {
   for (const games of [false, true]) {
@@ -65,6 +73,7 @@ test("tapping Shelf scrolls the library pane to the top only when its list is al
     const scrolled: unknown[] = [];
     const libraryPaneRef = { current: { scrollTo: (options: unknown) => scrolled.push(options) } };
     const { openNativeTab } = loadHook("usePlayerNavigation", {
+      "react": { useRef: (value: unknown) => ({ current: value }), useLayoutEffect: () => {} },
       "react-dom": { flushSync: (update: () => void) => update() },
       "./native": { haptic: () => {} },
       "./nativeNavigation": { isLeftEdgeBackSwipe: () => false },
@@ -89,4 +98,75 @@ test("tapping Shelf scrolls the library pane to the top only when its list is al
     openNativeTab(tapped);
     assert.deepEqual(scrolled, scrolls ? [{ top: 0, behavior: "smooth" }] : [], name);
   }
+});
+
+test("Back to Library restores the shelf only after the details trip that left it", () => {
+  // Refs persist and the layout effect reruns on changed dependencies, as in React.
+  const refs: { current: unknown }[] = [];
+  let slot = 0;
+  let lastDeps: unknown[] | null = null;
+  const usePlayerNavigation = loadHook("usePlayerNavigation", {
+    "react": {
+      useRef: (value: unknown) => refs[slot++] ??= { current: value },
+      useLayoutEffect: (effect: () => void, deps: unknown[]) => {
+        if (lastDeps && deps.every((dep, index) => dep === lastDeps![index])) return;
+        lastDeps = deps;
+        effect();
+      }
+    },
+    "react-dom": { flushSync: (update: () => void) => update() },
+    "./native": { haptic: () => {} },
+    "./nativeNavigation": { isLeftEdgeBackSwipe: () => false },
+    "./nativeTabs": nativeTabs,
+    "./shelfOnScreen": shelfOnScreen,
+    "./gamePreferences": { writeGamesEnabled: () => {} }
+  });
+  const shelf = { scrollTop: 0, scrollTo: () => {} };
+  const libraryPaneRef = { current: shelf };
+  let tab = "shelf";
+  let view = "now";
+  const render = () => {
+    slot = 0;
+    return usePlayerNavigation({
+      books: [],
+      changeShelfLayout: (_next: string, _animate: boolean, update?: () => void) => update?.(),
+      gamesEnabled: true,
+      libraryPaneRef,
+      librarySource: "local",
+      native: true,
+      nativePlayerView: view,
+      nativeTab: tab,
+      playbackBook: null,
+      playerPaneRef: { current: null },
+      setChaptersOpen: () => {},
+      setNativePlayerView: (next: string) => { view = next; },
+      setNativeTab: (next: string) => { tab = next; },
+      setSelectedBookId: () => {},
+      setShowChapterJumpTop: () => {},
+      shelfLayout: "split",
+      shelfSpread: false
+    });
+  };
+
+  shelf.scrollTop = 900;
+  render().openBookDetails("first");
+  render();
+  // The details layout can clamp the hidden shelf's position.
+  shelf.scrollTop = 0;
+  render().returnToLibrary();
+  render();
+  assert.equal(shelf.scrollTop, 900);
+
+  // Leaving details for Reading ends that trip; a details page opened later
+  // from Reading returns to the shelf where the reader last left it.
+  render().openBookDetails("first");
+  render();
+  render().openNativeTab("reading");
+  render();
+  shelf.scrollTop = 120;
+  render().openBookDetails("second");
+  render();
+  render().returnToLibrary();
+  render();
+  assert.equal(shelf.scrollTop, 120);
 });

@@ -33,6 +33,7 @@ export function useLibraryRefresh({
   persistProgress,
   playbackBookIdRef,
   reconcileServerBookGains,
+  refreshAudiblePurchases,
   setBooks,
   setCurrentTrackId,
   setError,
@@ -63,6 +64,7 @@ export function useLibraryRefresh({
   persistProgress: () => Promise<void>;
   playbackBookIdRef: RefObject<string | null>;
   reconcileServerBookGains: (payload: readonly Book[]) => void;
+  refreshAudiblePurchases: () => Promise<void>;
   setBooks: Dispatch<SetStateAction<Book[]>>;
   setCurrentTrackId: Dispatch<SetStateAction<string | null>>;
   setError: Dispatch<SetStateAction<string | null>>;
@@ -156,23 +158,28 @@ export function useLibraryRefresh({
 
 
   const refreshShelf = useCallback(async () => {
-    if (librarySource === "all") {
-      await refreshPurchaseSources([
-        ...(libroAccounts?.length ? [async () => {
-          try { await (libroOnDevice ? refreshLibroDevice() : refreshLibroAccount()); }
-          finally { setLibroRefreshKey(key => key + 1); }
-        }] : []),
-        ...(canBrowseLibation ? [loadLibationBooks] : [])
-      ]);
-    } else if (librarySource === "audible") {
-      await loadLibationBooks();
-    } else if (librarySource === "libro") {
-      await (libroOnDevice ? refreshLibroDevice() : refreshLibroAccount());
-      setLibroRefreshKey(key => key + 1);
-    } else {
-      await loadBooks();
+    setError(null);
+    try {
+      if (librarySource === "all") {
+        await refreshPurchaseSources([
+          ...(libroAccounts?.length ? [async () => {
+            try { await (libroOnDevice ? refreshLibroDevice() : refreshLibroAccount()); }
+            finally { setLibroRefreshKey(key => key + 1); }
+          }] : []),
+          ...(canBrowseLibation ? [refreshAudiblePurchases] : [])
+        ]);
+      } else if (librarySource === "audible") {
+        await refreshAudiblePurchases();
+      } else if (librarySource === "libro") {
+        await (libroOnDevice ? refreshLibroDevice() : refreshLibroAccount());
+        setLibroRefreshKey(key => key + 1);
+      } else {
+        await loadBooks();
+      }
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : "Shelf refresh failed. Please try again.");
     }
-  }, [librarySource, libroOnDevice, libroAccounts, canBrowseLibation, loadBooks, loadLibationBooks, setLibroRefreshKey]);
+  }, [librarySource, libroOnDevice, libroAccounts, canBrowseLibation, loadBooks, refreshAudiblePurchases, setLibroRefreshKey, setError]);
 
   return {
     applyAdminLibraryChange,

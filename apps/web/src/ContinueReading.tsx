@@ -1,7 +1,8 @@
 import { memo, useMemo, useState } from "react";
-import { ArrowUp, Play, X } from "lucide-react";
+import { ArrowUp, ChevronDown, Pause, Play, X } from "lucide-react";
 import { CoverArt } from "./CoverArt";
 import { bookProgressLabel } from "./formatting";
+import { readStoredValue, writeStoredValue } from "./appStorage";
 import { progressTimestamp } from "./reliability";
 import { moveQueuedBookEarlier, queuedBooks } from "./readingQueue";
 import { useReadingQueue } from "./useReadingQueue";
@@ -10,6 +11,10 @@ import type { Book } from "./types";
 export const ContinueReading = memo(function ContinueReading({
   books,
   onContinue,
+  playbackBookId,
+  isPlaying,
+  playPending,
+  onTogglePlayback,
   storageKey,
   onOpenBook
 }: {
@@ -17,13 +22,25 @@ export const ContinueReading = memo(function ContinueReading({
   storageKey: string;
   onOpenBook: (id: string) => void;
   onContinue: (book: Book, play?: boolean) => void;
+  playbackBookId: string | null;
+  isPlaying: boolean;
+  playPending: boolean;
+  onTogglePlayback: () => void;
 }) {
   const reading = useMemo(() => books
     .filter((book) => book.progress?.status === "inProgress")
-    .sort((a, b) => progressTimestamp(b.progress!.updatedAt) - progressTimestamp(a.progress!.updatedAt)), [books]);
+    .sort((a, b) => Number(b.id === playbackBookId) - Number(a.id === playbackBookId) || progressTimestamp(b.progress!.updatedAt) - progressTimestamp(a.progress!.updatedAt)), [books, playbackBookId]);
 
   const [ids, saveIds] = useReadingQueue(storageKey);
   const [notice, setNotice] = useState("");
+  // Folding the queue is a per-device view choice, kept beside the queue itself.
+  const collapsedKey = `${storageKey}.collapsed`;
+  const [collapsed, setCollapsed] = useState(() => readStoredValue(collapsedKey) === "1");
+  function toggleCollapsed() {
+    const next = !collapsed;
+    setCollapsed(next);
+    writeStoredValue(collapsedKey, next ? "1" : "0");
+  }
   // A planned book that is now in progress is already listed with the others.
   const planned = queuedBooks(ids, books).filter(book => book.progress?.status !== "inProgress");
   // Planned IDs with no book to show (offline, or outside this library view)
@@ -41,7 +58,7 @@ export const ContinueReading = memo(function ContinueReading({
       const percent = book.progress?.percentComplete;
       const progress = percent == null ? null : Math.min(100, Math.max(0, percent));
       return (
-        <li key={book.id} className="continue-reading-row">
+        <li key={book.id} className={`continue-reading-row${book.id === playbackBookId ? " is-playback-book" : ""}`}>
           <button
             type="button"
             className="continue-reading-book"
@@ -66,10 +83,10 @@ export const ContinueReading = memo(function ContinueReading({
           <button
             type="button"
             className="continue-reading-play"
-            aria-label={`Play ${book.title}`}
-            onClick={() => onContinue(book, true)}
+            aria-label={`${book.id === playbackBookId && (isPlaying || playPending) ? "Pause" : "Play"} ${book.title}`}
+            onClick={() => book.id === playbackBookId ? onTogglePlayback() : onContinue(book, true)}
           >
-            <Play size={14} fill="currentColor" aria-hidden="true" />
+            {book.id === playbackBookId && (isPlaying || playPending) ? <Pause size={14} fill="currentColor" aria-hidden="true" /> : <Play size={14} fill="currentColor" aria-hidden="true" />}
           </button>
         </li>
       );
@@ -105,18 +122,26 @@ export const ContinueReading = memo(function ContinueReading({
     ))
   ];
 
+  const upNextToggle = (count: number) => (
+    <button type="button" className="continue-reading-toggle" aria-expanded={!collapsed} onClick={toggleCollapsed}>
+      <ChevronDown className="continue-reading-chevron" size={14} strokeWidth={2} aria-hidden="true" />
+      Up next <span>{count}</span>
+    </button>
+  );
+  // With nothing in progress the whole list is the queue, so folding hides all of it.
+  const queueOnly = !reading.length;
+
   return (
     <>
-      {rows.length + unavailable > 0 ? <section className="continue-reading" aria-labelledby="up-next-title">
+      {rows.length + unavailable > 0 ? <section className={`continue-reading${collapsed ? " is-collapsed" : ""}`} aria-label="Listening and queue">
         <header className="continue-reading-heading">
-          <h2 id="up-next-title">Up Next</h2>
-          <span>{rows.length}</span>
+          <h2>{queueOnly ? upNextToggle(rows.length) : "Now listening"}</h2>
         </header>
         {/* The first book stands apart so the open Duo can give it a leaf while the
             rest scroll in a row beside it. */}
-        {rows.length > 0 ? <ul className="continue-reading-list continue-reading-lead">{rows[0]}</ul> : null}
-        {rows.length > 1 ? <ul className="continue-reading-list continue-reading-rest">{rows.slice(1)}</ul> : null}
-        {rows.length === 1 ? <p className="queue-hint">Open a book and choose Add to Up Next to line it up here.</p> : null}
+        {rows.length > 0 && !(queueOnly && collapsed) ? <ul className="continue-reading-list continue-reading-lead">{rows[0]}</ul> : null}
+        {rows.length > 1 ? <div className="continue-reading-up-next">{queueOnly ? null : <h3>{upNextToggle(rows.length - 1)}</h3>}{collapsed ? null : <ul className="continue-reading-list continue-reading-rest">{rows.slice(1)}</ul>}</div> : null}
+        {rows.length === 1 && !(queueOnly && collapsed) ? <p className="queue-hint">Open a book and choose Add to Up Next to line it up here.</p> : null}
         {unavailable > 0 ? <p className="queue-unavailable">{unavailable === 1 ? "1 planned book isn’t available right now." : `${unavailable} planned books aren’t available right now.`} {unavailable === 1 ? "It stays" : "They stay"} in your plan.</p> : null}
         {noticeLine}
       </section> : noticeLine}

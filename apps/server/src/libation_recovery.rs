@@ -7,29 +7,322 @@ pub(crate) async fn start(
     profile_id: Option<String>,
     asin: String,
     grant_to_user: Option<String>,
+    initiated_by: Option<String>,
 ) -> Result<Json<JobCreated>, ApiError> {
     let pending = PendingLibationDownload {
         id: generate_session_token(),
+        initiated_by: initiated_by.or_else(|| grant_to_user.clone()),
+        job_id: None,
         profile_id,
         asin,
         grant_to_user,
     };
-    state
+    let existing = state
         .libation_refreshes
         .mutate(|store| {
+            if let Some(job_id) = admit_download(&store.pending_downloads, &pending)? {
+                return Ok(Some(job_id));
+            }
             store.pending_downloads.push(pending.clone());
-            Ok(())
+            Ok(None)
         })
         .await?;
-    dispatch(state, pending, false).await
+    if let Some(job_id) = existing {
+        if !state.jobs.read().await.contains_key(&job_id) {
+            return Err(ApiError::conflict(
+                "This download is awaiting recovery. Try again shortly.",
+            ));
+        }
+        return Ok(Json(JobCreated { job_id }));
+    }
+    dispatch(state, pending, false)
+        .await
+        .map(|(created, _)| created)
+}
+
+fn admit_download(
+    downloads: &[PendingLibationDownload],
+    pending: &PendingLibationDownload,
+) -> Result<Option<String>, ApiError> {
+    if let Some(existing) = downloads.iter().find(|existing| {
+        existing.profile_id == pending.profile_id
+            && existing.asin.eq_ignore_ascii_case(&pending.asin)
+            && existing.grant_to_user == pending.grant_to_user
+            && existing.initiated_by == pending.initiated_by
+    }) {
+        return existing.job_id.clone().map(Some).ok_or_else(|| {
+            ApiError::conflict("This download is being queued. Try again shortly.")
+        });
+    }
+    let user = pending
+        .initiated_by
+        .as_ref()
+        .or(pending.grant_to_user.as_ref());
+    if downloads.len() >= MAX_TRACKED_LIBATION_REQUESTS
+        || downloads
+            .iter()
+            .filter(|existing| {
+                existing
+                    .initiated_by
+                    .as_ref()
+                    .or(existing.grant_to_user.as_ref())
+                    == user
+            })
+            .count()
+            >= MAX_PENDING_LIBATION_REQUESTS_PER_USER
+    {
+        return Err(ApiError::too_many_requests(
+            "Too many unfinished Libation downloads. Try again after queued downloads finish.",
+        ));
+    }
+    Ok(None)
+}
+
+#[cfg(all(test, unix))]
+mod admission_tests {
+    use super::*;
+
+    fn pending(index: usize, user: &str) -> PendingLibationDownload {
+        PendingLibationDownload {
+            id: format!("pending-{index}"),
+            initiated_by: Some(user.to_string()),
+            job_id: None,
+            profile_id: None,
+            asin: format!("B{index:09}"),
+            grant_to_user: Some(user.to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn libation_admission_rejects_excess_without_persisting_or_creating_jobs() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = crate::unit_tests::fake_libation_state(root.path());
+        for (count, same_user) in [(100, true), (1_000, false)] {
+            state
+                .libation_refreshes
+                .mutate(|store| {
+                    store.pending_downloads = (0..count)
+                        .map(|index| pending(index, if same_user { "reader" } else { "other" }))
+                        .collect();
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            let error = start(
+                &state,
+                None,
+                "B999999999".to_string(),
+                Some("reader".to_string()),
+                Some("reader".to_string()),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+            let snapshot = load_cached_snapshot(&state.database).await.unwrap();
+            assert_eq!(snapshot.libation_refreshes.pending_downloads.len(), count);
+            assert!(state.jobs.read().await.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn libation_admission_serializes_the_last_user_slot() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = crate::unit_tests::fake_libation_state(root.path());
+        state
+            .libation_refreshes
+            .mutate(|store| {
+                store.pending_downloads = (0..99).map(|index| pending(index, "reader")).collect();
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let registration = state.libation_account_registration_lock.lock().await;
+        let mut attempts = tokio::task::JoinSet::new();
+        for asin in ["B999999998", "B999999999"] {
+            let state = state.clone();
+            attempts.spawn(async move {
+                start(
+                    &state,
+                    None,
+                    asin.to_string(),
+                    Some("reader".to_string()),
+                    Some("reader".to_string()),
+                )
+                .await
+            });
+        }
+        let rejected = tokio::time::timeout(Duration::from_secs(2), attempts.join_next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(rejected.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            state
+                .libation_refreshes
+                .read()
+                .await
+                .pending_downloads
+                .len(),
+            100
+        );
+        assert!(state.jobs.read().await.is_empty());
+        drop(registration);
+        let accepted = attempts.join_next().await.unwrap().unwrap().unwrap();
+        assert!(!accepted.job_id.is_empty());
+    }
+
+    #[test]
+    fn libation_admission_reuses_duplicates_at_capacity_and_counts_legacy_readers() {
+        let mut downloads = (0..100)
+            .map(|index| pending(index, "reader"))
+            .collect::<Vec<_>>();
+        downloads[0].job_id = Some("existing-job".to_string());
+        let mut duplicate = pending(0, "reader");
+        duplicate.asin.make_ascii_lowercase();
+        assert_eq!(
+            admit_download(&downloads, &duplicate).unwrap(),
+            Some("existing-job".to_string())
+        );
+        for download in &mut downloads {
+            download.initiated_by = None;
+        }
+        assert_eq!(
+            admit_download(&downloads, &pending(101, "reader"))
+                .unwrap_err()
+                .status,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert!(
+            admit_download(&downloads, &pending(101, "another-reader"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn libation_recovery_does_not_materialize_an_oversized_saved_queue() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = crate::unit_tests::fake_libation_state(root.path());
+        state
+            .libation_refreshes
+            .mutate(|store| {
+                store.pending_downloads = (0..105)
+                    .map(|index| {
+                        let mut download = pending(index, "reader");
+                        download.grant_to_user = None;
+                        download
+                    })
+                    .collect();
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let snapshot = load_cached_snapshot(&state.database).await.unwrap();
+        let (restarted, _) = crate::unit_tests::fake_libation_state(root.path());
+        restarted
+            .libation_refreshes
+            .adopt_restored(snapshot.libation_refreshes)
+            .await;
+        let execution = restarted.libation_job_lock.lock().await;
+        recover(restarted.clone());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while restarted.jobs.read().await.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(restarted.jobs.read().await.len(), 1);
+        assert_eq!(
+            restarted
+                .libation_refreshes
+                .read()
+                .await
+                .pending_downloads
+                .len(),
+            105
+        );
+        restarted.shutdown.send(()).unwrap();
+        drop(execution);
+    }
+
+    #[tokio::test]
+    async fn libation_admission_retains_reservation_after_a_grant_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = crate::unit_tests::fake_libation_state(root.path());
+        let execution = state.libation_job_lock.lock().await;
+        let created = start(
+            &state,
+            None,
+            "B000TEST09".to_string(),
+            Some("reader".to_string()),
+            Some("reader".to_string()),
+        )
+        .await
+        .unwrap();
+        update_job_finished(
+            &state,
+            &created.job_id,
+            "failed",
+            None,
+            Some("grant wait expired".to_string()),
+        )
+        .await;
+        assert!(
+            state
+                .jobs
+                .read()
+                .await
+                .values()
+                .any(|job| job.kind == "libation-liberate" && is_active_job(job))
+        );
+        state
+            .libation_refreshes
+            .mutate(|store| {
+                store
+                    .pending_downloads
+                    .extend((0..99).map(|index| pending(index, "reader")));
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let rejected = start(
+            &state,
+            None,
+            "B999999999".to_string(),
+            Some("reader".to_string()),
+            Some("reader".to_string()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(rejected.status, StatusCode::TOO_MANY_REQUESTS);
+        drop(execution);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while state
+                .libation_refreshes
+                .read()
+                .await
+                .pending_downloads
+                .len()
+                != 99
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
 }
 
 pub(crate) async fn dispatch(
     state: &AppState,
     pending: PendingLibationDownload,
     report_failure: bool,
-) -> Result<Json<JobCreated>, ApiError> {
+) -> Result<(Json<JobCreated>, String), ApiError> {
     let shutdown = state.shutdown.subscribe();
+    let download_shutdown = state.shutdown.subscribe();
     let result = start_libation_download_inner(
         state,
         pending.profile_id.clone(),
@@ -38,10 +331,33 @@ pub(crate) async fn dispatch(
     )
     .await;
     match result {
-        Ok(created) => {
+        Ok((created, download_job_id)) => {
+            if let Err(error) = state
+                .libation_refreshes
+                .mutate(|store| {
+                    if let Some(stored) = store
+                        .pending_downloads
+                        .iter_mut()
+                        .find(|stored| stored.id == pending.id)
+                    {
+                        stored.job_id = Some(created.job_id.clone());
+                    }
+                    Ok(())
+                })
+                .await
+            {
+                tracing::warn!(
+                    "could not save Libation download job identity: {}",
+                    error.message
+                );
+            }
             let state = state.clone();
             let job_id = created.job_id.clone();
+            let underlying_job_id = download_job_id.clone();
             tokio::spawn(async move {
+                if !wait_for_terminal(&state, &underlying_job_id, download_shutdown).await {
+                    return;
+                }
                 if !wait_for_terminal(&state, &job_id, shutdown).await {
                     return;
                 }
@@ -52,7 +368,7 @@ pub(crate) async fn dispatch(
                     );
                 }
             });
-            Ok(created)
+            Ok((created, download_job_id))
         }
         Err(error) => {
             if report_failure {
@@ -150,8 +466,21 @@ pub(crate) fn recover(state: AppState) {
             .pending_downloads
             .clone();
         for download in pending {
-            if let Err(error) = dispatch(&state, download, true).await {
-                tracing::warn!("could not recover Libation download: {}", error.message);
+            // Older servers could persist unlimited intent. Drain that backlog
+            // without materializing a task and job for every saved entry.
+            let shutdown = state.shutdown.subscribe();
+            let download_shutdown = state.shutdown.subscribe();
+            match dispatch(&state, download, true).await {
+                Ok((created, download_job_id)) => {
+                    if !wait_for_terminal(&state, &download_job_id, download_shutdown).await
+                        || !wait_for_terminal(&state, &created.job_id, shutdown).await
+                    {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!("could not recover Libation download: {}", error.message)
+                }
             }
         }
         let approved = state
@@ -239,6 +568,8 @@ pub(crate) async fn queue_new_purchases(
                 if preference.seen_asins.insert(asin.clone()) {
                     pending.push(PendingLibationDownload {
                         id: generate_session_token(),
+                        initiated_by: Some(preference.enabled_by.clone()),
+                        job_id: None,
                         profile_id: Some(profile_id.clone()),
                         asin: asin.clone(),
                         grant_to_user: None,

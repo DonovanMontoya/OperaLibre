@@ -5,7 +5,7 @@ type SeekStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 export function progressSeekStorage(): SeekStorage | null {
   try { return window.localStorage; } catch { return null; }
 }
-export type ProgressSeekIntent = {
+type ProgressSeekIntent = {
   id: string;
   recordedAt: number;
   targetBookPosition: number | null;

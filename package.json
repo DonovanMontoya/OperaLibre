@@ -11,6 +11,8 @@
     "dev:server": "cargo run --manifest-path apps/server/Cargo.toml",
     "dev:web": "npm run dev -w @operalibre/web",
     "testenv": "node script/testenv/run.mjs",
+    "test:broker": "tsc -p share-broker/tsconfig.test.json && node --test share-broker/test/capability.test.mjs share-broker/test/claims.test.mjs share-broker/test/resume.test.mjs share-broker/test/reservations.test.mjs share-broker/test/successor-mailbox.test.mjs share-broker/test/recipient-recovery.test.mjs share-broker/test/gift-landing.test.mjs share-broker/test/app-associations.test.mjs",
+    "test:book-gifts": "node script/test_book_gifts.mjs",
     "build": "cargo build --release --manifest-path apps/server/Cargo.toml && cargo build --release --manifest-path apps/launcher/Cargo.toml && npm run build -w @operalibre/web",
     "build:android": "./script/build_android.sh",
     "build:ios": "./script/build_ios.sh",
@@ -27,7 +29,8 @@
     "test:follow": "python3 -m unittest discover -s script/follow-along -p \"test_*.py\" && cargo test --locked --manifest-path apps/server/Cargo.toml sync::tests::windowed && npm run test:follow -w @operalibre/web",
     "test:follow:corpus": "python3 script/follow-along/corpus.py",
     "test:follow:audio": "python3 script/follow-along/audio_faults.py",
-    "test:follow:library": "python3 script/follow-along/verify.py"
+    "test:follow:library": "python3 script/follow-along/verify.py",
+    "postinstall": "node script/file-picker/patch.mjs"
   },
   "devDependencies": {
     "typescript": "^7.0.2"

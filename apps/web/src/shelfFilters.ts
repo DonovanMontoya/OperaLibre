@@ -15,7 +15,7 @@ import type { Book } from "./types.ts";
  */
 export type ShelfStatusFilter = ReadingStatus | "all";
 
-export type ShelfReadingFilter = "all" | "ebook" | "followAlong";
+type ShelfReadingFilter = "all" | "ebook" | "followAlong";
 
 export const SHELF_READING_OPTIONS: { value: Exclude<ShelfReadingFilter, "all">; label: string }[] = [
   { value: "ebook", label: "Ebook only" },
@@ -33,7 +33,7 @@ export type ShelfFilters = {
 /** Which of the two chip groups an action is aimed at. They behave identically. */
 export type ShelfFacetGroupKey = "genres" | "tags";
 
-export type ShelfFacetValue = { key: string; label: string };
+type ShelfFacetValue = { key: string; label: string };
 
 export type ShelfFacetOption = ShelfFacetValue & { count: number };
 

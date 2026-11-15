@@ -11,6 +11,7 @@ import type {
 } from "./types";
 import { errorMessage, formatLibationMessage } from "./formatting";
 import { isPendingJob, jobSummary, reconcileLibationJobs } from "./jobLabels";
+import { canCheckAudible } from "./libationState";
 import {
   getJob,
   getLibationAccess,
@@ -630,6 +631,16 @@ export function usePurchases({
     }
   }
 
+  // Refreshing Get books asks Libation to check Audible rather than reread its
+  // last scan; the list reloads when that job finishes.
+  async function refreshAudiblePurchases() {
+    if (canCheckAudible(libationStatus, libationRefreshPending || !!refreshLibationJob)) {
+      await startLibationSync();
+    } else {
+      await loadLibationBooks();
+    }
+  }
+
   async function startLiberation(book: LibationBook) {
     setLibationError(null);
     libationFinalizationStartedRef.current.delete(book.catalogId);
@@ -752,6 +763,7 @@ export function usePurchases({
     },
     pendingLibationJobs,
     purchaseAccountFilter,
+    refreshAudiblePurchases,
     refreshLibationJob,
     setAudibleAccountFilter,
     setLibationBooks,

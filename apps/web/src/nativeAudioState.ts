@@ -1,4 +1,4 @@
-export type NativeAudioClockState = {
+type NativeAudioClockState = {
   positionSeconds: number;
   isPlaying: boolean;
 };

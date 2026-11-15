@@ -35,13 +35,16 @@ test('a queued book starts its own audio without marking another book started', 
   await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(2);
   await expect(page.getByRole('button', { name: 'Continue reading Second Book', exact: true })).toHaveCount(1);
   await expect(page.locator('.queue-row')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Pause', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Open library', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Pause Second Book', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Pause Second Book', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Play Second Book', exact: true })).toBeVisible();
   await expect.poll(async () => (await server.progress(second.id))?.bookPositionSeconds ?? 0).toBeGreaterThan(1);
   expect(await server.progress(first.id)).toBeNull();
 
   // In progress, it stays in Up Next by itself and no longer offers to be planned.
-  await page.getByRole('button', { name: 'Open library', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Up Next', exact: true }).getByRole('listitem')).toHaveCount(1);
+  await expect(page.getByRole('region', { name: 'Listening and queue', exact: true }).getByRole('listitem')).toHaveCount(1);
+  await expect(page.getByRole('heading', { name: 'Now listening', exact: true })).toBeVisible();
   await page.locator('.book-row').filter({ hasText: 'Second Book' }).click();
   await expect(page.locator('.book-quick-queue')).toHaveCount(0);
 });

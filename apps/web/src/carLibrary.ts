@@ -26,7 +26,7 @@ export class CarLibraryAccess {
  * through its usual path the next time it runs.
  */
 
-export type CarLibraryTrack = {
+type CarLibraryTrack = {
   id: string;
   title: string;
   url: string;
@@ -34,14 +34,14 @@ export type CarLibraryTrack = {
   bookOffsetSeconds: number;
 };
 
-export type CarLibraryChapter = {
+type CarLibraryChapter = {
   title: string;
   startSeconds: number;
   durationSeconds: number;
   trackId?: string;
 };
 
-export type CarLibraryBook = {
+type CarLibraryBook = {
   id: string;
   title: string;
   author?: string;

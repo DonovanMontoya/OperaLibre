@@ -1,4 +1,5 @@
 import { type Dispatch, type RefObject, type SetStateAction, useEffect } from "react";
+import { flushSync } from "react-dom";
 import {
   attachNativeAudioPlayer,
   forgetDetachedNativeClock,
@@ -43,6 +44,7 @@ export function useAudioElement({
   playPendingBookIdRef,
   playPendingRef,
   playWhenTrackLoads,
+  playbackActionVersionRef,
   playbackBook,
   playbackBookKey,
   playbackGain,
@@ -94,6 +96,7 @@ export function useAudioElement({
   playPendingBookIdRef: RefObject<string | null>;
   playPendingRef: RefObject<boolean>;
   playWhenTrackLoads: RefObject<boolean>;
+  playbackActionVersionRef: RefObject<number>;
   playbackBook: Book | null;
   playbackBookKey: string | null;
   playbackGain: number;
@@ -161,6 +164,8 @@ export function useAudioElement({
     // when slower filesystem checks for later chapters completed.
     if (!nativeAudioQueueReady) return;
     nativeAudioAttachedRef.current = true;
+    const actionVersionAtAttach = playbackActionVersionRef.current;
+    const pendingSeekAtAttach = pendingSeekRef.current;
     return attachNativeAudioPlayer(
       audio,
       (message) => {
@@ -202,7 +207,34 @@ export function useAudioElement({
           if (deadline !== null) return Math.max(0, (deadline - Date.now()) / 1000);
           return sleepRemainingRef.current;
         },
-        sleepAtChapterEnd: () => sleepAtChapterEndRef.current
+        sleepAtChapterEnd: () => sleepAtChapterEndRef.current,
+        adopted: ({ positionSeconds, sleepTimerSeconds, sleepAtChapterEnd }) => {
+          // Committed before the next native tick runs: that tick announces
+          // metadata, and a pending seek still in React's render state would
+          // move the live player back to the position restored at startup.
+          flushSync(() => {
+            // AVPlayer kept playing, so the listener's own session owns the
+            // position, as it would after a lock-screen action. A seek they
+            // made while adoption was being decided is newer still; the next
+            // tick's metadata applies it.
+            const listenerSeeked = playbackActionVersionRef.current !== actionVersionAtAttach
+              && pendingSeekRef.current !== pendingSeekAtAttach;
+            markPlaybackTouchedRef.current();
+            nativePlaybackPlayingRef.current = true;
+            playWhenTrackLoads.current = false;
+            if (!listenerSeeked) {
+              setPendingSeek(null);
+              setPosition(positionSeconds);
+            }
+            const remaining = Math.ceil(sleepTimerSeconds);
+            sleepDeadlineRef.current = remaining > 0 ? Date.now() + remaining * 1000 : null;
+            sleepAtChapterEndRef.current = sleepAtChapterEnd;
+            setSleepRemaining(remaining);
+            setSleepMinutes(remaining > 0 ? Math.ceil(remaining / 60) : 0);
+            setSleepAtChapterEnd(sleepAtChapterEnd);
+          });
+          scheduleStartupReveal();
+        }
       },
       (trackId, positionSeconds, _bookPositionSeconds, nativeIsPlaying) => {
         if (!playbackBook.tracks.some((track) => track.id === trackId)) return false;

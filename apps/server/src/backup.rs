@@ -88,6 +88,16 @@ struct BackupBookSettings {
     user_id: String,
     book_id: String,
     volume_gain: f64,
+    /// Absent in backups from before schema 5, where every row was a level
+    /// the listener set.
+    #[serde(default = "default_true")]
+    manual: bool,
+    #[serde(default = "default_true")]
+    auto_volume: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize)]
@@ -400,13 +410,16 @@ fn read_database(path: &FsPath) -> anyhow::Result<BackupData> {
     let mut book_settings = Vec::new();
     {
         let mut statement = transaction.prepare(
-            "SELECT user_id, book_id, volume_gain FROM book_settings ORDER BY user_id, book_id",
+            "SELECT user_id, book_id, volume_gain, manual, auto_volume FROM book_settings
+             ORDER BY user_id, book_id",
         )?;
         let rows = statement.query_map([], |row| {
             Ok(BackupBookSettings {
                 user_id: row.get(0)?,
                 book_id: row.get(1)?,
                 volume_gain: row.get(2)?,
+                manual: row.get::<_, i64>(3)? != 0,
+                auto_volume: row.get::<_, i64>(4)? != 0,
             })
         })?;
         book_settings.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
@@ -515,8 +528,15 @@ fn restore_database(
     }
     for row in &data.book_settings {
         transaction.execute(
-            "INSERT INTO book_settings (user_id, book_id, volume_gain) VALUES (?1, ?2, ?3)",
-            rusqlite::params![row.user_id, row.book_id, row.volume_gain],
+            "INSERT INTO book_settings (user_id, book_id, volume_gain, manual, auto_volume)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                row.user_id,
+                row.book_id,
+                row.volume_gain,
+                row.manual,
+                row.auto_volume
+            ],
         )?;
     }
     for (name, value) in &data.documents {

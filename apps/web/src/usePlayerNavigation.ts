@@ -1,4 +1,5 @@
 import { flushSync } from "react-dom";
+import { useLayoutEffect, useRef } from "react";
 import type { Book } from "./types";
 import { haptic } from "./native";
 import type { NativePlayerSheet } from "./PlayerSheets";
@@ -63,6 +64,26 @@ export function usePlayerNavigation({
   showChapterJumpTop: boolean;
   trackListSectionRef: RefObject<HTMLElement | null>;
 }) {
+  const shelfScrollBeforeDetails = useRef<number | null>(null);
+  const restoreShelfScroll = useRef(false);
+
+  // The remembered place belongs to one trip into details. Leaving it any
+  // other way (playing the book, another tab) forgets it, so a later details
+  // page opened from elsewhere cannot return to a stale position.
+  useLayoutEffect(() => {
+    if (nativePlayerView === "details") return;
+    if (restoreShelfScroll.current && libraryPaneRef.current && shelfScrollBeforeDetails.current !== null) {
+      libraryPaneRef.current.scrollTop = shelfScrollBeforeDetails.current;
+    }
+    restoreShelfScroll.current = false;
+    shelfScrollBeforeDetails.current = null;
+  }, [nativePlayerView, libraryPaneRef]);
+
+  function rememberShelfScroll() {
+    if (native && nativeTab === "shelf" && nativePlayerView !== "details") {
+      shelfScrollBeforeDetails.current = libraryPaneRef.current?.scrollTop ?? null;
+    }
+  }
   // On the web, changing books or returning to Now Playing reshapes the page
   // as one surface, the way the Duo's posture changes do, with the cover
   // carried across. The native shells keep their own navigation motion.
@@ -146,6 +167,7 @@ export function usePlayerNavigation({
   }
 
   function selectBook(book: Book) {
+    rememberShelfScroll();
     showPlayer(() => selectBookOnPage(book));
   }
 
@@ -169,6 +191,7 @@ export function usePlayerNavigation({
   }
 
   function openBookDetails(bookId: string) {
+    rememberShelfScroll();
     showPlayer(() => openBookDetailsOnPage(bookId));
   }
 
@@ -188,6 +211,7 @@ export function usePlayerNavigation({
 
   function returnToLibrary() {
     haptic("light");
+    restoreShelfScroll.current = shelfScrollBeforeDetails.current !== null;
     setNativePlayerView("now");
   }
 
@@ -281,6 +305,9 @@ export function usePlayerNavigation({
   function openNativeTab(tab: NativeTab) {
     if (tab === "games" && !gamesEnabled) return;
     haptic("light");
+    if (tab === "shelf" && nativeTab === "shelf" && nativePlayerView === "details") {
+      restoreShelfScroll.current = shelfScrollBeforeDetails.current !== null;
+    }
     // Re-tapping the active Shelf tab is an escape hatch from the Audible
     // catalogue back to the listener's own library.
     if (tab === "shelf" && spreadTab(nativeTab, shelfSpread, shelfLayout) === "shelf" && librarySource !== "local") {

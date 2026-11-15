@@ -1,4 +1,4 @@
-import { type Dispatch, type RefObject, type SetStateAction, useCallback } from "react";
+import { type Dispatch, type RefObject, type SetStateAction, useCallback, useRef } from "react";
 import {
   backfillDeviceLibraryMetadata,
   getDeviceBooks,
@@ -22,11 +22,12 @@ import {
   rebasePendingProgress
 } from "./reliability";
 import { readStoredBookId, withoutCachedBookGains } from "./appStorage";
-import { startupDestinationAfterLoad } from "./startup";
-import { getBooks, getLibationBooks, getServerStorageKey, isServerNotReadyError, saveProgress } from "./api";
+import { libraryOfflineConfirmed, libraryReconnectDelayMs, startupDestinationAfterLoad } from "./startup";
+import { getBooks, getLibationBooks, getServerStorageKey, isNetworkError, isServerBusyError, isServerNotReadyError, saveProgress } from "./api";
 import { cacheLibrary, getCachedLibrary, getCachedProgress } from "./offline";
 import type { LibraryProgressReplay } from "./playbackTypes";
 import type { NativeTab } from "./nativeTabs";
+import { recoverNativeGiftImport } from "./giftDeviceImport";
 import { acknowledgeProgressSeekIntent, progressSeekStorage, progressSeekOptions, readProgressSeekIntent } from "./progressSeekIntent";
 
 /**
@@ -46,6 +47,7 @@ export function useLibrary({
   native,
   nativeAudioRef,
   nativePlaybackPlayingRef,
+  onServerReachable,
   reconcileServerBookGains,
   resumeReconciliationBookIdRef,
   setBooks,
@@ -75,6 +77,7 @@ export function useLibrary({
   native: boolean;
   nativeAudioRef: RefObject<boolean>;
   nativePlaybackPlayingRef: RefObject<boolean>;
+  onServerReachable: () => void;
   reconcileServerBookGains: (payload: readonly Book[]) => void;
   resumeReconciliationBookIdRef: RefObject<string | null>;
   setBooks: Dispatch<SetStateAction<Book[]>>;
@@ -92,6 +95,10 @@ export function useLibrary({
   startupViewReadyRef: RefObject<boolean>;
   storeCanonicalServerProgress: (book: Book, saved: Progress, attempted?: Progress | null, journal?: Progress | null) => void;
 }) {
+  // Consecutive listings that could not reach the server, and when the first
+  // of them was sent.
+  const unreachableFailuresRef = useRef(0);
+  const unreachableSinceRef = useRef(0);
   const loadBooks = useCallback(async () => {
     const requestGeneration = ++libraryRequestGenerationRef.current;
     const isCurrentRequest = () => requestGeneration === libraryRequestGenerationRef.current;
@@ -99,9 +106,17 @@ export function useLibrary({
       window.clearTimeout(libraryRetryTimerRef.current);
       libraryRetryTimerRef.current = null;
     }
-    setIsLoading(true);
-    setError(null);
+    // A reconnect attempt leaves the shelf and any offline notice as they are
+    // until it has an answer, so background retries do not flicker.
+    const reconnecting = unreachableFailuresRef.current > 0;
+    const attemptStartedAt = Date.now();
+    let keepLoading = false;
+    if (!reconnecting) {
+      setIsLoading(true);
+      setError(null);
+    }
     if (native) {
+      await recoverNativeGiftImport().catch(() => undefined);
       await migrateDeviceLibraryFileExtensions();
       await backfillDeviceLibraryMetadata();
     }
@@ -296,6 +311,9 @@ export function useLibrary({
       applyLoadedBooks(nextBooks, true);
       reconcileServerBookGains(serverBooks);
       setIsOffline(false);
+      if (reconnecting) setError(null);
+      unreachableFailuresRef.current = 0;
+      onServerReachable();
       if (isCurrentRequest()) void cacheLibrary(currentUser.id, serverBooks);
       if (isOperaLibre) {
         // Audio tags commonly omit the publisher blurb. Libation already has
@@ -316,18 +334,43 @@ export function useLibrary({
       if (!isCurrentRequest()) return;
       const cached = mergeDeviceAndServerBooks(cachedServer, deviceBooks);
       applyLoadedBooks(cached, true);
+      const retryIn = (delayMs: number) => {
+        libraryRetryTimerRef.current = window.setTimeout(() => {
+          libraryRetryTimerRef.current = null;
+          void loadBooksRef.current();
+        }, delayMs);
+      };
       if (isServerNotReadyError(loadError)) {
+        unreachableFailuresRef.current = 0;
         // The server answered: it is up, its startup scan just has not
         // published a catalogue yet. Keep the cached shelf without muting
         // anything, and ask again when it said to.
         setIsOffline(false);
         setError("The server is still loading its library. The shelf refreshes once it is ready.");
-        const delayMs = Math.min(30_000, Math.max(2_000, (loadError.retryAfterSeconds ?? 5) * 1000));
-        libraryRetryTimerRef.current = window.setTimeout(() => {
-          libraryRetryTimerRef.current = null;
-          void loadBooksRef.current();
-        }, delayMs);
+        retryIn(Math.min(30_000, Math.max(2_000, (loadError.retryAfterSeconds ?? 5) * 1000)));
         return;
+      }
+      if (isServerBusyError(loadError)) {
+        // Reachable and answering, so neither offline nor an error to show.
+        unreachableFailuresRef.current = 0;
+        setIsOffline(false);
+        setError(null);
+        keepLoading = !cached.length;
+        retryIn(Math.min(30_000, Math.max(1_000, (loadError.retryAfterSeconds ?? 2) * 1000)));
+        return;
+      }
+      if (isNetworkError(loadError)) {
+        const failures = ++unreachableFailuresRef.current;
+        if (failures === 1) unreachableSinceRef.current = attemptStartedAt;
+        retryIn(libraryReconnectDelayMs(failures));
+        if (!libraryOfflineConfirmed(failures, navigator.onLine, Date.now() - unreachableSinceRef.current)) {
+          // Not proven offline yet: keep the shelf live, and keep a first
+          // launch with nothing cached on its loading state.
+          keepLoading = !cached.length;
+          return;
+        }
+      } else {
+        unreachableFailuresRef.current = 0;
       }
       setIsOffline(true);
       if (cached.length) {
@@ -336,13 +379,13 @@ export function useLibrary({
         setError("The audiobook server is not reachable.");
       }
     } finally {
-      if (isCurrentRequest()) setIsLoading(false);
+      if (isCurrentRequest() && !keepLoading) setIsLoading(false);
     }
     // storeCanonicalServerProgress and reconcileServerBookGains read only
     // currentUser.id (listed), refs and state setters, so the render that
     // created this callback cannot hand them anything stale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser.id, isOperaLibre, localMode, native]);
+  }, [currentUser.id, isOperaLibre, localMode, native, onServerReachable]);
 
   return {
     loadBooks

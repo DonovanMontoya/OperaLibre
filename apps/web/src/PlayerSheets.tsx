@@ -10,13 +10,15 @@ import {
   Volume2,
   X
 } from "lucide-react";
-import type { Dispatch, FormEvent, SetStateAction } from "react";
+import { useLayoutEffect, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { useModalFocus } from "./useModalFocus";
 import type { ChapterSegment } from "./chapters";
+import { displayPublishedDate } from "./bookMetadata";
+import { ChapterNotesPanel } from "./ChapterNotesPanel";
 import { CoverArt } from "./CoverArt";
 import { bookSubtitle, durationFromTracks, formatDurationLabel, formatTime } from "./formatting";
 import { haptic } from "./native";
-import { BookVolumeControl, PlaybackSpeedControl } from "./PlaybackControls";
+import { AutoVolumeNotice, BookVolumeControl, PlaybackSpeedControl } from "./PlaybackControls";
 import { formatSleepTimerMinutes, SLEEP_TIMER_MAX_MINUTES, SLEEP_TIMER_MIN_MINUTES } from "./sleepTimer";
 import type { Book, Chapter } from "./types";
 
@@ -100,7 +102,7 @@ export function BookDetailsSheet({
           </div>
           <div>
             <span>Published</span>
-            <strong>{playbackBook.publishedDate ?? "—"}</strong>
+            <strong>{displayPublishedDate(playbackBook.publishedDate) ?? "—"}</strong>
           </div>
           <div>
             <span>Tracks</span>
@@ -116,6 +118,8 @@ export function BookDetailsSheet({
         ) : null}
 
         {playbackDescription ? <p className="details-sheet-description">{playbackDescription}</p> : null}
+
+        <ChapterNotesPanel book={playbackBook} />
 
         <div className="details-sheet-actions">
           {playbackBook.progress && playbackBook.progress.status !== "notStarted" ? (
@@ -172,6 +176,7 @@ export function SpeedSheet({
   playbackGain,
   setNativePlayerSheet,
   speed,
+  updateAutoVolume,
   updateBookGain,
   updateSpeed
 }: {
@@ -181,6 +186,7 @@ export function SpeedSheet({
   playbackGain: number;
   setNativePlayerSheet: Dispatch<SetStateAction<NativePlayerSheet>>;
   speed: number;
+  updateAutoVolume: (book: Book, enabled: boolean) => void;
   updateBookGain: (book: Book, db: number) => void;
   updateSpeed: (value: number) => void;
 }) {
@@ -197,7 +203,7 @@ export function SpeedSheet({
         <div className="sleep-sheet-grabber" aria-hidden="true" />
         <header>
           <div>
-            <span className="eyebrow"><Gauge size={13} /> Cadence</span>
+            <span className="eyebrow"><Gauge size={13} /> Speed and volume</span>
             <h2 id="speed-sheet-title">Playback</h2>
           </div>
           <button type="button" className="icon-button" aria-label="Close" onClick={closeNativePlayerSheet}>
@@ -205,7 +211,7 @@ export function SpeedSheet({
           </button>
         </header>
         <p className="sleep-sheet-hint">Fine-tune the pace in 0.05× steps or jump to a familiar preset.</p>
-        <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary />
+        <PlaybackSpeedControl value={speed} onChange={updateSpeed} />
         {/* Noticing a book is too quiet happens mid-chapter, so the fix
             lives with the other thing a listener reaches for while the
             book is playing rather than on the book's own page. */}
@@ -224,6 +230,10 @@ export function SpeedSheet({
               value={playbackGain}
               canBoost={playbackCanBoost}
               onChange={(db) => updateBookGain(playbackBook, db)}
+            />
+            <AutoVolumeNotice
+              book={playbackBook}
+              onToggle={(enabled) => updateAutoVolume(playbackBook, enabled)}
             />
           </div>
         ) : null}
@@ -258,6 +268,15 @@ export function ChapterSheet({
   setNativePlayerSheet: Dispatch<SetStateAction<NativePlayerSheet>>;
 }) {
   const dialogRef = useModalFocus<HTMLElement>(closeNativePlayerSheet);
+  // Open on the playing chapter, centred in the sheet. Only on open: following
+  // playback afterwards would yank the list away from someone browsing it.
+  useLayoutEffect(() => {
+    const sheet = dialogRef.current;
+    const row = sheet?.querySelector<HTMLElement>(".chapter-sheet-options button.selected");
+    if (!sheet || !row) return;
+    const offset = row.getBoundingClientRect().top - sheet.getBoundingClientRect().top;
+    sheet.scrollTop += offset - (sheet.clientHeight - row.offsetHeight) / 2;
+  }, [dialogRef]);
   return (
     <div className="sleep-sheet-layer" role="presentation">
       <button

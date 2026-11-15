@@ -8,7 +8,8 @@ nav_order: 12
 
 Release history for the OperaLibre iPhone and iPad app, starting with **1.1.0 (0)**.
 Entries use **version (build)** and appear newest first. iOS versions are tracked
-independently of the server releases.
+independently of the server releases. From 1.3.2, the build number counts
+uploads of each app version from 1, and Android uses the same build number.
 
 ## Unreleased
 
@@ -17,6 +18,133 @@ independently of the server releases.
   and turning it on first explains what it needs. iOS allows the outer screen only alongside a camera preview, so the rear
   camera runs at low quality behind a small viewfinder; nothing is recorded
   or saved.
+
+## 1.3.2 (6)
+
+Uploaded to App Store Connect on November 14, 2026, from
+[`2d3c5cd2`](https://github.com/DonovanMontoya/OperaLibre/commit/2d3c5cd2d9c3c2a81c4ca803b8991d7fa2ddc0c8).
+
+- Long AAC audiobooks can start and resume sooner with the updated OperaLibre server.
+  Stream recovery preserves the failed track's position and pending seeks.
+  ([#491](https://github.com/DonovanMontoya/OperaLibre/pull/491))
+- Cover art opens from the local cache first and avoids unnecessary downloads.
+  ([#487](https://github.com/DonovanMontoya/OperaLibre/pull/487))
+- Phone queue titles have more room.
+  ([#486](https://github.com/DonovanMontoya/OperaLibre/pull/486))
+- Read-along chapter navigation and page turns are more reliable.
+  ([#485](https://github.com/DonovanMontoya/OperaLibre/pull/485))
+
+## 1.3.2 (5)
+
+Uploaded to App Store Connect on November 13, 2026, from main at
+[`428992ff`](https://github.com/DonovanMontoya/OperaLibre/commit/428992ff130c5f19ed8f3bcb8c1802d331075c76).
+
+- Book gifts are available as an owner-enabled experiment, with configurable link lifetimes.
+- The unfolded player, Up next list, shelf covers, and light themes have been refined.
+- EPUB pages and small responses open without the previous stalls.
+
+## 1.3.2 (4)
+
+Uploaded to App Store Connect on November 8, 2026, from main at
+[`f5f9cab8`](https://github.com/DonovanMontoya/OperaLibre/commit/f5f9cab875543a05bea604ad9dbb34583c7a9edc).
+
+- The iOS interface follows the system text size, with updated shelf and
+  playback controls.
+- Read-along stays visible when rotating an open iPhone Duo, and landscape
+  text keeps its intended size.
+- Mobile cover images stay available after opening a book.
+- CarPlay forward seeks preserve listening progress, and cancelling an iOS
+  download no longer leaves a completed file behind.
+
+## 1.3.2 (3)
+
+Uploaded to App Store Connect on November 5, 2026, from main at
+[`e29b82e4`](https://github.com/DonovanMontoya/OperaLibre/commit/e29b82e4).
+
+- Playback continues when iOS reloads the app during a background listen.
+- The library reconnects after an unsuccessful launch, and saved downloads and
+  CarPlay sessions are preserved when their records cannot be read.
+- Choose additional light themes, and find the current chapter more easily.
+- Refreshing Get books checks Audible for new purchases.
+
+## 1.3.2 (2)
+
+Uploaded to App Store Connect on November 2, 2026, from main at
+[`082d4bc7`](https://github.com/DonovanMontoya/OperaLibre/commit/082d4bc7b9d57daaf2d428655cab21745eb24803).
+
+- The player keeps updating when iOS interrupts the scheduling of screen
+  updates, including the elapsed time and navigation between tabs.
+- Choose Warm, Graphite, Midnight, Reading Room, or True Black in the
+  iPhone and iPad dark-theme settings. Long labels stay inside Settings
+  and store rows.
+- Libro.fm downloads enforce the per-book storage limit during downloads
+  and recovery after an interruption.
+- Saved sign-ins stay with their server, including servers hosted beneath
+  different paths on the same address. App fonts are bundled locally.
+
+## 1.3.2 (1)
+
+Built from main at
+[`6dc8c7df`](https://github.com/DonovanMontoya/OperaLibre/commit/6dc8c7df1ba9),
+the merge of #393, covering changes after the 1.3.1 range ending at
+[`992ce885`](https://github.com/DonovanMontoya/OperaLibre/commit/992ce8857687da9e5a9a63ed6361b64b01a9724f).
+The distribution channel and release date are pending confirmation.
+
+- While a book plays, the Shelf's **Now listening** section puts it first,
+  with a pause button, and lists the rest under **Up next**. Returning from
+  book details restores your place on the Shelf, and book details no longer
+  repeats the **Now playing** link while the mini player is showing.
+  ([#375](https://github.com/DonovanMontoya/OperaLibre/pull/375),
+  [#364](https://github.com/DonovanMontoya/OperaLibre/pull/364))
+- Sliding a finger off a button before lifting it cancels the press, as in
+  other iPhone apps. A brushed skip, restart, or play/pause no longer moves
+  your place in the book.
+  ([#365](https://github.com/DonovanMontoya/OperaLibre/pull/365))
+- The reader's Follow and close buttons keep working when a dragged page turn
+  is interrupted by switching apps, rotating, or folding.
+  ([#376](https://github.com/DonovanMontoya/OperaLibre/pull/376))
+- On an open iPhone Duo, the mini player stays on the Shelf while a book
+  plays. The player's Details, Chapters, and Sleep timer sheets, the reader's
+  sheets, and the metadata editor open as cards on one side of the fold
+  instead of across it. The Up Next strip fades at the page edge instead of
+  cutting a card in half, and the Shared reading list stays beside its bell.
+  ([#375](https://github.com/DonovanMontoya/OperaLibre/pull/375),
+  [#359](https://github.com/DonovanMontoya/OperaLibre/pull/359))
+- On an iPhone Duo lying fully open and flat, the reader keeps its two-page
+  spread, and its controls line up with the tab bar and clock.
+  ([#382](https://github.com/DonovanMontoya/OperaLibre/pull/382))
+- Stand a folded iPhone Duo on its edges like a tent, with the cover screen
+  sideways, and the playing book fills the cover in a full-screen desk view
+  with large skip and play controls. The screen stays awake while the book
+  plays. Rotating in dark mode no longer flashes a light screen.
+  ([#383](https://github.com/DonovanMontoya/OperaLibre/pull/383))
+- Connect an AI assistant you already use to your own account from the
+  **AI assistants** card in **Settings**. Each assistant gets its own token
+  and only the access you choose: your library, where you are in each book,
+  listening history, book text up to your position (for books with Follow
+  Along), and, if you allow it, getting books you own onto the server. The
+  card appears when you are connected to an OperaLibre server, 1.3.2 or
+  newer, whose owner has turned on AI assistants under
+  **Administration → Experiments**.
+  ([#368](https://github.com/DonovanMontoya/OperaLibre/pull/368),
+  [#369](https://github.com/DonovanMontoya/OperaLibre/pull/369),
+  [#370](https://github.com/DonovanMontoya/OperaLibre/pull/370))
+- Book descriptions written in HTML show as readable text instead of raw
+  tags, and published dates show as dates instead of raw timestamps.
+  ([#393](https://github.com/DonovanMontoya/OperaLibre/pull/393))
+- When pulling down to refresh the Shelf or a purchase shelf fails, the app
+  says so instead of looking finished, and a pull interrupted by the system
+  no longer starts a refresh.
+  ([#390](https://github.com/DonovanMontoya/OperaLibre/pull/390))
+- Pressing Escape to dismiss metadata suggestions keeps what you typed and
+  leaves the editor open.
+  ([#389](https://github.com/DonovanMontoya/OperaLibre/pull/389))
+- **Settings** has a link to the privacy policy, which is also reachable from
+  the sign-in screen. The app includes Apple's privacy manifest and now
+  requires a 64-bit iPhone or iPad.
+  ([#384](https://github.com/DonovanMontoya/OperaLibre/pull/384),
+  [#385](https://github.com/DonovanMontoya/OperaLibre/pull/385),
+  [#386](https://github.com/DonovanMontoya/OperaLibre/pull/386))
 
 ## 1.3.1
 

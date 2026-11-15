@@ -5,6 +5,7 @@ import { formatDurationLabel } from "./formatting";
 import { haptic } from "./native";
 import type { StoreBookFacts } from "./storeBookFacts";
 import { useModalFocus } from "./useModalFocus";
+import { useSheetSwipeDismiss } from "./useSheetSwipeDismiss";
 
 /** The book page for a store purchase, shaped like a server book's details but
     built around getting the book onto the server. The caller passes its live
@@ -18,6 +19,7 @@ export function StoreBookDetails({ facts, cover, action, status, hint, onClose }
   onClose: () => void;
 }) {
   const dialogRef = useModalFocus<HTMLElement>(onClose);
+  useSheetSwipeDismiss(dialogRef, onClose);
   const titleId = useId();
   const descriptionId = useId();
   const descriptionRef = useRef<HTMLParagraphElement>(null);

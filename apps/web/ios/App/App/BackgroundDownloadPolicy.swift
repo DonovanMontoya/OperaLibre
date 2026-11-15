@@ -196,3 +196,26 @@ func completedBackgroundDownloadCounts(
     let existingFiles = files.filter { existingDestinations.contains($0.destination) }
     return (existingFiles.count, existingFiles.filter { $0.required }.count)
 }
+
+/// Persisted high-water marks include background tasks whose temporary files
+/// are owned by URLSession, plus final files reconciled after a restart.
+struct BackgroundBookByteBudget: Codable {
+    private(set) var received: [String: Int64] = [:]
+
+    mutating func reserve(destination: String, bytes: Int64, retained: [String: Int64], limit: Int64 = maximumBackgroundDownloadBytes) -> Bool {
+        guard bytes >= 0, limit >= 0 else { return false }
+        var next = received.filter { retained[$0.key] != nil }
+        for (path, size) in retained {
+            guard size >= 0 else { return false }
+            next[path] = max(next[path] ?? 0, size)
+        }
+        next[destination] = max(next[destination] ?? 0, bytes)
+        var total: Int64 = 0
+        for size in next.values {
+            guard size <= limit - total else { return false }
+            total += size
+        }
+        received = next
+        return true
+    }
+}

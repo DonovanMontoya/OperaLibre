@@ -16,12 +16,13 @@ import { buildCarLibrarySnapshot, type CarPlaybackSession, carSessionIsWorthSavi
 import { cacheProgress, getOfflineCoverUrl, getOfflineTrackUrl, warnCacheFailure } from "./offline";
 import type { PluginListenerHandle } from "@capacitor/core";
 import type { AuthUser, Book, Progress } from "./types";
-import { pendingProgress, progressTimestamp, readProgressCheckpoint, serverRevisionFromSummary, writeProgressCheckpoint } from "./reliability";
+import { pendingProgress, progressTimestamp, readProgressCheckpoint, serverRevisionFromSummary, shouldFlagIntentionalRegression, writeProgressCheckpoint } from "./reliability";
 import type { QueuedProgressSave } from "./playbackTypes";
 import { progressSeekStorage, recordProgressSeekIntent } from "./progressSeekIntent";
 
 export function useCarPlay({
   acknowledgedSeekGenerationRef,
+  acknowledgedServerPositionRef,
   bookGains,
   bookIdsKey,
   books,
@@ -35,6 +36,7 @@ export function useCarPlay({
   updateBookProgress
 }: {
   acknowledgedSeekGenerationRef: RefObject<Map<string, number>>;
+  acknowledgedServerPositionRef: RefObject<Map<string, number>>;
   bookGains: Record<string, number>;
   bookIdsKey: string;
   books: Book[];
@@ -246,13 +248,14 @@ export function useCarPlay({
         progress,
         isPaused: true,
         seekIntentId: seekIntent?.id,
-        // A chapter jump or a restart in the car lands here as a backwards
-        // move the server would otherwise refuse. The generation has to clear
-        // the last acknowledged one for the flag to survive the queue.
+        // Every deliberate seek needs authorization, but only a rewind or
+        // restart may bypass reset protection if a stale clock replaces it.
         intentionalSeekGeneration: newIntentionalSeek
           ? (acknowledgedSeekGenerationRef.current.get(book.id) ?? 0) + 1
           : 0,
-        intentionalRegression: newIntentionalSeek
+        intentionalRegression: newIntentionalSeek && shouldFlagIntentionalRegression(
+          session.bookPositionSeconds, acknowledgedServerPositionRef.current.get(book.id)
+        )
       });
     }
     return handled;

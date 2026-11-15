@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  readFlatSpreadEnabled,
   readFollowAggressiveness,
   readReaderFollowEnabled,
+  writeFlatSpreadEnabled,
   writeReaderFollowEnabled,
   writeFollowAggressiveness
 } from "../src/readalongPreferences.ts";
@@ -20,6 +22,15 @@ test("follow aggressiveness keeps the existing timing by default", () => {
   assert.equal(readFollowAggressiveness(memoryStorage()), 0);
   assert.equal(readFollowAggressiveness(memoryStorage("unexpected")), 0);
   assert.equal(readFollowAggressiveness(memoryStorage("3")), 0);
+});
+
+test("fully open on its side shows two pages until the reader picks one", () => {
+  const storage = memoryStorage();
+  assert.equal(readFlatSpreadEnabled(storage), true);
+  writeFlatSpreadEnabled(false, storage);
+  assert.equal(readFlatSpreadEnabled(storage), false);
+  writeFlatSpreadEnabled(true, storage);
+  assert.equal(readFlatSpreadEnabled(storage), true);
 });
 
 test("narration following starts off and remembers the reader's choice", () => {

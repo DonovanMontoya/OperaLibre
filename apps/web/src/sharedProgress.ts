@@ -3,7 +3,7 @@ import type { SharedProgress } from "./types";
 /** Names shown inline on a library row before the rest collapse into "+n". */
 const ROW_NAME_LIMIT = 2;
 
-export type SharedProgressSummary = {
+type SharedProgressSummary = {
   finished: number;
   reading: number;
   /** Compact text for the library row, e.g. "Elena, Sam +2". */

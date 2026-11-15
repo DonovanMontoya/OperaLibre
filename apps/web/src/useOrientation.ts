@@ -48,7 +48,7 @@ export function readShortLandscape(): boolean {
 // contents, or all three columns.
 const ROOM_QUERY = "(min-width: 900px)";
 const WIDE_ROOM_QUERY = "(min-width: 1240px)";
-export type ReadingRoomWindow = "narrow" | "contents" | "wide";
+type ReadingRoomWindow = "narrow" | "contents" | "wide";
 function readReadingRoomWindow(): ReadingRoomWindow {
   if (typeof window === "undefined" || !window.matchMedia) return "wide";
   if (window.matchMedia(WIDE_ROOM_QUERY).matches) return "wide";

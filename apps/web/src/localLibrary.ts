@@ -4,6 +4,8 @@ import { Directory, Filesystem } from "@capacitor/filesystem";
 import { readAudioFileTags, rangeSource, type AudioFileTags, type EmbeddedCover } from "./audioTags";
 import { isSupportedAudioFileName, storedMediaExtension } from "./mediaFiles";
 import { mergeLibraryBooks } from "./libraryMerge";
+import { recoverGiftIndex } from "./giftLibraryIndex";
+import { removeGiftImport } from "./giftDeviceImport";
 import type { AuthUser, Book, Chapter, MetadataSummary, Progress, Track } from "./types";
 import {
   summarizeBookProgress
@@ -94,6 +96,9 @@ export function saveDeviceProgress(bookId: string, progress: Progress) {
 }
 
 export function getDeviceBooks(): Book[] {
+  // A gift's files are committed before its index journal is written. Recover
+  // that journal before reading the shelf after an interrupted publication.
+  try { recoverGiftIndex(localStorage); } catch { /* Preserve the existing shelf on storage failure. */ }
   const progress = storedProgress();
   return storedBooks().map((book) => ({
     ...book,
@@ -315,6 +320,9 @@ export async function migrateDeviceLibraryFileExtensions() {
     const books = storedBooks();
     let changed = false;
     for (const book of books) {
+      // Gift filenames and metadata are receipt-bound; renaming a committed
+      // file would break native crash recovery and its alignment dependencies.
+      if (/^device:gift:/.test(book.id)) continue;
       for (const track of book.tracks) {
         const path = track.localFilePath;
         if (!path) continue;
@@ -359,6 +367,7 @@ export async function backfillDeviceLibraryMetadata() {
     const books = storedBooks();
     let changed = false;
     for (const book of books) {
+      if (/^device:gift:/.test(book.id)) continue;
       const untagged =
         !book.author && !book.localCoverPath && !book.chapters.some((chapter) => chapter.source === "embedded-chapters");
       if (!untagged) continue;
@@ -527,12 +536,20 @@ export async function importDeviceAudioFiles(
 }
 
 export async function removeDeviceBook(bookId: string) {
-  const book = storedBooks().find((candidate) => candidate.id === bookId);
-  const path = book?.tracks[0]?.localFilePath?.split("/").slice(0, -1).join("/");
-  if (path) await Filesystem.rmdir({ path, directory: Directory.Data, recursive: true }).catch(() => undefined);
-  writeJson(LIBRARY_KEY, storedBooks().filter((candidate) => candidate.id !== bookId));
-  // Media and listening history have different lifetimes. Keep the compact
-  // progress record even when the on-device files are removed.
+  const giftId = bookId.startsWith("device:gift:") ? bookId.slice("device:gift:".length) : "";
+  const giftDirectory = /^[A-Za-z0-9_-]{16,128}$/.test(giftId) ? `device-library/gift-${giftId}` : null;
+  const remove = async () => {
+    const books = storedBooks();
+    const book = books.find((candidate) => candidate.id === bookId);
+    const path = giftDirectory ?? book?.tracks[0]?.localFilePath?.split("/").slice(0, -1).join("/");
+    // A failed shelf write must leave the listed book's files available.
+    writeJson(LIBRARY_KEY, books.filter((candidate) => candidate.id !== bookId));
+    if (path) await Filesystem.rmdir({ path, directory: Directory.Data, recursive: true }).catch(() => undefined);
+    // Media and listening history have different lifetimes. Keep the compact
+    // progress record even when the on-device files are removed.
+  };
+  if (giftDirectory) await removeGiftImport(localStorage, bookId, remove);
+  else await remove();
 }
 
 /** Pair one EPUB with an imported audiobook without contacting a server. */

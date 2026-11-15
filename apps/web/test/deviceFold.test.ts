@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyDeviceFold, isBookPosture, isFoldTransitionChange, resolveFoldLayoutState, type DeviceFoldState } from "../src/deviceFold.ts";
+import { applyDeviceFold, holdsCoverThroughHandoff, isBookPosture, isFlatSidePosture, isHingeParted, isFoldTransitionChange, resolveFoldLayoutState, type DeviceFoldState } from "../src/deviceFold.ts";
 
 function fakeRoot() {
   const properties = new Map<string, string>();
@@ -67,6 +67,19 @@ test("layout follows the active region even when hinge status arrives separately
   assert.equal(isBookPosture(inactive), true);
   // The inner-display geometry remains available for the flat layout.
   assert.equal(properties.get("--fold-x"), "460px");
+});
+
+test("only fully open on its side counts as the flat spread pose", () => {
+  const fold = { x: 455, y: 0, width: 41, height: 669, axis: "vertical" as const, active: false };
+  assert.equal(isFlatSidePosture({ posture: "flat", angle: 180, fold }), true);
+  // Half open always splits across the crease; it is not the reader's choice.
+  assert.equal(isFlatSidePosture({ posture: "half-open", angle: 110, fold: { ...fold, active: true } }), false);
+  assert.equal(isFlatSidePosture({ posture: "flat", angle: 180, fold: { ...fold, active: true } }), false);
+  assert.equal(isFlatSidePosture({
+    posture: "flat", angle: 180, fold: { x: 0, y: 455, width: 669, height: 41, axis: "horizontal", active: false }
+  }), false);
+  assert.equal(isFlatSidePosture({ posture: "flat", angle: 180 }), false);
+  assert.equal(isFlatSidePosture({ posture: "closed", angle: 0, fold }), false);
 });
 
 test("rotation and closing clear the book spread and fold displacement", () => {
@@ -164,6 +177,7 @@ test("a deferred fold transition cannot overwrite a newer closed state", async (
     classList: { contains: () => true },
     ownerDocument: {
       defaultView: { matchMedia: () => ({ matches: false }) },
+      querySelector: () => null,
       startViewTransition: (update: () => void) => {
         updates.push(update);
         return { finished: new Promise<void>(resolve => finishes.push(resolve)), skipTransition() {} };
@@ -183,4 +197,56 @@ test("a deferred fold transition cannot overwrite a newer closed state", async (
   assert.equal(dataset.foldPosture, "closed");
   assert.equal(attributes.has("data-fold-active"), false);
   assert.equal(dataset.foldTransition, undefined);
+});
+
+test("rotating the open phone under the full-screen reader changes the layout without animating the page behind it", () => {
+  const { root, dataset } = fakeRoot();
+  let transitions = 0;
+  Object.assign(root, {
+    classList: { contains: () => true },
+    ownerDocument: {
+      defaultView: { matchMedia: () => ({ matches: false }) },
+      querySelector: (selector: string) => (selector === ".epub-reader.immersive" ? {} : null),
+      startViewTransition: () => {
+        transitions += 1;
+        return { finished: Promise.resolve(), skipTransition() {} };
+      }
+    }
+  });
+  applyDeviceFold(root, { posture: "flat", angle: 180,
+    fold: { x: 460, y: 0, width: 31, height: 669, axis: "vertical", active: false } });
+  applyDeviceFold(root, { posture: "flat", angle: 180,
+    fold: { x: 0, y: 460, width: 669, height: 31, axis: "horizontal", active: false } });
+  assert.equal(transitions, 0);
+  assert.equal(dataset.foldAxis, "horizontal");
+  assert.equal(dataset.foldTransition, undefined);
+});
+
+test("a tent counts as parted even while the cover layout still reads it as closed", () => {
+  const tent: DeviceFoldState = { posture: "half-open", angle: 60 };
+  assert.equal(resolveFoldLayoutState(tent, { posture: "closed" }).posture, "closed");
+  assert.equal(isHingeParted(resolveFoldLayoutState(tent, { posture: "closed" })), true);
+  assert.equal(isHingeParted({ posture: "closed", angle: 0 }), false);
+  assert.equal(isHingeParted({ posture: "half-open", angle: 4 }), false);
+});
+
+test("a hinge hovering near the cutoff does not flip the tent back and forth", () => {
+  let parted = false;
+  const seen = [];
+  for (const angle of [8, 15, 21, 18, 12, 19, 22, 9, 14]) {
+    parted = isHingeParted({ posture: "half-open", angle }, parted);
+    seen.push(parted);
+  }
+  assert.deepEqual(seen, [false, false, true, true, true, true, true, false, false]);
+  assert.equal(isHingeParted({ posture: "unknown" }), false);
+});
+
+test("opening into a tent holds the sideways cover through iOS's brief inner-screen handoff", () => {
+  assert.equal(holdsCoverThroughHandoff({ posture: "half-open", angle: 14 }, true), true);
+  assert.equal(holdsCoverThroughHandoff({ posture: "half-open", angle: 45 }, true), true);
+  // Opened to read on the inner screen, or the cover was upright.
+  assert.equal(holdsCoverThroughHandoff({ posture: "half-open", angle: 95 }, true), false);
+  assert.equal(holdsCoverThroughHandoff({ posture: "half-open", angle: 45 }, false), false);
+  assert.equal(holdsCoverThroughHandoff({ posture: "flat", angle: 180 }, true), false);
+  assert.equal(holdsCoverThroughHandoff({ posture: "unknown" }, true), false);
 });

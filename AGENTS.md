@@ -174,6 +174,26 @@ An empty library is a weak test. Build a scratch copy instead of using live stat
   data unless the flow under test needs it.
 - Copy in, never symlink. Data flows one way: into your scratch space, never back.
 
+## Audio while testing
+
+Nobody should have to listen to the demo audiobook. Unless the sound itself is
+under test (output routing, ducking, interruptions, a sound-only bug), keep
+playback silent but real: audio still goes to an output, so position, progress
+sync, and media-session behavior are exercised, and you verify them from the
+player clock and the server, not by ear.
+
+- **Browsers you drive:** launch with `--mute-audio`
+  (`chromium.launch({ args: ['--mute-audio'] })`). Media elements keep playing
+  and advancing while muted.
+- **Android emulator:** start it with `-no-audio`, which gives the guest a
+  dummy audio device.
+- **iOS Simulator and physical devices:** the simulator plays through the Mac's
+  output. Send that to a silent virtual output device if one is installed;
+  otherwise mute the Mac before starting playback, and mute a physical device.
+  Read the prior state first (`osascript -e 'output muted of (get volume
+  settings)'`) and put it back when you finish.
+- If a screen can be checked paused, do not start playback at all.
+
 ## Validation
 
 `.github/workflows/ci.yml` is the source of truth for required checks. Start with
@@ -248,6 +268,41 @@ explicit; a release or dependency version bump alone is not a reason to remap.
   include outdated maps while respecting the saved limit. Keep
   `docs/using-operalibre.md` and `docs/api.md` accurate when these contracts change.
 
+### Versions
+
+There are two version lines, and they are independent of each other:
+
+- **Server line**: the server and launcher crates (and their lockfiles). It
+  follows the stable release tags, such as `0.5.1`; nightlies between releases
+  are `0.5.2-nightly.<date>.<run>`. Release builds take their version from the
+  tag (`OPERALIBRE_VERSION`), which also stamps the web bundle, so the crate
+  version only shows in source builds. Keep it at the latest stable release.
+  The macOS app is on this line too: `script/build_and_run.sh` stamps the
+  server crate's version into its bundle.
+- **App line**: the iOS and Android apps, versioned for the stores (iOS 1.3.1
+  is the confirmed App Store release; the in-tree app line is 1.3.2). iOS and Android share
+  one build number. Android's `versionCode` is
+  `major·1000000 + minor·10000 + patch·100 + build`, so it rises across builds
+  and versions.
+
+The read-along add-on is published separately and keeps its own version.
+
+Change versions only with `node script/version.mjs`, never by editing
+`Cargo.toml`, `build.gradle`, or the Xcode project by hand:
+
+- `set server X.Y.Z` after a stable release, so source builds report it. It is
+  not needed before a release, and it doesn't block one.
+- `set app X.Y.Z` for the next app release. It only accepts a version above the
+  current one and restarts the build at 1.
+- `build` raises the app build number for another upload of the same app
+  version (`build 4` sets it to 4). It works on any branch, including test
+  builds for TestFlight. The stores need each upload's number above the last
+  one, so if a build was uploaded from a branch that isn't merged, pass the
+  next number explicitly.
+- `check` verifies each line agrees with itself; CI runs it.
+
+Record each shipped app build as **version (build)** in `docs/ios-changelog.md`.
+
 ### Configuration compatibility
 
 New `server.config` keys need safe defaults so existing installs keep working.
@@ -294,10 +349,8 @@ record of the work.
 
 ## Version control and pull requests
 
-Git and [Jujutsu](https://jujutsu-vcs.github.io/) (`jj`, colocated with Git) both
-work. Inspect the checkout first: if a `.jj` directory exists, use `jj` for
-working-copy operations and do not mix in Git staging or commits. Linked Git
-worktrees may have no `.jj`; use Git there and do not initialize a new JJ store.
+Use Git for all version-control operations, including staging, commits, branches,
+worktrees, fetches, and merges.
 
 - Do not push branches or open PRs unless the developer asks you to.
 - Branch names use a `feat/`, `fix/`, `chore/`, or `docs/` prefix and a short
@@ -326,11 +379,7 @@ worktrees may have no `.jj`; use Git there and do not initialize a new JJ store.
 
 These apply only to maintainers with write access.
 
-- Merge PRs with merge commits (`gh pr merge N --merge`). With `jj`, a successful
-  merge may still print a `--delete-branch` error because Git HEAD is detached;
-  check the PR state before retrying.
-- After `jj git fetch` following a force-push, inspect `jj st` and `jj diff`
-  before recovering with `jj new main`; abandon only revisions confirmed obsolete.
+- Merge PRs with merge commits (`gh pr merge N --merge`).
 - Before version bumps or releases, apply [Read-along mapping revisions and
   recovery](#read-along-mapping-revisions-and-recovery); state any remapping
   recommendation in the release notes.
@@ -338,6 +387,15 @@ These apply only to maintainers with write access.
   `tag` (the workflow picks the next patch) and notes written from the actual
   diff since the previous release, passed as a file or structured input. Use an
   explicit tag only for a rebuild or deliberate version jump. The source commit
-  must be in `origin/main`. Native clients can be versioned separately; check
-  their version files. Follow the run to completion and verify the published
-  release and assets. A `docs/**` push to `main` redeploys the docs site.
+  must be in `origin/main`. The release stamps its tag into the server and web
+  builds; the native apps are versioned separately (see [Versions](#versions)).
+  Follow the run to completion and verify the published release and assets.
+  Afterward, run `node script/version.mjs set server <tag>` in a follow-up PR
+  to main. A
+  `docs/**` push to `main` redeploys the docs site.
+
+## Agent skills
+
+### Animatic
+
+The animatic skill's voice, renderer, style and stitcher. See `docs/agents/animatic.md`.

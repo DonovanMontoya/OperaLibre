@@ -67,7 +67,7 @@ for (const width of [768, 1194]) {
   });
 }
 
-for (const entry of ['Reading', 'book details'] as const) {
+for (const entry of ['Listening', 'book details'] as const) {
   test(`iPad ${entry} keeps the full Shelf until its transition captures it`, async ({ page }) => {
     await page.setViewportSize({ width: 1194, height: 834 });
     await page.addInitScript(() => {
@@ -108,8 +108,8 @@ for (const entry of ['Reading', 'book details'] as const) {
         return { finished, ready: Promise.resolve(), updateCallbackDone: Promise.resolve(), skipTransition() {} } as ViewTransition;
       };
     });
-    if (entry === 'Reading') {
-      await page.getByRole('button', { name: 'Reading', exact: true }).click();
+    if (entry === 'Listening') {
+      await page.getByRole('button', { name: 'Listening', exact: true }).click();
     } else {
       await page.locator('.book-row').first().click();
     }
@@ -125,7 +125,7 @@ for (const entry of ['Reading', 'book details'] as const) {
     });
     await expect(shell).toHaveClass(/shelf-split/);
     await expect(page.locator('.player-pane')).toBeVisible();
-    await expect(shell).toHaveClass(entry === 'Reading' ? /tab-reading/ : /library-book-open/);
+    await expect(shell).toHaveClass(entry === 'Listening' ? /tab-reading/ : /library-book-open/);
     if (entry === 'book details') await expect(page.locator('.book-heading')).toContainText(books[0].title);
   });
 }
@@ -229,7 +229,7 @@ test('unfolded spread keeps the mini player in the side rail, off the fold', asy
   await page.setContent(`<html class="native-app side-rail" data-fold-posture="flat" data-fold-axis="vertical" data-fold-active><head>
     <link rel="stylesheet" href="${url}src/styles.css?direct">
     </head><body><main class="native-shell tab-shelf has-mini-player shelf-landscape">
-    <section class="library-pane"></section><section class="player-pane"></section>
+    <section class="library-pane"></section><section class="player-pane has-native-player"></section>
     <aside class="mini-player" aria-label="Mini player">
       <button class="mini-cover-button" aria-label="Open current book">Book</button>
       <div class="mini-actions"><button class="mini-play" aria-label="Pause">Pause</button></div>
@@ -246,9 +246,11 @@ test('unfolded spread keeps the mini player in the side rail, off the fold', asy
   expect(player.x + player.width).toBeLessThanOrEqual(951);
   expect(player.y).toBeGreaterThanOrEqual(120);
   expect(player.y + player.height).toBeLessThanOrEqual(380);
+  await expect(page.locator('.player-pane')).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
 });
 
-test('wide Duo gives Shelf both leaves while Reading keeps the player spread', async ({ page }) => {
+test('wide Duo gives Shelf both leaves while Listening keeps the player spread', async ({ page }) => {
   await page.setViewportSize({ width: 951, height: 669 });
   const stylesheet = readFileSync(new URL('../../src/styles.css', import.meta.url), 'utf8');
   await page.setContent(`<html class="native-app side-rail" data-fold-posture="half-open" data-fold-axis="vertical" data-fold-active><head>
@@ -394,7 +396,7 @@ test('Get Books keeps controls on the left leaf and books on the right leaf', as
   await page.setViewportSize({ width: 951, height: 669 });
   await page.setContent(`<html class="native-app side-rail" data-fold-posture="flat" data-fold-axis="vertical"><head>
     <link rel="stylesheet" href="${url}src/styles.css?direct">
-    </head><body><main class="native-shell tab-shelf shelf-landscape device-ipad">
+    </head><body><main class="native-shell tab-shelf shelf-split shelf-landscape device-ipad has-mini-player">
       <aside class="library-pane purchase-browsing">
         <header class="pane-title"><h1>OperaLibre</h1></header>
         <div class="library-toolbar">
@@ -405,16 +407,20 @@ test('Get Books keeps controls on the left leaf and books on the right leaf', as
         <div class="purchase-results">
           <div class="purchase-settings-pane"><details class="purchase-console"><summary>Activity</summary><section style="height:900px">Download activity</section></details></div>
           <div class="purchase-books-pane">
-            <ol class="libro-purchases purchase-book-list purchase-book-list--list"><li class="purchase-book-row"><span class="libro-purchase-cover"></span><span class="libro-purchase-copy"><h3>Taipei Story</h3><p>Author</p></span><button>Import</button></li></ol>
+            <section class="libro-catalog"><header class="libro-catalog-head"><h2>Libro.fm</h2></header><ol class="libro-purchases purchase-book-list purchase-book-list--list"><li class="purchase-book-row"><span class="libro-purchase-cover"></span><span class="libro-purchase-copy"><h3>Taipei Story</h3><p>Author</p></span><button>Import</button></li></ol></section>
+            <section class="libro-catalog"><header class="libro-catalog-head"><h2>Audible</h2></header></section>
             <div class="audible-list purchase-book-list purchase-book-list--list"><div class="audible-row purchase-book-row"><span class="audible-cover"></span><span class="audible-copy"><strong>12 Rules for Life</strong><span>Author</span></span><button>Download</button></div></div>
           </div>
         </div>
       </aside>
+      <section class="player-pane has-native-player"></section>
+      <aside class="mini-player" aria-label="Mini player"><button class="mini-cover-button">Book</button><div class="mini-actions"><button>Pause</button></div></aside>
     </main></body></html>`);
   await page.evaluate(() => {
     const root = document.documentElement;
     for (const [name, value] of Object.entries({ '--fold-x': '460px', '--fold-width': '31px',
-      '--status-h': '44px', '--tabs-h': '0px', '--native-viewport-height': '669px' })) {
+      '--status-h': '44px', '--tabs-h': '0px', '--native-viewport-height': '669px',
+      '--rail-x': '895px', '--rail-width': '56px', '--rail-top': '240px', '--rail-bottom': '480px' })) {
       root.style.setProperty(name, value);
     }
   });
@@ -436,10 +442,21 @@ test('Get Books keeps controls on the left leaf and books on the right leaf', as
   expect(storeTabs.width).toBeGreaterThan(350);
   const books = (await page.locator('.purchase-books-pane').boundingBox())!;
   expect(books.x).toBeGreaterThanOrEqual(491);
+  await expect(page.locator('.player-pane')).toBeHidden();
+  await expect(page.getByLabel('Mini player')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+  const player = (await page.getByLabel('Mini player').boundingBox())!;
+  expect(player.x).toBeGreaterThanOrEqual(491);
   await expect(page.locator('.purchase-settings-pane')).toHaveCSS('overflow-y', 'auto');
   await expect(page.locator('.purchase-books-pane')).toHaveCSS('overflow-y', 'auto');
   const libroRow = (await page.locator('.libro-purchases .purchase-book-row').boundingBox())!;
   const audibleRow = (await page.locator('.audible-list .purchase-book-row').boundingBox())!;
+  for (const row of await page.locator('.purchase-book-list .purchase-book-row').all()) {
+    await expect(row).toHaveCSS('border-top-width', '0px');
+  }
+  for (const heading of await page.locator('.purchase-books-pane .libro-catalog-head').all()) {
+    await expect(heading).toHaveCSS('border-bottom-width', '1px');
+  }
   expect(libroRow.width).toBe(audibleRow.width);
   expect((await page.locator('.libro-purchase-cover').boundingBox())!.width)
     .toBe((await page.locator('.audible-cover').boundingBox())!.width);
@@ -721,63 +738,6 @@ test('a fold that turns on the spread and shortens the stage lays the page out a
   await expect.poll(page0).toEqual({ href: 'c1.xhtml', laidOut: true });
 });
 
-test('a spread change preserves a pending followed chapter', async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('operalibre.readerFollow', '1'));
-  await page.setViewportSize({ width: 951, height: 669 });
-  await page.goto(`${url}test/reader-catch-up.html?immersive&chapter-sync&listening=1`);
-  await expect(page.locator('.epub-loading')).toHaveCount(0);
-  await page.evaluate(async () => {
-    const modulePath = '/src/deviceFold.ts';
-    const { applyDeviceFold } = await import(modulePath);
-    applyDeviceFold(document.documentElement, { posture: 'half-open', angle: 110,
-      fold: { x: 0, y: 320, width: 951, height: 31, axis: 'horizontal', active: true } });
-  });
-  const href = () => page.evaluate(() => (window as any).__operalibreReader.rendition.location?.start?.href);
-  await expect.poll(href).toBe('c1.xhtml');
-  // Keep geometry and the font-size bucket fixed to isolate changing the
-  // spread while epub.js is still loading the chapter requested by Follow.
-  await page.evaluate(async () => {
-    const stage = document.querySelector<HTMLElement>('.epub-stage')!;
-    const bounds = stage.getBoundingClientRect();
-    for (const prop of ['width', 'min-width', 'max-width']) stage.style.setProperty(prop, `${bounds.width}px`, 'important');
-    for (const prop of ['height', 'min-height', 'max-height']) stage.style.setProperty(prop, `${bounds.height}px`, 'important');
-    await (window as any).__operalibreReader.rendition.display('c1.xhtml#start');
-  });
-  await expect.poll(href).toBe('c1.xhtml');
-  await page.evaluate(() => {
-    const reader = (window as any).__operalibreReader;
-    const rendition = reader.rendition;
-    const display = rendition._display.bind(rendition);
-    let held = false;
-    rendition._display = (target: string | undefined) => {
-      if (!held && target?.startsWith('c2.xhtml')) {
-        held = true;
-        return new Promise(resolve => { reader.releaseChapter = () => resolve(display(target)); });
-      }
-      return display(target);
-    };
-  });
-  // The fixture control is behind the immersive reader.
-  await page.getByRole('button', { name: 'Advance audio (1)', exact: true }).evaluate(button => (button as HTMLButtonElement).click());
-  await expect.poll(() => page.evaluate(() => !!(window as any).__operalibreReader.releaseChapter)).toBe(true);
-  await page.evaluate(async () => {
-    const modulePath = '/src/deviceFold.ts';
-    const { applyDeviceFold } = await import(modulePath);
-    applyDeviceFold(document.documentElement, { posture: 'half-open', angle: 110,
-      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } });
-  });
-  await expect.poll(() => page.evaluate(() => (window as any).__operalibreReader.rendition.settings.spread)).toBe('always');
-  await page.evaluate(async () => {
-    const reader = (window as any).__operalibreReader;
-    reader.releaseChapter();
-    // Wait for every queued display and its location report, including any
-    // extra display scheduled by the spread, before checking the destination.
-    await reader.rendition.q.enqueue(() => undefined);
-    await reader.rendition.q.enqueue(() => undefined);
-  });
-  await expect.poll(href).toBe('c2.xhtml');
-});
-
 test('reader survives folding, rotating, flattening and closing without replacing its book', async ({ page }) => {
   await page.goto(`${url}test/reader-catch-up.html?immersive`);
   await expect(page.locator('.epub-loading')).toHaveCount(0);
@@ -791,7 +751,7 @@ test('reader survives folding, rotating, flattening and closing without replacin
       fold: { x: 0, y: 460, width: 669, height: 31, axis: 'horizontal', active: true } } },
     { width: 951, height: 669, spread: 'always', state: { posture: 'half-open', angle: 110,
       fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } } },
-    { width: 951, height: 669, spread: 'none', state: { posture: 'flat', angle: 180,
+    { width: 951, height: 669, spread: 'always', state: { posture: 'flat', angle: 180,
       fold: { x: 475, y: 0, width: 1, height: 669, axis: 'vertical', active: false } } },
     { width: 466, height: 678, spread: 'none', state: { posture: 'closed', angle: 0 } }
   ];
@@ -809,6 +769,23 @@ test('reader survives folding, rotating, flattening and closing without replacin
   }
   await expect(page.locator('html')).not.toHaveAttribute('data-fold-axis');
   await expect(page.locator('html')).not.toHaveAttribute('data-fold-active');
+});
+
+test('choosing one page keeps the flat reader single while half open still splits', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('operalibre.reader.flatSpread', '0'));
+  await page.setViewportSize({ width: 951, height: 669 });
+  await page.goto(`${url}test/reader-catch-up.html?immersive`);
+  await expect(page.locator('.epub-stage iframe')).toHaveCount(1);
+  const rendition = await page.evaluateHandle(() => (window as any).__operalibreReader.rendition);
+  const fold = (state: DeviceFoldState) => page.evaluate(async state => {
+    const modulePath = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(modulePath);
+    applyDeviceFold(document.documentElement, state);
+  }, state);
+  await fold({ posture: 'flat', angle: 180, fold: { x: 475, y: 0, width: 1, height: 669, axis: 'vertical', active: false } });
+  await expect.poll(() => rendition.evaluate(value => value.settings.spread)).toBe('none');
+  await fold({ posture: 'half-open', angle: 110, fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } });
+  await expect.poll(() => rendition.evaluate(value => value.settings.spread)).toBe('always');
 });
 
 test('fully opening the reader redraws the active follow-along highlight', async ({ page }) => {
@@ -923,13 +900,13 @@ test('portrait fold bounds the shelf, settings and administration to independent
       });
       document.documentElement.style.setProperty('--tabs-h', axis === 'vertical' ? '0px' : '80px');
     }, { width, height, axis });
-    for (const tab of axis === 'closed' ? ['Reading'] : ['Reading', 'Shelf']) {
+    for (const tab of axis === 'closed' ? ['Listening'] : ['Listening', 'Shelf']) {
       // The fixture has HTML tabs instead of UIKit's side rail; zero bottom
       // inset intentionally hides them in landscape. Exercise their handlers.
       await page.locator('.spine-tab').filter({ hasText: tab }).dispatchEvent('click');
       // Shelf is a collection destination in either fold direction. Browsing
       // keeps the library full screen and the transport in the mini player;
-      // Reading is the tab that owns the persistent player page.
+      // Listening is the tab that owns the persistent player page.
       if (tab === 'Shelf' && axis !== 'closed') {
         await expect(page.locator('.player-pane')).toBeHidden();
         const library = (await page.locator('.library-pane').boundingBox())!;

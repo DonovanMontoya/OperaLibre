@@ -2,7 +2,7 @@ const LEFT_EDGE_WIDTH_PX = 28;
 const BACK_SWIPE_DISTANCE_PX = 72;
 const BACK_SWIPE_DIRECTION_RATIO = 1.5;
 
-export type TouchPoint = {
+type TouchPoint = {
   clientX: number;
   clientY: number;
 };

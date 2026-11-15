@@ -6,6 +6,8 @@ import {
   canRestoreCachedNativeSession,
   LAUNCH_SETTLE_LIMIT_MS,
   launchIntroRemainingMs,
+  libraryOfflineConfirmed,
+  libraryReconnectDelayMs,
   shouldAcceptNativeTrackChange,
   shouldRefreshMediaCredential,
   startupDestinationAfterLoad
@@ -89,4 +91,16 @@ test("the launch cover waits out its intro once and never holds a later reveal",
   assert.equal(launchIntroRemainingMs(LAUNCH_INTRO_MS + 5000, false, false), LAUNCH_SETTLE_LIMIT_MS);
   assert.equal(launchIntroRemainingMs(0, false, false), LAUNCH_INTRO_MS);
   assert.equal(launchIntroRemainingMs(0, true, false), LAUNCH_SETTLE_LIMIT_MS);
+});
+
+test("a launch that misses the server retries before calling itself offline", () => {
+  assert.equal(libraryOfflineConfirmed(1, true, 100), false);
+  assert.equal(libraryOfflineConfirmed(2, true, 1_200), false);
+  assert.equal(libraryOfflineConfirmed(3, true, 3_200), true);
+  // Two requests that each waited out the 8s timeout are proof enough.
+  assert.equal(libraryOfflineConfirmed(2, true, 17_000), true);
+  // A device with no network at all is offline on the first failure.
+  assert.equal(libraryOfflineConfirmed(1, false, 0), true);
+  assert.deepEqual([1, 2, 3, 4, 5, 6, 20].map(libraryReconnectDelayMs),
+    [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]);
 });

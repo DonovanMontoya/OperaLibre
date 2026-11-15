@@ -5,7 +5,9 @@ nav_order: 11
 
 # Troubleshooting
 
-Common problems and how to fix them. If you hit something not listed here, open an issue with the relevant lines from the server's stdout/stderr.
+Common problems and how to fix them. If you hit something not listed here, open
+an issue with the relevant lines from the server's stdout/stderr. For private
+support questions, email [operalibre@agentmail.to](mailto:operalibre@agentmail.to).
 
 ## `Error: spawn npm ENOENT` on Windows
 
@@ -73,7 +75,7 @@ The combined package runs in the background. Closing the browser does not stop i
 
 ## The ebook does not follow sentences
 
-Chapter sync works without a sentence map. For sentence highlighting and seeking, the server's **Follow along** experiment must be enabled and the book must have an aligned `.sync.json` map. An administrator can generate one with **Improve sync**. Then press **Follow** in the reader; turning pages yourself pauses following until you turn it on again. See [Read along with the ebook](using-operalibre.md#read-along-with-the-ebook).
+If the reader shows no **Follow** button, the book has no sentence map. For sentence highlighting and seeking, the server's **Follow along** experiment must be enabled and the book must have an aligned `.sync.json` map. An administrator can generate one with **Improve sync**. Then press **Follow** in the reader; turning pages yourself pauses following until you turn it on again. See [Read along with the ebook](using-operalibre.md#read-along-with-the-ebook).
 
 ## Seeking is broken or the audio rebuffers constantly
 

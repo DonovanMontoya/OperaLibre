@@ -1,4 +1,4 @@
-export type PendingPlayRequest = {
+type PendingPlayRequest = {
   bookId: string | null;
   cancelGeneration: number;
 };
