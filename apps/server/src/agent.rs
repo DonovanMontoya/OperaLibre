@@ -906,6 +906,16 @@ fn progress_instant(updated_at: &str) -> String {
 }
 
 /// The chapter a book-absolute position falls in, by index into `chapters`.
+/// Where a chapter's audio stops: the next chapter's start, else its own
+/// recorded end, else the end of the book.
+pub(crate) fn chapter_end(book: &Book, index: usize) -> Option<f64> {
+    book.chapters
+        .get(index + 1)
+        .map(|next| next.start_seconds)
+        .or(book.chapters.get(index)?.end_seconds)
+        .or(book.duration_seconds)
+}
+
 fn chapter_index_at(chapters: &[Chapter], seconds: f64) -> Option<usize> {
     chapters
         .partition_point(|chapter| chapter.start_seconds <= seconds)
@@ -1733,20 +1743,6 @@ async fn get_text_so_far(
     let book_id = book_id_argument(arguments)?;
     let max_characters = count_argument(arguments, "maxCharacters", 30_000, 200_000).max(1_000);
     let book = caller_book(state, caller, &book_id, true).await?;
-    let sync_path = state.library.read().await.sync_paths.get(&book.id).cloned();
-    let transcript = if sync_path.is_none() && chapter_notes::experiment_enabled(state).await {
-        chapter_notes::transcript_spans(state, &book.id).await
-    } else {
-        Vec::new()
-    };
-    let sync_path = match sync_path {
-        Some(path) => Some(path),
-        None if !transcript.is_empty() => None,
-        None => {
-            return Err(text_unavailable(&book));
-        }
-    };
-
     let progress = book.progress.as_ref();
     let finished = progress.is_some_and(|progress| progress.status == BookProgressStatus::Finished);
     let position = progress.map_or(0.0, |progress| progress.book_position_seconds);
@@ -1755,27 +1751,20 @@ async fn get_text_so_far(
     }
     let heard_through = progress.map_or(0.0, heard_through);
 
+    let sync_path = state.library.read().await.sync_paths.get(&book.id).cloned();
     let map = match sync_path {
         Some(sync_path) => read_text_map(sync_path).await?,
-        // Transcripts stand in for the map, sentence by recognized sentence.
-        None => alignment::SyncMap {
-            version: alignment::SYNC_MAP_VERSION,
-            mapping_revision: 0,
-            generator: None,
-            generated_at: None,
-            precision: None,
-            fragments: transcript
-                .into_iter()
-                .map(|span| alignment::SyncFragment {
-                    start_seconds: span.start_seconds,
-                    end_seconds: span.end_seconds,
-                    href: "transcript".into(),
-                    text: span.text,
-                    words: Vec::new(),
-                })
-                .collect(),
-            recovery_gaps: Vec::new(),
-        },
+        None => {
+            let spans = if chapter_notes::experiment_enabled(state).await {
+                chapter_notes::transcript_spans(state, &book.id, heard_through).await
+            } else {
+                Vec::new()
+            };
+            if spans.is_empty() {
+                return Err(text_unavailable(&book));
+            }
+            transcript_map(spans)
+        }
     };
 
     let mut heard: Vec<&alignment::SyncFragment> = map
@@ -1915,6 +1904,29 @@ async fn get_chapter_notes(
     }))
 }
 
+/// Transcripts stand in for a follow-along map, sentence by recognized
+/// sentence.
+fn transcript_map(spans: Vec<chapter_notes::TranscriptSpan>) -> alignment::SyncMap {
+    alignment::SyncMap {
+        version: alignment::SYNC_MAP_VERSION,
+        mapping_revision: 0,
+        generator: None,
+        generated_at: None,
+        precision: None,
+        fragments: spans
+            .into_iter()
+            .map(|span| alignment::SyncFragment {
+                start_seconds: span.start_seconds,
+                end_seconds: span.end_seconds,
+                href: "transcript".into(),
+                text: span.text,
+                words: Vec::new(),
+            })
+            .collect(),
+        recovery_gaps: Vec::new(),
+    }
+}
+
 fn text_unavailable(book: &Book) -> String {
     if book.reading_file.is_some() {
         "This book has its text but no follow-along map yet, so OperaLibre cannot tell exactly where the listener is in it. An administrator can create the map from the book's page.".into()
@@ -1924,25 +1936,14 @@ fn text_unavailable(book: &Book) -> String {
 }
 
 async fn read_text_map(sync_path: PathBuf) -> Result<alignment::SyncMap, String> {
-    // A long book's map is several megabytes of JSON.
-    let map = tokio::task::spawn_blocking(move || -> anyhow::Result<alignment::SyncMap> {
-        Ok(serde_json::from_slice(&std::fs::read(&sync_path)?)?)
-    })
-    .await
-    .map_err(|error| tool_failure(ApiError::internal(error.to_string())))?
-    .map_err(|error| {
+    let map = alignment::SyncMap::read(sync_path).await.map_err(|error| {
         tool_failure(ApiError::internal(format!(
             "Could not read the sync map: {error}"
         )))
     })?;
-    if map
-        .precision
-        .as_deref()
-        .is_some_and(|precision| precision != "sentence")
-    {
+    if !map.is_sentence_precise() {
         return Err("This book's follow-along map is only an estimate, so it cannot mark a safe stopping point. Recreating the map fixes that.".into());
     }
-
     Ok(map)
 }
 
@@ -1969,12 +1970,7 @@ pub(crate) fn group_heard_text(
             let (title, complete) = match book.chapters.get(index) {
                 Some(chapter) => (
                     chapter.title.clone(),
-                    book.chapters
-                        .get(index + 1)
-                        .map(|next| next.start_seconds)
-                        .or(chapter.end_seconds)
-                        .or(book.duration_seconds)
-                        .is_some_and(|end| end <= heard_through),
+                    chapter_end(book, index).is_some_and(|end| end <= heard_through),
                 ),
                 None => (book.title.clone(), heard_through.is_infinite()),
             };

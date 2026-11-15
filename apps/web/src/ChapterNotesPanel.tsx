@@ -10,6 +10,7 @@ import {
   type ChapterNotesStatus
 } from "./api";
 import { isDemoMode } from "./demo";
+import { errorMessage } from "./formatting";
 import type { Book } from "./types";
 
 /** How long to wait between looks at a book whose notes are being made. */
@@ -69,7 +70,7 @@ export function ChapterNotesPanel({ book }: { book: Book }) {
     try {
       setNotes(await generateBookChapterNotes(book.id));
     } catch (failure) {
-      setError(failure instanceof Error && failure.message ? failure.message : "Could not start making notes.");
+      setError(errorMessage(failure, "Could not start making notes."));
     } finally {
       setBusy(false);
     }
@@ -83,7 +84,7 @@ export function ChapterNotesPanel({ book }: { book: Book }) {
       await deleteBookChapterNotes(book.id);
       setNotes(await getBookChapterNotes(book.id));
     } catch (failure) {
-      setError(failure instanceof Error && failure.message ? failure.message : "Could not remove the notes.");
+      setError(errorMessage(failure, "Could not remove the notes."));
     } finally {
       setBusy(false);
     }

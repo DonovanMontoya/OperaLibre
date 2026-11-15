@@ -394,10 +394,7 @@ async fn delete_notes(state: &AppState, book_id: &str) -> Result<(), ApiError> {
     let name = notes_document(book_id);
     state
         .database
-        .transaction(move |db| {
-            db.execute("DELETE FROM documents WHERE name = ?1", [name])?;
-            Ok(())
-        })
+        .transaction(move |db| delete_document(db, &name))
         .await?;
     let directory = transcripts_dir(state).join(transcript_dir_name(book_id));
     match fs::remove_dir_all(&directory).await {
@@ -449,9 +446,13 @@ async fn read_transcript(path: &FsPath) -> Option<SavedTranscript> {
     serde_json::from_slice(&fs::read(path).await.ok()?).ok()
 }
 
-/// Every saved transcript of a book, in book order, for reading the words a
-/// listener has heard. Empty when the book was never transcribed.
-pub(crate) async fn transcript_spans(state: &AppState, book_id: &str) -> Vec<TranscriptSpan> {
+/// A book's saved transcripts, in book order, for the chapters that start
+/// before `heard_through`. Empty when the book was never transcribed.
+pub(crate) async fn transcript_spans(
+    state: &AppState,
+    book_id: &str,
+    heard_through: f64,
+) -> Vec<TranscriptSpan> {
     let Some(notes) = load_notes(state, book_id).await else {
         return Vec::new();
     };
@@ -459,7 +460,7 @@ pub(crate) async fn transcript_spans(state: &AppState, book_id: &str) -> Vec<Tra
     for note in notes
         .chapters
         .iter()
-        .filter(|note| note.source == TextSource::Transcript)
+        .filter(|note| note.source == TextSource::Transcript && note.start_seconds < heard_through)
     {
         if let Some(saved) = read_transcript(&transcript_path(state, book_id, note.index)).await {
             spans.extend(saved.spans);
@@ -675,8 +676,6 @@ async fn set_status(book_id: &str, change: impl FnOnce(&mut GenerationStatus)) {
     }
 }
 
-struct Stopped;
-
 /// A chapter as generation sees it: where it is, and its words once found.
 struct ChapterPlan {
     index: usize,
@@ -703,12 +702,7 @@ fn chapter_plans(book: &Book, map: Option<&alignment::SyncMap>) -> Vec<ChapterPl
                 index,
                 title: chapter.title.clone(),
                 start_seconds: chapter.start_seconds,
-                end_seconds: book
-                    .chapters
-                    .get(index + 1)
-                    .map(|next| next.start_seconds)
-                    .or(chapter.end_seconds)
-                    .or(book.duration_seconds),
+                end_seconds: agent::chapter_end(book, index),
                 ebook_text: None,
             })
             .collect()
@@ -725,19 +719,6 @@ fn chapter_plans(book: &Book, map: Option<&alignment::SyncMap>) -> Vec<ChapterPl
         }
     }
     plans
-}
-
-async fn read_sentence_map(path: PathBuf) -> Option<alignment::SyncMap> {
-    let map = tokio::task::spawn_blocking(move || -> anyhow::Result<alignment::SyncMap> {
-        Ok(serde_json::from_slice(&std::fs::read(&path)?)?)
-    })
-    .await
-    .ok()?
-    .ok()?;
-    map.precision
-        .as_deref()
-        .is_none_or(|precision| precision == alignment::PRECISION_SENTENCE)
-        .then_some(map)
 }
 
 fn text_hash(text: &str) -> String {
@@ -766,7 +747,7 @@ async fn run_generation(
         return;
     };
     match outcome {
-        Ok(()) | Err(GenerateError::Stopped(Stopped)) => {
+        Ok(()) | Err(GenerateError::Stopped) => {
             generations.remove(&book_id);
         }
         Err(GenerateError::Failed(message)) => {
@@ -777,7 +758,7 @@ async fn run_generation(
 }
 
 enum GenerateError {
-    Stopped(Stopped),
+    Stopped,
     Failed(String),
 }
 
@@ -794,7 +775,7 @@ async fn generate(
 ) -> Result<(), GenerateError> {
     let stop_check = || {
         if cancel.load(Ordering::Relaxed) {
-            Err(GenerateError::Stopped(Stopped))
+            Err(GenerateError::Stopped)
         } else {
             Ok(())
         }
@@ -814,12 +795,22 @@ async fn generate(
         (book, sync_path, tracks)
     };
     let map = match sync_path {
-        Some(path) => read_sentence_map(path).await,
+        Some(path) => alignment::SyncMap::read(path)
+            .await
+            .ok()
+            .filter(alignment::SyncMap::is_sentence_precise),
         None => None,
     };
     let plans = chapter_plans(&book, map.as_ref());
     let settings = load_settings(state).await;
     let provider = settings.provider;
+    // One client for the whole run, so chapters reuse the connection.
+    let client = http_client_builder()
+        .timeout(Duration::from_secs(10 * 60))
+        .build()
+        .map_err(|_| {
+            GenerateError::Failed("Could not prepare a connection to the model provider.".into())
+        })?;
     let mut notes = load_notes(state, book_id).await.unwrap_or_default();
     // Notes for chapters the book no longer has would mislead.
     notes.chapters.retain(|note| {
@@ -983,7 +974,7 @@ async fn generate(
                     text: chapter_text,
                     prior: &prior_summaries,
                 };
-                let written = write_note(provider, &request)
+                let written = write_note(&client, provider, &request)
                     .await
                     .map_err(GenerateError::Failed)?;
                 note.synopsis = Some(written.synopsis);
@@ -1231,12 +1222,13 @@ fn provider_error(status: reqwest::StatusCode, body: &str) -> String {
     }
 }
 
-async fn write_note(provider: &Provider, request: &NoteRequest<'_>) -> Result<WrittenNote, String> {
-    let client = http_client_builder()
-        .timeout(Duration::from_secs(10 * 60))
-        .build()
-        .map_err(|_| "Could not prepare a connection to the model provider.".to_string())?;
-    let (http_request, anthropic) = match provider.kind {
+async fn write_note(
+    client: &reqwest::Client,
+    provider: &Provider,
+    request: &NoteRequest<'_>,
+) -> Result<WrittenNote, String> {
+    type Parse = fn(&serde_json::Value) -> Result<WrittenNote, String>;
+    let (http_request, parse): (_, Parse) = match provider.kind {
         ProviderKind::Anthropic => {
             let mut builder = client
                 .post(ANTHROPIC_API)
@@ -1246,7 +1238,7 @@ async fn write_note(provider: &Provider, request: &NoteRequest<'_>) -> Result<Wr
             if takes_server_fallback(&provider.model) {
                 builder = builder.header("anthropic-beta", "server-side-fallback-2026-07-01");
             }
-            (builder, true)
+            (builder, anthropic_note)
         }
         ProviderKind::OpenAiCompatible => {
             let base = provider.base_url.as_deref().unwrap_or_default();
@@ -1256,7 +1248,7 @@ async fn write_note(provider: &Provider, request: &NoteRequest<'_>) -> Result<Wr
             if let Some(key) = &provider.api_key {
                 builder = builder.bearer_auth(key);
             }
-            (builder, false)
+            (builder, openai_note)
         }
     };
     let response = http_request
@@ -1273,11 +1265,7 @@ async fn write_note(provider: &Provider, request: &NoteRequest<'_>) -> Result<Wr
     }
     let reply: serde_json::Value = serde_json::from_str(&body)
         .map_err(|_| "The model provider's reply was not JSON.".to_string())?;
-    if anthropic {
-        anthropic_note(&reply)
-    } else {
-        openai_note(&reply)
-    }
+    parse(&reply)
 }
 
 // ---------------------------------------------------------------------------
@@ -1309,9 +1297,7 @@ async fn book_notes_response(state: &AppState, book_id: &str) -> BookChapterNote
 }
 
 async fn ensure_book(state: &AppState, auth: &AuthUser, book_id: &str) -> Result<(), ApiError> {
-    if !can_access_book(auth, book_id) {
-        return Err(ApiError::not_found("Book not found"));
-    }
+    require_book_access(auth, book_id)?;
     state.library.read().await.book(book_id).map(|_| ())
 }
 

@@ -42,6 +42,23 @@ pub struct SyncMap {
     pub recovery_gaps: Vec<RecoveryGap>,
 }
 
+impl SyncMap {
+    /// Reads a map off the async runtime: a long book's map is several
+    /// megabytes of JSON.
+    pub(crate) async fn read(path: std::path::PathBuf) -> anyhow::Result<Self> {
+        tokio::task::spawn_blocking(move || Ok(serde_json::from_slice(&std::fs::read(&path)?)?))
+            .await?
+    }
+
+    /// Whether the map follows the narration sentence by sentence, rather
+    /// than estimating where chapters fall.
+    pub(crate) fn is_sentence_precise(&self) -> bool {
+        self.precision
+            .as_deref()
+            .is_none_or(|precision| precision == PRECISION_SENTENCE)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryGap {

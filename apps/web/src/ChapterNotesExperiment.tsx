@@ -8,12 +8,9 @@ import {
   type ChapterNotesProviderKind,
   type ChapterNotesStatus
 } from "./api";
+import { errorMessage } from "./formatting";
 
 const DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5";
-
-function failureMessage(failure: unknown, fallback: string) {
-  return failure instanceof Error && failure.message ? failure.message : fallback;
-}
 
 /** The switch for chapter notes, and the owner's choice of model. */
 export function ChapterNotesExperiment({ isOwner }: { isOwner: boolean }) {
@@ -34,7 +31,7 @@ export function ChapterNotesExperiment({ isOwner }: { isOwner: boolean }) {
     try {
       setStatus(await setChapterNotesEnabled(!status.enabled));
     } catch (failure) {
-      setError(failureMessage(failure, "Could not change chapter notes."));
+      setError(errorMessage(failure, "Could not change chapter notes."));
     } finally {
       setBusy(false);
     }
@@ -108,7 +105,7 @@ function ProviderForm({ status, onSaved }: { status: ChapterNotesStatus; onSaved
       }));
       setApiKey("");
     } catch (failure) {
-      setError(failureMessage(failure, "Could not save the model."));
+      setError(errorMessage(failure, "Could not save the model."));
     } finally {
       setBusy(false);
     }
@@ -121,7 +118,7 @@ function ProviderForm({ status, onSaved }: { status: ChapterNotesStatus; onSaved
       onSaved(await removeChapterNotesProvider());
       setApiKey("");
     } catch (failure) {
-      setError(failureMessage(failure, "Could not remove the model."));
+      setError(errorMessage(failure, "Could not remove the model."));
     } finally {
       setBusy(false);
     }
