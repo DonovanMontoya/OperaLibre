@@ -8,7 +8,9 @@ type ReaderWindow = Window & {
     rendition: {
       annotations: { _annotations: Record<string, { cfiRange: string }> };
       getContents(): Array<{ cfiFromRange(range: Range): string }>;
+      display(target?: string): Promise<unknown>;
       currentLocation(): { start: { cfi: string; href: string } };
+      location?: { start: { cfi: string; href: string } };
       manager: { container: HTMLElement };
     };
   };
@@ -42,6 +44,50 @@ const annotations = (page: Page) => page.evaluate(() =>
 
 const place = (page: Page) => page.evaluate(() =>
   (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation().start?.cfi);
+
+for (const nestedToc of [false, true]) {
+  test(`the immersive contents sheet navigates to the selected chapter (nested contents: ${nestedToc})`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => {
+      if (window === window.top) localStorage.setItem('operalibre.readerFollow', '1');
+    });
+    await page.goto(`${url}test/reader-catch-up.html?immersive&narration${nestedToc ? "&nested-toc" : ""}`);
+    await expect(page.frameLocator('.epub-stage iframe').locator('h1')).toHaveText('Chapter 1');
+    await expect.poll(() => annotations(page)).toHaveLength(1);
+    // A toolbar or viewport change can resize the page while the chapter
+    // jump is queued. The old chapter must not remain the saved anchor.
+    await page.evaluate(() => {
+      const rendition = (window as unknown as ReaderWindow).__operalibreReader.rendition;
+      const display = rendition.display.bind(rendition);
+      rendition.display = async (target) => {
+        if (target === 'c2.xhtml#start') {
+          rendition.display = display;
+          document.querySelector<HTMLElement>('.epub-stage')!.style.height = '400px';
+          await new Promise(requestAnimationFrame);
+          await new Promise(requestAnimationFrame);
+        }
+        return display(target);
+      };
+    });
+    for (const chapter of [2, 3, 1, 2]) {
+      await page.getByRole('button', { name: 'Contents', exact: true }).click();
+      await page.locator('.epub-sheet').getByRole('button', { name: `Chapter ${chapter}`, exact: true }).click();
+      await expect(page.locator('.epub-sheet')).toHaveCount(0);
+      await expect(page.frameLocator('.epub-stage iframe').locator('h1')).toHaveText(`Chapter ${chapter}`);
+      await expect(page.frameLocator('.epub-stage iframe').locator('h1')).toBeVisible();
+      await expect.poll(() => page.evaluate(() =>
+        (window as unknown as ReaderWindow).__operalibreReader.rendition.location?.start?.href)).toBe(`c${chapter}.xhtml`);
+      await expect.poll(() => page.evaluate(() =>
+        localStorage.getItem('operalibre.reader.catch-up-fixture.fixture.location'))).toBe(await place(page));
+      await expect(page.getByRole('button', { name: 'Follow narration', exact: true })).toHaveAttribute('aria-pressed', 'false');
+    }
+    const selected = await place(page);
+    await page.getByRole('button', { name: 'Close the reader', exact: true }).click();
+    await page.getByRole('button', { name: 'Open ebook', exact: true }).click();
+    await expect(page.frameLocator('.epub-stage iframe').locator('h1')).toHaveText('Chapter 2');
+    await expect.poll(() => place(page)).toBe(selected);
+  });
+}
 
 test('a resize before the first page reports its location lays the page out again', async ({ page }) => {
   // epub.js reports the first location a frame after the page is shown. Hold
