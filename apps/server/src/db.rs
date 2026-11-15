@@ -18,7 +18,7 @@ use crate::*;
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Bumped when the schema changes in a way `migrate` has to react to.
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
 
 /// Marks a database that is the authority over any legacy JSON files beside
 /// it: either it finished importing them, or it never had any to import.
@@ -94,7 +94,28 @@ CREATE TABLE IF NOT EXISTS book_settings (
     user_id     TEXT NOT NULL,
     book_id     TEXT NOT NULL,
     volume_gain REAL NOT NULL,
+    -- 0 when the row only records auto_volume and volume_gain is a
+    -- placeholder: the listener never set a level for this book.
+    manual      INTEGER NOT NULL DEFAULT 1,
+    -- 0 when the listener switched the suggested gain off for this book.
+    auto_volume INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (user_id, book_id)
+);
+
+-- Loudness measurements per book, derived from the audio and never written
+-- back to it. Rebuilt whenever the book's fingerprint changes, so it is not
+-- part of a backup.
+CREATE TABLE IF NOT EXISTS audio_analysis (
+    book_id            TEXT PRIMARY KEY,
+    fingerprint        TEXT NOT NULL,
+    analyzer_version   INTEGER NOT NULL,
+    analyzed_at        INTEGER NOT NULL,
+    sampled_seconds    REAL NOT NULL,
+    -- NULL when the book could not be measured.
+    integrated_lufs    REAL,
+    true_peak_dbtp     REAL,
+    track_spread_lu    REAL,
+    channel_balance_db REAL
 );
 
 CREATE TABLE IF NOT EXISTS activity (
@@ -150,6 +171,9 @@ pub(crate) fn open(path: &FsPath) -> anyhow::Result<Connection> {
             }
             if version < 4 {
                 upgrade_v3_to_v4(&mut connection)?;
+            }
+            if version < 5 {
+                upgrade_v4_to_v5(&mut connection)?;
             }
         }
     }
@@ -212,6 +236,23 @@ fn upgrade_v3_to_v4(connection: &mut Connection) -> anyhow::Result<()> {
         transaction.execute_batch("ALTER TABLE progress ADD COLUMN recording TEXT;")?;
     }
     transaction.execute("UPDATE schema_version SET version = 4", [])?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Adds the per-book auto-volume columns. Existing rows were all set by hand,
+/// which is what the defaults record. The `audio_analysis` table is created
+/// by the schema itself.
+fn upgrade_v4_to_v5(connection: &mut Connection) -> anyhow::Result<()> {
+    let transaction = connection.transaction()?;
+    for column in ["manual", "auto_volume"] {
+        if !table_has_column(&transaction, "book_settings", column)? {
+            transaction.execute_batch(&format!(
+                "ALTER TABLE book_settings ADD COLUMN {column} INTEGER NOT NULL DEFAULT 1;"
+            ))?;
+        }
+    }
+    transaction.execute("UPDATE schema_version SET version = 5", [])?;
     transaction.commit()?;
     Ok(())
 }
