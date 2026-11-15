@@ -69,6 +69,8 @@ mod app;
 mod auth;
 mod backup;
 mod catalogue;
+mod chapter_notes;
+mod cloud_recognition;
 mod compact_audio;
 mod companions;
 mod config;
