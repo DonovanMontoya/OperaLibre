@@ -1180,6 +1180,18 @@ fn parse_note(text: &str) -> Result<WrittenNote, String> {
         .map_or(trimmed, |(start, end)| &trimmed[start..=end]);
     let note: WrittenNote = serde_json::from_str(body)
         .map_err(|_| "The model's reply was not the notes it was asked for.".to_string())?;
+    if note.synopsis.len() > 16 * 1024
+        || note.summary.len() > 128 * 1024
+        || note.people.len() > 60
+        || note.terms.len() > 60
+        || note
+            .people
+            .iter()
+            .chain(&note.terms)
+            .any(|item| item.len() > 4096)
+    {
+        return Err("The model returned notes exceeding the size limits.".into());
+    }
     if note.summary.trim().is_empty() {
         return Err("The model wrote an empty summary.".into());
     }
@@ -1256,10 +1268,11 @@ async fn write_note(
         .await
         .map_err(|_| "Could not reach the model provider.".to_string())?;
     let status = response.status();
-    let body = response
-        .text()
+    let bytes = provider_response::read(response, 2 * 1024 * 1024)
         .await
-        .map_err(|_| "The model provider's reply was cut off.".to_string())?;
+        .map_err(|_| "The model provider reply was too large or interrupted.".to_string())?;
+    let body = String::from_utf8(bytes)
+        .map_err(|_| "The model provider reply was not UTF-8.".to_string())?;
     if !status.is_success() {
         return Err(provider_error(status, &body));
     }
@@ -1492,5 +1505,26 @@ mod tests {
                 .get("fallbacks")
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod response_budget_tests {
+    #[test]
+    fn rejects_oversized_note_fields_before_persisting() {
+        let mut note =
+            serde_json::json!({"synopsis":"Brief", "summary":"Summary", "people":[], "terms":[]});
+        assert!(super::parse_note(&note.to_string()).is_ok());
+        for field in ["synopsis", "summary"] {
+            let old = note[field].clone();
+            note[field] = "x".repeat(128 * 1024 + 1).into();
+            assert!(super::parse_note(&note.to_string()).is_err());
+            note[field] = old;
+        }
+        note["people"] = serde_json::json!(["x".repeat(4097)]);
+        assert!(super::parse_note(&note.to_string()).is_err());
+        note["people"] = serde_json::json!([]);
+        note["terms"] = serde_json::json!(vec!["term"; 61]);
+        assert!(super::parse_note(&note.to_string()).is_err());
     }
 }

@@ -44,7 +44,7 @@ const SCOPES: { scope: AgentScope; title: string; detail: string; reads: boolean
   {
     scope: "getBooks",
     title: "Get books for you",
-    detail: "See what you own on Audible and Libro.fm, and add a book to this server when you ask. If your Audible downloads need approval, it asks the owner instead.",
+    detail: "See what you own on Audible and Libro.fm. To add or request a book, you confirm it yourself on Get books.",
     reads: false
   }
 ];

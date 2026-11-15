@@ -6,13 +6,14 @@
 
 use std::fs::{File, Metadata};
 use std::io::{Read, Seek, SeekFrom};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const MAX_HEADER_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CACHE_BYTES: usize = 32 * 1024 * 1024;
 
 pub(crate) struct CompactHeader {
-    pub bytes: Arc<[u8]>,
+    pub bytes: bytes::Bytes,
     pub removed: u64,
 }
 
@@ -47,40 +48,68 @@ impl FileKey {
 // stream probes must not each allocate another large source index.
 static CACHE: Mutex<Vec<(FileKey, Option<Arc<CompactHeader>>)>> = Mutex::new(Vec::new());
 
-pub(crate) fn cached_header(file: &mut File, metadata: &Metadata) -> Option<Arc<CompactHeader>> {
+static HEADER_BUDGET: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(MAX_CACHE_BYTES)));
+
+struct BudgetedHeader {
+    bytes: bytes::Bytes,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl AsRef<[u8]> for BudgetedHeader {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+fn retain_header(
+    mut header: CompactHeader,
+    budget: Arc<Semaphore>,
+) -> Result<Arc<CompactHeader>, crate::ApiError> {
+    let permit = budget
+        .try_acquire_many_owned(header.bytes.len() as u32)
+        .map_err(|_| {
+            crate::ApiError::too_many_requests("Compact audio streams are busy. Try again shortly.")
+        })?;
+    // Bytes slices keep the permit alive even after eviction or request cancellation.
+    header.bytes = bytes::Bytes::from_owner(BudgetedHeader {
+        bytes: header.bytes,
+        _permit: permit,
+    });
+    Ok(Arc::new(header))
+}
+
+pub(crate) fn cached_header(
+    file: &mut File,
+    metadata: &Metadata,
+) -> Result<Option<Arc<CompactHeader>>, crate::ApiError> {
     let key = FileKey::new(metadata);
-    let mut cache = CACHE.lock().ok()?;
-    // Unix ctime and inode distinguish replacements even with a preserved
-    // mtime. Other platforms still compact, without retaining file identities.
+    let mut cache = CACHE
+        .lock()
+        .map_err(|_| crate::ApiError::internal("Compact audio cache unavailable"))?;
     if cfg!(unix)
         && let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key)
     {
         let entry = cache.remove(index);
         let result = entry.1.clone();
         cache.push(entry);
-        return result;
+        return Ok(result);
     }
-    let result = compact_header(file, metadata.len()).map(Arc::new);
-    if FileKey::new(&file.metadata().ok()?) != key {
-        return None;
+    let result = compact_header(file, metadata.len());
+    if file.metadata().ok().as_ref().map(FileKey::new).as_ref() != Some(&key) {
+        return Ok(None);
     }
+    let incoming = result.as_ref().map_or(0, |header| header.bytes.len());
+    while !cache.is_empty() && (cache.len() >= 64 || HEADER_BUDGET.available_permits() < incoming) {
+        cache.remove(0);
+    }
+    let result = result
+        .map(|header| retain_header(header, HEADER_BUDGET.clone()))
+        .transpose()?;
     if cfg!(unix) {
-        let incoming = result.as_ref().map_or(0, |header| header.bytes.len());
-        while !cache.is_empty()
-            && (cache.len() >= 64
-                || cache
-                    .iter()
-                    .filter_map(|(_, header)| header.as_ref())
-                    .map(|header| header.bytes.len())
-                    .sum::<usize>()
-                    + incoming
-                    > MAX_CACHE_BYTES)
-        {
-            cache.remove(0);
-        }
         cache.push((key, result.clone()));
     }
-    result
+    Ok(result)
 }
 
 /// Accept a single, ordinary faststart MP4. Fragment offsets and auxiliary
@@ -162,7 +191,8 @@ pub(crate) fn compact_header(file: &mut File, length: u64) -> Option<CompactHead
         }
     }
     Some(CompactHeader {
-        bytes: bytes.into(),
+        // Discard capacity reserved for artwork removed during compaction.
+        bytes: bytes.into_boxed_slice().into(),
         removed,
     })
 }
@@ -321,6 +351,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn response_slices_hold_the_budget_after_cache_eviction() {
+        let budget = Arc::new(Semaphore::new(8));
+        let header = retain_header(
+            CompactHeader {
+                bytes: vec![0; 8].into(),
+                removed: 0,
+            },
+            budget.clone(),
+        )
+        .unwrap();
+        let response = header.bytes.slice(0..1);
+        drop(header);
+        assert_eq!(budget.available_permits(), 0);
+        assert!(
+            retain_header(
+                CompactHeader {
+                    bytes: vec![0; 1].into(),
+                    removed: 0
+                },
+                budget.clone()
+            )
+            .is_err()
+        );
+        drop(response);
+        assert_eq!(budget.available_permits(), 8);
+        assert!(
+            retain_header(
+                CompactHeader {
+                    bytes: vec![0; 8].into(),
+                    removed: 0
+                },
+                budget
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn omits_embedded_artwork_but_keeps_text_metadata_and_audio() {
         let source = fixture(false, false);
         let moov_start = read_u32(&source, 0).unwrap() as usize;
@@ -416,7 +484,7 @@ pub(crate) mod tests {
         let mut file = tempfile::tempfile().unwrap();
         std::io::Write::write_all(&mut file, &source).unwrap();
         let metadata = file.metadata().unwrap();
-        let first = cached_header(&mut file, &metadata).unwrap();
+        let first = cached_header(&mut file, &metadata).unwrap().unwrap();
         let pos = source.windows(4).position(|part| part == b"stsz").unwrap() + 16;
         source[pos..pos + 4].copy_from_slice(&3_u32.to_be_bytes());
         file.seek(SeekFrom::Start(0)).unwrap();
@@ -424,7 +492,7 @@ pub(crate) mod tests {
         file.set_times(std::fs::FileTimes::new().set_modified(metadata.modified().unwrap()))
             .unwrap();
         let metadata = file.metadata().unwrap();
-        let second = cached_header(&mut file, &metadata).unwrap();
+        let second = cached_header(&mut file, &metadata).unwrap().unwrap();
         assert_ne!(first.bytes, second.bytes);
         assert_eq!(first.removed, second.removed);
     }
