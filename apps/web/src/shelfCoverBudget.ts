@@ -23,3 +23,17 @@ export function shelfCoverEvictions(files: CachedShelfCover[], incomingBytes: nu
   }
   return evictions;
 }
+
+/** Keep every distinct request, but fetch and mutate the cache one at a time. */
+export function createShelfCoverQueue() {
+  let tail = Promise.resolve();
+  const pending = new Map<string, Promise<void>>();
+  return (key: string, write: () => Promise<void>): Promise<void> => {
+    const existing = pending.get(key);
+    if (existing) return existing;
+    const job = tail.then(write).finally(() => pending.delete(key));
+    pending.set(key, job);
+    tail = job.catch(() => undefined);
+    return job;
+  };
+}

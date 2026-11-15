@@ -16,3 +16,27 @@ test("cover budget limits tiny orphaned files and rejects unknown sizes", () => 
   assert.deepEqual(shelfCoverEvictions(files, 1), ["0"]);
   assert.throws(() => shelfCoverEvictions([{ path: "unknown", size: NaN, mtime: 0 }], 1));
 });
+
+test("simultaneous covers are all kept, deduplicated, and serialized after failures", async () => {
+  const { createShelfCoverQueue } = await import("../src/shelfCoverBudget.ts");
+  const queue = createShelfCoverQueue();
+  const events: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const first = queue("first", async () => {
+    events.push("first");
+    await gate;
+    throw new Error("failed fetch");
+  });
+  const failure = assert.rejects(first, /failed fetch/);
+  assert.equal(queue("first", async () => { events.push("duplicate"); }), first);
+  const second = queue("second", async () => { events.push("second"); });
+  const third = queue("third", async () => { events.push("third"); });
+  await Promise.resolve();
+  assert.deepEqual(events, ["first"]);
+  release();
+  await Promise.all([failure, second, third]);
+  assert.deepEqual(events, ["first", "second", "third"]);
+  await queue("first", async () => { events.push("retry"); });
+  assert.equal(events.at(-1), "retry");
+});
