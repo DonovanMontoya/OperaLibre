@@ -193,23 +193,6 @@ export function readalongMatchScore(target: ParsedReadalongLabel, item: ParsedRe
 
 export const LABEL_MATCH_THRESHOLD = 70;
 
-/** The table-of-contents entry that best names the chapter being played. */
-export function findTocHrefForChapterTitle<T extends { href: string; label: string }>(
-  toc: T[],
-  chapterTitle: string
-) {
-  const parsedTarget = parseReadalongLabel(chapterTitle);
-  const ranked = toc
-    .filter((item) => item.href)
-    .map((item) => ({
-      href: item.href,
-      score: readalongMatchScore(parsedTarget, parseReadalongLabel(item.label))
-    }))
-    .sort((a, b) => b.score - a.score);
-  const best = ranked[0];
-  return best && best.score >= LABEL_MATCH_THRESHOLD ? best.href : null;
-}
-
 // ---------------------------------------------------------------------------
 // Sync maps
 // ---------------------------------------------------------------------------
@@ -328,7 +311,7 @@ export function syncMapPrecision(map: SyncMap | null | undefined): SyncPrecision
 // What a book offers
 // ---------------------------------------------------------------------------
 
-type ReadAlongMode = SyncPrecision | "chapter" | "text";
+type ReadAlongMode = SyncPrecision | "unsynced" | "text";
 
 /**
  * How closely the reader can follow this book's audio, from what the book
@@ -342,11 +325,11 @@ export function readAlongMode(
   const file = book.readingFile;
   if (!file) return null;
   if (file.extension.toLowerCase() !== "epub") return "text";
-  if (!sentenceFollowAvailable) return "chapter";
+  if (!sentenceFollowAvailable) return "unsynced";
   // A loaded map is the truth; the book's promise only stands in until then.
-  if (map) return syncMapPrecision(map) ?? "chapter";
+  if (map) return syncMapPrecision(map) ?? "unsynced";
   if (hasPreciseSync(book)) return "sentence";
-  return "chapter";
+  return "unsynced";
 }
 
 export const READ_ALONG_MODE_LABELS: Record<ReadAlongMode, { title: string; detail: string }> = {
@@ -354,9 +337,9 @@ export const READ_ALONG_MODE_LABELS: Record<ReadAlongMode, { title: string; deta
     title: "Sentence sync",
     detail: "The narrated sentence is highlighted, and the page turns with the audio."
   },
-  chapter: {
-    title: "Chapter sync",
-    detail: "The reader opens to the chapter being played."
+  unsynced: {
+    title: "Not synced",
+    detail: "Read beside the audio. Following the narration needs a sync map for this book."
   },
   text: {
     title: "Companion text",
@@ -485,15 +468,6 @@ export function anchorAfterRelocation(
   }
   if (restoring) return { anchor, arrived: false };
   return { anchor: page.start, arrived: true };
-}
-
-export function shouldOpenPlayingChapter(
-  following: boolean,
-  playingChapterId: string | null,
-  handledChapterId: string | null
-): boolean {
-  if (!following || !playingChapterId) return false;
-  return playingChapterId !== handledChapterId;
 }
 
 type NarratedPageTurn = { cfi: string; from: string; layout: number };

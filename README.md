@@ -49,7 +49,7 @@ Grab a release from the [GitHub releases page](https://github.com/DonovanMontoya
 
 Combined installations notify administrators about new versions, and owners can install verified updates from the app. For step-by-step setup, see [Install a Release](docs/installing-a-release.md), then [Using OperaLibre](docs/using-operalibre.md) for phones, reader accounts, uploads, readalong, and Audible imports.
 
-An iPhone TestFlight build is also available: https://testflight.apple.com/join/x69Ffa33
+OperaLibre for iPhone and iPad is on the [App Store](https://apps.apple.com/us/app/operalibre/id6792065037). Beta builds are distributed through [TestFlight](https://testflight.apple.com/join/x69Ffa33); beta availability may vary.
 
 ## Build and run from source
 
@@ -107,10 +107,8 @@ For repeatable web, server, and native iOS checks and before/after measurements,
 [performance test suite](script/performance/README.md). Run `npm run test:perf` for the portable suite
 or `npm run test:perf:all` on a Mac with Xcode and an iOS Simulator runtime.
 
-This project uses [Jujutsu](https://jujutsu-vcs.github.io/) (`jj`) for version control:
-
 ```bash
-jj git clone https://github.com/DonovanMontoya/OperaLibre.git
+git clone https://github.com/DonovanMontoya/OperaLibre.git
 ```
 
 The server lives in `apps/server` (Rust/axum) and the frontend in `apps/web` (React/Vite). After changing the frontend, run `npm run sync:android` or `npm run sync:ios` before rebuilding the native apps.

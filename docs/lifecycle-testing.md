@@ -23,6 +23,7 @@ Coverage:
 - Network loss during buffered playback: an offline pause survives closing the tab and synchronizes after reconnection.
 - Signing out stops playback; another account starts with its own listening position.
 - Six signed-in listeners play real audio concurrently and save independent positions, without throughput or hardware saturation targets.
+- Every web screen at nine window sizes, from a phone in either orientation to an ultrawide desktop: no text or control is drawn over another, cut off by its own box, or pushes the page wider than the window. A failing size leaves a screenshot of each failing screen and an `issues.txt` listing what collided.
 
 Failure screenshots, traces and server logs are under `output/lifecycle`. The server unit/HTTP suite separately checks malformed backups, restore rollback and request cancellation. These browser tests check completed writes surviving process termination; they do not establish power-loss durability or recovery from termination halfway through a multi-file restore.
 

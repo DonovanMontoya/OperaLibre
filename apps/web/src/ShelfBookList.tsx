@@ -210,6 +210,7 @@ export const ShelfBookList = memo(function ShelfBookList({
   native,
   readalongEnabled,
   sentenceFollowAvailable,
+  sentenceFollowAvailableForBook,
   onSelectBook,
   onToggleGroup
 }: {
@@ -229,6 +230,7 @@ export const ShelfBookList = memo(function ShelfBookList({
   native: boolean;
   readalongEnabled: boolean;
   sentenceFollowAvailable: boolean;
+  sentenceFollowAvailableForBook?: (book: Book) => boolean;
   onSelectBook: (book: Book) => void;
   onToggleGroup: (label: string) => void;
 }) {
@@ -296,7 +298,7 @@ export const ShelfBookList = memo(function ShelfBookList({
         // shortening it costs a screen reader nothing.
         const progressLabel = isCompactView ? compactProgressLabel(book) : bookProgressLabel(book);
         const compactProgressTitle = isCompactView ? bookProgressLabel(book) : undefined;
-        const followAlong = bookReadingAvailability(book, sentenceFollowAvailable) === "followAlong";
+        const followAlong = bookReadingAvailability(book, sentenceFollowAvailableForBook?.(book) ?? (book.source !== "device" && sentenceFollowAvailable)) === "followAlong";
         const readingLabel = followAlong ? "Follow along" : "Ebook";
         const readingTitle = followAlong ? "Synced ebook: text follows the audio" : "Ebook included: read beside the audio";
         const sortTag = tagForShelfSort(book, shelfTags);

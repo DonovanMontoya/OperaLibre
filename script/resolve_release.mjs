@@ -79,12 +79,14 @@ export function nightlyFeedMatches(feed, release) {
 
 function main() {
   const repository = process.env.GITHUB_REPOSITORY;
-  const api = (route) => JSON.parse(execFileSync("gh", ["api", `repos/${repository}/${route}`], { encoding: "utf8" }));
-  // Full release objects grow past execFileSync's default output limit quickly.
+  // A comparison carries every changed file's patch, and full release objects
+  // grow quickly too: both pass execFileSync's default 1 MiB output limit.
+  const maxBuffer = 64 * 1024 * 1024;
+  const api = (route) => JSON.parse(execFileSync("gh", ["api", `repos/${repository}/${route}`], { encoding: "utf8", maxBuffer }));
   const paginate = (route) => {
     const fields = route === "tags" ? ".[] | {name} | @json"
       : '.[] | {tag_name, draft, prerelease, published_at, assets: [.assets[] | select(.name == "operalibre-manifest-v1.json") | {name, digest, state}]} | @json';
-    const output = execFileSync("gh", ["api", "--paginate", `repos/${repository}/${route}?per_page=100`, "--jq", fields], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }).trim();
+    const output = execFileSync("gh", ["api", "--paginate", `repos/${repository}/${route}?per_page=100`, "--jq", fields], { encoding: "utf8", maxBuffer }).trim();
     return output ? output.split("\n").map((line) => JSON.parse(line)) : [];
   };
   const event = process.env.RELEASE_EVENT || process.env.GITHUB_EVENT_NAME;

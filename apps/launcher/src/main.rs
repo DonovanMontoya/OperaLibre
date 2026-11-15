@@ -429,40 +429,46 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     let trial_token = update_trial_token()?;
     wait_for_server_exit(server_pid, port)?;
 
-    let backup_root = data_dir(&install_root).join("update-backups").join(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("Could not create an update timestamp: {error}"))?
-            .as_secs()
-            .to_string(),
-    );
+    let backups = data_dir(&install_root).join("update-backups");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("Could not create an update timestamp: {error}"))?
+        .as_secs();
     let server_name = server_binary_name();
     let install_server = install_root.join(server_name);
     let install_web = install_root.join("web");
     let install_version = install_root.join("VERSION.txt");
-    let data_snapshot = backup_root.join("data");
-    let preparation = update_backups::create_generation(&backup_root)
-        .map_err(|error| format!("Could not create {}: {error}", backup_root.display()))
-        .and_then(|()| {
+    let preparation = create_backup_generation(&backups, timestamp)
+        .map_err(|error| {
+            format!(
+                "Could not create an update backup in {}: {error}",
+                backups.display()
+            )
+        })
+        .and_then(|backup_root| {
             let result = prepare_update(&install_root, &backup_root, includes_web);
             if result.is_err() {
                 // Only clean up a snapshot made by this transaction.
-                let _ = fs::remove_dir_all(&data_snapshot);
+                let _ = fs::remove_dir_all(backup_root.join("data"));
             }
-            result
+            result.map(|()| backup_root)
         });
-    if let Err(staging_error) = preparation {
-        let restart = start_server(&install_root, false, None).and_then(require_ready_start);
-        return Err(match restart {
-            Ok(()) => format!(
-                "Could not prepare the update; the previous server was restarted: {staging_error}"
-            ),
-            Err(restart_error) => format!(
-                "Could not prepare the update ({staging_error}), and could not restart the previous server ({restart_error}). Check {}.",
-                backup_root.display()
-            ),
-        });
-    }
+    let backup_root = match preparation {
+        Ok(backup_root) => backup_root,
+        Err(staging_error) => {
+            let restart = start_server(&install_root, false, None).and_then(require_ready_start);
+            return Err(match restart {
+                Ok(()) => format!(
+                    "Could not prepare the update; the previous server was restarted: {staging_error}"
+                ),
+                Err(restart_error) => format!(
+                    "Could not prepare the update ({staging_error}), and could not restart the previous server ({restart_error}). Check {}.",
+                    backups.display()
+                ),
+            });
+        }
+    };
+    let data_snapshot = backup_root.join("data");
 
     let install_result = (|| -> Result<(), String> {
         move_required(&package_root.join(server_name), &install_server)?;
@@ -513,6 +519,23 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// A rolled-back update keeps its generation for recovery, and a retry can
+/// start within the same second. Take the next free number so the retry gets
+/// its own generation and still sorts after the one it follows.
+fn create_backup_generation(backups: &Path, mut timestamp: u64) -> std::io::Result<PathBuf> {
+    // Outside the loop: a file in place of the folder also reports
+    // AlreadyExists, and must fail the update rather than retry forever.
+    fs::create_dir_all(backups)?;
+    loop {
+        let backup = backups.join(timestamp.to_string());
+        match update_backups::create_generation(&backup) {
+            Ok(()) => return Ok(backup),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => timestamp += 1,
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn required_update_argument(
@@ -1720,6 +1743,25 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn an_update_in_the_same_second_keeps_the_rolled_back_generation() {
+        let root = scratch("backup-same-second");
+        let backups = root.join("update-backups");
+        let failed = super::create_backup_generation(&backups, 100).unwrap();
+        fs::write(failed.join("restore-required"), "kept for recovery").unwrap();
+        let retry = super::create_backup_generation(&backups, 100).unwrap();
+        assert_eq!(retry, backups.join("101"));
+        assert_eq!(
+            fs::read_to_string(failed.join("restore-required")).unwrap(),
+            "kept for recovery"
+        );
+        assert_eq!(fs::read_dir(&retry).unwrap().count(), 0);
+        let file = root.join("not-a-folder");
+        fs::write(&file, "").unwrap();
+        assert!(super::create_backup_generation(&file, 100).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

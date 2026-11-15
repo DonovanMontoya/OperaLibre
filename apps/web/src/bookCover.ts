@@ -3,6 +3,14 @@ import type { Book } from "./types";
 export const MAX_COVER_BYTES = 8 * 1024 * 1024;
 export const COVER_FILE_ACCEPT = "image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp";
 
+/** Other server types and external artwork keep their original image routes. */
+export function displayCoverPath(path: string): string {
+  if (!/^\/api\/books\/[^/?#]+\/cover(?:\?|$)/.test(path)) return path;
+  const url = new URL(path, "http://cover.invalid");
+  url.searchParams.set("size", "display");
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 export function coverFileError(file: Pick<File, "name" | "size" | "type">): string | null {
   if (file.size === 0) return "Choose an image that is not empty.";
   if (file.size > MAX_COVER_BYTES) return "The cover must be 8 MiB or smaller.";

@@ -14,6 +14,7 @@ import { MAX_COVER_BYTES, coverMediaKind, coverRevision } from "./bookCover.ts";
 import { revalidatedCompanion } from "./companionCache";
 import { downloadWebBook } from "./offlineDownload";
 import { inspectOfflineReadiness, offlineCompanions } from "./offlineReadiness.ts";
+import { loadGiftLocalSyncMap } from "./giftLocalSync.ts";
 import type { AuthUser, Book, CompanionFile, Progress, SyncMap, Track } from "./types";
 
 const DB_NAME = "operalibre-offline";
@@ -709,6 +710,7 @@ export async function cacheShelfCover(book: Book, url: string) {
   if (!Capacitor.isNativePlatform() || isDemoMode()) return;
   const path = shelfCoverPath(book);
   if (!path || shelfCoverWrites.has(path)) return;
+  const directory = coverCacheDirectory();
   shelfCoverWrites.add(path);
   try {
     if (await nonemptyNativeFile(path)) return;
@@ -717,7 +719,6 @@ export async function cacheShelfCover(book: Book, url: string) {
     if (!response.ok || !type.startsWith("image/")) return;
     const data = await response.arrayBuffer();
     if (!data.byteLength || data.byteLength > MAX_COVER_BYTES) return;
-    const directory = coverCacheDirectory();
     await ensureMediaDirectory(directory);
     await Filesystem.writeFile({ path, directory: MEDIA_DIRECTORY, data: toBase64(data) });
     // A replaced cover leaves its earlier revision behind; keep only the newest.
@@ -738,10 +739,14 @@ export async function getOfflineCoverUrl(book: Book, allowLegacy = navigator.onL
   // Restoring a book that has no embedded art must not resurrect a cached override.
   if (!book.coverArtUrl && book.hasCoverOverride !== undefined && book.source !== "device") return null;
   if (Capacitor.isNativePlatform()) {
+    // Most shelf books are not downloaded. Check their saved artwork before
+    // migrating/probing audio directories or enumerating older cover files.
+    const shelfPath = shelfCoverPath(book);
+    const shelfUrl = shelfPath ? await nativeFileUrl(shelfPath) : null;
+    if (shelfUrl) return shelfUrl;
     const path = await nativeCoverPath(book, allowLegacy);
     if (path) return nativeFileUrl(path);
-    const shelfPath = shelfCoverPath(book);
-    return shelfPath ? nativeFileUrl(shelfPath) : null;
+    return null;
   }
   const record = await webCoverRecord(book, allowLegacy);
   return record ? URL.createObjectURL(record.blob) : null;
@@ -842,15 +847,18 @@ export async function loadCompanionBytes(
 }
 
 /** The sync map stored with a downloaded book, for reading with no server. */
-export async function getOfflineSyncMap(book: Book): Promise<SyncMap | null> {
+export async function getOfflineSyncMap(book: Book, signal?: AbortSignal): Promise<SyncMap | null> {
   try {
+    if (signal?.aborted) return null;
+    if (book.source === "device") return await loadGiftLocalSyncMap(book, undefined, signal);
     if (Capacitor.isNativePlatform()) {
       const path = syncMapFilePath(book);
       await migrateLegacyBookDirectory(book);
       const url = await nativeFileUrl(path);
-      return url ? ((await (await fetch(url)).json()) as SyncMap) : null;
+      return url ? ((await (await fetch(url, { signal })).json()) as SyncMap) : null;
     }
     const record = await readMedia(book.id, SYNC_MAP_KIND);
+    if (signal?.aborted) return null;
     return record ? ((JSON.parse(await record.blob.text())) as SyncMap) : null;
   } catch {
     return null;
@@ -865,6 +873,7 @@ export async function getOfflineSyncMap(book: Book): Promise<SyncMap | null> {
  * must not fail the reader, which already has the map in hand.
  */
 export async function saveOfflineSyncMap(book: Book, map: SyncMap, signal?: AbortSignal): Promise<void> {
+  if (book.source === "device") return;
   // Freeze the destination before yielding: changing servers must never move
   // an in-flight write into the new server's cache.
   const scope = getServerStorageKey();

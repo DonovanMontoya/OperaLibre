@@ -1,6 +1,8 @@
+import { createPortal } from "react-dom";
 import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BookPreviewBar, type PreviewPosition } from "./BookPreviewBar";
 import { BookCredits } from "./BookCredits";
+import { ChapterNotesPanel } from "./ChapterNotesPanel";
 import type { useBookCompletion } from "./useBookCompletion";
 import type { useMetadataEditor } from "./useMetadataEditor";
 import type { useOfflineDownloads } from "./useOfflineDownloads";
@@ -62,10 +64,11 @@ import type { DeviceDownloadActivity } from "./SettingsCards";
 import { OfflineBookReadiness } from "./OfflineBookReadiness";
 import { offlineReadinessNeedsAttention } from "./offlineReadiness";
 import type { Dispatch, ReactNode, RefObject, SetStateAction, TouchEvent, UIEvent } from "react";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ServerCapabilities } from "./serverCapabilities";
 import { usePhoneWidthWindow } from "./useOrientation";
 import { useReadingQueue } from "./useReadingQueue";
+import { GiftShareAction, GiftShareDialog, useBookGiftSending } from "./GiftShareDialog";
 
 // Beyond this the segments are too thin to read or tap, and their fixed
 // borders/gaps overflow a phone screen; fall back to one continuous bar.
@@ -90,6 +93,7 @@ export function PlayerPane({
   closeReadalong,
   completionError,
   completionPendingBookId,
+  continueReadingBook,
   currentTrack,
   demoMode,
   descriptionCanExpand,
@@ -182,6 +186,7 @@ export function PlayerPane({
   closeReadalong: () => void;
   completionError: DeviceNotice | null;
   completionPendingBookId: string | null;
+  continueReadingBook: (book: Book, play?: boolean) => void;
   currentTrack: Track | null;
   demoMode: boolean;
   descriptionCanExpand: boolean;
@@ -257,6 +262,7 @@ export function PlayerPane({
   volume: number;
   withWebViewTransition: (update: () => void) => void;
 }) {
+  const giftSending = useBookGiftSending(isOperaLibre && !demoMode && !localMode);
   const {
     cancelOfflineDownload,
     downloadForOffline,
@@ -303,11 +309,24 @@ export function PlayerPane({
   } = uploads;
 
   const phoneWidth = usePhoneWidthWindow();
+  // The books most recently in progress, offered when nothing is open.
+  const resumeBooks = useMemo(() => books
+    .filter(book => book.progress?.status === "inProgress")
+    .sort((a, b) => Number(b.progress?.updatedAt ?? 0) - Number(a.progress?.updatedAt ?? 0))
+    .slice(0, 3), [books]);
   const compactActions = native || phoneWidth;
   const [bookActionsOpen, setBookActionsOpen] = useState(false);
+  const [giftOpen, setGiftOpen] = useState(false);
+  useEffect(() => setGiftOpen(false), [selectedBook?.id, giftSending]);
   const [bookActionsAbove, setBookActionsAbove] = useState(false);
   const bookActionsRef = useRef<HTMLDivElement>(null);
+  const bookActionsMenuRef = useRef<HTMLDivElement>(null);
   const bookActionsId = useId();
+  const giftWasOpen = useRef(false);
+  useLayoutEffect(() => {
+    if (giftWasOpen.current && !giftOpen) bookActionsRef.current?.querySelector<HTMLButtonElement>(".book-action-more")?.focus();
+    giftWasOpen.current = giftOpen;
+  }, [giftOpen]);
   const [queueIds, saveQueueIds] = useReadingQueue(readingQueueStorageKey);
   const selectedBookQueued = !!selectedBook && queueIds.includes(selectedBook.id);
   const [queueSaveFailed, setQueueSaveFailed] = useState(false);
@@ -317,20 +336,28 @@ export function PlayerPane({
     if (!bookActionsOpen) return;
     const placeMenu = () => {
       const rail = bookActionsRef.current?.querySelector<HTMLElement>(".book-action-rail");
-      const menu = bookActionsRef.current?.querySelector<HTMLElement>(".book-action-menu");
-      if (!rail || !menu) return;
-      const { top, bottom } = rail.getBoundingClientRect();
+      const menu = bookActionsMenuRef.current;
+      const anchor = rail ?? bookActionsRef.current?.querySelector<HTMLElement>(".book-action-more");
+      if (!anchor || !menu) return;
+      const { top, bottom, right } = anchor.getBoundingClientRect();
       const spaceBelow = window.innerHeight - bottom;
-      setBookActionsAbove(menu.offsetHeight + 8 > spaceBelow && top > spaceBelow);
+      const above = menu.scrollHeight + 8 > spaceBelow && top > spaceBelow;
+      setBookActionsAbove(above);
+      menu.style.maxHeight = `${Math.max(48, (above ? top : spaceBelow) - 16)}px`;
+      if (!compactActions) {
+        menu.style.left = `${Math.max(16, Math.min(window.innerWidth - menu.offsetWidth - 16, right - menu.offsetWidth))}px`;
+        menu.style.top = `${above ? top - menu.offsetHeight - 8 : bottom + 8}px`;
+      }
     };
     placeMenu();
     window.addEventListener("resize", placeMenu);
-    return () => window.removeEventListener("resize", placeMenu);
-  }, [bookActionsOpen]);
+    window.addEventListener("scroll", placeMenu, true);
+    return () => { window.removeEventListener("resize", placeMenu); window.removeEventListener("scroll", placeMenu, true); };
+  }, [bookActionsOpen, giftSending, compactActions]);
   useEffect(() => {
     if (!bookActionsOpen) return;
     const closeOutside = (event: Event) => {
-      if (event.target instanceof Node && !bookActionsRef.current?.contains(event.target)) {
+      if (event.target instanceof Node && !bookActionsRef.current?.contains(event.target) && !bookActionsMenuRef.current?.contains(event.target)) {
         setBookActionsOpen(false);
       }
     };
@@ -881,6 +908,7 @@ export function PlayerPane({
           ) : null}
           {native ? bookPageMasthead : <div className="book-page-masthead">{bookPageMasthead}</div>}
 
+          {giftOpen && giftSending && selectedBook.source !== "device" ? createPortal(<GiftShareDialog key={selectedBook.id} bookId={selectedBook.id} onClose={() => setGiftOpen(false)} />, document.body) : null}
           <div className="book-heading">
             <div className="book-cover-column">
               <CoverArt book={selectedBook} size="large" />
@@ -912,11 +940,16 @@ export function PlayerPane({
                           <span className="book-action-label">More</span>
                         </button>
                       </div>
-                      <div id={bookActionsId} role="group" aria-label="Book actions"
+                      <div ref={bookActionsMenuRef} id={bookActionsId} role="group" aria-label="Book actions"
                         className={`book-action-menu ${bookActionsOpen ? "is-open" : ""} ${bookActionsAbove ? "opens-up" : ""}`}
                         onClick={event => {
                           if (event.target instanceof Element && event.target.closest("button")) setBookActionsOpen(false);
                         }}>
+                        <GiftShareAction enabled={giftSending && selectedBook.source !== "device"} onOpen={() => {
+                          setBookActionsOpen(false);
+                          bookActionsRef.current?.querySelector<HTMLButtonElement>(".book-action-more")?.focus();
+                          setGiftOpen(true);
+                        }} />
                         {completionAction}
                         {resetAction}
                         {epubAction}
@@ -930,6 +963,16 @@ export function PlayerPane({
                       {resetAction}
                       {readAction}
                       {storageAction}
+                      {giftSending && selectedBook.source !== "device" ? <div className="book-action-overflow">
+                        <button type="button" className="download-btn book-action-more" aria-label="More book actions" aria-expanded={bookActionsOpen} aria-controls={bookActionsId} onClick={() => setBookActionsOpen(open => !open)}><Ellipsis size={13} /> More</button>
+                        {createPortal(<div ref={bookActionsMenuRef} id={bookActionsId} role="group" aria-label="Book actions" className={`book-action-menu is-desktop ${bookActionsOpen ? "is-open" : ""}`}>
+                          <GiftShareAction enabled={giftSending} onOpen={() => {
+                            setBookActionsOpen(false);
+                            bookActionsRef.current?.querySelector<HTMLButtonElement>(".book-action-more")?.focus();
+                            setGiftOpen(true);
+                          }} />
+                        </div>, document.body)}
+                      </div> : null}
                     </>
                   )}
                   {playbackError ? <span className="download-status">{playbackError}</span> : null}
@@ -1001,7 +1044,8 @@ export function PlayerPane({
                 {queueSaveFailed ? (
                   <span className="download-status" role="alert">Up Next could not be saved. Check available device storage and try again.</span>
                 ) : null}
-                {playbackBook && playbackBook.id !== selectedBook.id ? (
+                {/* The web mini player already shows what is playing. */}
+                {native && playbackBook && playbackBook.id !== selectedBook.id ? (
                   <button type="button" className="book-quick-return book-quick-now-playing" onClick={scrollToPlayer}>
                     <Headphones size={14} />
                     <span>Now playing <em>{playbackBook.title}</em></span>
@@ -1028,27 +1072,29 @@ export function PlayerPane({
                   the next. */}
               {!native ? (
                 <>
-                  <dl className="book-colophon">
-                    {[
-                      {
-                        label: "Series",
-                        value: selectedBook.metadata.series
-                          ? `${selectedBook.metadata.series}${selectedBook.metadata.seriesPosition ? ` · #${selectedBook.metadata.seriesPosition}` : ""}`
-                          : null
-                      },
-                      { label: "Published", value: displayPublishedDate(selectedBook.publishedDate) },
-                      { label: "Publisher", value: selectedBook.metadata.publisher || null },
-                      {
-                        label: "Runtime",
-                        value: formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ?? null
-                      }
-                    ].map((fact) => (
-                      <div key={fact.label}>
-                        <dt>{fact.label}</dt>
-                        <dd title={fact.value ?? undefined}>{fact.value ?? "—"}</dd>
-                      </div>
-                    ))}
-                  </dl>
+                  <div className="book-colophon-frame">
+                    <dl className="book-colophon">
+                      {[
+                        {
+                          label: "Series",
+                          value: selectedBook.metadata.series
+                            ? `${selectedBook.metadata.series}${selectedBook.metadata.seriesPosition ? ` · #${selectedBook.metadata.seriesPosition}` : ""}`
+                            : null
+                        },
+                        { label: "Published", value: displayPublishedDate(selectedBook.publishedDate) },
+                        { label: "Publisher", value: selectedBook.metadata.publisher || null },
+                        {
+                          label: "Runtime",
+                          value: formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ?? null
+                        }
+                      ].map((fact) => (
+                        <div key={fact.label}>
+                          <dt>{fact.label}</dt>
+                          <dd title={fact.value ?? undefined}>{fact.value ?? "—"}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
                   <div className="metadata-strip book-subjects">
                     {tagsForBook(selectedBook).map((tag) => (
                       <span className="metadata-custom-tag" key={tag.name}>
@@ -1138,6 +1184,8 @@ export function PlayerPane({
               ) : null}
             </div>
           ) : null}
+
+          <ChapterNotesPanel book={selectedBook} />
 
           {demoMode ? <DemoMediaCredits /> : null}
 
@@ -1524,7 +1572,33 @@ export function PlayerPane({
           {books.length > 0 ? (
             <>
               <h2>Nothing <em>playing</em></h2>
-              <p>Choose a book from your shelf to begin listening.</p>
+              {resumeBooks.length ? (
+                <>
+                  <p>Pick up where you left off.</p>
+                  <div className="empty-player-books">
+                    {resumeBooks.map(book => (
+                      <button key={book.id} type="button" className="empty-player-book" onClick={() => continueReadingBook(book)}>
+                        <CoverArt book={book} size="small" />
+                        <span className="empty-player-book-copy">
+                          <strong>{book.title}</strong>
+                          {book.author ? <em>{book.author}</em> : null}
+                          {book.progress?.percentComplete != null ? (
+                            <small>{Math.round(book.progress.percentComplete)}% listened</small>
+                          ) : null}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p>Choose a book from your shelf to begin listening.</p>
+              )}
+              {/* Only shown where the library is a drawer; a wide window
+                  already has the shelf beside this page. */}
+              <button type="button" className="empty-player-browse" onClick={() => setLibraryOpen(true)}>
+                <Library size={15} />
+                <span>Browse the library</span>
+              </button>
             </>
           ) : (
             <>

@@ -41,7 +41,7 @@ export type NativeAudioQueueTrack = {
 };
 
 /** A player that kept running through a WebView reload, as the page takes it over. */
-export type NativeAudioAdoptedSession = {
+type NativeAudioAdoptedSession = {
   positionSeconds: number;
   sleepTimerSeconds: number;
   sleepAtChapterEnd: boolean;

@@ -18,17 +18,13 @@ mkdirSync(output); // Refuse to overwrite a baseline.
 const metadata = { schema: 1, scope, label, startedAt: new Date().toISOString(),
   platform: platform(), arch: arch(), os: release(), cpu: cpus()[0]?.model,
   node: process.version, playwright: JSON.parse(readFileSync(resolve(root, 'node_modules/@playwright/test/package.json'), 'utf8')).version, books: process.env.PERF_BOOKS ?? 'web=1000,server=200', checks: {} };
-const revisionErrors = [];
-for (const cmd of [['jj', 'log', '-r', '@', '--no-graph', '-T', 'commit_id'], ['git', 'rev-parse', 'HEAD']]) {
-  const result = spawnSync(cmd[0], cmd.slice(1), { cwd: root, encoding: 'utf8' });
-  const revision = result.stdout?.trim();
-  if (!result.error && result.status === 0 && /^[a-f0-9]{40,64}$/.test(revision ?? '')) {
-    metadata.revision = revision;
-    break;
-  }
-  revisionErrors.push(`${cmd[0]}: ${result.error?.message ?? (result.stderr?.trim() || `exit ${result.status}, invalid revision`)}`);
+const revisionResult = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' });
+const revision = revisionResult.stdout?.trim();
+if (revisionResult.error || revisionResult.status !== 0 || !/^[a-f0-9]{40,64}$/.test(revision ?? '')) {
+  throw new Error(`Cannot record source revision: git: ${revisionResult.error?.message
+    ?? (revisionResult.stderr?.trim() || `exit ${revisionResult.status}, invalid revision`)}`);
 }
-if (!metadata.revision) throw new Error(`Cannot record source revision: ${revisionErrors.join('; ')}`);
+metadata.revision = revision;
 for (const [key, cmd] of [['xcode', ['xcodebuild', '-version']], ['rust', ['rustc', '--version']]]) {
   const result = spawnSync(cmd[0], cmd.slice(1), { cwd: root, encoding: 'utf8' });
   metadata[key] = !result.error && result.status === 0 ? result.stdout.trim() : null;
