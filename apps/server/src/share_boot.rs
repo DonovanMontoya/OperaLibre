@@ -2,7 +2,7 @@
 //! owner's experiment switch, so saved settings alone cannot start a transfer.
 use super::*;
 
-const BOOT_LIFETIME: Duration = Duration::from_secs(900);
+const BOOT_LIFETIME: Duration = Duration::from_secs(crate::share::GIFT_MAX_LIFETIME_SECONDS);
 const RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 pub(crate) fn start_boot_recovery(

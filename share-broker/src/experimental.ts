@@ -1,3 +1,4 @@
+import { MAX_TTL_SECONDS } from "./limits.js";
 /** Unrouted prototype. The production Worker remains disabled pending review. */
 import { authenticateOwner, claimRole, type Claim, type TransactionalStorage } from "./claims.js";
 
@@ -58,7 +59,7 @@ export async function issue(request: Request, env: Environment): Promise<Respons
   let claim: Claim;
   try { claim = JSON.parse(input); } catch { return new Response(null, { status: 400 }); }
   const now = Math.floor(Date.now() / 1000);
-  if (!claim || typeof claim.room !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(claim.room) || typeof claim.nonce !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(claim.nonce) || (claim.previousNonce !== undefined && (typeof claim.previousNonce !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(claim.previousNonce) || claim.previousNonce === claim.nonce)) || !["producer", "recipient"].includes(claim.role) || !Number.isSafeInteger(claim.expiresAt) || claim.expiresAt <= now || claim.expiresAt > now + 900) return new Response(null, { status: 400 });
+  if (!claim || typeof claim.room !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(claim.room) || typeof claim.nonce !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(claim.nonce) || (claim.previousNonce !== undefined && (typeof claim.previousNonce !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(claim.previousNonce) || claim.previousNonce === claim.nonce)) || !["producer", "recipient"].includes(claim.role) || !Number.isSafeInteger(claim.expiresAt) || claim.expiresAt <= now || claim.expiresAt > now + MAX_TTL_SECONDS) return new Response(null, { status: 400 });
   const payload = JSON.stringify({ room: claim.room, role: claim.role, nonce: claim.nonce, expiresAt: claim.expiresAt, ...(claim.previousNonce === undefined ? {} : { previousNonce: claim.previousNonce }) });
   return Response.json({ payload, signature: await mac(payload, env.SIGNING_SECRET) }, { headers: { "cache-control": "no-store" } });
 }

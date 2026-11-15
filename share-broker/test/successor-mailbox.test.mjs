@@ -63,7 +63,7 @@ test("room, role, nonce and exact expiry are bound across all operations", async
 test("expiry, revocation and concurrent publication serialize with delivery", async () => {
   const db = storage(), recovery = secret();
   assert.equal(await claimMailbox(db, room, claim, recovery, () => 200), false);
-  assert.equal(await claimMailbox(db, room, { ...claim, expiresAt: 1001 }, recovery, clock), false);
+  assert.equal(await claimMailbox(db, room, { ...claim, expiresAt: 100 + 86400 + 1 }, recovery, clock), false);
   assert.equal(await claimMailbox(db, room, claim, recovery, clock), true);
   assert.equal(await publishSuccessor(db, room, claim, envelope, () => 200), false);
   assert.deepEqual((await Promise.all([publishSuccessor(db, room, claim, envelope, clock), publishSuccessor(db, room, claim, envelope, clock)])).toSorted(), [false, true]);

@@ -61,7 +61,7 @@ for (const failure of ["tampered", "missing"]) test(`${failure} local map never 
     const status = await page.evaluate(() => window.giftReaderStatus);
     assert.equal(status.error, undefined); assert.equal(status.mapLoaded, false);
     assert.equal(status.following, false); assert.equal(status.available, false); assert.equal(status.otherAvailable, false);
-    assert.equal(await page.locator("#gift-reader-mode").textContent(), "chapter");
+    assert.equal(await page.locator("#gift-reader-mode").textContent(), "unsynced");
     assert.equal(await page.locator(".readalong-highlight").count(), 0);
     assert.deepEqual(requests, []);
   } finally { await browser.close(); }

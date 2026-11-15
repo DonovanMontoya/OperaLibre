@@ -149,8 +149,8 @@ export function useReadalong({
   const selectedSyncMap = selectedMapKey ? syncMaps[selectedMapKey] ?? null : null;
   // Only a forced alignment drives the marker. A map that is not one — an
   // interpolated map a device cached before those were dropped — is left out
-  // entirely, so the reader falls back to chapter sync instead of following
-  // timings that do not match the narration.
+  // entirely, so the reader offers no Follow instead of following timings
+  // that do not match the narration.
   const selectedSyncFragments =
     isViewingPlayingBook && selectedSyncMap && syncMapPrecision(selectedSyncMap) === "sentence"
       ? selectedSyncMap.fragments

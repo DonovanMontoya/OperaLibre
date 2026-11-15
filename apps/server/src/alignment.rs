@@ -123,7 +123,7 @@ pub(crate) fn parse_epub_file_within(
     text_bytes: u64,
 ) -> anyhow::Result<EpubDocument> {
     parse_epub_archive_within(
-        &mut zip::ZipArchive::new(std::fs::File::open(path)?)?,
+        &mut crate::util::open_zip_file(std::fs::File::open(path)?)?,
         text_bytes.min(EPUB_TEXT_BYTES),
     )
 }

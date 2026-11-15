@@ -4,6 +4,8 @@
 
 use crate::*;
 
+pub(crate) const GIFT_MAX_LIFETIME_SECONDS: u64 = 24 * 60 * 60;
+
 pub(crate) const SHARE_TOKEN_BYTES: usize = 32;
 pub(crate) const SHARE_MAX_ASSETS: usize = 256;
 pub(crate) const SHARE_MAX_MESSAGE_CHARS: usize = 1_000;
@@ -1982,7 +1984,8 @@ pub(crate) async fn start_invitation_sender_with_recovery(
         ));
     }
     let cover = selected_archive_cover_preview(&mut archive, &receipt).await?;
-    let expires_at = (invitation.expires_at as u64).min(now.saturating_add(900));
+    let expires_at =
+        (invitation.expires_at as u64).min(now.saturating_add(GIFT_MAX_LIFETIME_SECONDS));
     let random_id = || URL_SAFE_NO_PAD.encode(rand::random::<[u8; 24]>());
     let recipient_nonce = random_id();
     let gift_id = random_id();

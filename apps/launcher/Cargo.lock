@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "operalibre-launcher"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "getrandom",
  "rusqlite",

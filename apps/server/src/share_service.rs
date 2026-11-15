@@ -85,7 +85,9 @@ where
     anyhow::ensure!(enabled, "sharing is disabled");
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     anyhow::ensure!(
-        !owner_secret.is_empty() && expires_at > now && expires_at <= now.saturating_add(900),
+        !owner_secret.is_empty()
+            && expires_at > now
+            && expires_at <= now.saturating_add(crate::share::GIFT_MAX_LIFETIME_SECONDS),
         "invalid share session configuration"
     );
     let capability = broker.issue(owner_secret, room, nonce, expires_at).await?;
@@ -111,7 +113,8 @@ where
     anyhow::ensure!(enabled, "sharing is disabled");
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     anyhow::ensure!(
-        expires_at > now && expires_at <= now.saturating_add(900),
+        expires_at > now
+            && expires_at <= now.saturating_add(crate::share::GIFT_MAX_LIFETIME_SECONDS),
         "invalid share lifetime"
     );
     let (stop, receiver) = tokio::sync::watch::channel(false);
@@ -190,7 +193,11 @@ mod ownership_tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        for (enabled, expires_at) in [(false, now + 60), (true, now)] {
+        for (enabled, expires_at) in [
+            (false, now + 60),
+            (true, now),
+            (true, now + crate::share::GIFT_MAX_LIFETIME_SECONDS + 10),
+        ] {
             let result = run_authorized(
                 enabled,
                 expires_at,
@@ -202,13 +209,17 @@ mod ownership_tests {
             assert!(result.is_err());
         }
         let (closed, outcome) = tokio::sync::oneshot::channel();
-        let session = run_authorized(true, now + 60, move |mut stop| async move {
-            if !*stop.borrow() {
-                let _ = stop.changed().await;
-            }
-            let _ = closed.send(());
-            Ok(())
-        })
+        let session = run_authorized(
+            true,
+            now + crate::share::GIFT_MAX_LIFETIME_SECONDS,
+            move |mut stop| async move {
+                if !*stop.borrow() {
+                    let _ = stop.changed().await;
+                }
+                let _ = closed.send(());
+                Ok(())
+            },
+        )
         .await
         .unwrap();
         session.stop().await.unwrap();

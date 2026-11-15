@@ -158,7 +158,7 @@ The first page asks for the initial administrator name and password. The adminis
 
 Use a password you can remember. See [Users & Accounts](users.md) for household accounts and password recovery.
 
-The standard install remains the small playback server. If you want OperaLibre to create sentence-level follow-along timing, the owner can later open **Administration → Experiments** and install the separate readalong sync add-on. Installing it is optional; playback and chapter sync work without it. Sentence following requires an enabled experiment and an aligned map, including when the map was imported rather than generated on this server.
+The standard install remains the small playback server. If you want OperaLibre to create sentence-level follow-along timing, the owner can later open **Administration → Experiments** and install the separate readalong sync add-on. Installing it is optional; playback and EPUB reading work without it. Sentence following requires an enabled experiment and an aligned map, including when the map was imported rather than generated on this server.
 
 ## 5. Add audiobooks
 

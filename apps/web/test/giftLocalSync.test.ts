@@ -77,7 +77,7 @@ test("only real compatible sentence formats, bounded times/hrefs and valid UTF-1
     (v: any) => { v.fragments[0].text = "🎁gift"; v.fragments[0].words = [[0, 1, 1, 1]]; },
   ]) { const value = structuredClone(map); change(value); assert.throws(() => parseGiftSyncMap(value, 30)); }
   assert.equal(parseGiftSyncMap({ version: 1, fragments: map.fragments }, 30).precision, "sentence", "legacy forced sentence maps stay usable");
-  assert.equal(readAlongMode({ readingFile: { extension: "epub" } as any, syncFile: null }, null, false), "chapter");
+  assert.equal(readAlongMode({ readingFile: { extension: "epub" } as any, syncFile: null }, null, false), "unsynced");
 });
 
 test("aligned import validates the map after native commit, and a failed read recovers without publishing or resetting history", async () => {

@@ -42,7 +42,7 @@ test("old state, expired reservations and revoked rooms cannot be acquired", asy
   const db = storage();
   assert.equal(await reserveRoom(db, a, () => 100), true);
   assert.equal(await reserveRoom(db, { ...a, reservationId: "B".repeat(43), expiresAt: 300 }, () => 200), false);
-  assert.equal(await reserveRoom(storage(), { ...a, expiresAt: 1001 }, () => 100), false);
+  assert.equal(await reserveRoom(storage(), { ...a, expiresAt: 100 + 86400 + 1 }, () => 100), false);
 });
 
 test("public endpoints require owner authorization and clean only their room", async () => {
@@ -62,4 +62,10 @@ test("public endpoints require owner authorization and clean only their room", a
   assert.equal((await call(`cleanup/${room}`)).status, 403);
   assert.equal((await call(`cleanup/${other}`)).status, 204);
   assert.equal((await broker.fetch(new Request(`https://broker/reserve/${room}`, { method: "POST" }), {})).status, 503);
+});
+
+test("a full-day room is reserved while a longer room is rejected", async () => {
+  const room = { reservationId: "A".repeat(43), expiresAt: 100 + 86400 };
+  assert.equal(await reserveRoom(storage(), room, () => 100), true);
+  assert.equal(await reserveRoom(storage(), { ...room, expiresAt: room.expiresAt + 1 }, () => 100), false);
 });

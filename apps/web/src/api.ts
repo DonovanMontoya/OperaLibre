@@ -536,11 +536,13 @@ function persistsAuthToken(): boolean {
 
 /** Save the active address's sign-in; null ends it, media credential included. */
 export function setStoredToken(token: string | null) {
+  const previous = getStoredToken();
   if (token) {
     credentialVault().update(getServerUrl(), { token });
   } else {
     credentialVault().forget(getServerUrl());
   }
+  if (token !== previous) forgetBookGiftsStatus();
 }
 
 export function getStoredMediaToken(): string | null {
@@ -559,6 +561,7 @@ export function hasSignInAt(url: string): boolean {
 /** Signing out, or leaving this server, ends the sign-in at every address. */
 export function forgetAllSignIns() {
   credentialVault().forgetAll();
+  forgetBookGiftsStatus();
 }
 
 export { ApiError };
@@ -662,22 +665,25 @@ export async function saveGiftOwnerConfiguration(input: GiftOwnerConfigurationRe
   requireGiftSetupTransport();
   if (input.ownerControlsBroker !== true) throw new ApiError("Confirm that you control this broker before saving credentials.", 400);
   const body = giftOwnerConfigurationPayload(input);
-  forgetBookGiftsStatus();
-  return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config", { method: "PUT", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }));
+  try {
+    return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config", { method: "PUT", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }));
+  } finally { forgetBookGiftsStatus(); }
 }
 
 /** The token goes only to the owner's own server, which uses it once and does not keep it. */
 export async function installGiftBrokerOnCloudflare(input: { apiToken: string; accountId?: string }, signal?: AbortSignal) {
   requireGiftSetupTransport();
-  forgetBookGiftsStatus();
   const body = { apiToken: input.apiToken, ...(input.accountId ? { accountId: input.accountId } : {}) };
-  return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config/cloudflare", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }, 120_000));
+  try {
+    return parseGiftOwnerConfiguration(await request<unknown>("/api/admin/shares/config/cloudflare", { method: "POST", signal, redirect: "error", ignoreUnauthorized: true, body: JSON.stringify(body) }, 120_000));
+  } finally { forgetBookGiftsStatus(); }
 }
 
 export async function deleteGiftOwnerConfiguration(signal?: AbortSignal) {
   requireGiftSetupTransport();
-  forgetBookGiftsStatus();
-  await request<void>("/api/admin/shares/config", { method: "DELETE", signal, redirect: "error", ignoreUnauthorized: true });
+  try {
+    await request<void>("/api/admin/shares/config", { method: "DELETE", signal, redirect: "error", ignoreUnauthorized: true });
+  } finally { forgetBookGiftsStatus(); }
 }
 
 export async function cleanupConfiguredGiftBroker(signal?: AbortSignal) {
@@ -703,6 +709,13 @@ export async function abandonConfiguredGiftSenders(signal?: AbortSignal) {
  * account may send. A server that predates gifts answers 404, which reads as off. */
 export type BookGiftsStatus = { enabled: boolean; configured: boolean; canSend: boolean };
 const BOOK_GIFTS_OFF: BookGiftsStatus = { enabled: false, configured: false, canSend: false };
+const bookGiftsStatusListeners = new Set<() => void>();
+
+export function subscribeBookGiftsStatus(listener: () => void): () => void {
+  bookGiftsStatusListeners.add(listener);
+  return () => { bookGiftsStatusListeners.delete(listener); };
+}
+
 let bookGiftsStatus: { key: string; value: Promise<BookGiftsStatus> } | null = null;
 
 function parseBookGiftsStatus(value: unknown): BookGiftsStatus {
@@ -729,12 +742,14 @@ export function getBookGiftsStatus(): Promise<BookGiftsStatus> {
 
 function forgetBookGiftsStatus() {
   bookGiftsStatus = null;
+  for (const listener of bookGiftsStatusListeners) listener();
 }
 
 export async function setBookGiftsEnabled(enabled: boolean) {
   requireOperaLibreServer();
-  forgetBookGiftsStatus();
-  return parseBookGiftsStatus(await request<unknown>("/api/experimental-features/book-gifts/enabled", { method: "PUT", redirect: "error", body: JSON.stringify({ enabled }) }));
+  try {
+    return parseBookGiftsStatus(await request<unknown>("/api/experimental-features/book-gifts/enabled", { method: "PUT", redirect: "error", body: JSON.stringify({ enabled }) }));
+  } finally { forgetBookGiftsStatus(); }
 }
 
 async function requestAt<T>(
