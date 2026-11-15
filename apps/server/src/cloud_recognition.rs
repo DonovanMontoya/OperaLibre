@@ -199,31 +199,42 @@ impl CloudRecognizer {
             }
             tokio::time::sleep(retry_delay(attempt)).await;
         };
-        let status = reply.status();
-        let text = reply.text().await?;
-        if !status.is_success() {
-            anyhow::bail!(
-                "OpenAI transcription failed: {}",
-                openai_error(status, &text)
-            );
-        }
-        let parsed: VerboseTranscription = serde_json::from_str(&text).map_err(|_| {
-            anyhow::anyhow!("OpenAI returned a transcription OperaLibre could not read.")
-        })?;
-        Ok(parsed
-            .words
-            .into_iter()
-            .map(|word| alignment::TimelineEntry {
-                kind: "word".into(),
-                text: word.word,
-                start_time: word.start,
-                end_time: word.end,
-                start_offset_utf16: None,
-                end_offset_utf16: None,
-                timeline: None,
-            })
-            .collect())
+        decode_transcription(reply).await
     }
+}
+
+async fn decode_transcription(
+    reply: reqwest::Response,
+) -> anyhow::Result<Vec<alignment::TimelineEntry>> {
+    let status = reply.status();
+    let bytes = provider_response::read(reply, 8 * 1024 * 1024).await?;
+    let text = String::from_utf8(bytes)?;
+    if !status.is_success() {
+        anyhow::bail!(
+            "OpenAI transcription failed: {}",
+            openai_error(status, &text)
+        );
+    }
+    let parsed: VerboseTranscription = serde_json::from_str(&text).map_err(|_| {
+        anyhow::anyhow!("OpenAI returned a transcription OperaLibre could not read.")
+    })?;
+    anyhow::ensure!(
+        parsed.words.len() <= 100_000 && parsed.words.iter().all(|word| word.word.len() <= 4096),
+        "OpenAI transcription exceeds the word limits."
+    );
+    Ok(parsed
+        .words
+        .into_iter()
+        .map(|word| alignment::TimelineEntry {
+            kind: "word".into(),
+            text: word.word,
+            start_time: word.start,
+            end_time: word.end,
+            start_offset_utf16: None,
+            end_offset_utf16: None,
+            timeline: None,
+        })
+        .collect())
 }
 
 fn retry_delay(attempt: u32) -> Duration {
@@ -299,6 +310,35 @@ fn openai_error(status: reqwest::StatusCode, body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn provider_reply_limits_apply_before_timeline_conversion() {
+        let response = |body: String| reqwest::Response::from(axum::http::Response::new(body));
+        let oversized = serde_json::json!({"words":[{"word":"x".repeat(4097),"start":0,"end":1}]});
+        assert!(
+            decode_transcription(response(oversized.to_string()))
+                .await
+                .is_err()
+        );
+        let word = serde_json::json!({"word":"x","start":0,"end":1});
+        let oversized = serde_json::json!({"words":vec![word; 100_001]});
+        assert!(
+            decode_transcription(response(oversized.to_string()))
+                .await
+                .is_err()
+        );
+        assert!(
+            decode_transcription(response(" ".repeat(8 * 1024 * 1024 + 1)))
+                .await
+                .is_err()
+        );
+        let valid = serde_json::json!({"words":[{"word":"Hello","start":0.5,"end":1.0}]});
+        let entries = decode_transcription(response(valid.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(entries[0].text, "Hello");
+        assert_eq!(entries[0].start_time, 0.5);
+    }
 
     /// A stand-in for OpenAI that fails `failures` times with a 500, then
     /// answers with two words, and hands back each request body it saw.

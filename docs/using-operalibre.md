@@ -321,7 +321,7 @@ AI assistants are an experiment the owner turns on under **Administration → Ex
 - **Where you are**: how far through each book you are.
 - **Listening history**: when you listened, what you finished, your stats, and your achievements.
 - **Book text so far**: a book's text up to the sentence you have reached.
-- **Get books for you**: what you own on Audible and Libro.fm, and adding one of those books to the server when you ask. It can do only what you could on **Get books**: if your Audible downloads need the owner's approval, it sends them a request. This one starts switched off.
+- **Get books for you**: what you own on Audible and Libro.fm. The assistant can help you choose a title, but you add or request it yourself on **Get books**. It cannot start downloads or send requests on your behalf. This one starts switched off.
 
 OperaLibre then shows an address and a token. The token is shown only once. Add both to the assistant as an MCP server. In Claude Code:
 

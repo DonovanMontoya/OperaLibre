@@ -89,3 +89,11 @@ The iPhone client can use a small-index AAC transport on supported servers. It
 keeps the original track URL for playback recovery and falls back to ordinary
 streaming if the server or file does not support it. Downloads and other clients
 continue to use their existing streams.
+
+### Agent book imports
+
+The experimental MCP `get_book_onto_server` tool is read-only and returns
+`requiresUserAction` when a title needs importing. Clients should show its message
+and direct the listener to **Get books**. `alreadyOnServer` still identifies an
+accessible library book. Imports and owner-approval requests require the listener’s
+normal session; an agent token cannot perform them.

@@ -584,7 +584,7 @@ pub(crate) async fn serve_file_response(
             };
             let compact =
                 if caching == FileCaching::CompactAudio && faststart::is_mp4_file(&path_for_open) {
-                    compact_audio::cached_header(&mut file, &metadata)
+                    compact_audio::cached_header(&mut file, &metadata)?
                 } else {
                     None
                 };
@@ -648,7 +648,7 @@ pub(crate) async fn serve_file_response(
         .filter(|header| start < header.bytes.len() as u64)
         .map(|header| {
             let stop = (end + 1).min(header.bytes.len() as u64) as usize;
-            Bytes::from_owner(header.bytes.clone()).slice(start as usize..stop)
+            header.bytes.slice(start as usize..stop)
         })
         .unwrap_or_default();
     let disk_length = end - start + 1 - prefix.len() as u64;
