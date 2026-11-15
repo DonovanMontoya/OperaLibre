@@ -7,7 +7,7 @@ import { setServerConnection, setStoredToken, setUnauthorizedHandler, setBookGif
 declare global { interface Window { senderSwitchServer(origin: string, token: string): void; senderUnauthorizedCount: number } }
 window.senderUnauthorizedCount = 0;
 setUnauthorizedHandler(() => { window.senderUnauthorizedCount++; });
-window.senderSwitchServer = (origin, token) => { setServerConnection("operalibre", origin, null); setStoredToken(token); };
+window.senderSwitchServer = (origin, token) => { setServerConnection(origin, null); setStoredToken(token); };
 
 function Fixture() {
   const [open, setOpen] = useState(false);
