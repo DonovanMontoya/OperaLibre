@@ -6,11 +6,14 @@ import { markNativePlatform, syncStatusBarStyle } from "./native";
 import { installPressGuard } from "./pressGuard";
 import { applyStoredRotationLock } from "./rotationLock";
 import { applyStoredAppearance, readStoredAppearanceMode, watchSystemAppearance } from "./appearance";
+import { applyStoredColorVision } from "./colorVision";
 import "./styles.css";
+import "./colorVision.css";
 
 markNativePlatform();
 installPressGuard();
 applyStoredAppearance();
+applyStoredColorVision();
 watchSystemAppearance();
 syncStatusBarStyle(readStoredAppearanceMode());
 void applyStoredRotationLock().catch((error) => {

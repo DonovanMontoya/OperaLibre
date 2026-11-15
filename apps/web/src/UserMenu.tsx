@@ -1,3 +1,4 @@
+import { ColorVisionSettings, type ColorVisionSettingsProps } from "./ColorVisionSettings";
 import { PrivacyPolicyLink } from "./PrivacyPolicyLink";
 import { BehaviorSection } from "./BehaviorSection";
 import { AgentAccessMenuItem } from "./AgentAccess";
@@ -103,6 +104,7 @@ function AccountHead({ user, role, onUserChanged }: {
 }
 
 export function renderUserMenu({
+  displaySettings,
   continueReadingAutoplay,
   toggleContinueReadingAutoplay,
   bookPreviewsEnabled,
@@ -128,6 +130,7 @@ export function renderUserMenu({
   setUsersModalOpen,
   setAgentAccessOpen
 }: {
+  displaySettings: ColorVisionSettingsProps;
   continueReadingAutoplay: boolean;
   toggleContinueReadingAutoplay: () => void;
   bookPreviewsEnabled: boolean;
@@ -226,6 +229,10 @@ export function renderUserMenu({
           <AlertCircle size={16} /> Audible accounts ({brokenLibationAccounts.length})
         </button>
       ) : null}
+      {!native ? <details className="behavior-settings user-menu-display">
+        <summary><span><strong>Display</strong><small>Color vision and visual cues</small></span></summary>
+        <div className="behavior-settings-body"><ColorVisionSettings {...displaySettings} /></div>
+      </details> : null}
       {!native ? <BehaviorSection>
         <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
         {isOperaLibre && !demoMode && !localMode ? <BookPreviewSetting enabled={bookPreviewsEnabled} onToggle={toggleBookPreviewsEnabled} /> : null}
