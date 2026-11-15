@@ -1,3 +1,4 @@
+import { applyColorVision, applyStrongerVisualCues, readColorVision, readStrongerVisualCues, writeColorVision, writeStrongerVisualCues, type ColorVision } from "./colorVision";
 import { useState } from "react";
 import { disableRotationLock, enableRotationLock, readStoredRotationLock } from "./rotationLock";
 import {
@@ -22,6 +23,8 @@ export function useDisplaySettings({
 }: {
   ios: boolean;
 }) {
+  const [colorVision, setColorVision] = useState(readColorVision);
+  const [strongerVisualCues, setStrongerVisualCues] = useState(readStrongerVisualCues);
   const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() =>
     ios ? readStoredAppearanceMode() : "light"
@@ -75,7 +78,26 @@ export function useDisplaySettings({
     haptic("light");
   }
 
+  function updateColorVision(mode: ColorVision) {
+    setColorVision(mode);
+    writeColorVision(mode);
+    applyColorVision(mode);
+    haptic("light");
+  }
+
+  function toggleStrongerVisualCues() {
+    const enabled = !strongerVisualCues;
+    setStrongerVisualCues(enabled);
+    writeStrongerVisualCues(enabled);
+    applyStrongerVisualCues(enabled);
+    haptic("light");
+  }
+
   return {
+    colorVision,
+    strongerVisualCues,
+    updateColorVision,
+    toggleStrongerVisualCues,
     appearanceMode,
     darkTheme,
     lightTheme,
