@@ -14,6 +14,7 @@ import { useLayoutEffect, type Dispatch, type FormEvent, type SetStateAction } f
 import { useModalFocus } from "./useModalFocus";
 import type { ChapterSegment } from "./chapters";
 import { displayPublishedDate } from "./bookMetadata";
+import { ChapterNotesPanel } from "./ChapterNotesPanel";
 import { CoverArt } from "./CoverArt";
 import { bookSubtitle, durationFromTracks, formatDurationLabel, formatTime } from "./formatting";
 import { haptic } from "./native";
@@ -117,6 +118,8 @@ export function BookDetailsSheet({
         ) : null}
 
         {playbackDescription ? <p className="details-sheet-description">{playbackDescription}</p> : null}
+
+        <ChapterNotesPanel book={playbackBook} />
 
         <div className="details-sheet-actions">
           {playbackBook.progress && playbackBook.progress.status !== "notStarted" ? (
