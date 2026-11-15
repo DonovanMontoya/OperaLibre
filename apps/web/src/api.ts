@@ -753,6 +753,85 @@ export async function setBookGiftsEnabled(enabled: boolean) {
   } finally { forgetBookGiftsStatus(); }
 }
 
+/** The chapter notes experiment. Administrators also see which model writes
+ * the notes; a server that predates notes answers 404, which reads as off. */
+export type ChapterNotesProviderKind = "anthropic" | "openAiCompatible";
+export type ChapterNotesStatus = {
+  enabled: boolean;
+  provider?: { kind: ChapterNotesProviderKind; model: string; baseUrl: string | null; hasApiKey: boolean } | null;
+  transcriptionAvailable: boolean;
+  canGenerate: boolean;
+};
+const CHAPTER_NOTES_OFF: ChapterNotesStatus = { enabled: false, provider: null, transcriptionAvailable: false, canGenerate: false };
+let chapterNotesStatus: { key: string; value: Promise<ChapterNotesStatus> } | null = null;
+
+export function getChapterNotesStatus(): Promise<ChapterNotesStatus> {
+  if (getServerType() !== "operalibre") return Promise.resolve(CHAPTER_NOTES_OFF);
+  const key = `${currentApiBase()}\n${getStoredToken() ?? ""}`;
+  if (chapterNotesStatus?.key === key) return chapterNotesStatus.value;
+  const value = request<ChapterNotesStatus>("/api/experimental-features/chapter-notes", { ignoreUnauthorized: true })
+    .catch((error: unknown) => {
+      if (!(error instanceof ApiError && error.status === 404) && chapterNotesStatus?.value === value) chapterNotesStatus = null;
+      return CHAPTER_NOTES_OFF;
+    });
+  chapterNotesStatus = { key, value };
+  return value;
+}
+
+export async function setChapterNotesEnabled(enabled: boolean) {
+  requireOperaLibreServer();
+  chapterNotesStatus = null;
+  return request<ChapterNotesStatus>("/api/experimental-features/chapter-notes/enabled", { method: "PUT", body: JSON.stringify({ enabled }) });
+}
+
+/** Leave `apiKey` out to keep the saved key; an empty string removes it. */
+export async function setChapterNotesProvider(provider: { kind: ChapterNotesProviderKind; model?: string; baseUrl?: string; apiKey?: string }) {
+  requireOperaLibreServer();
+  chapterNotesStatus = null;
+  return request<ChapterNotesStatus>("/api/experimental-features/chapter-notes/provider", { method: "PUT", body: JSON.stringify(provider) });
+}
+
+export async function removeChapterNotesProvider() {
+  requireOperaLibreServer();
+  chapterNotesStatus = null;
+  return request<ChapterNotesStatus>("/api/experimental-features/chapter-notes/provider", { method: "DELETE" });
+}
+
+export type ChapterNote = {
+  index: number;
+  title: string;
+  startSeconds: number;
+  endSeconds: number | null;
+  source: "ebook" | "transcript";
+  charactersOfText: number;
+  synopsis?: string;
+  summary?: string;
+  people?: string[];
+  terms?: string[];
+  model?: string;
+  textTruncated?: boolean;
+};
+export type BookChapterNotes = {
+  bookId: string;
+  chapters: ChapterNote[];
+  updatedAt: string | null;
+  generation: { state: "running" | "failed"; step: string; completed: number; total: number; error?: string } | null;
+};
+
+const chapterNotesRoute = (bookId: string) => `/api/books/${encodeURIComponent(bookId)}/chapter-notes`;
+
+export async function getBookChapterNotes(bookId: string) {
+  return request<BookChapterNotes>(chapterNotesRoute(bookId));
+}
+
+export async function generateBookChapterNotes(bookId: string) {
+  return request<BookChapterNotes>(chapterNotesRoute(bookId), { method: "POST", body: "{}" });
+}
+
+export async function deleteBookChapterNotes(bookId: string) {
+  await request<void>(chapterNotesRoute(bookId), { method: "DELETE" });
+}
+
 async function requestAt<T>(
   base: string,
   token: string | null,
@@ -921,6 +1000,28 @@ export async function setSyncAddonEnabled(enabled: boolean) {
     "/api/experimental-features/readalong-sync/enabled",
     { method: "PUT", body: JSON.stringify({ enabled }) }
   );
+}
+
+export type CloudRecognitionStatus = {
+  enabled: boolean;
+};
+
+const CLOUD_RECOGNITION = "/api/experimental-features/readalong-sync/cloud-recognition";
+
+export async function getCloudRecognitionStatus() {
+  return request<CloudRecognitionStatus>(CLOUD_RECOGNITION);
+}
+
+/** Sends follow-along recognition audio to OpenAI with the owner's key. */
+export async function enableCloudRecognition(apiKey: string) {
+  return request<CloudRecognitionStatus>(CLOUD_RECOGNITION, {
+    method: "PUT",
+    body: JSON.stringify({ apiKey, acknowledgePrivacy: true })
+  });
+}
+
+export async function disableCloudRecognition() {
+  return request<CloudRecognitionStatus>(CLOUD_RECOGNITION, { method: "DELETE" });
 }
 
 export async function removeSyncAddon() {
@@ -1293,6 +1394,21 @@ export async function downloadClipAudio(clip: Pick<Clip, "id" | "bookId">): Prom
     }
     return response.blob();
   }, 120_000);
+}
+
+/**
+ * Switch the server's suggested gain on or off for one book. Turning it on
+ * also clears the listener's own level for the book. Returns the updated book,
+ * or null on backends with no loudness analysis.
+ */
+export async function setBookAutoVolume(bookId: string, enabled: boolean): Promise<Book | null> {
+  if (isDemoMode() || isLocalMode() || getServerType() === "jellyfin") {
+    return null;
+  }
+  return request<Book>(`/api/books/${encodeURIComponent(bookId)}/auto-volume`, {
+    method: "PUT",
+    body: JSON.stringify({ enabled })
+  });
 }
 
 export async function rescanLibrary() {

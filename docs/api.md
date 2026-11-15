@@ -128,11 +128,20 @@ The archive includes accounts, permissions, progress, per-book settings, saved c
 | `GET` | `/api/experimental-features/readalong-sync` | Installed, enabled, version, package availability, size, and management status for the optional generator. Admin only. Add `?refresh=true` to refresh release metadata. |
 | `POST` | `/api/experimental-features/readalong-sync/install` | Download, verify, and install or update the official platform package. Owner only; managed release installations only. |
 | `PUT` | `/api/experimental-features/readalong-sync/enabled` | Enable or disable an installed managed add-on or a generator found on the server's `PATH` with `{ "enabled": bool }`. Owner only. An explicit `alignment_cli_path` remains always enabled. |
+| `GET` | `/api/experimental-features/readalong-sync/cloud-recognition` | `{ "enabled": bool }`: whether sync transcribes with OpenAI instead of on the server. Admin only. The key is never returned. |
+| `PUT` | `/api/experimental-features/readalong-sync/cloud-recognition` | Transcribe with OpenAI using `{ "apiKey": string, "acknowledgePrivacy": true }`. Without `acknowledgePrivacy`, nothing is saved. Owner only. |
+| `DELETE` | `/api/experimental-features/readalong-sync/cloud-recognition` | Delete the saved key and return to on-server transcription. Running syncs stop at their next recognition window. Owner only. |
 | `DELETE` | `/api/experimental-features/readalong-sync` | Disable the managed add-on and move its installed files into recoverable update storage. Existing sync maps are retained. Owner only. |
 | `GET` | `/api/experimental-features/agent-access` | Whether [agent access](#agent-access-mcp) is on, and how many agents are connected by how many users: `{ enabled, assistants, listeners }`. Admin only. |
 | `PUT` | `/api/experimental-features/agent-access/enabled` | Turn agent access on or off with `{ "enabled": bool }`. Owner only. Turning it off keeps connected agents' tokens but refuses them until it is turned back on. |
 | `GET` | `/api/experimental-features/book-gifts` | Whether [book gifts](book-gifts.md) are on and whether the caller may send one: `{ enabled, configured, canSend }`. Signed-in users. |
 | `PUT` | `/api/experimental-features/book-gifts/enabled` | Turn book gifts on or off with `{ "enabled": bool }`. Owner only. Turning them off stops transfers in progress and keeps the saved broker settings. Not available on Windows servers. |
+| `GET` | `/api/experimental-features/chapter-notes` | Whether chapter notes are on: `{ enabled, transcriptionAvailable, canGenerate, provider? }`. Signed-in users; `provider` (`{ kind, model, baseUrl, hasApiKey }`) is only shown to administrators and never includes the key. |
+| `PUT` | `/api/experimental-features/chapter-notes/enabled` | Turn chapter notes on or off with `{ "enabled": bool }`. Owner only. Turning them off stops notes being made and keeps saved notes. |
+| `PUT` | `/api/experimental-features/chapter-notes/provider` | Choose the model that writes notes: `{ kind: "anthropic" \| "openAiCompatible", model?, baseUrl?, apiKey? }`. `baseUrl` is required for `openAiCompatible`; an Anthropic key is required. Leaving `apiKey` out keeps the saved key, and `""` removes it. `DELETE` removes the model, so notes stop at transcripts. Owner only. |
+| `GET` | `/api/books/{book_id}/chapter-notes` | The book's chapter notes, spoilers included, and any generation in progress: `{ bookId, chapters, updatedAt, generation }`. Each chapter has `index`, `title`, `startSeconds`, `endSeconds`, `source` (`ebook` or `transcript`), and, once a model has written them, `synopsis`, `summary`, `people`, `terms`, and `model`. Returns 404 while chapter notes are off, as do the other chapter-note routes. |
+| `POST` | `/api/books/{book_id}/chapter-notes` | Start making the book's notes. Admin only. Chapters with a sentence-level sync map use its text; others are transcribed with the follow-along add-on. Chapters whose text and model have not changed are skipped. One book is worked on at a time. |
+| `DELETE` | `/api/books/{book_id}/chapter-notes` | Stop making the book's notes and remove them and its transcripts. Admin only. |
 | `POST` | `/api/admin/shares/config/cloudflare` | Install the gift broker in the owner's Cloudflare account from `{ apiToken, accountId? }` and save the result. The token is used once and not stored. Owner only, over HTTPS in proxy deployment mode. |
 | `GET` | `/api/books/{book_id}/gift-inventory` | The files of a book the caller may gift, with sizes and the default selection. Returns 404 while book gifts are off, as do the other gift routes. |
 | `POST` | `/api/shares/selected` | Create a gift from `{ bookId, selectedAssetIds, personalMessage?, expiresInSeconds? }`. Lifetime defaults to 900 seconds and is bounded to 60–86400 seconds (24 hours). Returns `{ giftUrl, expiresAt, managementToken }`. The owner, or a reader when the owner allows it. |
@@ -148,6 +157,7 @@ The archive includes accounts, permissions, progress, per-book settings, saved c
 | `PUT` | `/api/books/{book_id}/clips/{clip_id}` | Replace a clip's range, title, and note. Same body as saving, without `id`. Returns the clip. |
 | `DELETE` | `/api/books/{book_id}/clips/{clip_id}` | Remove a clip. Returns 204, including when it is already gone. |
 | `GET` | `/api/books/{book_id}/clips/{clip_id}/audio` | The clip as an AAC `.m4a` attachment, encoded on request and joined across tracks when it spans them. Requires ffmpeg; 404 otherwise. One export runs at a time. |
+| `PUT` | `/api/books/{book_id}/auto-volume` | Turn the suggested gain on or off for the current user's copy of the book. Body `{ "enabled": boolean }`. Turning it on also clears the user's own level for the book. Returns the updated book. |
 | `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. Admin only. |
 | `POST` | `/api/library/upload` | Upload one or more audio files as a new library folder. Admin only; multipart fields are `bookName` and one or more `files`. Subject to `max_upload_gib`. |
 | `POST` | `/api/books/{book_id}/ebook` | Pair one validated, unencrypted EPUB with an existing book. Admin only; multipart field `file`. Limited to 64 MiB or `max_upload_gib`, whichever is lower. Does not overwrite files; refuses books with an existing paired EPUB or sync map. Returns the refreshed book list. |
@@ -339,7 +349,22 @@ Progress responses may include `finishedOverride`. `true` or `false` records the
 
 #### Per-book volume
 
-Audiobooks are mastered at very different levels, so `volumeGain` is a per-listener, per-book correction rather than a device setting: it is stored beside progress (keyed by user and book) and follows the listener to every client they sign in from. Every book in `/api/books` carries the caller's own `volumeGain`; `1.0` means the file's own level and is what an untuned book reports.
+Audiobooks are mastered at very different levels, so `volumeGain` is a per-listener, per-book correction rather than a device setting: it is stored beside progress (keyed by user and book) and follows the listener to every client they sign in from. Every book in `/api/books` carries the gain the caller should play it at as `volumeGain`; `1.0` means the file's own level.
+
+`volumeGainSource` says where that gain came from: `manual` (the listener set it, including setting it back to `1.0`), `auto` (the suggested gain below), or `default`. A level the listener sets always wins. `autoVolume` is the listener's switch for the suggested gain on that book, `true` unless they turned it off.
+
+When ffmpeg is available, the server measures each book in the background after a scan, by decoding about six minutes of short samples spread across its tracks. Files are only read. Books are measured again only when their audio changes. A measured book carries `audioAnalysis`:
+
+| Field | Meaning |
+| --- | --- |
+| `integratedLufs` | Integrated loudness (EBU R128) of the samples. |
+| `truePeakDbtp` | Highest true peak found in the samples. |
+| `trackSpreadLu` | Loudest minus quietest track, for books with two or more tracks over a minute long. |
+| `channelImbalanceDb`, `louderChannel` | Left/right RMS difference and the louder side, for stereo files. `60` means one channel is silent. |
+| `flags` | Any of `quiet` (below -24 LUFS), `inconsistent` (tracks differ by more than 5 LU), and `lopsided` (channels differ by more than 3 dB). |
+| `suggestedGain` | Linear gain toward -18 LUFS, or `1.0` for books within 3 LU of it. Boosts stop where the sampled true peak would pass -1 dBTP, and the gain stays within `0.5`–`16.0`. |
+
+Without ffmpeg there is no analysis: books carry no `audioAnalysis` and play at the listener's own level or `1.0`. Channel balance is reported but not corrected.
 
 Applying it is the client's job, and above unity it needs an engine that can exceed the media element's ceiling — a Web Audio gain node, or the platform's own mixer. A client that cannot do that should still honour gains below `1.0`.
 
@@ -482,7 +507,8 @@ It accepts only an agent token from `POST /api/me/agent-tokens`, sent as `Author
 | `get_finished_books` | `history` | The user's completions with their edition snapshots. Accepts `since` and `limit`. |
 | `get_listening_stats` | `history` | The listening statistics from `/api/profile/stats`, without cover links. Accepts `tzOffsetMinutes`. |
 | `get_achievements` | `history` | The profile's achievements, each with `current`, `target`, and `earned`. Accepts `tzOffsetMinutes`. |
-| `get_text_so_far` | `text` | A book's sync-map sentences that end at or before the user's position, grouped by audio chapter. Finished books return all of them. Accepts `chapter` and `maxCharacters`; a longer chapter keeps its latest text. Books without an aligned sync map return a tool error. |
+| `get_text_so_far` | `text` | Recaps are prepared one at a time, with a 16 MiB limit on the source sync map. Retry a busy response shortly. A book's sync-map sentences that end at or before the user's position, grouped by audio chapter. Finished books return all of them. Accepts `chapter` and `maxCharacters`; a longer chapter keeps its latest text. Books without an aligned sync map use their chapter-note transcripts when chapter notes are on, and otherwise return a tool error. |
+| `get_chapter_notes` | `text` | A book's chapter notes. Chapters the user has heard in full return `synopsis`, `summary`, `people`, and `terms`; the current chapter returns only its `synopsis`; later chapters are counted in `chaptersAhead` and left out. `includeSpoilers: true` returns later chapters too, marked `spoiler`. Accepts `chapter`. A tool error while chapter notes are off or the book has none. |
 | `find_store_books` | `getBooks` | The user's Audible titles (from `/api/libation/books`) and Libro.fm purchases with short plain-text descriptions, without account emails, and whether they can add Audible titles directly or must request them. Books the user can already open are left out unless `includeOnServer` is set. Accepts `query`, `limit`, and `offset`. |
 | `get_book_onto_server` | `getBooks` | Takes `store` (`audible` or `libroFm`), `id`, and for Audible `accountId`. Starts the import the user could start, files an Audible request when their access is `approval`, or returns `alreadyOnServer` with the book's id. |
 

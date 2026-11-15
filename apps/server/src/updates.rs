@@ -578,7 +578,7 @@ impl UpdateManager {
         })?;
         let mut settings = self.read_experimental_settings().await;
         match config {
-            AlignmentConfig::Manual(_) => {
+            AlignmentConfig::Manual(cli) if cli.is_file() => {
                 bail!("The generator configured in server.config is always enabled.");
             }
             AlignmentConfig::Path(cli) if cli.is_file() => {
@@ -2217,6 +2217,15 @@ mod tests {
                 .to_string()
                 .contains("always enabled")
         );
+        std::fs::remove_file(&cli).unwrap();
+        for enabled in [false, true] {
+            let result = manager.set_sync_addon_enabled(enabled, &config).await;
+            // A missing manual executable follows the managed-runtime path,
+            // which may require installation on this test machine.
+            if let Err(error) = result {
+                assert!(error.to_string().contains("not installed"), "{error}");
+            }
+        }
     }
 
     #[tokio::test]

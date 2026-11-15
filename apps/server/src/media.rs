@@ -69,6 +69,9 @@ fn file_etag(metadata: &std::fs::Metadata) -> Option<String> {
     ))
 }
 
+const MAX_ETAG_BYTES: u64 = 32 * 1024 * 1024;
+static ETAG_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(2)));
+
 /// ETag for a file a client is allowed to revalidate.
 ///
 /// The tag is a hash of the bytes this response will send. Length and
@@ -76,9 +79,15 @@ fn file_etag(metadata: &std::fs::Metadata) -> Option<String> {
 /// during the timestamp tick already recorded on the file, which is several
 /// milliseconds on ordinary disks, and a client offering the old tag would
 /// then be told its copy was still current.
-fn content_etag(file: &std::fs::File) -> io::Result<String> {
+fn content_etag(file: &std::fs::File) -> io::Result<Option<String>> {
+    // Large companions remain streamable without conditional validation.
+    if file.metadata()?.len() > MAX_ETAG_BYTES {
+        return Ok(None);
+    }
     let mut source = file.try_clone()?;
     std::io::Seek::seek(&mut source, std::io::SeekFrom::Start(0))?;
+    let mut source = std::io::Read::take(source, MAX_ETAG_BYTES + 1);
+    let mut total = 0;
     let mut hasher = Sha1::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
@@ -86,9 +95,13 @@ fn content_etag(file: &std::fs::File) -> io::Result<String> {
         if amount == 0 {
             break;
         }
+        total += amount as u64;
+        if total > MAX_ETAG_BYTES {
+            return Ok(None);
+        }
         hasher.update(&buffer[..amount]);
     }
-    Ok(format!("\"{}\"", hex_digest(hasher.finalize())))
+    Ok(Some(format!("\"{}\"", hex_digest(hasher.finalize()))))
 }
 
 pub(crate) async fn get_cover_art(
@@ -546,17 +559,26 @@ pub(crate) async fn serve_file_response(
         .map(|root| root.to_path_buf())
         .collect::<Vec<_>>();
     let revalidated = caching == FileCaching::Revalidated;
+    let hash_permit = if revalidated {
+        Some(ETAG_SLOTS.clone().try_acquire_owned().map_err(|_| {
+            ApiError::too_many_requests("Companion validation is busy. Try again shortly.")
+        })?)
+    } else {
+        None
+    };
     let (file, metadata, etag, compact) =
         tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+            // The blocking hash retains its slot if the request is cancelled.
+            let _permit = hash_permit;
             let (mut file, metadata) = open_contained_file(&path_for_open, &allowed_roots)
                 .map_err(|_| ApiError::not_found("Media file not found"))?;
             // Hashed on this blocking thread: a long sync map or ebook must not
             // stall the runtime, and the hash has to be known before the status
             // line so a matching tag can answer 304 without the body.
             let etag = if revalidated {
-                Some(content_etag(&file).map_err(|error| {
+                content_etag(&file).map_err(|error| {
                     ApiError::internal(format!("Could not read media file: {error}"))
-                })?)
+                })?
             } else {
                 None
             };
@@ -1055,6 +1077,46 @@ pub(crate) async fn delete_downloaded_book(
     removal?;
     rescan?;
     Ok(Json(books_with_progress(&state, &auth).await?))
+}
+
+#[cfg(test)]
+mod etag_budget_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn large_companions_skip_hashing_without_losing_stream_access() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("large.pdf");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_ETAG_BYTES + 1).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(RANGE, "bytes=0-0".parse().unwrap());
+        headers.insert(IF_NONE_MATCH, "\"old\"".parse().unwrap());
+        let response = serve_file_response(
+            &path,
+            &[root.path()],
+            headers,
+            None,
+            FileCaching::Revalidated,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert!(response.headers().get(ETAG).is_none());
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 1)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        file.set_len(3).unwrap();
+        assert!(
+            content_etag(&std::fs::File::open(path).unwrap())
+                .unwrap()
+                .is_some()
+        );
+    }
 }
 
 #[derive(Deserialize)]

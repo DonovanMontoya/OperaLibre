@@ -567,12 +567,13 @@ enum AgentTool {
     GetAchievements,
     GetSeriesProgress,
     GetTextSoFar,
+    GetChapterNotes,
     FindStoreBooks,
     GetBookOntoServer,
 }
 
 impl AgentTool {
-    const ALL: [AgentTool; 11] = [
+    const ALL: [AgentTool; 12] = [
         AgentTool::SearchLibrary,
         AgentTool::GetBook,
         AgentTool::GetSeriesProgress,
@@ -582,6 +583,7 @@ impl AgentTool {
         AgentTool::GetListeningStats,
         AgentTool::GetAchievements,
         AgentTool::GetTextSoFar,
+        AgentTool::GetChapterNotes,
         AgentTool::FindStoreBooks,
         AgentTool::GetBookOntoServer,
     ];
@@ -597,6 +599,7 @@ impl AgentTool {
             AgentTool::GetAchievements => "get_achievements",
             AgentTool::GetSeriesProgress => "get_series_progress",
             AgentTool::GetTextSoFar => "get_text_so_far",
+            AgentTool::GetChapterNotes => "get_chapter_notes",
             AgentTool::FindStoreBooks => "find_store_books",
             AgentTool::GetBookOntoServer => "get_book_onto_server",
         }
@@ -612,7 +615,7 @@ impl AgentTool {
             | AgentTool::GetFinishedBooks
             | AgentTool::GetListeningStats
             | AgentTool::GetAchievements => AgentScope::History,
-            AgentTool::GetTextSoFar => AgentScope::Text,
+            AgentTool::GetTextSoFar | AgentTool::GetChapterNotes => AgentScope::Text,
             AgentTool::FindStoreBooks | AgentTool::GetBookOntoServer => AgentScope::GetBooks,
         }
     }
@@ -693,11 +696,21 @@ impl AgentTool {
                 ),
                 AgentTool::GetTextSoFar => (
                     "Text so far",
-                    "The book's text from the start up to the exact sentence the listener has reached, for a spoiler-free recap. Nothing past their position is ever returned. Only books with a follow-along map have this. Returns the latest chapter by default; pass chapter to read an earlier one.".to_string(),
+                    "The book's text from the start up to the exact sentence the listener has reached, for a spoiler-free recap. Nothing past their position is ever returned. Books with a follow-along map have their own text; books the server has transcribed for chapter notes have the narration's transcript. Returns the latest chapter by default; pass chapter to read an earlier one.".to_string(),
                     serde_json::json!({
                         "bookId": { "type": "string" },
                         "chapter": { "type": "integer", "minimum": 0, "description": "A chapter index from the chapters list this tool returns." },
                         "maxCharacters": { "type": "integer", "minimum": 1000, "maximum": 200000, "default": 30000, "description": "A longer chapter keeps its most recent text." },
+                    }),
+                    &["bookId"],
+                ),
+                AgentTool::GetChapterNotes => (
+                    "Chapter notes",
+                    "Notes the server made for each chapter: a spoiler-free synopsis, a full summary, and the people and terms in it. Works for books without an e-book. Chapters the listener has heard in full come with everything; the chapter they are in gives only its synopsis; later chapters are left out. Set includeSpoilers only when the listener explicitly asks to be spoiled, and warn them before sharing what it returns.".to_string(),
+                    serde_json::json!({
+                        "bookId": { "type": "string" },
+                        "chapter": { "type": "integer", "minimum": 0, "description": "Only this chapter index." },
+                        "includeSpoilers": { "type": "boolean", "default": false, "description": "Also return notes past the listener's position, marked as spoilers." },
                     }),
                     &["bookId"],
                 ),
@@ -789,6 +802,7 @@ impl AgentTool {
             AgentTool::GetAchievements => get_achievements(state, caller, arguments).await,
             AgentTool::GetSeriesProgress => get_series_progress(state, caller, arguments).await,
             AgentTool::GetTextSoFar => get_text_so_far(state, caller, arguments).await,
+            AgentTool::GetChapterNotes => get_chapter_notes(state, caller, arguments).await,
             AgentTool::FindStoreBooks => find_store_books(state, caller, arguments).await,
             AgentTool::GetBookOntoServer => get_book_onto_server(state, caller, arguments).await,
         }
@@ -892,6 +906,16 @@ fn progress_instant(updated_at: &str) -> String {
 }
 
 /// The chapter a book-absolute position falls in, by index into `chapters`.
+/// Where a chapter's audio stops: the next chapter's start, else its own
+/// recorded end, else the end of the book.
+pub(crate) fn chapter_end(book: &Book, index: usize) -> Option<f64> {
+    book.chapters
+        .get(index + 1)
+        .map(|next| next.start_seconds)
+        .or(book.chapters.get(index)?.end_seconds)
+        .or(book.duration_seconds)
+}
+
 fn chapter_index_at(chapters: &[Chapter], seconds: f64) -> Option<usize> {
     chapters
         .partition_point(|chapter| chapter.start_seconds <= seconds)
@@ -1711,6 +1735,25 @@ async fn get_series_progress(
     }))
 }
 
+const MAX_RECAP_MAP_BYTES: u64 = 16 * 1024 * 1024;
+static RECAP_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
+
+fn read_recap_map(path: &FsPath) -> anyhow::Result<alignment::SyncMap> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    anyhow::ensure!(
+        file.metadata()?.len() <= MAX_RECAP_MAP_BYTES,
+        "Sync map is too large for a recap"
+    );
+    let mut bytes = Vec::new();
+    file.take(MAX_RECAP_MAP_BYTES + 1).read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() as u64 <= MAX_RECAP_MAP_BYTES,
+        "Sync map is too large for a recap"
+    );
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 async fn get_text_so_far(
     state: &AppState,
     caller: &AgentCaller,
@@ -1719,15 +1762,6 @@ async fn get_text_so_far(
     let book_id = book_id_argument(arguments)?;
     let max_characters = count_argument(arguments, "maxCharacters", 30_000, 200_000).max(1_000);
     let book = caller_book(state, caller, &book_id, true).await?;
-    let sync_path = state.library.read().await.sync_paths.get(&book.id).cloned();
-    let Some(sync_path) = sync_path else {
-        return Err(if book.reading_file.is_some() {
-            "This book has its text but no follow-along map yet, so OperaLibre cannot tell exactly where the listener is in it. An administrator can create the map from the book's page.".into()
-        } else {
-            "This book has no text on the server, so there is nothing to recap from.".into()
-        });
-    };
-
     let progress = book.progress.as_ref();
     let finished = progress.is_some_and(|progress| progress.status == BookProgressStatus::Finished);
     let position = progress.map_or(0.0, |progress| progress.book_position_seconds);
@@ -1736,24 +1770,27 @@ async fn get_text_so_far(
     }
     let heard_through = progress.map_or(0.0, heard_through);
 
-    // A long book's map is several megabytes of JSON.
-    let map = tokio::task::spawn_blocking(move || -> anyhow::Result<alignment::SyncMap> {
-        Ok(serde_json::from_slice(&std::fs::read(&sync_path)?)?)
-    })
-    .await
-    .map_err(|error| tool_failure(ApiError::internal(error.to_string())))?
-    .map_err(|error| {
-        tool_failure(ApiError::internal(format!(
-            "Could not read the sync map: {error}"
-        )))
-    })?;
-    if map
-        .precision
-        .as_deref()
-        .is_some_and(|precision| precision != "sentence")
-    {
-        return Err("This book's follow-along map is only an estimate, so it cannot mark a safe stopping point. Recreating the map fixes that.".into());
-    }
+    let permit = Arc::new(
+        RECAP_SLOTS
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "Another recap is being prepared. Try again shortly.".to_string())?,
+    );
+    let sync_path = state.library.read().await.sync_paths.get(&book.id).cloned();
+    let map = match sync_path {
+        Some(sync_path) => read_text_map(sync_path, permit.clone()).await?,
+        None => {
+            let spans = if chapter_notes::experiment_enabled(state).await {
+                chapter_notes::transcript_spans(state, &book.id, heard_through).await
+            } else {
+                Vec::new()
+            };
+            if spans.is_empty() {
+                return Err(text_unavailable(&book));
+            }
+            transcript_map(spans)
+        }
+    };
 
     let mut heard: Vec<&alignment::SyncFragment> = map
         .fragments
@@ -1809,17 +1846,152 @@ async fn get_text_so_far(
     }))
 }
 
-struct HeardChapter {
+async fn get_chapter_notes(
+    state: &AppState,
+    caller: &AgentCaller,
+    arguments: &serde_json::Value,
+) -> ToolOutcome {
+    let book_id = book_id_argument(arguments)?;
+    let include_spoilers = arguments
+        .get("includeSpoilers")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let only = arguments.get("chapter").and_then(|value| value.as_u64());
+    let book = caller_book(state, caller, &book_id, true).await?;
+    if !chapter_notes::experiment_enabled(state).await {
+        return Err("Chapter notes are not turned on for this server.".into());
+    }
+    let Some(notes) = chapter_notes::load_notes(state, &book.id)
+        .await
+        .filter(|notes| !notes.chapters.is_empty())
+    else {
+        return Err("This book has no chapter notes yet. An administrator can make them from the book's page.".into());
+    };
+    let progress = book.progress.as_ref();
+    let heard_through = progress.map_or(0.0, heard_through);
+    let mut ahead = 0;
+    let mut chapters = Vec::new();
+    for note in &notes.chapters {
+        if only.is_some_and(|index| index != note.index as u64) {
+            continue;
+        }
+        let end = note.end_seconds.unwrap_or(f64::INFINITY);
+        let reached = if end <= heard_through {
+            "heard"
+        } else if note.start_seconds < heard_through {
+            "current"
+        } else {
+            "ahead"
+        };
+        if reached == "ahead" && !include_spoilers {
+            ahead += 1;
+            continue;
+        }
+        let mut entry = serde_json::json!({
+            "index": note.index,
+            "title": note.title,
+            "listener": reached,
+            "source": note.source,
+            "synopsis": note.synopsis,
+        });
+        if reached == "current" && !include_spoilers {
+            entry["summaryWithheld"] = "The listener is partway through this chapter.".into();
+        } else {
+            entry["summary"] = note.summary.clone().into();
+            entry["people"] = note.people.clone().into();
+            entry["terms"] = note.terms.clone().into();
+            if reached != "heard" {
+                entry["spoiler"] = true.into();
+            }
+        }
+        if note.text_truncated {
+            entry["writtenFromPartOfChapter"] = true.into();
+        }
+        chapters.push(entry);
+    }
+    if chapters.is_empty() && only.is_some() {
+        return Err(if ahead > 0 {
+            "That chapter is past the listener's position. Pass includeSpoilers only if they ask to be spoiled.".into()
+        } else {
+            "That chapter has no notes. Use an index this tool lists.".into()
+        });
+    }
+    let summarized = notes.chapters.iter().any(|note| note.summary.is_some());
+    Ok(serde_json::json!({
+        "bookId": book.id,
+        "title": book.title,
+        "author": book.author,
+        "chapters": chapters,
+        "chaptersAhead": ahead,
+        "note": (!summarized).then_some(
+            "These chapters were transcribed but no summaries were written. get_text_so_far returns the transcript up to the listener's position, for you to recap."
+        ),
+    }))
+}
+
+/// Transcripts stand in for a follow-along map, sentence by recognized
+/// sentence.
+fn transcript_map(spans: Vec<chapter_notes::TranscriptSpan>) -> alignment::SyncMap {
+    alignment::SyncMap {
+        version: alignment::SYNC_MAP_VERSION,
+        mapping_revision: 0,
+        generator: None,
+        generated_at: None,
+        precision: None,
+        fragments: spans
+            .into_iter()
+            .map(|span| alignment::SyncFragment {
+                start_seconds: span.start_seconds,
+                end_seconds: span.end_seconds,
+                href: "transcript".into(),
+                text: span.text,
+                words: Vec::new(),
+            })
+            .collect(),
+        recovery_gaps: Vec::new(),
+    }
+}
+
+fn text_unavailable(book: &Book) -> String {
+    if book.reading_file.is_some() {
+        "This book has its text but no follow-along map yet, so OperaLibre cannot tell exactly where the listener is in it. An administrator can create the map from the book's page.".into()
+    } else {
+        "This book has no text on the server, so there is nothing to recap from. An administrator can transcribe it by making chapter notes, if that experiment is on.".into()
+    }
+}
+
+async fn read_text_map(
+    sync_path: PathBuf,
+    permit: Arc<OwnedSemaphorePermit>,
+) -> Result<alignment::SyncMap, String> {
+    let map = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        read_recap_map(&sync_path)
+    })
+    .await
+    .map_err(|error| tool_failure(ApiError::internal(error.to_string())))?
+    .map_err(|error| {
+        tool_failure(ApiError::internal(format!(
+            "Could not read the sync map: {error}"
+        )))
+    })?;
+    if !map.is_sentence_precise() {
+        return Err("This book's follow-along map is only an estimate, so it cannot mark a safe stopping point. Recreating the map fixes that.".into());
+    }
+    Ok(map)
+}
+
+pub(crate) struct HeardChapter {
     /// Index into the book's chapters, or 0 for a book without any.
-    index: usize,
-    title: String,
-    text: String,
-    complete: bool,
+    pub(crate) index: usize,
+    pub(crate) title: String,
+    pub(crate) text: String,
+    pub(crate) complete: bool,
 }
 
 /// Gather heard sentences under the audio chapters they fall in. A book
 /// without chapters is one stretch named after the book.
-fn group_heard_text(
+pub(crate) fn group_heard_text(
     book: &Book,
     heard: &[&alignment::SyncFragment],
     heard_through: f64,
@@ -1832,12 +2004,7 @@ fn group_heard_text(
             let (title, complete) = match book.chapters.get(index) {
                 Some(chapter) => (
                     chapter.title.clone(),
-                    book.chapters
-                        .get(index + 1)
-                        .map(|next| next.start_seconds)
-                        .or(chapter.end_seconds)
-                        .or(book.duration_seconds)
-                        .is_some_and(|end| end <= heard_through),
+                    chapter_end(book, index).is_some_and(|end| end <= heard_through),
                 ),
                 None => (book.title.clone(), heard_through.is_infinite()),
             };
@@ -2250,6 +2417,18 @@ async fn get_book_onto_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recap_rejects_large_maps_before_parsing() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(MAX_RECAP_MAP_BYTES + 1).unwrap();
+        assert!(
+            read_recap_map(file.path())
+                .unwrap_err()
+                .to_string()
+                .contains("too large")
+        );
+    }
 
     #[test]
     fn agents_hear_request_mistakes_but_not_server_failures() {

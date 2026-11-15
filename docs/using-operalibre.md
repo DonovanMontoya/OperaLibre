@@ -27,6 +27,8 @@ The small **Preview** bar beneath a server book’s cover plays its opening five
 
 Audiobooks are mastered at very different levels, so a device volume that suits one book leaves the next one hard to hear. **Book Volume**, in the player’s playback sheet (the speed pill) and on the book’s own page, trims or lifts that single book by up to 24 dB without touching anything else. It is saved per reader on the server, so a book you turned up on your phone is already turned up on every other device you sign in from.
 
+When the server has ffmpeg, it also checks each book's mastering in the background and lifts books that were recorded far too quietly, or turns down ones that are far too loud, so they play near a normal speech level. The playback sheet shows **Audio adjusted** when this is happening, with a switch to turn it off for that book. Setting **Book Volume** yourself always takes priority; turning the switch back on returns the book to the suggested level. The sheet also notes books whose tracks vary a lot in loudness or whose audio leans to one side or is on one channel only. Your audio files are never changed.
+
 The setting is a boost, not a re-recording: past the point where a book’s loudest passages reach full scale a limiter holds them there, so very large boosts trade some dynamic range for audibility. A frontend hosted separately from the OperaLibre server can only turn a book down, not up — the browser will not let it read the audio closely enough to amplify it.
 
 Safari and other WebKit web players currently allow reductions only because routing audio through their boost engine can distort playback. This also applies to downloaded and imported books. Saved boosts remain available in supported players; Safari plays them at Original. To use boost, use the native iOS app or desktop Chrome or Firefox with a frontend served by OperaLibre.
@@ -283,7 +285,13 @@ Alignment matches numbered chapter labels across formats such as “Chapter One�
 
 Follow-along generation is developed and tested with English books. The audiobook and EPUB must be in the same language; a translation cannot be aligned with audio in another language. Other languages that separate words with spaces, such as Spanish, French, or German, can be aligned, but they use a general multilingual recognizer that is less accurate than the English one, so expect more retries and more unhighlighted passages. The EPUB’s language metadata selects the recognizer, so a Spanish book whose EPUB is labelled English aligns poorly. When that happens, sync says so and offers to re-sync the book in the language it heard; see below. Chapter words and spelled-out numbers are understood only in English (“Chapter Twelve”); in other languages, chapters are paired by identical titles, leading digits, or their order. Languages written without spaces between words, such as Chinese, Japanese, and Thai, are not supported.
 
-Generation downloads any missing model files, so initial use requires network access. Generation runs locally; audiobook contents are not uploaded anywhere. Jobs run one at a time; repeated requests for the same book reuse its queued, running, or paused job.
+Generation downloads any missing model files, so initial use requires network access. Generation runs locally and audiobook contents are not uploaded anywhere, unless the owner turns on OpenAI transcription. Jobs run one at a time; repeated requests for the same book reuse its queued, running, or paused job.
+
+#### Optional: speech recognition with OpenAI
+
+By default, follow-along sync runs entirely on your server. An owner who prefers can instead have OpenAI's speech recognition transcribe the narration, using their own OpenAI API key. While it is on, short clips of each book's narration are sent to OpenAI as the book syncs and billed to that key, under OpenAI's terms. Book text, accounts, and listening history stay on the server, and matching the audio to the text still runs locally, so the follow-along add-on is still required.
+
+To use it, open **Administration → Experiments**, choose **OpenAI** under **Speech recognition** in the follow-along card, paste your key, and choose **Use OpenAI**. To go back, choose **On this server** and **Use this server**; the saved key is deleted, and a book that is syncing stops sending audio at its next clip. Existing maps are kept either way.
 
 To monitor several books together, open **Administration → Experiments** and expand **Sync activity** under the follow-along sync generator. It shows running and queued books, progress, elapsed time, and recent completed or failed results. Select a book title to open it. The view refreshes while expanded; collapsing it does not stop server jobs. Use the small × to remove a queued or paused book, or dismiss a completed, failed, or cancelled result. A new finished sync replaces older results for that book, including old failures after a successful re-sync or chapter re-run. Dismissal applies to everyone and survives restarts; it leaves maps, chapter grades, and listening progress unchanged. Books without a current map stay under **Ready to optimize**, and Poor or Failed maps stay under **Needs attention**. A failed scheduled-start notice can also be dismissed beside the book. Dismissing a job result clears its matching scheduled-failure notice. Use the up/down arrows to change the queue order. Pause stops the current section and keeps completed chapters or tracks saved, without waiting for a long track to finish. Resume puts the book back at the end of the queue and repeats the unfinished section. Paused books stay paused across server restarts. Server updates interrupt running syncs at their last saved section and resume them automatically once the server is ready; the unfinished section is repeated. A failed update resumes the queue on the current server. The queue, saved sections, and recent results survive restarts. Interrupted books resume from the last completed section once the library is ready and the generator is enabled; an unfinished section is repeated. If the audio, EPUB, alignment runtime, or server alignment code changes, generation starts over. Previous maps stay usable until replacements are saved.
 
@@ -346,7 +354,17 @@ Other assistants that accept an MCP server address with a bearer token connect t
 
 Apart from getting books, an assistant can only read. It cannot change your progress or anything else, it never sees other listeners' activity, and it sees no more than you can in the app: if an administrator narrows your access, the assistant's narrows with it. Whatever it reads is sent to the company that runs the assistant. Remove an assistant from the **AI assistants** card to disconnect it. Assistants are also disconnected when someone else resets your password, when your account is removed, and when the owner restores a backup. If the owner turns the experiment off, connected assistants stop working until it is turned back on.
 
-Recaps need a book with its text and a follow-along map (see [Read along with the ebook](#read-along-with-the-ebook)), because the map marks exactly where you are in the text. The assistant gets nothing past that point, and it is asked not to fill in the plot from its own knowledge of the book.
+Recaps need a book with its text and a follow-along map (see [Read along with the ebook](#read-along-with-the-ebook)), because the map marks exactly where you are in the text, or a book transcribed for [chapter notes](#chapter-notes). The assistant gets nothing past that point, and it is asked not to fill in the plot from its own knowledge of the book.
+
+### Chapter notes
+
+Chapter notes give each chapter a spoiler-free synopsis, a full summary, and the people and places in it, including for books that have no ebook. They are an experiment the owner turns on under **Administration → Experiments**.
+
+Notes start from the book's words. A book with a follow-along map uses its own text. Any other book is transcribed on your server by the follow-along sync add-on, so install that first. Writing the notes needs a language model, which the owner chooses on the same card: paste an Anthropic API key, or give the address of any OpenAI-compatible endpoint, such as Ollama or LM Studio on your own network. With no model chosen, books are only transcribed, and a connected assistant writes its own recap from the transcript.
+
+An administrator makes a book's notes from the book's page with **Make notes** (or **Transcribe**). Transcribing takes a while on modest hardware, and one book is worked on at a time. A chapter's text goes to the model you chose only then, and running it again sends only chapters that changed. **Remove** deletes the book's notes and transcripts.
+
+Notes appear on the book's page and in the player's details. Summaries of chapters you have not finished stay hidden until you choose **Show spoilers**. Assistants with **Book text so far** can read them the same way: everything for chapters you have heard, only the synopsis for the chapter you are in, and nothing later unless you ask the assistant to spoil it.
 
 ## Import Audible books with Libation (optional)
 
@@ -369,6 +387,12 @@ The milestones are books finished (1, then 10, 25, and 100), a finished book of 
 ## Games
 
 The installed iPhone and Android apps include a **Games** tab. **Word Grid** is a five-letter word puzzle: it starts on the day's word, takes six guesses, and can be replaced with another word. **Chapter Match** is a board where you swap adjacent symbols to line up three or more. The tab is in the bottom navigation by default. Turn it off with **Games tab** under **Settings → Behavior**. The games run on the device and send nothing to the server.
+
+## Color vision
+
+Under **Settings → Display → Color vision** in the apps, or **Account menu → Display** on the web, choose **Red–green**, **Blue–yellow**, or **Monochrome** to change interface accents and status colors. The choice stays on this device and works offline. Covers and book illustrations keep their original colors; ebook links and narrated-sentence highlights follow the selected palette.
+
+Turn on **Stronger visual cues** for outlined selections, underlined links, patterned listening progress, and a numbered listening calendar (1–4, from less to more). It works with any palette, including **Default colors**. Word Grid always labels its feedback with symbols: ✓ for the correct position, ↔ for a different position, and × for a letter absent from the word. Chapter Match uses a different symbol for each piece.
 
 ## Light and dark themes
 

@@ -11,6 +11,21 @@ Entries use **version (build)** and appear newest first. iOS versions are tracke
 independently of the server releases. From 1.3.2, the build number counts
 uploads of each app version from 1, and Android uses the same build number.
 
+## 1.3.2 (6)
+
+Uploaded to App Store Connect on November 14, 2026, from
+[`2d3c5cd2`](https://github.com/DonovanMontoya/OperaLibre/commit/2d3c5cd2d9c3c2a81c4ca803b8991d7fa2ddc0c8).
+
+- Long AAC audiobooks can start and resume sooner with the updated OperaLibre server.
+  Stream recovery preserves the failed track's position and pending seeks.
+  ([#491](https://github.com/DonovanMontoya/OperaLibre/pull/491))
+- Cover art opens from the local cache first and avoids unnecessary downloads.
+  ([#487](https://github.com/DonovanMontoya/OperaLibre/pull/487))
+- Phone queue titles have more room.
+  ([#486](https://github.com/DonovanMontoya/OperaLibre/pull/486))
+- Read-along chapter navigation and page turns are more reliable.
+  ([#485](https://github.com/DonovanMontoya/OperaLibre/pull/485))
+
 ## 1.3.2 (5)
 
 Uploaded to App Store Connect on November 13, 2026, from main at
