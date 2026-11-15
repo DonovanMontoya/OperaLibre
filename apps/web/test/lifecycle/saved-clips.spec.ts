@@ -188,7 +188,7 @@ test('Audio clips behavior preference persists and restores saved passages witho
   const ribbon = page.getByRole('button', { name: 'Save a clip of the last 30 seconds and the next 10', exact: true });
   await expect(ribbon).toBeVisible();
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
-  await page.locator('.user-menu .behavior-settings summary').click();
+  await page.locator('.user-menu summary').filter({ hasText: 'Playback, navigation, and reading preferences' }).click();
   const preference = page.getByRole('switch', { name: 'Show audio clips', exact: true });
   await expect(preference).toHaveAttribute('aria-checked', 'true');
   await preference.click();
@@ -197,13 +197,13 @@ test('Audio clips behavior preference persists and restores saved passages witho
   expect(await audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(false);
   await page.reload();
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
-  await page.locator('.user-menu .behavior-settings summary').click();
+  await page.locator('.user-menu summary').filter({ hasText: 'Playback, navigation, and reading preferences' }).click();
   await expect(preference).toHaveAttribute('aria-checked', 'false');
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
   await page.locator('.book-row').nth(1).click();
   await expect(page.getByRole('tab', { name: 'Clips', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
-  await page.locator('.user-menu .behavior-settings summary').click();
+  await page.locator('.user-menu summary').filter({ hasText: 'Playback, navigation, and reading preferences' }).click();
   await preference.click();
   await expect(preference).toHaveAttribute('aria-checked', 'true');
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
