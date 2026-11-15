@@ -430,7 +430,7 @@ pub(crate) async fn agent_auth_middleware(
 
 const MCP_PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-const MCP_INSTRUCTIONS: &str = "OperaLibre is the listener's own private audiobook server. Everything here is read-only except get_book_onto_server, which adds a book the listener already owns or asks the server's owner for it; call it only when the listener asks for that book. When recommending what to read next, get_series_progress and find_store_books show what they already own. When recapping a book, use only the text get_text_so_far returns: it stops exactly where the listener is. Do not add plot details from your own knowledge of the book or its series, because that could spoil what they have not heard yet. Book ids come from search_library, get_currently_listening, and the history tools.";
+const MCP_INSTRUCTIONS: &str = "OperaLibre is the listener's own private audiobook server. Everything here is read-only. get_book_onto_server checks an owned book and directs the listener to Get books to add or request it themselves; it never starts a download or request. When recommending what to read next, get_series_progress and find_store_books show what they already own. When recapping a book, use only the text get_text_so_far returns: it stops exactly where the listener is. Do not add plot details from your own knowledge of the book or its series, because that could spoil what they have not heard yet. Book ids come from search_library, get_currently_listening, and the history tools.";
 
 pub(crate) async fn mcp_endpoint(
     State(state): State<AppState>,
@@ -751,7 +751,7 @@ impl AgentTool {
                 ),
                 AgentTool::GetBookOntoServer => (
                     "Get a book onto the server",
-                    "Add a book from find_store_books to the server, or, when the listener's Audible downloads need approval, ask the server's owner for it. Only do this when the listener asks for the book. Imports take a few minutes; the book then appears in search_library.".to_string(),
+                    "Check a book from find_store_books and direct the listener to Get books to add or request it. Returns requiresUserAction without starting any import or request, or alreadyOnServer when accessible.".to_string(),
                     serde_json::json!({
                         "store": { "type": "string", "enum": ["audible", "libroFm"] },
                         "id": { "type": "string", "description": "The id find_store_books gave the book." },
@@ -760,7 +760,6 @@ impl AgentTool {
                     &["store", "id"],
                 ),
             };
-        let acts = self == AgentTool::GetBookOntoServer;
         serde_json::json!({
             "name": self.name(),
             "title": title,
@@ -773,11 +772,11 @@ impl AgentTool {
             },
             "annotations": {
                 "title": title,
-                "readOnlyHint": !acts,
+                "readOnlyHint": true,
                 "destructiveHint": false,
-                // Asking twice for the same book reuses the first import or request.
+                // Repeating a lookup does not mutate the library.
                 "idempotentHint": true,
-                "openWorldHint": acts,
+                "openWorldHint": false,
             },
         })
     }
@@ -2354,64 +2353,13 @@ async fn get_book_onto_server(
         }));
     }
 
-    if store == Store::LibroFm {
-        // Libro.fm purchases are the listener's own, so any account may add them.
-        let Json(JobCreated { .. }) = import_libro_purchase(
-            State(state.clone()),
-            Extension(caller.user.clone()),
-            Path(book.id.clone()),
-            Query(AccountSelection {
-                email: book.account_id.clone(),
-            }),
-        )
-        .await
-        .map_err(tool_failure)?;
-        return store_outcome(
-            "adding",
-            &book.title,
-            "Downloading from Libro.fm. It appears in the library when the import finishes.",
-        );
-    }
-
-    let profile_id = book.account_id.clone().unwrap_or_default();
-    if caller.user.libation_access == LibationAccess::Direct {
-        let Json(JobCreated { .. }) = liberate_profile_libation_book(
-            State(state.clone()),
-            Extension(caller.user.clone()),
-            Path((profile_id, book.id.clone())),
-        )
-        .await
-        .map_err(tool_failure)?;
-        return store_outcome(
-            "adding",
-            &book.title,
-            "Downloading from Audible. It appears in the library when the import finishes.",
-        );
-    }
-    let Json(request) = create_libation_download_request(
-        State(state.clone()),
-        Extension(caller.user.clone()),
-        Path(book.id.clone()),
-        Json(CreateLibationDownloadRequest {
-            title: book.title.clone(),
-            profile_id: Some(profile_id),
-        }),
+    // Store metadata is untrusted model input. Only the listener's session in
+    // Get books may authorize the import; agent capabilities cannot confirm it.
+    store_outcome(
+        "requiresUserAction",
+        &book.title,
+        "Open Get books in OperaLibre and choose Add or Request for this title. No download or request has been started.",
     )
-    .await
-    .map_err(tool_failure)?;
-    if request.status == "pending" {
-        store_outcome(
-            "requested",
-            &book.title,
-            "Asked the server's owner for this book. It is added once they approve the request.",
-        )
-    } else {
-        store_outcome(
-            "adding",
-            &book.title,
-            "The owner already approved this book, so it is downloading from Audible.",
-        )
-    }
 }
 
 #[cfg(test)]
