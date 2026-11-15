@@ -5,6 +5,8 @@
 use crate::*;
 use sha2::{Digest, Sha256};
 
+const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+
 const API: &str = "https://api.cloudflare.com/client/v4";
 /// Cloudflare's public STUN service, saved with a first installation so two
 /// peers behind home routers can find each other.
@@ -60,6 +62,35 @@ impl From<Failure> for ApiError {
     }
 }
 
+async fn decode_response(mut response: reqwest::Response) -> Result<serde_json::Value, Failure> {
+    let oversized = || Failure::Other("Cloudflare returned too much data.".into());
+    let declared_length = response
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    if [declared_length, response.content_length()]
+        .into_iter()
+        .flatten()
+        .any(|size| size > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(oversized());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| Failure::Other("The Cloudflare response was interrupted.".into()))?
+    {
+        if chunk.len() > MAX_RESPONSE_BYTES - bytes.len() {
+            return Err(oversized());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|_| Failure::Other("Cloudflare returned an unreadable response.".into()))
+}
+
 struct Account {
     client: reqwest::Client,
     base: String,
@@ -86,7 +117,7 @@ impl Account {
             || Failure::Other("Cloudflare could not be reached. Try again in a moment.".into());
         let response = request.send().await.map_err(|_| unreachable())?;
         let status = response.status();
-        let body: serde_json::Value = response.json().await.map_err(|_| unreachable())?;
+        let body = decode_response(response).await?;
         if status.is_success() && body["success"] == true {
             return Ok(body["result"].clone());
         }
@@ -291,4 +322,43 @@ pub(crate) async fn install(
         origin: format!("https://{}.{subdomain}.workers.dev", WORKER.name),
         owner_secret,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn provider_responses_are_bounded_before_json_parsing() {
+        let response = reqwest::Response::from(axum::http::Response::new(r#"{"success":true}"#));
+        assert_eq!(
+            decode_response(response).await.ok().unwrap()["success"],
+            true
+        );
+        let response = reqwest::Response::from(
+            axum::http::Response::builder()
+                .header("content-length", MAX_RESPONSE_BYTES + 1)
+                .body("")
+                .unwrap(),
+        );
+        assert!(
+            matches!(decode_response(response).await, Err(Failure::Other(message)) if message.contains("too much data"))
+        );
+        for status in [200, 500] {
+            let chunks = tokio_util::io::ReaderStream::new(std::io::Cursor::new(vec![
+                b' ';
+                MAX_RESPONSE_BYTES
+                    + 1
+            ]));
+            let response = reqwest::Response::from(
+                axum::http::Response::builder()
+                    .status(status)
+                    .body(reqwest::Body::wrap_stream(chunks))
+                    .unwrap(),
+            );
+            assert!(
+                matches!(decode_response(response).await, Err(Failure::Other(message)) if message.contains("too much data"))
+            );
+        }
+    }
 }

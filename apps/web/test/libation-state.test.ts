@@ -56,3 +56,12 @@ test("refreshing Get books only rereads the list when Audible cannot be checked"
   assert.equal(canCheckAudible(status({ pendingLogin: { sessionId: "s", profileId: "a", loginUrl: "", expiresAt: 0 } }), false), false);
   assert.equal(canCheckAudible(status({ accounts: [signedIn, { ...signedIn, id: "b", connectionState: "signing_in" }] }), false), false);
 });
+
+
+test("native readers can refresh Audible with redacted account details", () => {
+  const reader = status({ accounts: [], authenticated: true });
+  assert.equal(canCheckAudible(reader, false), true);
+  assert.equal(canCheckAudible(reader, true), false);
+  assert.equal(canCheckAudible({ ...reader, enabled: false }, false), false);
+  assert.equal(canCheckAudible({ ...reader, authenticated: false }, false), false);
+});

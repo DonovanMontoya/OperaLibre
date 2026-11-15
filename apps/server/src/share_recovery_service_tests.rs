@@ -468,7 +468,7 @@ async fn retained_invitation_recovers_with_actual_worker_and_real_recipient_peer
         )
         .await
         .map_err(|_| anyhow::anyhow!("selected creation failed"))?;
-        let available = server.state.download_task_slots.available_permits();
+        let available = server.state.gift_sender_slots.available_permits();
         let initial = crate::share::start_invitation_sender_with_recovery(
             true,
             &server.state,
@@ -558,7 +558,7 @@ async fn retained_invitation_recovers_with_actual_worker_and_real_recipient_peer
         assert!(zip.by_name("01 Track.wav").is_err());
         loop {
             if store.list().await?.is_empty()
-                && server.state.download_task_slots.available_permits() == available
+                && server.state.gift_sender_slots.available_permits() == available
             {
                 break;
             }
@@ -650,7 +650,15 @@ async fn retained_invitation_recovers_with_actual_worker_and_real_recipient_peer
         )
         .await?;
         let _live_offer = offer(&broker, &record, &pins, generation).await?;
-        assert!(server.state.download_task_slots.available_permits() < available);
+        assert!(server.state.gift_sender_slots.available_permits() < available);
+        // A recipient who has not accepted must not block ordinary downloads.
+        let download = server
+            .state
+            .download_task_slots
+            .clone()
+            .try_acquire_owned()
+            .unwrap();
+        drop(download);
         let wrong_broker = crate::share_broker::BrokerClient::new("https://wrong-broker.invalid/")?;
         assert_eq!(
             crate::share::abandon_retained_senders(&server.state, &wrong_broker)
@@ -676,7 +684,7 @@ async fn retained_invitation_recovers_with_actual_worker_and_real_recipient_peer
         assert_eq!(cleanup.completed, 1);
         assert_eq!(cleanup.pending, 0);
         loop {
-            if server.state.download_task_slots.available_permits() == available {
+            if server.state.gift_sender_slots.available_permits() == available {
                 break;
             }
             tokio::task::yield_now().await;

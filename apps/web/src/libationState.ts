@@ -20,5 +20,8 @@ export function isLibationAdding({
 export function canCheckAudible(status: LibationStatus | null, checkRunning: boolean) {
   if (!status?.enabled || checkRunning || status.pendingLogin) return false;
   if (status.accounts.some((account) => account.connectionState === "signing_in")) return false;
-  return status.accounts.some((account) => account.authenticated);
+  // Reader status omits account details; its aggregate flag carries access.
+  return status.accounts.length === 0
+    ? status.authenticated === true
+    : status.accounts.some((account) => account.authenticated);
 }

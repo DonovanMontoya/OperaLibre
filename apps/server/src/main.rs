@@ -734,6 +734,7 @@ fn build_app_state(
         password_request_slots: Arc::new(Semaphore::new(PASSWORD_REQUEST_CAPACITY)),
         password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
         download_task_slots: Arc::new(Semaphore::new(config.max_concurrent_book_downloads)),
+        gift_sender_slots: Arc::new(Semaphore::new(config.max_concurrent_book_downloads)),
         catalogue_slots: Arc::new(Semaphore::new(CATALOGUE_CONCURRENCY)),
         catalogue_account_slots: Arc::new(Mutex::new(HashMap::new())),
         epub_entry_slots: Arc::new(Semaphore::new(EPUB_ENTRY_CONCURRENCY)),

@@ -1941,7 +1941,7 @@ pub(crate) async fn start_invitation_sender_with_recovery(
     drop(library);
     let limit = share_archive_limit(state, &planned, &generated)?;
     let permit = state
-        .download_task_slots
+        .gift_sender_slots
         .clone()
         .try_acquire_owned()
         .map_err(|_| ApiError::too_many_requests("Share transfer capacity is full."))?;
