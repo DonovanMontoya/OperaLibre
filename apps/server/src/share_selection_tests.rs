@@ -526,6 +526,7 @@ impl TestServer {
             },
             alignment_config: AlignmentConfig::Managed,
             faststart_tools: None,
+            audio_analysis: Arc::new(AudioAnalysisStore::new(database.clone())),
             update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
             sync_dir: data_dir.join("sync"),
             sync_schedule_lock: Arc::new(Mutex::new(())),

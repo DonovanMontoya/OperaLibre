@@ -18,7 +18,7 @@ import { ChapterNotesPanel } from "./ChapterNotesPanel";
 import { CoverArt } from "./CoverArt";
 import { bookSubtitle, durationFromTracks, formatDurationLabel, formatTime } from "./formatting";
 import { haptic } from "./native";
-import { BookVolumeControl, PlaybackSpeedControl } from "./PlaybackControls";
+import { AutoVolumeNotice, BookVolumeControl, PlaybackSpeedControl } from "./PlaybackControls";
 import { formatSleepTimerMinutes, SLEEP_TIMER_MAX_MINUTES, SLEEP_TIMER_MIN_MINUTES } from "./sleepTimer";
 import type { Book, Chapter } from "./types";
 
@@ -176,6 +176,7 @@ export function SpeedSheet({
   playbackGain,
   setNativePlayerSheet,
   speed,
+  updateAutoVolume,
   updateBookGain,
   updateSpeed
 }: {
@@ -185,6 +186,7 @@ export function SpeedSheet({
   playbackGain: number;
   setNativePlayerSheet: Dispatch<SetStateAction<NativePlayerSheet>>;
   speed: number;
+  updateAutoVolume: (book: Book, enabled: boolean) => void;
   updateBookGain: (book: Book, db: number) => void;
   updateSpeed: (value: number) => void;
 }) {
@@ -228,6 +230,10 @@ export function SpeedSheet({
               value={playbackGain}
               canBoost={playbackCanBoost}
               onChange={(db) => updateBookGain(playbackBook, db)}
+            />
+            <AutoVolumeNotice
+              book={playbackBook}
+              onToggle={(enabled) => updateAutoVolume(playbackBook, enabled)}
             />
           </div>
         ) : null}

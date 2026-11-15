@@ -88,6 +88,10 @@ impl Fixture {
             progress: None,
             shared_progress: vec![],
             volume_gain: 1.0,
+            volume_gain_source: crate::VolumeGainSource::Default,
+            auto_volume: true,
+            audio_analysis: None,
+            audio_fingerprint: String::new(),
         };
         let mut library = LibraryState {
             books: vec![book],

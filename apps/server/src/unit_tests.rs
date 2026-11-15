@@ -119,6 +119,10 @@ fn book_with_tracks(duration_seconds: Option<f64>, tracks: Vec<super::Track>) ->
         progress: None,
         shared_progress: Vec::new(),
         volume_gain: super::BOOK_VOLUME_GAIN_DEFAULT,
+        volume_gain_source: super::VolumeGainSource::Default,
+        auto_volume: true,
+        audio_analysis: None,
+        audio_fingerprint: String::new(),
     }
 }
 
@@ -202,19 +206,28 @@ async fn an_untuned_book_reads_back_at_unity_and_a_stored_extreme_is_clamped() {
         .unwrap();
 
     assert_eq!(
-        settings.gain("reader", "untouched").await.unwrap(),
-        super::BOOK_VOLUME_GAIN_DEFAULT
+        settings.get("reader", "untouched").await.unwrap(),
+        super::BookVolumeSetting::default()
     );
-    assert_eq!(settings.gain("reader", "quiet").await.unwrap(), 2.0);
     assert_eq!(
-        settings.gain("reader", "loud").await.unwrap(),
-        super::BOOK_VOLUME_GAIN_MAX,
+        settings.get("reader", "quiet").await.unwrap().manual_gain,
+        Some(2.0)
+    );
+    assert_eq!(
+        settings.get("reader", "loud").await.unwrap().manual_gain,
+        Some(super::BOOK_VOLUME_GAIN_MAX),
         "a stored gain above the supported range reached a client"
     );
 
     let listed = settings.list_for_user("reader").await.unwrap();
-    assert_eq!(listed.get("loud"), Some(&super::BOOK_VOLUME_GAIN_MAX));
-    assert_eq!(listed.get("quiet"), Some(&2.0));
+    assert_eq!(
+        listed.get("loud").and_then(|setting| setting.manual_gain),
+        Some(super::BOOK_VOLUME_GAIN_MAX)
+    );
+    assert_eq!(
+        listed.get("quiet").and_then(|setting| setting.manual_gain),
+        Some(2.0)
+    );
     assert!(!listed.contains_key("untouched"));
 }
 
@@ -1915,6 +1928,7 @@ exit 0
         },
         alignment_config: super::AlignmentConfig::Managed,
         faststart_tools: None,
+        audio_analysis: super::Arc::new(super::AudioAnalysisStore::new(database.clone())),
         update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
         sync_dir: data_dir.join("sync"),
         sync_schedule_lock: super::Arc::new(super::Mutex::new(())),
@@ -4581,8 +4595,9 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
     assert_eq!(bobs.duration_seconds, None);
 
     let settings = super::BookSettingsStore::new(database.clone());
-    assert!((settings.gain("alice", "one").await.unwrap() - 2.25).abs() < 1e-9);
-    assert!((settings.gain("bob", "two").await.unwrap() - 1.0).abs() < 1e-9);
+    let gain = |setting: super::BookVolumeSetting| setting.manual_gain.unwrap_or(1.0);
+    assert!((gain(settings.get("alice", "one").await.unwrap()) - 2.25).abs() < 1e-9);
+    assert!((gain(settings.get("bob", "two").await.unwrap()) - 1.0).abs() < 1e-9);
 
     // And the export reproduces what was imported.
     let exported_dir = root.path().join("exported");
@@ -7628,6 +7643,47 @@ fn the_v1_schema_upgrade_can_run_twice_and_from_a_half_applied_state() {
             }
         }
     }
+}
+
+/// Schema 5 adds the auto-volume columns. A level saved before it was set by
+/// hand, so it must come through as the listener's own level, which keeps
+/// winning over any suggested gain.
+#[tokio::test]
+async fn the_v4_schema_upgrade_keeps_saved_levels_as_the_listeners_own() {
+    let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("operalibre.db");
+    {
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (4);
+                 CREATE TABLE book_settings (
+                     user_id     TEXT NOT NULL,
+                     book_id     TEXT NOT NULL,
+                     volume_gain REAL NOT NULL,
+                     PRIMARY KEY (user_id, book_id)
+                 );
+                 INSERT INTO book_settings VALUES ('alice', 'quiet', 3.0);",
+            )
+            .unwrap();
+    }
+    for _ in 0..2 {
+        let connection = super::db::open(&database_path).unwrap();
+        let version: i64 = connection
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+    }
+    let database = super::Database::open(&database_path).unwrap();
+    let settings = super::BookSettingsStore::new(database);
+    assert_eq!(
+        settings.get("alice", "quiet").await.unwrap(),
+        super::BookVolumeSetting {
+            manual_gain: Some(3.0),
+            auto_volume: true,
+        }
+    );
 }
 
 /// Schema 3 stores digests in place of session and media tokens. A session
