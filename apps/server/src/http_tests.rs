@@ -10094,7 +10094,7 @@ async fn scopes_decide_which_tools_an_agent_has() {
             .clone()
     };
     assert_eq!(read_only("find_store_books"), true);
-    assert_eq!(read_only("get_book_onto_server"), false);
+    assert_eq!(read_only("get_book_onto_server"), true);
     assert_eq!(tools.as_array().unwrap().len(), 2);
 
     let unknown = server
@@ -10540,7 +10540,7 @@ async fn achievements_and_series_follow_what_the_listener_finished() {
 }
 
 #[tokio::test]
-async fn an_agent_gets_a_libro_purchase_onto_the_server_as_its_listener_could() {
+async fn agent_import_requires_the_listeners_independent_session() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;
     let reader = server.add_reader(&owner, "agent-purchaser").await;
@@ -10615,7 +10615,30 @@ async fn an_agent_gets_a_libro_purchase_onto_the_server_as_its_listener_could() 
     )
     .await;
     assert!(!failed, "{said}");
-    assert_eq!(said["result"], "adding");
+    assert_eq!(said["result"], "requiresUserAction");
+    assert_eq!(
+        server
+            .get("/api/books", &reader)
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    // A model cannot bypass the handoff by calling the session-only import route.
+    let route = "/api/me/libro/books/9780000000001/import";
+    assert_eq!(
+        server
+            .send_json("POST", route, &secret, serde_json::json!({}))
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    let confirmed = server
+        .send_json("POST", route, &reader, serde_json::json!({}))
+        .await;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.text());
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let book_id = loop {
         let books = server.get("/api/books", &reader).await.json();
