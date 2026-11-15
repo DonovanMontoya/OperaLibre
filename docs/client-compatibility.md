@@ -87,9 +87,8 @@ Libation status includes optional setup and automatic-import information. Existi
 
 The iPhone client can use a small-index AAC transport on supported servers. It
 keeps the original track URL for playback recovery and falls back to ordinary
-streaming if the server or file does not support it. Downloads, Jellyfin, and
-other clients continue to use their existing streams.
-
+streaming if the server or file does not support it. Downloads and other clients
+continue to use their existing streams.
 
 ### Agent book imports
 

@@ -18,7 +18,6 @@ The backend is a Rust `axum` server that exposes a documented HTTP API; the incl
 - **CarPlay.** The iPhone app browses your shelf, downloads, and books in progress on the car screen and plays them there, from a library snapshot that works with the phone locked and the server out of reach.
 - **Audible import.** Optional [Libation](https://github.com/rmcrackan/Libation) integration lets administrators connect Audible accounts, browse purchases, and download titles straight into the library — with a per-reader approval workflow. See [Libation / Audible Import](docs/libation.md).
 - **Libro.fm import.** Connect your Libro.fm account, browse purchases, and import selected audiobooks directly into the server. A watched-folder option is also available. See [Libro.fm Import](docs/libro.md).
-- **Jellyfin support.** The apps can also connect to a Jellyfin server for audiobook browsing, streaming, and resume sync.
 - **Third-party client access.** A subset of the Audiobookshelf API supports BookPlayer browsing and download contracts; an OPDS catalog provides individual audio downloads. Compatibility and progress sync depend on the client; see [Client compatibility](docs/client-compatibility.md).
 - **Book identity across editions.** Different rips, editions, and ISBNs of the same book are linked as one work, so reading history follows the reader across copies.
 - **Try it instantly.** A self-contained on-device demo works without a server, account, or network connection.
@@ -45,7 +44,7 @@ Grab a release from the [GitHub releases page](https://github.com/DonovanMontoya
 
 - **Combined packages** — the easiest option: a background launcher starts the server and opens the web app.
 - **Server packages** — native binaries for headless or separate deployments.
-- **Frontend package** — static web files for an existing OperaLibre or Jellyfin server.
+- **Frontend package** — static web files for an existing OperaLibre server.
 
 Combined installations notify administrators about new versions, and owners can install verified updates from the app. For step-by-step setup, see [Install a Release](docs/installing-a-release.md), then [Using OperaLibre](docs/using-operalibre.md) for phones, reader accounts, uploads, readalong, and Audible imports.
 
@@ -81,7 +80,7 @@ The server owns scanning, authentication, metadata, cover art, readalong files, 
 ## Documentation
 
 - [Install a Release](docs/installing-a-release.md) — plain-language installation guide
-- [Using OperaLibre](docs/using-operalibre.md) — phones, readers, uploads, readalong, Jellyfin, Audible
+- [Using OperaLibre](docs/using-operalibre.md) — phones, readers, uploads, readalong, Audible
 - [iOS Release Changelog](docs/ios-changelog.md) — iPhone and iPad release history, starting with 1.1.0 (0)
 - [Configuration](docs/configuration.md) — every `server.config` option
 - [Library Layout](docs/library-layout.md) — how folders, files, and companions are organized

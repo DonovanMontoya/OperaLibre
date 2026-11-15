@@ -6,9 +6,9 @@ nav_order: 10
 # OperaLibre Privacy Policy
 
 **Effective date:** July 18, 2026  
-**Last updated:** November 9, 2026
+**Last updated:** November 15, 2026
 
-OperaLibre is an audiobook player that can use audio files stored on your device or connect to an OperaLibre or Jellyfin server chosen by you. This Privacy Policy explains how the OperaLibre application (the **“App”**) handles information.
+OperaLibre is an audiobook player that can use audio files stored on your device or connect to an OperaLibre server chosen by you. This Privacy Policy explains how the OperaLibre application (the **“App”**) handles information.
 
 ## Summary
 
@@ -22,12 +22,11 @@ Depending on the features you use, the App may handle the following information.
 
 ### Server and account information
 
-When you connect to an OperaLibre or Jellyfin server, the App handles:
+When you connect to an OperaLibre server, the App handles:
 
-- the server address and server type;
+- the server address;
 - the username and password you enter during sign-in;
-- an authentication or session token returned by the server;
-- a locally generated Jellyfin device identifier when using Jellyfin; and
+- an authentication or session token returned by the server; and
 - basic account information returned by the server, such as a user ID, username, and account privileges.
 
 Your sign-in information is sent directly to the server you select. The App stores the server address and authentication token on your device so that you can remain signed in. The App does not retain your password after the sign-in request is completed.
@@ -74,7 +73,7 @@ If you choose the on-device library feature, the App lets you select supported a
 
 ### Local-network access
 
-The App may request permission to access your local network so it can connect to an OperaLibre or Jellyfin server running on your home network. This access is used only to communicate with servers you select.
+The App may request permission to access your local network so it can connect to an OperaLibre server running on your home network. This access is used only to communicate with servers you select.
 
 ### Technical network information
 
@@ -110,7 +109,7 @@ The server operator controls retention. An OperaLibre administrator can remove a
 
 ### Optional assistant access
 
-An OperaLibre server owner can enable optional assistant access. This does not by itself give an assistant access to your account. You must create a named access token, choose its permissions, and supply the server address and token to an assistant you choose. Review the selected permissions before connecting; read permissions are initially selected, while permission to get books requires a separate opt-in. This integration reads from your OperaLibre server, not a device-only library or Jellyfin server.
+An OperaLibre server owner can enable optional assistant access. This does not by itself give an assistant access to your account. You must create a named access token, choose its permissions, and supply the server address and token to an assistant you choose. Review the selected permissions before connecting; read permissions are initially selected, while permission to get books requires a separate opt-in. This integration reads from your OperaLibre server, not a device-only library.
 
 Depending on the permissions you grant, the assistant can receive:
 
@@ -128,15 +127,11 @@ You can remove an assistant in Settings (or the account menu's assistant control
 
 An OperaLibre server owner can enable optional chapter notes and choose a language model to write them, either a hosted provider such as Anthropic or an endpoint the owner runs. When an administrator makes notes for a book, that book's text or a transcript of its narration is sent from the server to the chosen model, under that provider's own terms. The book's title and author are included; your account, listening progress, and history are not. Transcripts are made on the server itself. Notes and transcripts are kept in the server's data directory until an administrator removes them.
 
-### On a Jellyfin server
-
-When you connect to Jellyfin, account, library, session, and playback information is handled according to the configuration and privacy practices of that Jellyfin server and its operator.
-
 ## Disclosure and third parties
 
 The App sends information only as needed to services you choose or that are required to deliver the App:
 
-- **Your selected OperaLibre or Jellyfin server.** Information described above is sent directly to that server for app functionality.
+- **Your selected OperaLibre server.** Information described above is sent directly to that server for app functionality.
 - **Your chosen assistant.** If you connect one, the selected assistant and its provider can receive the information permitted by your token, as described under Optional assistant access. Their own practices govern processing and retention of received copies.
 - **Apple.** Apple may process App Store, download, purchase, diagnostic, or device information independently under Apple’s own privacy policies. The developer does not control information Apple processes independently.
 
@@ -158,8 +153,7 @@ You can:
 - sign out or change the selected server;
 - delete downloaded books and imported on-device books in the App;
 - uninstall the App to remove its locally stored data, subject to normal device backup behavior;
-- ask the operator of an OperaLibre server to delete your reader account, listening progress, and reading log; or
-- use the account and data-management options provided by your Jellyfin server or contact its operator.
+- ask the operator of an OperaLibre server to delete your reader account, listening progress, and reading log.
 
 Because the developer does not receive or centrally store your server account or listening data, requests concerning data held by a self-hosted server must be directed to that server’s operator.
 
@@ -179,4 +173,4 @@ This policy may be updated when the App’s features or data practices change. T
 
 OperaLibre is developed by Donovan Montoya. For privacy questions about the App itself, open a request through the [OperaLibre issue tracker](https://github.com/DonovanMontoya/OperaLibre/issues). Do not include passwords, authentication tokens, audiobook files, or other sensitive information in a public issue.
 
-For information stored on an OperaLibre or Jellyfin server, contact the person or organization that operates that server.
+For information stored on an OperaLibre server, contact the person or organization that operates that server.

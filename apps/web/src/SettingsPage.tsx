@@ -45,7 +45,6 @@ export function SettingsPage({
   downloadedBookIds,
   gamesEnabled,
   ios,
-  isOperaLibre,
   loadBooks,
   localMode,
   nativeTab,
@@ -87,7 +86,6 @@ export function SettingsPage({
   downloadedBookIds: Set<string>;
   gamesEnabled: boolean;
   ios: boolean;
-  isOperaLibre: boolean;
   loadBooks: () => Promise<void>;
   localMode: boolean;
   nativeTab: "settings";
@@ -243,7 +241,7 @@ export function SettingsPage({
         />
 
         <BehaviorSettings
-          bookPreviewsAvailable={isOperaLibre && !demoMode && !localMode}
+          bookPreviewsAvailable={!demoMode && !localMode}
           bookPreviewsEnabled={bookPreviewsEnabled}
           toggleBookPreviewsEnabled={toggleBookPreviewsEnabled}
           continueReadingAutoplay={continueReadingAutoplay}
@@ -264,7 +262,6 @@ export function SettingsPage({
           brokenLibationAccounts={brokenLibationAccounts}
           canBrowseLibation={canBrowseLibation}
           currentUser={currentUser}
-          isOperaLibre={isOperaLibre}
           libroAccounts={libroAccounts}
           libroAvailable={libroAvailable}
           libroOnDevice={libroOnDevice}
@@ -331,7 +328,6 @@ export function SettingsPage({
           capabilities={capabilities}
           currentUser={currentUser}
           demoMode={demoMode}
-          isOperaLibre={isOperaLibre}
           localMode={localMode}
           onConnectServer={onConnectServer}
           onLogout={onLogout}

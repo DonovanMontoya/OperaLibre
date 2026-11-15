@@ -21,7 +21,7 @@ func normalizedBackgroundDownloadOrigin(_ url: URL) -> String? {
 }
 
 /// The path prefix a configured server address carries, if any. A server can
-/// live behind a reverse-proxy subpath (`https://host/jellyfin`), so media
+/// live behind a reverse-proxy subpath (`https://host/books`), so media
 /// paths are only approved after that prefix is removed.
 func normalizedBackgroundDownloadBasePath(_ url: URL) -> String {
     var path = url.path
@@ -58,21 +58,6 @@ func isApprovedBackgroundMediaPath(_ path: String, basePath: String = "") -> Boo
        components[0] == "api",
        components[1] == "books",
        components[3] == "companions" {
-        return true
-    }
-    if components.count == 3,
-       components[0].caseInsensitiveCompare("Audio") == .orderedSame,
-       components.last?.caseInsensitiveCompare("stream") == .orderedSame {
-        return true
-    }
-    if components.count == 3,
-       components[0].caseInsensitiveCompare("Items") == .orderedSame,
-       components.last?.caseInsensitiveCompare("Download") == .orderedSame {
-        return true
-    }
-    if components.count == 4,
-       components[0].caseInsensitiveCompare("Items") == .orderedSame,
-       components[2].caseInsensitiveCompare("Images") == .orderedSame {
         return true
     }
     return false

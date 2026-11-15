@@ -7,7 +7,6 @@ import { library } from './performance/fixtures';
 import '../src/styles.css';
 
 localStorage.setItem('operalibre.serverUrl', location.origin);
-localStorage.setItem('operalibre.serverType', 'operalibre');
 const fixtures = library(2).map(book => ({ ...book, coverArtUrl: `/api/books/${book.id}/cover?v=original`,
   coverArtContentType: 'image/png', hasCoverOverride: false }));
 if (new URLSearchParams(location.search).has('native')) {

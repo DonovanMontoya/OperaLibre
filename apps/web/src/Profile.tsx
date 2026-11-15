@@ -22,7 +22,7 @@ type ProfilePageProps = {
   onOpenBook: (bookId: string) => void;
   onUserChanged: (user: AuthUser) => void;
   onSharingChanged: () => void;
-  /** Jellyfin has no shared-progress concept, so the control is hidden there. */
+  /** Demo and device-only libraries have no other listeners, so the control is hidden there. */
   sharingAvailable: boolean;
   /** A device-only library has no profile endpoint, so its ledger uses local progress. */
   deviceOnly?: boolean;

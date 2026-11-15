@@ -37,7 +37,6 @@ for (const native of [false, true]) {
       await page.setViewportSize({ width: native ? 390 : 1440, height: 844 });
       await page.addInitScript(state => {
         localStorage.setItem('operalibre.serverUrl', location.origin);
-        localStorage.setItem('operalibre.serverType', 'operalibre');
         if (state === 'demo') localStorage.setItem('operalibre.demoMode', 'true');
         if (state === 'local') localStorage.setItem('operalibre.localMode', 'true');
       }, state);
@@ -64,11 +63,50 @@ for (const native of [false, true]) {
   }
 }
 
-test('server selection exposes privacy for both server types before connecting', async ({ page }) => {
+test('server selection exposes privacy before connecting', async ({ page }) => {
   await page.route('**/api/**', route => route.fulfill({ json: { setupRequired: false, user: null } }));
   await page.goto(url);
   await expect(page.getByRole('heading', { name: 'Connect your library' })).toBeVisible();
-  await openPolicy(page);
-  await page.getByRole('button', { name: 'Use a Jellyfin server' }).click();
+  await expect(page.getByRole('button', { name: /Jellyfin/ })).toHaveCount(0);
   await openPolicy(page);
 });
+
+for (const native of [false, true]) {
+  test(`${native ? 'macOS shell' : 'web'} with a saved Jellyfin connection opens the server picker`, async ({ page }) => {
+    const requests: string[] = [];
+    page.on('request', request => {
+      requests.push(new URL(request.url()).origin);
+    });
+    await page.route('https://media.example/**', route => route.abort());
+    await page.addInitScript(native => {
+      if (sessionStorage.getItem('seeded')) return;
+      sessionStorage.setItem('seeded', 'true');
+      if (native) Object.assign(window, { __OPERALIBRE_NATIVE_SHELL__: true });
+      localStorage.setItem('operalibre.serverType', 'jellyfin');
+      localStorage.setItem('operalibre.serverUrl', 'https://media.example');
+      localStorage.setItem('operalibre.serverIdentityUrl', 'https://media.example');
+      localStorage.setItem('operalibre.serverId', 'f00d');
+      localStorage.setItem('operalibre.jellyfinDeviceId', 'device');
+      localStorage.setItem('operalibre.credentials.v2', JSON.stringify({
+        'https://media.example': { token: 'jellyfin-token', mediaToken: 'jellyfin-token' }
+      }));
+    }, native);
+    await page.goto(url);
+    await expect(page.getByRole('heading', { name: 'Connect your library' })).toBeVisible();
+    await expect(page.getByRole('status')).toContainText('connects only to OperaLibre servers');
+    await expect(page.getByLabel('OperaLibre server address')).toBeVisible();
+    const stored = await page.evaluate(() => ({ ...localStorage }));
+    for (const key of ['operalibre.serverType', 'operalibre.serverUrl', 'operalibre.serverIdentityUrl',
+      'operalibre.serverId', 'operalibre.jellyfinDeviceId']) {
+      expect(stored[key], key).toBeUndefined();
+    }
+    expect(stored['operalibre.credentials.v2'] ?? '{}').not.toContain('jellyfin-token');
+    // Nothing was sent to the forgotten server.
+    expect(requests).not.toContain('https://media.example');
+
+    // The next launch is an ordinary first run, without the notice.
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Connect your library' })).toBeVisible();
+    await expect(page.getByText('connects only to OperaLibre servers')).toHaveCount(0);
+  });
+}

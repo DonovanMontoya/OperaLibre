@@ -28,7 +28,7 @@ type Pictured = Pick<AuthUser, "username" | "avatar">;
 /**
  * Whether this account's server stores pictures. It sends the field on every
  * account, `null` when none is chosen, so a missing field means a server that
- * predates them, a Jellyfin account, or an on-device library — places where a
+ * predates them or an on-device library — places where a
  * choice would have nowhere to be saved.
  */
 export function supportsAvatars(user: Pick<AuthUser, "avatar">): boolean {

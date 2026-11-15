@@ -21,10 +21,10 @@ test('macOS refuses public HTTP before sending passwords or candidate requests',
     const api = await import(/* @vite-ignore */ path);
     const errors: string[] = [];
     for (const action of [
-      () => api.pingServer('operalibre', 'http://books.example.org'),
+      () => api.pingServer('http://books.example.org'),
       () => api.signInAtAddress('http://books.example.org', 'reader', 'password'),
       () => api.addServerAlias('Public', 'http://books.example.org'),
-      () => api.setServerConnection('jellyfin', 'http://books.example.org', null)
+      () => api.setServerConnection('http://books.example.org', null)
     ]) {
       try { await action(); errors.push('accepted'); }
       catch (error) { errors.push(String(error)); }

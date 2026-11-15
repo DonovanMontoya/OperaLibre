@@ -194,7 +194,6 @@ export function BookStoreSettings({
   brokenLibationAccounts,
   canBrowseLibation,
   currentUser,
-  isOperaLibre,
   libroAccounts,
   libroAvailable,
   libroOnDevice,
@@ -213,7 +212,6 @@ export function BookStoreSettings({
   brokenLibationAccounts: LibationAccount[];
   canBrowseLibation: boolean;
   currentUser: AuthUser;
-  isOperaLibre: boolean;
   libroAccounts: LibroAccountSummary[] | null;
   libroAvailable: boolean;
   libroOnDevice: boolean;
@@ -267,7 +265,7 @@ export function BookStoreSettings({
           <ChevronDown size={16} />
         </summary>
         <div className="store-settings-body">
-          {supportsLibroDevice() && !localMode && isOperaLibre ? <label className="store-destination" htmlFor="settings-libro-destination">
+          {supportsLibroDevice() && !localMode ? <label className="store-destination" htmlFor="settings-libro-destination">
             <span><strong>Download purchases to</strong><small>Choose where new Libro.fm imports are kept.</small></span>
             <select id="settings-libro-destination" value={libroOnDevice ? "device" : "server"} onChange={event => setLibroDestination(event.currentTarget.value === "device" ? "device" : "server")}>
               <option value="server">OperaLibre server</option>
@@ -531,7 +529,6 @@ export function ConnectionSettings({
   capabilities,
   currentUser,
   demoMode,
-  isOperaLibre,
   localMode,
   onConnectServer,
   onLogout,
@@ -557,7 +554,6 @@ export function ConnectionSettings({
   capabilities: ServerCapabilities;
   currentUser: AuthUser;
   demoMode: boolean;
-  isOperaLibre: boolean;
   localMode: boolean;
   onConnectServer: () => void;
   onLogout: () => void | Promise<void>;
@@ -581,7 +577,7 @@ export function ConnectionSettings({
       <div className="settings-kv">
         <span>Server</span>
         <span className="settings-value">
-          {localMode ? "Not connected · on-device only" : demoMode ? "On-device demo · no network connection" : `${isOperaLibre ? "OperaLibre" : "Jellyfin"} · ${getServerUrl()}`}
+          {localMode ? "Not connected · on-device only" : demoMode ? "On-device demo · no network connection" : `OperaLibre · ${getServerUrl()}`}
         </span>
       </div>
       <div className="settings-kv">

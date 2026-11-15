@@ -332,7 +332,7 @@ export function usePlaybackRestore({
           const saved = await saveProgress(
             playbackBook.id,
             freshestLocal,
-            { isPaused: true, ...seekOptions }
+            seekOptions ?? undefined
           ).catch(() => null);
           if (cancelled || playbackActionVersionRef.current !== restoreActionVersion) return;
           if (saved) {

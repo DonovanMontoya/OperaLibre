@@ -16,7 +16,7 @@ unnecessary.
 2. **Private and self-hosted.** Readers' libraries, accounts, and listening
    history stay on their own server. No telemetry or analytics, no new
    outbound connections without a reason the owner can see, and optional
-   integrations (Audible, Libro.fm, Jellyfin) stay optional.
+   integrations (Audible and Libro.fm) stay optional.
 3. **Runs on modest hardware.** Home servers are often a NAS, a Raspberry Pi, or
    an old laptop. Watch payload sizes, scan cost, memory, and needless
    re-renders; UI animations must not repaint continuously.
@@ -131,8 +131,8 @@ entries applied:
   companion reader, and lock-screen or CarPlay controls.
 - **Clients.** Web, iPhone, Android, and macOS share the React frontend but have
   native code for downloads, background audio, media sessions, and CarPlay.
-- **Server types.** The apps also connect to Jellyfin servers and run an offline
-  demo mode. Decide per server type, even if the answer is "not supported".
+- **Library modes.** The apps also run an offline demo and use a device-only
+  library. Decide per mode, even if the answer is "not supported".
 - **External APIs.** Server changes can affect the Audiobookshelf-compatible
   API, OPDS, and `docs/api.md` consumers.
 - **Roles.** Check owner, administrator, and reader permissions, including what

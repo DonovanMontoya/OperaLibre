@@ -18,7 +18,7 @@ import {
   shouldResumeSavedPosition,
   summarizeBookProgress
 } from "./reliability";
-import { getFreshProgress, getServerStorageKey } from "./api";
+import { getProgress, getServerStorageKey } from "./api";
 import { progressSeekStorage, recordProgressSeekIntent } from "./progressSeekIntent";
 import { normalizePlaybackSpeed } from "./playbackSpeed";
 import { writeStoredBookGains, writeStoredSpeed } from "./appStorage";
@@ -697,7 +697,7 @@ export function usePlaybackControls({
       // save, then require a successful fresh read before authorizing a seek.
       await flushProgressSaveQueue();
       if (!ownsRequest()) return false;
-      const server = await getFreshProgress(book, START_OVER_PROGRESS_CHECK_MS);
+      const server = await getProgress(book.id, START_OVER_PROGRESS_CHECK_MS);
       if (!ownsRequest()) return false;
       const local = lastKnownProgressFor(book);
       const saved = freshestProgress(local, server);
@@ -747,7 +747,7 @@ export function usePlaybackControls({
       return null;
     }
     try {
-      const server = await getFreshProgress(book, START_OVER_PROGRESS_CHECK_MS);
+      const server = await getProgress(book.id, START_OVER_PROGRESS_CHECK_MS);
       if (!server) return null;
       const summary = summarizeBookProgress(book, server);
       return summary?.status === "inProgress"

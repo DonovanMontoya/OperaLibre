@@ -125,7 +125,6 @@ test("the gift action follows the server's experiment and API requests use the a
   assert.match(component, /No DRM removal is provided/);
   assert.match(component, /not a guarantee of DRM detection/);
   const pane = await readFile(new URL("../src/PlayerPane.tsx", import.meta.url), "utf8");
-  assert.match(pane, /useBookGiftSending\(isOperaLibre && !demoMode && !localMode\)/);
   assert.match(pane, /enabled=\{giftSending && selectedBook\.source !== "device"\}/);
   const api = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
   assert.ok(api.includes("/api/books/${encodeURIComponent(bookId)}/gift-inventory"));

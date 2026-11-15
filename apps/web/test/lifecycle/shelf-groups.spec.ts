@@ -19,7 +19,6 @@ for (const platform of ['web', 'ios', 'android'] as const) {
     }));
     await page.addInitScript(() => {
       localStorage.setItem('operalibre.serverUrl', location.origin);
-      localStorage.setItem('operalibre.serverType', 'operalibre');
       if (!localStorage.getItem('shelfFixtureSeeded')) {
         localStorage.setItem('operalibre.sortMode.local', 'series');
         localStorage.setItem('operalibre.collapsedShelfGroups', JSON.stringify({

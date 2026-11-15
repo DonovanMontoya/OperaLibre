@@ -89,7 +89,6 @@ export function LibraryPane({
   playPending,
   togglePlayback,
   isOffline,
-  isOperaLibre,
   lastPurchaseSource,
   libraryOpen,
   libraryPaneRef,
@@ -147,7 +146,6 @@ export function LibraryPane({
   playPending: boolean;
   togglePlayback: () => void;
   isOffline: boolean;
-  isOperaLibre: boolean;
   lastPurchaseSource: RefObject<"audible" | "libro" | "all">;
   libraryOpen: boolean;
   libraryPaneRef: RefObject<HTMLElement | null>;
@@ -1057,7 +1055,7 @@ export function LibraryPane({
           {isLoading ? <div className="empty-state">Loading library…</div> : null}
           {!isLoading && !error && books.length === 0 ? (
             <div className="empty-state device-empty-state">
-              <span>{localMode ? "Your shelf is ready. Pick audiobook files from this device to start listening." : !isOperaLibre ? "No audiobooks are available to this account. Add audiobooks to a Books library in Jellyfin and check this account’s library access. Music libraries are not included." : "No audiobooks found in the configured library folder."}</span>
+              <span>{localMode ? "Your shelf is ready. Pick audiobook files from this device to start listening." : "No audiobooks found in the configured library folder."}</span>
               {native ? (
                 <button type="button" className="download-btn" onClick={() => void importFromDevice()}>
                   <FolderOpen size={14} /> Choose audiobook files

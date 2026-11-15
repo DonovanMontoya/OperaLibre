@@ -246,7 +246,6 @@ export function useCarPlay({
       queuedProgressSaves.current.set(book.id, {
         bookId: book.id,
         progress,
-        isPaused: true,
         seekIntentId: seekIntent?.id,
         // Every deliberate seek needs authorization, but only a rewind or
         // restart may bypass reset protection if a stale clock replaces it.

@@ -1,12 +1,11 @@
 /**
  * The identity a server reports about itself without authentication: the
- * `serverId` of an OperaLibre health check, or the `Id` of Jellyfin's public
- * system info. OperaLibre servers released before the identity report none.
+ * `serverId` of its health check. Servers released before the identity report
+ * none.
  */
 export function readServerId(body: unknown): string | null {
   if (!body || typeof body !== "object") return null;
-  const record = body as Record<string, unknown>;
-  const value = record.serverId ?? record.Id;
+  const value = (body as Record<string, unknown>).serverId;
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 

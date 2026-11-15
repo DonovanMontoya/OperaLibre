@@ -4,8 +4,7 @@ import type { Book } from "./types";
  * Where a book sits for the viewer. The three values mirror the server's
  * `BookProgressStatus`, which already folds an explicit "mark finished" choice
  * into the status it reports, so the shelf never has to consult
- * `finishedOverride` itself. Jellyfin reports the same vocabulary, and a book
- * with no progress record at all has simply never been opened.
+ * `finishedOverride` itself. A book with no progress record at all has simply never been opened.
  */
 export type ReadingStatus = "inProgress" | "notStarted" | "finished";
 
