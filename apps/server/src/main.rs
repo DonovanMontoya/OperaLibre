@@ -97,6 +97,7 @@ mod migrate;
 mod opds;
 mod packet_audio;
 mod progress;
+mod provider_response;
 mod reading;
 mod reading_log;
 mod scan_input;
