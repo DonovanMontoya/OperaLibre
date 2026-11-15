@@ -1735,6 +1735,25 @@ async fn get_series_progress(
     }))
 }
 
+const MAX_RECAP_MAP_BYTES: u64 = 16 * 1024 * 1024;
+static RECAP_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
+
+fn read_recap_map(path: &FsPath) -> anyhow::Result<alignment::SyncMap> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    anyhow::ensure!(
+        file.metadata()?.len() <= MAX_RECAP_MAP_BYTES,
+        "Sync map is too large for a recap"
+    );
+    let mut bytes = Vec::new();
+    file.take(MAX_RECAP_MAP_BYTES + 1).read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() as u64 <= MAX_RECAP_MAP_BYTES,
+        "Sync map is too large for a recap"
+    );
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 async fn get_text_so_far(
     state: &AppState,
     caller: &AgentCaller,
@@ -1751,9 +1770,15 @@ async fn get_text_so_far(
     }
     let heard_through = progress.map_or(0.0, heard_through);
 
+    let permit = Arc::new(
+        RECAP_SLOTS
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "Another recap is being prepared. Try again shortly.".to_string())?,
+    );
     let sync_path = state.library.read().await.sync_paths.get(&book.id).cloned();
     let map = match sync_path {
-        Some(sync_path) => read_text_map(sync_path).await?,
+        Some(sync_path) => read_text_map(sync_path, permit.clone()).await?,
         None => {
             let spans = if chapter_notes::experiment_enabled(state).await {
                 chapter_notes::transcript_spans(state, &book.id, heard_through).await
@@ -1935,8 +1960,17 @@ fn text_unavailable(book: &Book) -> String {
     }
 }
 
-async fn read_text_map(sync_path: PathBuf) -> Result<alignment::SyncMap, String> {
-    let map = alignment::SyncMap::read(sync_path).await.map_err(|error| {
+async fn read_text_map(
+    sync_path: PathBuf,
+    permit: Arc<OwnedSemaphorePermit>,
+) -> Result<alignment::SyncMap, String> {
+    let map = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        read_recap_map(&sync_path)
+    })
+    .await
+    .map_err(|error| tool_failure(ApiError::internal(error.to_string())))?
+    .map_err(|error| {
         tool_failure(ApiError::internal(format!(
             "Could not read the sync map: {error}"
         )))
@@ -2383,6 +2417,18 @@ async fn get_book_onto_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recap_rejects_large_maps_before_parsing() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(MAX_RECAP_MAP_BYTES + 1).unwrap();
+        assert!(
+            read_recap_map(file.path())
+                .unwrap_err()
+                .to_string()
+                .contains("too large")
+        );
+    }
 
     #[test]
     fn agents_hear_request_mistakes_but_not_server_failures() {

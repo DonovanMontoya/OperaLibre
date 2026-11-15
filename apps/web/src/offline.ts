@@ -14,6 +14,8 @@ import { MAX_COVER_BYTES, coverMediaKind, coverRevision } from "./bookCover.ts";
 import { revalidatedCompanion } from "./companionCache";
 import { downloadWebBook } from "./offlineDownload";
 import { inspectOfflineReadiness, offlineCompanions } from "./offlineReadiness.ts";
+import { readBoundedGiftResponse } from "./giftLocalAssets.ts";
+import { shelfCoverEvictions, type CachedShelfCover } from "./shelfCoverBudget.ts";
 import { loadGiftLocalSyncMap } from "./giftLocalSync.ts";
 import type { AuthUser, Book, CompanionFile, Progress, SyncMap, Track } from "./types";
 
@@ -709,18 +711,36 @@ const shelfCoverWrites = new Set<string>();
 export async function cacheShelfCover(book: Book, url: string) {
   if (!Capacitor.isNativePlatform() || isDemoMode()) return;
   const path = shelfCoverPath(book);
-  if (!path || shelfCoverWrites.has(path)) return;
-  const directory = coverCacheDirectory();
+  if (!path || shelfCoverWrites.size > 0) return;
   shelfCoverWrites.add(path);
   try {
     if (await nonemptyNativeFile(path)) return;
-    const response = await fetch(url);
+    const signal = AbortSignal.timeout(15_000);
+    const response = await fetch(url, { signal });
     const type = response.headers.get("content-type") ?? "";
     if (!response.ok || !type.startsWith("image/")) return;
-    const data = await response.arrayBuffer();
-    if (!data.byteLength || data.byteLength > MAX_COVER_BYTES) return;
+    const data = await readBoundedGiftResponse(response, MAX_COVER_BYTES, signal);
+    if (!data.byteLength) return;
+    // Capture the original server's directory even if the user switches servers
+    // while fetching. The budget covers every server, including orphaned covers.
+    const directory = path.slice(0, path.lastIndexOf("/"));
     await ensureMediaDirectory(directory);
-    await Filesystem.writeFile({ path, directory: MEDIA_DIRECTORY, data: toBase64(data) });
+    const cached: CachedShelfCover[] = [];
+    const scopes = await Filesystem.readdir({ path: COVER_CACHE_ROOT, directory: MEDIA_DIRECTORY });
+    for (const scope of scopes.files) {
+      const scopePath = `${COVER_CACHE_ROOT}/${scope.name}`;
+      if (scope.type !== "directory") continue;
+      const entries = await Filesystem.readdir({ path: scopePath, directory: MEDIA_DIRECTORY });
+      for (const file of entries.files) {
+        if (file.type !== "file") continue;
+        cached.push({ path: `${scopePath}/${file.name}`, size: file.size, mtime: file.mtime ?? 0 });
+      }
+    }
+    for (const oldPath of shelfCoverEvictions(cached, data.byteLength)) {
+      // If eviction fails, leave the cache alone rather than exceed its budget.
+      await Filesystem.deleteFile({ path: oldPath, directory: MEDIA_DIRECTORY });
+    }
+    await Filesystem.writeFile({ path, directory: MEDIA_DIRECTORY, data: toBase64(data.buffer as ArrayBuffer) });
     // A replaced cover leaves its earlier revision behind; keep only the newest.
     const prefix = `${sanitizeSegment(book.id)}-`;
     const name = path.slice(directory.length + 1);

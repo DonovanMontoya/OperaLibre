@@ -213,7 +213,7 @@ pub(crate) async fn recover_saved_senders(
             continue;
         }
         attempted += 1;
-        let permit = match state.download_task_slots.clone().try_acquire_owned() {
+        let permit = match state.gift_sender_slots.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
                 report.pending += 1;
