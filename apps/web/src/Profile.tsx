@@ -333,7 +333,7 @@ export function ProfilePage({
               <p aria-live="polite">{selectedDay
                 ? `${selectedDay.date} · ${Math.round(selectedDay.minutes)} minutes listened`
                 : "Select a day to see your listening time."}</p>
-              <div className="calendar-legend" aria-label="Color intensity indicates listening time">
+              <div className="calendar-legend" aria-label="Listening time from less to more">
                 <span>Less</span>{[0, 1, 2, 3, 4].map(tier => <i key={tier} className={`calendar-cell tier-${tier}`} />)}<span>More</span>
               </div>
             </div>
