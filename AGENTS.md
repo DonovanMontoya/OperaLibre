@@ -16,7 +16,7 @@ unnecessary.
 2. **Private and self-hosted.** Readers' libraries, accounts, and listening
    history stay on their own server. No telemetry or analytics, no new
    outbound connections without a reason the owner can see, and optional
-   integrations (Audible, Libro.fm, Jellyfin) stay optional.
+   integrations (Audible and Libro.fm) stay optional.
 3. **Runs on modest hardware.** Home servers are often a NAS, a Raspberry Pi, or
    an old laptop. Watch payload sizes, scan cost, memory, and needless
    re-renders; UI animations must not repaint continuously.
@@ -131,8 +131,8 @@ entries applied:
   companion reader, and lock-screen or CarPlay controls.
 - **Clients.** Web, iPhone, Android, and macOS share the React frontend but have
   native code for downloads, background audio, media sessions, and CarPlay.
-- **Server types.** The apps also connect to Jellyfin servers and run an offline
-  demo mode. Decide per server type, even if the answer is "not supported".
+- **Library modes.** The apps also run an offline demo and use a device-only
+  library. Decide per mode, even if the answer is "not supported".
 - **External APIs.** Server changes can affect the Audiobookshelf-compatible
   API, OPDS, and `docs/api.md` consumers.
 - **Roles.** Check owner, administrator, and reader permissions, including what
@@ -173,6 +173,26 @@ An empty library is a weak test. Build a scratch copy instead of using live stat
 - Copy the JSON state files you need alongside it. Leave out Audible account
   data unless the flow under test needs it.
 - Copy in, never symlink. Data flows one way: into your scratch space, never back.
+
+## Audio while testing
+
+Nobody should have to listen to the demo audiobook. Unless the sound itself is
+under test (output routing, ducking, interruptions, a sound-only bug), keep
+playback silent but real: audio still goes to an output, so position, progress
+sync, and media-session behavior are exercised, and you verify them from the
+player clock and the server, not by ear.
+
+- **Browsers you drive:** launch with `--mute-audio`
+  (`chromium.launch({ args: ['--mute-audio'] })`). Media elements keep playing
+  and advancing while muted.
+- **Android emulator:** start it with `-no-audio`, which gives the guest a
+  dummy audio device.
+- **iOS Simulator and physical devices:** the simulator plays through the Mac's
+  output. Send that to a silent virtual output device if one is installed;
+  otherwise mute the Mac before starting playback, and mute a physical device.
+  Read the prior state first (`osascript -e 'output muted of (get volume
+  settings)'`) and put it back when you finish.
+- If a screen can be checked paused, do not start playback at all.
 
 ## Validation
 
@@ -253,14 +273,14 @@ explicit; a release or dependency version bump alone is not a reason to remap.
 There are two version lines, and they are independent of each other:
 
 - **Server line**: the server and launcher crates (and their lockfiles). It
-  follows the stable release tags, such as `0.5.0`; nightlies between releases
-  are `0.5.1-nightly.<date>.<run>`. Release builds take their version from the
+  follows the stable release tags, such as `0.5.1`; nightlies between releases
+  are `0.5.2-nightly.<date>.<run>`. Release builds take their version from the
   tag (`OPERALIBRE_VERSION`), which also stamps the web bundle, so the crate
   version only shows in source builds. Keep it at the latest stable release.
   The macOS app is on this line too: `script/build_and_run.sh` stamps the
   server crate's version into its bundle.
 - **App line**: the iOS and Android apps, versioned for the stores (iOS 1.3.1
-  is on the App Store; the next app release is 1.3.2). iOS and Android share
+  is the confirmed App Store release; the in-tree app line is 1.3.2). iOS and Android share
   one build number. Android's `versionCode` is
   `major·1000000 + minor·10000 + patch·100 + build`, so it rises across builds
   and versions.
@@ -329,10 +349,8 @@ record of the work.
 
 ## Version control and pull requests
 
-Git and [Jujutsu](https://jujutsu-vcs.github.io/) (`jj`, colocated with Git) both
-work. Inspect the checkout first: if a `.jj` directory exists, use `jj` for
-working-copy operations and do not mix in Git staging or commits. Linked Git
-worktrees may have no `.jj`; use Git there and do not initialize a new JJ store.
+Use Git for all version-control operations, including staging, commits, branches,
+worktrees, fetches, and merges.
 
 - Do not push branches or open PRs unless the developer asks you to.
 - Branch names use a `feat/`, `fix/`, `chore/`, or `docs/` prefix and a short
@@ -361,11 +379,7 @@ worktrees may have no `.jj`; use Git there and do not initialize a new JJ store.
 
 These apply only to maintainers with write access.
 
-- Merge PRs with merge commits (`gh pr merge N --merge`). With `jj`, a successful
-  merge may still print a `--delete-branch` error because Git HEAD is detached;
-  check the PR state before retrying.
-- After `jj git fetch` following a force-push, inspect `jj st` and `jj diff`
-  before recovering with `jj new main`; abandon only revisions confirmed obsolete.
+- Merge PRs with merge commits (`gh pr merge N --merge`).
 - Before version bumps or releases, apply [Read-along mapping revisions and
   recovery](#read-along-mapping-revisions-and-recovery); state any remapping
   recommendation in the release notes.
@@ -379,3 +393,9 @@ These apply only to maintainers with write access.
   Afterward, run `node script/version.mjs set server <tag>` in a follow-up PR
   to main. A
   `docs/**` push to `main` redeploys the docs site.
+
+## Agent skills
+
+### Animatic
+
+The animatic skill's voice, renderer, style and stitcher. See `docs/agents/animatic.md`.

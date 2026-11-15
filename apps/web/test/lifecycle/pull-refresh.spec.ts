@@ -15,7 +15,7 @@ async function openShelf(page: Page, source: string) {
   const user = { id: 'reader', username: 'Reader', isAdmin: false, isOwner: false,
     allowedBookIds: null, libationAccess: 'approval', createdAt: '1700000000' };
   const email = 'reader@example.test';
-  const requests = { libro: 0, audible: 0 };
+  const requests = { libro: 0, audible: 0, audibleSync: 0 };
   await page.setViewportSize({ width: 390, height: 844 });
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
@@ -24,6 +24,10 @@ async function openShelf(page: Page, source: string) {
     else if (path === '/api/auth/me') body = user;
     else if (path === '/api/books') body = library(1);
     else if (path === '/api/libation/books') requests.audible++;
+    else if (path === '/api/libation/sync' && route.request().method() === 'POST') {
+      requests.audibleSync++;
+      body = { jobId: 'audible-refresh-job' };
+    }
     else if (path === '/api/libation/access') body = { enabled: true, autoRefreshHours: null, manualRefreshesPerHour: 2 };
     else if (path === '/api/libation/status') body = { accounts: [], configured: false, available: false };
     else if (path === '/api/me/libro') body = {
@@ -39,7 +43,7 @@ async function openShelf(page: Page, source: string) {
   await expect(page.locator('.book-row')).toHaveCount(1);
   await expect(page.locator('.native-launch-cover')).toHaveCount(0);
   await page.getByRole('button', { name: 'Get books', exact: true }).click();
-  await page.getByRole('tab', { name: source === 'libro' ? 'Libro.fm' : 'All accounts', exact: true }).click();
+  await page.getByRole('tab', { name: source === 'libro' ? 'Libro.fm' : 'All stores', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Retained purchase', exact: true })).toBeVisible();
   return requests;
 }
@@ -58,7 +62,7 @@ for (const source of ['libro', 'all']) {
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
     const requests = await openShelf(page, source);
-    const audibleBefore = requests.audible;
+    const audibleSyncBefore = requests.audibleSync;
     let release!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });
     await page.route('**/api/me/libro/refresh', async route => {
@@ -73,7 +77,11 @@ for (const source of ['libro', 'all']) {
     await expect(page.getByRole('alert')).toHaveText('Libro.fm refresh unavailable');
     await expect(page.locator('.pull-indicator')).not.toHaveClass(/refreshing/);
     await expect(page.getByRole('heading', { name: 'Retained purchase', exact: true })).toBeVisible();
-    if (source === 'all') expect(requests.audible).toBeGreaterThan(audibleBefore);
+    if (source === 'all') {
+      await expect.poll(() => requests.audibleSync).toBe(audibleSyncBefore + 1);
+    } else {
+      expect(requests.audibleSync).toBe(audibleSyncBefore);
+    }
     await pull(page, 'touchend');
     await expect.poll(() => requests.libro).toBe(2);
     await expect(page.locator('.pull-indicator')).not.toHaveClass(/refreshing/);

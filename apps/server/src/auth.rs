@@ -624,9 +624,17 @@ pub(crate) fn query_token_allowed(method: &Method, path: &str) -> bool {
             | ["api", "books", _, "companions", _, "entries", _, ..]
             | ["api", "books", _, "sync"]
             | ["api", "books", _, "download"]
-            | ["api", "books", _, "tracks", _, "stream"]
+            | ["api", "books", _, "tracks", _, "stream" | "packet-stream"]
             | ["abs", "api", "books", _, "cover"]
-            | ["abs", "api", "books", _, "tracks", _, "stream"]
+            | [
+                "abs",
+                "api",
+                "books",
+                _,
+                "tracks",
+                _,
+                "stream" | "packet-stream"
+            ]
             | ["api", "libation", "covers", _]
     )
 }
@@ -970,7 +978,11 @@ pub(crate) async fn authenticate_and_open_session(
     };
 
     if payload.password.chars().count() > MAX_PASSWORD_CHARS {
-        let _ = verify_dummy_password_async(state, "oversized-password".to_string()).await?;
+        // Burn a verification's worth of time on a bounded prefix, checked
+        // against the dummy hash only, so an oversized guess can neither run
+        // Argon2 over the whole input nor sign in with its first characters.
+        let prefix = payload.password.chars().take(MAX_PASSWORD_CHARS).collect();
+        let _ = verify_dummy_password_async(state, prefix).await?;
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
 
@@ -1680,6 +1692,13 @@ pub(crate) async fn delete_user(
     revoke_agent_tokens_for_user(&state, &user_id).await?;
     state.progress.remove_user(&user_id).await?;
     state.book_settings.remove_user(&user_id).await?;
+    state
+        .activity
+        .mutate(|activity| {
+            activity.by_user.remove(&user_id);
+            Ok(())
+        })
+        .await?;
     // Dropped before the history purge, so a flush of the buffered sessions
     // cannot re-persist the account between the two steps.
     state.open_sessions.lock().await.forget_user(&user_id);

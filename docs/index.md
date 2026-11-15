@@ -34,7 +34,7 @@ Windows and manual installs are covered in [Install a Release](installing-a-rele
 - **Rich metadata** — title/subtitle, author, narrator, publisher, dates, genres, custom ordered tags, language, description, and covers administrators can replace without changing audio
 - **Chapters** — M4A/M4B/MP4 chapter tracks, MP3 ID3 `CHAP` frames, and multi-file track boundaries
 - **Readalong** — full-window reader for `.epub`, `.pdf`, `.txt`, `.html`, `.htm` companion files, with contents and playback controls
-- **Readalong sync** — EPUB chapter sync, plus sentence seeking and highlighting with an aligned map and the follow-along experiment enabled; the optional generator installs separately from Administration
+- **Readalong sync** — read the EPUB beside the audio, with sentence seeking and highlighting when the book has an aligned map and the follow-along experiment is enabled; the optional generator installs separately from Administration
 - **Multi-reader** — accounts, per-reader progress, Argon2-hashed passwords
 - **Player controls** — playback speed, 15s rewind, 30s skip, sleep timer, OS Media Session
 - **Web and native mobile apps** — installable PWA plus Capacitor projects for Android and iPhone

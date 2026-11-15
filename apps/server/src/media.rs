@@ -9,7 +9,26 @@ use axum::body::Bytes;
 // which matters more as playback speed increases.
 pub(crate) const MEDIA_STREAM_BUFFER_CAPACITY: usize = 256 * 1024;
 
+/// A cover requested without the current revision, or under a revision
+/// that has since been replaced, is checked with the server before use.
 pub(crate) const COVER_CACHE_CONTROL: &str = "private, no-cache";
+
+/// A cover URL carrying the current `?v=` revision names those exact bytes:
+/// a replaced cover gets a new revision and so a new URL. The client may keep
+/// it without asking again, so reopening the app shows covers from its cache
+/// even before the server answers.
+pub(crate) const VERSIONED_COVER_CACHE_CONTROL: &str = "private, max-age=31536000, immutable";
+
+/// Whether the request's `v` query parameter names the cover being served.
+fn requests_current_cover(query: Option<&str>, etag: &str) -> bool {
+    let current = etag.trim_matches('"');
+    !current.is_empty()
+        && query.is_some_and(|query| {
+            query
+                .split('&')
+                .any(|pair| pair.strip_prefix("v=") == Some(current))
+        })
+}
 
 /// Track streams and downloads carry the listener's media token in the URL,
 /// so a shared cache must never hold one.
@@ -25,6 +44,9 @@ pub(crate) const COMPANION_CACHE_CONTROL: &str = "private, no-cache";
 pub(crate) enum FileCaching {
     /// Streamed media: never stored, never revalidated.
     Private,
+    /// Native audio can request a compact MP4 sample index. Unsupported files
+    /// retain their ordinary byte representation.
+    CompactAudio,
     /// Kept and revalidated with a content `ETag`.
     Revalidated,
 }
@@ -47,6 +69,9 @@ fn file_etag(metadata: &std::fs::Metadata) -> Option<String> {
     ))
 }
 
+const MAX_ETAG_BYTES: u64 = 32 * 1024 * 1024;
+static ETAG_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(2)));
+
 /// ETag for a file a client is allowed to revalidate.
 ///
 /// The tag is a hash of the bytes this response will send. Length and
@@ -54,9 +79,15 @@ fn file_etag(metadata: &std::fs::Metadata) -> Option<String> {
 /// during the timestamp tick already recorded on the file, which is several
 /// milliseconds on ordinary disks, and a client offering the old tag would
 /// then be told its copy was still current.
-fn content_etag(file: &std::fs::File) -> io::Result<String> {
+fn content_etag(file: &std::fs::File) -> io::Result<Option<String>> {
+    // Large companions remain streamable without conditional validation.
+    if file.metadata()?.len() > MAX_ETAG_BYTES {
+        return Ok(None);
+    }
     let mut source = file.try_clone()?;
     std::io::Seek::seek(&mut source, std::io::SeekFrom::Start(0))?;
+    let mut source = std::io::Read::take(source, MAX_ETAG_BYTES + 1);
+    let mut total = 0;
     let mut hasher = Sha1::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
@@ -64,15 +95,20 @@ fn content_etag(file: &std::fs::File) -> io::Result<String> {
         if amount == 0 {
             break;
         }
+        total += amount as u64;
+        if total > MAX_ETAG_BYTES {
+            return Ok(None);
+        }
         hasher.update(&buffer[..amount]);
     }
-    Ok(format!("\"{}\"", hex_digest(hasher.finalize())))
+    Ok(Some(format!("\"{}\"", hex_digest(hasher.finalize()))))
 }
 
 pub(crate) async fn get_cover_art(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Path(book_id): Path<String>,
+    RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     require_book_access(&auth, &book_id)?;
@@ -81,29 +117,44 @@ pub(crate) async fn get_cover_art(
         .cover_art
         .get(&book_id)
         .ok_or(ApiError::not_found("Cover art not found"))?;
+    let cache_control = if requests_current_cover(query.as_deref(), &cover.etag) {
+        VERSIONED_COVER_CACHE_CONTROL
+    } else {
+        COVER_CACHE_CONTROL
+    };
+    let mut cover = cover.clone();
+    drop(library);
+    if query
+        .as_deref()
+        .is_some_and(|query| query.split('&').any(|pair| pair == "size=display"))
+    {
+        // Unsupported originals remain available rather than breaking artwork
+        // that the browser can display but our bounded raster decoder cannot.
+        if let Ok(display) = covers::display_cover(&state.covers_dir, &book_id, &cover).await {
+            cover = display;
+        }
+    }
 
     if if_none_match_matches(&headers, &cover.etag) {
         return Ok(Response::builder()
             .status(StatusCode::NOT_MODIFIED)
             .header(ETAG, cover.etag.clone())
-            .header(CACHE_CONTROL, COVER_CACHE_CONTROL)
+            .header(CACHE_CONTROL, cache_control)
             .body(Body::empty())?);
     }
 
     // Streamed from the extracted file rather than copied out of a map that
     // held every cover in the library resident.
-    let cover = cover.clone();
     let file = fs::File::open(&cover.path)
         .await
         .map_err(|_| ApiError::not_found("Cover art not found"))?;
-    drop(library);
 
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, cover.mime_type)
         .header(CONTENT_LENGTH, cover.len.to_string())
         .header(ETAG, cover.etag)
-        .header(CACHE_CONTROL, COVER_CACHE_CONTROL)
+        .header(CACHE_CONTROL, cache_control)
         .body(Body::from_stream(ReaderStream::new(file)))?)
 }
 
@@ -235,8 +286,8 @@ pub(crate) async fn get_epub_entry(
     let (response, member) = tokio::task::spawn_blocking(move || {
         let (file, metadata) = open_contained_file(&path, &[root])
             .map_err(|_| ApiError::not_found("EPUB not found"))?;
-        let mut archive = zip::ZipArchive::new(file)
-            .map_err(|_| ApiError::bad_request("Invalid EPUB archive"))?;
+        let mut archive =
+            open_zip_file(file).map_err(|_| ApiError::bad_request("Invalid EPUB archive"))?;
         let index = archive
             .index_for_name(&entry_path)
             .ok_or(ApiError::not_found("EPUB entry not found"))?;
@@ -438,6 +489,7 @@ pub(crate) async fn stream_track(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Path((book_id, track_id)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     require_book_access(&auth, &book_id)?;
@@ -460,7 +512,14 @@ pub(crate) async fn stream_track(
         &[&state.library_root],
         headers,
         None,
-        FileCaching::Private,
+        if query
+            .as_deref()
+            .is_some_and(|query| query.split('&').any(|part| part == "compact=1"))
+        {
+            FileCaching::CompactAudio
+        } else {
+            FileCaching::Private
+        },
     )
     .await
 }
@@ -500,27 +559,44 @@ pub(crate) async fn serve_file_response(
         .map(|root| root.to_path_buf())
         .collect::<Vec<_>>();
     let revalidated = caching == FileCaching::Revalidated;
-    let (file, metadata, etag) = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
-        let (file, metadata) = open_contained_file(&path_for_open, &allowed_roots)
-            .map_err(|_| ApiError::not_found("Media file not found"))?;
-        // Hashed on this blocking thread: a long sync map or ebook must not
-        // stall the runtime, and the hash has to be known before the status
-        // line so a matching tag can answer 304 without the body.
-        let etag = if revalidated {
-            Some(content_etag(&file).map_err(|error| {
-                ApiError::internal(format!("Could not read media file: {error}"))
-            })?)
-        } else {
-            None
-        };
-        Ok((file, metadata, etag))
-    })
-    .await
-    .map_err(|error| ApiError::internal(format!("Could not open media file: {error}")))??;
-    let file_size = metadata.len();
+    let hash_permit = if revalidated {
+        Some(ETAG_SLOTS.clone().try_acquire_owned().map_err(|_| {
+            ApiError::too_many_requests("Companion validation is busy. Try again shortly.")
+        })?)
+    } else {
+        None
+    };
+    let (file, metadata, etag, compact) =
+        tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+            // The blocking hash retains its slot if the request is cancelled.
+            let _permit = hash_permit;
+            let (mut file, metadata) = open_contained_file(&path_for_open, &allowed_roots)
+                .map_err(|_| ApiError::not_found("Media file not found"))?;
+            // Hashed on this blocking thread: a long sync map or ebook must not
+            // stall the runtime, and the hash has to be known before the status
+            // line so a matching tag can answer 304 without the body.
+            let etag = if revalidated {
+                content_etag(&file).map_err(|error| {
+                    ApiError::internal(format!("Could not read media file: {error}"))
+                })?
+            } else {
+                None
+            };
+            let compact =
+                if caching == FileCaching::CompactAudio && faststart::is_mp4_file(&path_for_open) {
+                    compact_audio::cached_header(&mut file, &metadata)
+                } else {
+                    None
+                };
+            Ok((file, metadata, etag, compact))
+        })
+        .await
+        .map_err(|error| ApiError::internal(format!("Could not open media file: {error}")))??;
+    let removed = compact.as_ref().map_or(0, |header| header.removed);
+    let file_size = metadata.len() - removed;
     let content_type = media_content_type(&file_path);
     let cache_control = match caching {
-        FileCaching::Private => MEDIA_CACHE_CONTROL,
+        FileCaching::Private | FileCaching::CompactAudio => MEDIA_CACHE_CONTROL,
         FileCaching::Revalidated => COMPANION_CACHE_CONTROL,
     };
     // The client already holds this exact file; a range of it is moot.
@@ -567,9 +643,22 @@ pub(crate) async fn serve_file_response(
     };
 
     let mut file = fs::File::from_std(file);
-    file.seek(SeekFrom::Start(start)).await?;
-    let stream =
-        ReaderStream::with_capacity(file.take(end - start + 1), MEDIA_STREAM_BUFFER_CAPACITY);
+    let prefix = compact
+        .as_ref()
+        .filter(|header| start < header.bytes.len() as u64)
+        .map(|header| {
+            let stop = (end + 1).min(header.bytes.len() as u64) as usize;
+            Bytes::from_owner(header.bytes.clone()).slice(start as usize..stop)
+        })
+        .unwrap_or_default();
+    let disk_length = end - start + 1 - prefix.len() as u64;
+    if disk_length > 0 {
+        file.seek(SeekFrom::Start(start + prefix.len() as u64 + removed))
+            .await?;
+    }
+    let reader =
+        tokio::io::AsyncReadExt::chain(std::io::Cursor::new(prefix), file.take(disk_length));
+    let stream = ReaderStream::with_capacity(reader, MEDIA_STREAM_BUFFER_CAPACITY);
     let body = Body::from_stream(stream);
 
     let mut response = Response::builder()
@@ -985,4 +1074,141 @@ pub(crate) async fn delete_downloaded_book(
     removal?;
     rescan?;
     Ok(Json(books_with_progress(&state, &auth).await?))
+}
+
+#[cfg(test)]
+mod etag_budget_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn large_companions_skip_hashing_without_losing_stream_access() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("large.pdf");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_ETAG_BYTES + 1).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(RANGE, "bytes=0-0".parse().unwrap());
+        headers.insert(IF_NONE_MATCH, "\"old\"".parse().unwrap());
+        let response = serve_file_response(
+            &path,
+            &[root.path()],
+            headers,
+            None,
+            FileCaching::Revalidated,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert!(response.headers().get(ETAG).is_none());
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 1)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        file.set_len(3).unwrap();
+        assert!(
+            content_etag(&std::fs::File::open(path).unwrap())
+                .unwrap()
+                .is_some()
+        );
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PacketStreamQuery {
+    op: String,
+    offset: Option<u64>,
+    count: Option<usize>,
+    revision: Option<String>,
+    // Media tokens are authenticated by middleware before this handler.
+    token: Option<String>,
+}
+
+pub(crate) async fn packet_stream_track(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path((book_id, track_id)): Path<(String, String)>,
+    Query(query): Query<PacketStreamQuery>,
+) -> Result<Response, ApiError> {
+    require_book_access(&auth, &book_id)?;
+    let _ = &query.token;
+    if query.revision.as_ref().is_some_and(|v| v.len() > 128)
+        || !matches!(query.op.as_str(), "bootstrap" | "range")
+        || (query.op == "range"
+            && (query.offset.is_none()
+                || query.count.is_none_or(|n| n == 0 || n > 65536)
+                || query.revision.is_none()))
+    {
+        return Err(ApiError::bad_request("Invalid packet audio request"));
+    }
+    let path = {
+        let library = state.library.read().await;
+        let book = library.book(&book_id)?;
+        if !book.tracks.iter().any(|t| t.id == track_id) {
+            return Err(ApiError::not_found("Track not found"));
+        }
+        library
+            .track_paths
+            .get(&track_id)
+            .cloned()
+            .ok_or(ApiError::not_found("Track path not found"))?
+    };
+    let root = state.library_root.clone();
+    let (body, content_type) = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+        use std::io::Write;
+        let (mut file, _) = open_contained_file(&path, &[root])
+            .map_err(|_| ApiError::not_found("Media file not found"))?;
+        let plan = packet_audio::cached(&mut file).ok_or(ApiError::not_found(
+            "Packet audio is unavailable for this track",
+        ))?;
+        let audio = &plan.audio;
+        let (bytes, content_type) = if query.op == "bootstrap" {
+            let prefix = audio
+                .read(&mut file, 0, audio.length.min(16384) as usize)
+                .map_err(|_| ApiError::internal("Could not read audio"))?;
+            let data = serde_json::to_vec(&serde_json::json!({
+                "length": audio.length,
+                "revision": plan.revision,
+                "data": general_purpose::STANDARD.encode(prefix)
+            }))
+            .map_err(|_| ApiError::internal("Could not prepare audio"))?;
+            (data, "application/json")
+        } else {
+            if query.revision.as_deref() != Some(&plan.revision) {
+                return Err(ApiError::conflict("Audio source changed"));
+            }
+            let bytes = audio
+                .read(
+                    &mut file,
+                    query.offset.unwrap_or(0),
+                    query.count.unwrap_or(0),
+                )
+                .map_err(|_| ApiError::bad_request("Invalid audio range"))?;
+            (bytes, "application/octet-stream")
+        };
+        if !plan.unchanged(&file) {
+            return Err(ApiError::conflict("Audio source changed"));
+        }
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gzip.write_all(&bytes)
+            .map_err(|_| ApiError::internal("Could not prepare audio"))?;
+        let body = gzip
+            .finish()
+            .map_err(|_| ApiError::internal("Could not prepare audio"))?;
+        Ok((body, content_type))
+    })
+    .await
+    .map_err(|_| ApiError::internal("Could not prepare audio"))??;
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, content_type),
+            (axum::http::header::CONTENT_ENCODING, "gzip"),
+            (axum::http::header::CACHE_CONTROL, "private, no-store"),
+        ],
+        body,
+    )
+        .into_response())
 }

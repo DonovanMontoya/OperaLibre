@@ -63,6 +63,7 @@ export function scoreWord(guess: string, answer: string): LetterResult[] {
 
 export const MATCH_SIZE = 7;
 export const MATCH_GLYPHS = ["◆", "●", "✦", "■", "▲", "♥"] as const;
+export const MATCH_GLYPH_NAMES = ["Diamond", "Circle", "Star", "Square", "Triangle", "Heart"] as const;
 export const MATCH_KINDS = MATCH_GLYPHS.length;
 export type MatchBoard = number[][];
 export type MatchCell = { row: number; col: number };

@@ -30,8 +30,11 @@ import {
 import {
   BOOK_GAIN_DEFAULT,
   createBookGainSync,
-  mergeServerBookGains
+  bookGainFromDb,
+  mergeServerBookGains,
+  normalizeBookGain
 } from "./bookVolume";
+import { type BookVolumeState, createKeyedQueue, withAutoVolume } from "./autoVolume";
 import { PlaybackGainChain, streamCanBeBoosted, webAudioBoostSupported } from "./playbackGain";
 import { STREAM_LOAD_FAILED, streamFailureMessage } from "./streamFailure";
 import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
@@ -54,6 +57,7 @@ import {
   mediaUrl,
   pinActiveServerId,
   reconnectUsingServerAliases,
+  setBookAutoVolume,
   setBookVolume,
   setStoredMediaToken,
   setStoredToken,
@@ -182,6 +186,12 @@ import { useNowPlaying } from "./useNowPlaying";
 import { useAudioElement } from "./useAudioElement";
 import { usePlaybackRestore } from "./usePlaybackRestore";
 import { useAudioSource } from "./useAudioSource";
+import { GiftAppBoundary } from "./GiftAppBoundary";
+import { deviceGiftReceiving } from "./giftReceiving";
+import { createPersistentGiftTransport } from "./giftPersistentTransport";
+import { fetchVerifiedGiftPreview } from "./giftPreviewSource";
+import { loadOptionalNativeGiftRecoveryState, compareAndSwapNativeGiftRecoveryState } from "./giftNativeRecovery";
+import { createNativeGiftStaging, recoverNativeGiftStaging } from "./giftNativeStaging";
 // How long a Play still waiting on the stream shows as loading.
 const PLAY_PENDING_LIMIT_MS = 45_000;
 const SHELF_EXPANDED_STORAGE_KEY = "operalibre.shelfExpanded";
@@ -227,7 +237,20 @@ function initialAuthState(): AuthState {
     : { phase: "loading" };
 }
 
+// Gift links open only in the phone apps, which can store the book, and only
+// after the device's owner turns receiving on.
+const experimentalGiftTransport = createPersistentGiftTransport(fetchVerifiedGiftPreview, {
+  storage: { loadOptional: loadOptionalNativeGiftRecoveryState, compareAndSwap: compareAndSwapNativeGiftRecoveryState },
+  stages: { create: createNativeGiftStaging, recover: recoverNativeGiftStaging }
+});
+
 export default function App() {
+  return <GiftAppBoundary enabled={Capacitor.isNativePlatform()} native={Capacitor.isNativePlatform()} transport={experimentalGiftTransport} receiving={deviceGiftReceiving}>
+    <AuthenticatedApp />
+  </GiftAppBoundary>;
+}
+
+function AuthenticatedApp() {
   const [authState, setAuthState] = useState<AuthState>(initialAuthState);
 
   const checkAuth = useCallback(async () => {
@@ -702,9 +725,13 @@ function MainApp({
   // Serializes and coalesces the writes behind the gain slider, which reports
   // every step of a drag, and owns the release of the guard above.
   const gainSyncRef = useRef<ReturnType<typeof createBookGainSync> | null>(null);
+  // Orders every volume write for a book, manual or automatic, and counts the
+  // listener's changes so only the newest one's answer is applied.
+  const volumeQueueRef = useRef(createKeyedQueue());
+  const volumeChangesRef = useRef(new Map<string, number>());
   if (!gainSyncRef.current) {
     gainSyncRef.current = createBookGainSync(
-      setBookVolume,
+      (bookId, gain) => volumeQueueRef.current(bookId, () => setBookVolume(bookId, gain)),
       localGainWritesRef.current,
       unsyncedBookGainStore(currentUser.id)
     );
@@ -1004,6 +1031,7 @@ function MainApp({
   const booksRef = useRef<Book[]>(books);
   const carPlay = useCarPlay({
     acknowledgedSeekGenerationRef,
+    acknowledgedServerPositionRef,
     bookGains,
     bookIdsKey,
     books,
@@ -1435,6 +1463,7 @@ function MainApp({
     native,
     playbackFold,
     sentenceFollowAvailable: readalong.sentenceFollowAvailable,
+    sentenceFollowAvailableForBook: readalong.sentenceFollowAvailableForBook,
     shelfExpanded
   });
   const {
@@ -1711,6 +1740,81 @@ function MainApp({
     // land now; a no-op whenever nothing is owed.
     gainSyncRef.current?.retry();
   }
+
+  // Applies one book's volume state to both the book and the gain mirror the
+  // players read. The guard keeps a library payload fetched before this
+  // change from putting the old gain back.
+  function applyBookVolumeState(bookId: string, state: BookVolumeState) {
+    setBooks((current) =>
+      current.map((book) => (book.id === bookId ? { ...book, ...state } : book))
+    );
+    const gain = normalizeBookGain(state.volumeGain);
+    localGainWritesRef.current.set(bookId, gain);
+    setBookGains((existing) => {
+      if ((existing[bookId] ?? BOOK_GAIN_DEFAULT) === gain) return existing;
+      const next = { ...existing };
+      if (gain === BOOK_GAIN_DEFAULT) delete next[bookId];
+      else next[bookId] = gain;
+      writeStoredBookGains(currentUser.id, next);
+      return next;
+    });
+    if (bookId === playbackBookId) engageGainChain(audioRef.current, gain);
+  }
+
+  function noteVolumeChange(bookId: string) {
+    const change = (volumeChangesRef.current.get(bookId) ?? 0) + 1;
+    volumeChangesRef.current.set(bookId, change);
+    return change;
+  }
+
+  // The switch answers at once with the level the server will choose, then
+  // takes the server's answer, or goes back if the server could not be
+  // reached. Either is skipped when the listener has changed the book again
+  // since: their newer choice stands.
+  async function updateAutoVolume(book: Book, enabled: boolean) {
+    const change = noteVolumeChange(book.id);
+    const previous: BookVolumeState = {
+      // The mirror, not the book: it holds a slider move the server has not
+      // echoed yet.
+      volumeGain: bookGains[book.id] ?? BOOK_GAIN_DEFAULT,
+      volumeGainSource: book.volumeGainSource ?? "default",
+      autoVolume: book.autoVolume ?? true
+    };
+    applyBookVolumeState(book.id, withAutoVolume(book, enabled));
+    const isLatest = () => volumeChangesRef.current.get(book.id) === change;
+    try {
+      const updated = await volumeQueueRef.current(book.id, () => setBookAutoVolume(book.id, enabled));
+      if (updated && isLatest()) {
+        applyBookVolumeState(book.id, {
+          volumeGain: updated.volumeGain ?? BOOK_GAIN_DEFAULT,
+          volumeGainSource: updated.volumeGainSource ?? "default",
+          autoVolume: updated.autoVolume ?? enabled
+        });
+      }
+    } catch {
+      if (!isLatest()) return;
+      applyBookVolumeState(book.id, previous);
+      setPlaybackError("The automatic level could not be changed. Check the connection and try again.");
+    }
+  }
+
+  // Moving the slider makes the level the listener's own, which the server
+  // records the same way; the book follows at once rather than on the next
+  // library refresh.
+  function adjustBookGain(book: Book, db: number) {
+    noteVolumeChange(book.id);
+    updateBookGain(book, db);
+    if (book.volumeGainSource !== undefined) {
+      const volumeGain = bookGainFromDb(db);
+      setBooks((current) =>
+        current.map((candidate) =>
+          candidate.id === book.id
+            ? { ...candidate, volumeGain, volumeGainSource: "manual" }
+            : candidate
+        )
+      );
+    }
+  }
   useNowPlaying({
     activeChapter,
     activeTrackIndex,
@@ -1745,15 +1849,29 @@ function MainApp({
     startPlayback
   });
 
+  // The chapter list follows playback, but opening a book page leaves its top
+  // (the way back, the cover and the actions) in view: the first chapter seen
+  // there is only noted, and later chapter changes scroll as before.
+  const followedChapterRef = useRef<string | null>(null);
+  const followedViewRef = useRef(nativePlayerView);
   useEffect(() => {
-    if (!chaptersOpen || !isViewingPlayingBook || activeChapterId === null) return;
+    const enteredBookPage = followedViewRef.current !== nativePlayerView;
+    followedViewRef.current = nativePlayerView;
+    if (!chaptersOpen || !isViewingPlayingBook || activeChapterId === null) {
+      followedChapterRef.current = null;
+      return;
+    }
+    const firstOnBookPage = native && nativePlayerView === "details"
+      && (enteredBookPage || followedChapterRef.current === null);
+    followedChapterRef.current = String(activeChapterId);
+    if (firstOnBookPage) return;
     const frame = window.requestAnimationFrame(() => {
       chaptersListRef.current
         ?.querySelector<HTMLElement>(`[data-chapter-id="${activeChapterId}"]`)
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeChapterId, chaptersOpen, isViewingPlayingBook]);
+  }, [activeChapterId, chaptersOpen, isViewingPlayingBook, native, nativePlayerView]);
 
   useEffect(() => {
     const sync = createForegroundProgressSync(
@@ -1977,6 +2095,7 @@ function MainApp({
   const shelfPull = usePullToRefresh(native, refreshShelf);
 
   const userMenu = renderUserMenu({
+    displaySettings,
     continueReadingAutoplay,
     toggleContinueReadingAutoplay,
     bookPreviewsEnabled,
@@ -2282,6 +2401,7 @@ function MainApp({
         closeReadalong={closeReadalong}
         completionError={completionError}
         completionPendingBookId={completionPendingBookId}
+        continueReadingBook={continueReadingBook}
         currentTrack={currentTrack}
         demoMode={demoMode}
         descriptionCanExpand={descriptionCanExpand}
@@ -2470,7 +2590,8 @@ function MainApp({
           playbackGain={playbackGain}
           setNativePlayerSheet={setNativePlayerSheet}
           speed={speed}
-          updateBookGain={updateBookGain}
+          updateAutoVolume={(book, enabled) => void updateAutoVolume(book, enabled)}
+          updateBookGain={adjustBookGain}
           updateSpeed={updateSpeed}
         />
       ) : null}
@@ -2676,7 +2797,7 @@ function MainApp({
             onClick={() => openNativeTab("reading")}
           >
             <Headphones size={20} strokeWidth={1.6} />
-            <span>Reading</span>
+            <span>Listening</span>
           </button>
           {gamesEnabled ? <button
             type="button"

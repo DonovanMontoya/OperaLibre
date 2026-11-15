@@ -99,7 +99,7 @@ ffprobe_path =
 | --- | --- | --- |
 | `max_upload_gib` | `20` | Maximum total size of one web-uploaded audiobook or Libation title (including its temporary files). Set to `0` only to delegate storage-exhaustion control to another trusted layer. |
 | `max_book_download_gib` | `25` | Maximum source size that may be assembled into a temporary ZIP download. Set to `0` only when disk usage is constrained externally. |
-| `max_concurrent_book_downloads` | `1` | Simultaneous ZIP preparations/downloads. Accepted range: `1`–`32`. Each active archive can consume temporary disk space up to its book size. |
+| `max_concurrent_book_downloads` | `1` | Simultaneous ZIP preparations/downloads. Gift senders have a separate pool of the same size, so a waiting recipient does not block normal downloads. Accepted range: `1`–`32`. Each active archive can consume temporary disk space up to its book size. |
 | `download_temp_dir` | `data/download-temp` | Private staging directory for ZIP downloads. Put this on a data volume rather than a small operating-system temporary filesystem. Incomplete and completed archives are removed when their response ends. |
 | `min_download_free_gib` | `2` | Free space that must remain on the staging volume after a new archive is prepared; also protects the library volume during Libation imports. Set to `0` only when the volume is constrained and monitored elsewhere. |
 
@@ -146,19 +146,21 @@ Libation is available when the server finds its CLI at the configured path or on
 
 ### Optional readalong alignment
 
-Owners of managed release installations can install and enable the generator under **Administration → Experiments**; no configuration entry is needed. Sentence following requires an aligned map, the experiment to be enabled, and the reader to press Follow in the ebook, including for user-provided and previously generated `.sync.json` maps. Disabling it keeps those maps and leaves chapter sync available. Development and manually managed installations can configure an existing echogarden executable here instead; that explicit configuration takes priority over the managed add-on. See [Library Layout](library-layout.md#sync-maps-following-the-narration) for the sync-map workflow.
+Owners of managed release installations can install and enable the generator under **Administration → Experiments**; no configuration entry is needed. Sentence following requires an aligned map, the experiment to be enabled, and the reader to press Follow in the ebook, including for user-provided and previously generated `.sync.json` maps. Disabling it keeps those maps and listening progress; EPUBs stay readable beside the audio. Development and manually managed installations can configure an existing echogarden executable here instead; that explicit configuration takes priority over the managed add-on. See [Library Layout](library-layout.md#sync-maps-following-the-narration) for the sync-map workflow.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `alignment_cli_path` | *(empty)* | Optional path to a manually managed echogarden CLI. It is treated as installed and enabled and is not changed from the Administration panel. When blank, OperaLibre uses an enabled managed add-on instead. |
+| `alignment_cli_path` | *(empty)* | Optional path to a manually managed echogarden CLI. It is treated as installed and enabled and is not changed from the Administration panel. When blank, OperaLibre searches the server's `PATH` for echogarden before using an enabled managed add-on. A PATH installation is enabled by default, including after upgrades, and the owner can disable or re-enable it under **Administration → Experiments**. |
 
 ### Optional MP4 faststart conversion
 
 MP4-family files written without a leading `moov` index start playing slowly over a network. Administrators can remux them in place from **Administration → Downloaded books**; the control needs ffmpeg, and uses ffprobe to verify each converted file before it replaces the original. Leave both blank to search `PATH`; without ffmpeg the control simply reports itself unavailable.
 
+The same ffmpeg measures each book's loudness in the background after a scan, so badly mastered books can play at a corrected level. It reads a few minutes of each book at low priority and never changes the files. Without ffmpeg this is skipped.
+
 | Key | Default | Description |
 | --- | --- | --- |
-| `ffmpeg_path` | *(empty)* | Path to the ffmpeg binary used for faststart conversion. |
+| `ffmpeg_path` | *(empty)* | Path to the ffmpeg binary used for faststart conversion and loudness analysis. |
 | `ffprobe_path` | *(empty)* | Path to the ffprobe binary used to verify converted files. |
 
 ## Environment variables

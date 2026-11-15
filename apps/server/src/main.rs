@@ -10,7 +10,7 @@ use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use axum::{
     Extension, Json, Router,
     body::Body,
-    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, RawQuery, Request, State},
     http::{
         HeaderMap, HeaderValue, Method, StatusCode,
         header::{
@@ -69,6 +69,9 @@ mod app;
 mod auth;
 mod backup;
 mod catalogue;
+mod chapter_notes;
+mod cloud_recognition;
+mod compact_audio;
 mod companions;
 mod config;
 mod covers;
@@ -86,14 +89,43 @@ mod libation_setup;
 mod library;
 mod libro;
 mod libro_account;
+mod loudness;
 mod media;
 mod metadata_input;
 mod migrate;
 mod opds;
+mod packet_audio;
 mod progress;
 mod reading;
 mod reading_log;
 mod scan_input;
+mod share;
+mod share_alignment;
+#[allow(dead_code)]
+mod share_broker;
+mod share_cloudflare;
+#[allow(dead_code)]
+mod share_connectivity;
+#[allow(dead_code)]
+mod share_cover_preview;
+#[allow(dead_code)]
+mod share_metadata;
+#[allow(dead_code)]
+mod share_peer_proof;
+#[cfg(test)]
+mod share_peer_tests;
+#[allow(dead_code)]
+mod share_preview_crypto;
+#[allow(dead_code)]
+mod share_sender;
+#[allow(dead_code)]
+mod share_sender_recovery;
+#[allow(dead_code)]
+mod share_service;
+#[allow(dead_code)]
+mod share_setup;
+#[allow(dead_code)]
+mod share_transfer;
 mod storage;
 mod sync;
 mod sync_report;
@@ -102,6 +134,8 @@ mod sync_schedule;
 mod test_alloc;
 #[cfg(test)]
 mod unit_tests;
+#[path = "../../shared/update_backups.rs"]
+mod update_backups;
 mod update_channel;
 mod update_manifest;
 mod update_trial;
@@ -129,6 +163,7 @@ use libation_setup::*;
 use library::*;
 use libro::*;
 use libro_account::*;
+use loudness::*;
 use media::*;
 use metadata_input::*;
 use migrate::*;
@@ -137,6 +172,8 @@ use progress::*;
 use reading::*;
 use reading_log::*;
 use scan_input::*;
+#[cfg(test)]
+use share::*;
 use storage::*;
 use sync::*;
 use update_trial::*;
@@ -183,6 +220,11 @@ async fn main() -> anyhow::Result<()> {
         libation_accounts_root,
         server_id,
     )?;
+    // Derived data: a cache that fails to load only means books are measured
+    // again, never that the server stays down.
+    if let Err(error) = state.audio_analysis.load().await {
+        tracing::warn!("could not load loudness analyses: {}", error.message);
+    }
 
     let app = build_router(
         state.clone(),
@@ -234,6 +276,10 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         deferred.update_trial.wait_for_commit().await;
         libation_recovery::recover(deferred.clone());
+        // Gift recovery follows the owner's experiment switch, like the gift
+        // routes: saved broker settings alone never cause egress.
+        let gifts_enabled = share_setup::experiment_enabled(&deferred).await;
+        share_setup::start_boot_recovery(deferred.clone(), gifts_enabled);
         schedule_automatic_libation_refresh(deferred.clone());
         schedule_libro_imports(deferred.clone());
         schedule_reading_session_sweeper(deferred.clone());
@@ -243,6 +289,15 @@ async fn main() -> anyhow::Result<()> {
     let (shutdown_reason_sender, shutdown_reason) = tokio::sync::oneshot::channel();
     let shutdown = state.shutdown.subscribe();
     let shutdown_sender = state.shutdown.clone();
+    // Without TCP_NODELAY, a response written in more than one piece (the
+    // headers, then a body) can sit in the kernel until the client
+    // acknowledges the first piece, which clients delay by up to 40 ms. Every
+    // EPUB page, stylesheet, small JSON reply, and error paid that wait.
+    let listener = axum::serve::ListenerExt::tap_io(listener, |stream| {
+        if let Err(error) = stream.set_nodelay(true) {
+            tracing::debug!("could not set TCP_NODELAY on a connection: {error}");
+        }
+    });
     let serve = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -600,6 +655,7 @@ fn build_app_state(
             config.ffmpeg_path.clone(),
             config.ffprobe_path.clone(),
         ),
+        audio_analysis: Arc::new(AudioAnalysisStore::new(database.clone())),
         update_manager: updates::UpdateManager::new(
             config.data_dir.clone(),
             config.web_dist_dir.clone(),
@@ -678,6 +734,7 @@ fn build_app_state(
         password_request_slots: Arc::new(Semaphore::new(PASSWORD_REQUEST_CAPACITY)),
         password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
         download_task_slots: Arc::new(Semaphore::new(config.max_concurrent_book_downloads)),
+        gift_sender_slots: Arc::new(Semaphore::new(config.max_concurrent_book_downloads)),
         catalogue_slots: Arc::new(Semaphore::new(CATALOGUE_CONCURRENCY)),
         catalogue_account_slots: Arc::new(Mutex::new(HashMap::new())),
         epub_entry_slots: Arc::new(Semaphore::new(EPUB_ENTRY_CONCURRENCY)),

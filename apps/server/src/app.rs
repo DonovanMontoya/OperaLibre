@@ -25,8 +25,10 @@ pub(crate) struct AppState {
     pub(crate) libation_config: LibationConfig,
     pub(crate) alignment_config: AlignmentConfig,
     /// ffmpeg/ffprobe, when they were found. `None` disables faststart
-    /// conversion entirely.
+    /// conversion and loudness analysis entirely.
     pub(crate) faststart_tools: Option<faststart::Tools>,
+    /// Loudness measurements per book, from the background analysis.
+    pub(crate) audio_analysis: Arc<AudioAnalysisStore>,
     pub(crate) update_manager: updates::UpdateManager,
     pub(crate) sync_dir: PathBuf,
     pub(crate) sync_schedule_lock: Arc<Mutex<()>>,
@@ -92,6 +94,8 @@ pub(crate) struct AppState {
     pub(crate) password_task_slots: Arc<Semaphore>,
     pub(crate) password_request_slots: Arc<Semaphore>,
     pub(crate) download_task_slots: Arc<Semaphore>,
+    /// Waiting gift recipients must not occupy ordinary archive download slots.
+    pub(crate) gift_sender_slots: Arc<Semaphore>,
     pub(crate) catalogue_slots: Arc<Semaphore>,
     pub(crate) catalogue_account_slots: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
     pub(crate) epub_entry_slots: Arc<Semaphore>,
@@ -136,6 +140,13 @@ pub(crate) fn build_router(
         ))
         .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES));
 
+    #[cfg(test)]
+    let public_share_routes = Router::new()
+        .route("/api/shares/{token}/preview", get(share_preview))
+        .route("/api/shares/{token}/download", get(share_download));
+    #[cfg(not(test))]
+    let public_share_routes = Router::new();
+
     let protected_routes = Router::new()
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
@@ -176,6 +187,10 @@ pub(crate) fn build_router(
             get(stream_track),
         )
         .route(
+            "/abs/api/books/{book_id}/tracks/{track_id}/packet-stream",
+            get(packet_stream_track),
+        )
+        .route(
             "/abs/api/items/{item_id}/play",
             post(abs_play).get(abs_play),
         )
@@ -201,6 +216,12 @@ pub(crate) fn build_router(
         .route(
             "/api/experimental-features/readalong-sync/enabled",
             put(set_readalong_sync_addon_enabled),
+        )
+        .route(
+            "/api/experimental-features/readalong-sync/cloud-recognition",
+            get(crate::cloud_recognition::cloud_recognition_status)
+                .put(crate::cloud_recognition::set_cloud_recognition)
+                .delete(crate::cloud_recognition::remove_cloud_recognition),
         )
         .route(
             "/api/experimental-features/agent-access",
@@ -364,8 +385,16 @@ pub(crate) fn build_router(
         )
         .route("/api/books/{book_id}/volume", put(update_book_volume))
         .route(
+            "/api/books/{book_id}/auto-volume",
+            put(update_book_auto_volume),
+        )
+        .route(
             "/api/books/{book_id}/tracks/{track_id}/stream",
             get(stream_track),
+        )
+        .route(
+            "/api/books/{book_id}/tracks/{track_id}/packet-stream",
+            get(packet_stream_track),
         )
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -467,9 +496,101 @@ pub(crate) fn build_router(
     );
     let cors = CorsLayer::new().allow_origin(AllowOrigin::list(origins));
 
+    // The book gifts experiment. Its switch is always reachable; everything
+    // else answers 404 until the owner turns it on.
+    let gift_routes = Router::new()
+        .route(
+            "/api/books/{book_id}/gift-inventory",
+            get(crate::share::gift_inventory),
+        )
+        .route(
+            "/api/shares/selected",
+            post(crate::share_setup::create_configured_share),
+        )
+        .route(
+            "/api/admin/shares/config",
+            get(crate::share_setup::get_configuration)
+                .put(crate::share_setup::put_configuration)
+                .delete(crate::share_setup::delete_configuration),
+        )
+        .route(
+            "/api/admin/shares/config/cloudflare",
+            post(crate::share_setup::install_cloudflare_broker),
+        )
+        .route(
+            "/api/admin/shares/config/cleanup",
+            post(crate::share_setup::retry_configured_cleanup),
+        )
+        .route(
+            "/api/admin/shares/config/recover",
+            post(crate::share_setup::recover_configured_senders),
+        )
+        .route(
+            "/api/admin/shares/config/abandon",
+            post(crate::share_setup::abandon_configured_senders),
+        )
+        .route("/api/shares/{token}", delete(crate::share::revoke_share));
+    // The earlier direct-download prototype, and cleanup against a broker
+    // named in the request, stay out of released servers.
+    #[cfg(test)]
+    let gift_routes = gift_routes.route("/api/shares", post(create_share)).route(
+        "/api/admin/shares/revocations/retry",
+        post(retry_owner_broker_revocations),
+    );
+    let protected_share_routes = gift_routes
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::share_setup::require_experiment,
+        ))
+        .route(
+            "/api/experimental-features/book-gifts",
+            get(crate::share_setup::book_gifts_experiment),
+        )
+        .route(
+            "/api/experimental-features/book-gifts/enabled",
+            put(crate::share_setup::set_book_gifts_enabled),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    // The chapter notes experiment, gated like book gifts.
+    let chapter_notes_routes = Router::new()
+        .route(
+            "/api/books/{book_id}/chapter-notes",
+            get(crate::chapter_notes::get_book_chapter_notes)
+                .post(crate::chapter_notes::generate_book_chapter_notes)
+                .delete(crate::chapter_notes::delete_book_chapter_notes),
+        )
+        .route(
+            "/api/experimental-features/chapter-notes/provider",
+            put(crate::chapter_notes::set_chapter_notes_provider)
+                .delete(crate::chapter_notes::remove_chapter_notes_provider),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::chapter_notes::require_experiment,
+        ))
+        .route(
+            "/api/experimental-features/chapter-notes",
+            get(crate::chapter_notes::chapter_notes_experiment),
+        )
+        .route(
+            "/api/experimental-features/chapter-notes/enabled",
+            put(crate::chapter_notes::set_chapter_notes_enabled),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
     // Added before the web app's static files, which stay open during an
     // update trial so a reloaded page can load and wait for the API.
     let mut app = public_routes
+        .merge(public_share_routes)
+        .merge(protected_share_routes)
+        .merge(chapter_notes_routes)
         .merge(protected_routes)
         .merge(long_running_routes)
         .merge(agent_routes)
@@ -662,10 +783,15 @@ pub(crate) async fn set_update_channel(
 }
 
 pub(crate) async fn install_update(
-    State(state): State<AppState>,
+    // Read through `.0` rather than a `State(state)` pattern: CodeQL's Axum
+    // model treats handler arguments as request input and only stops at the
+    // field read, so the pattern reported the startup data directory as
+    // user-controlled (github/codeql#22466).
+    state: State<AppState>,
     _: OwnerUser,
     request: Option<Json<updates::UpdateInstallRequest>>,
 ) -> Result<Json<updates::UpdateInstallStarted>, ApiError> {
+    let state = state.0;
     let started = prepare_update_handoff(&state.backup_lock, async {
         state
             .update_manager
@@ -739,7 +865,7 @@ pub(crate) async fn readalong_sync_addon_status(
 ) -> Result<Json<updates::SyncAddonStatus>, ApiError> {
     state
         .update_manager
-        .check_sync_addon(query.refresh, state.alignment_config.cli_path.as_deref())
+        .check_sync_addon(query.refresh, &state.alignment_config)
         .await
         .map(Json)
         .map_err(|error| ApiError::bad_gateway(format!("Could not check the sync add-on: {error}")))
@@ -771,7 +897,7 @@ pub(crate) async fn set_readalong_sync_addon_enabled(
 ) -> Result<Json<updates::SyncAddonStatus>, ApiError> {
     state
         .update_manager
-        .set_sync_addon_enabled(input.enabled)
+        .set_sync_addon_enabled(input.enabled, &state.alignment_config)
         .await
         .map(Json)
         .map_err(|error| {

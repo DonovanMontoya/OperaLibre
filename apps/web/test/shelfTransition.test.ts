@@ -4,15 +4,16 @@ import { runShelfLayoutTransition } from "../src/shelfTransition.ts";
 
 type Finish = () => void;
 
-function fakeRoot(options: { viewTransitions?: boolean; reducedMotion?: boolean; spreadOnScreen?: boolean } = {}) {
-  const { viewTransitions = true, reducedMotion = false, spreadOnScreen = true } = options;
+function fakeRoot(options: { viewTransitions?: boolean; reducedMotion?: boolean; spreadOnScreen?: boolean; readerOpen?: boolean } = {}) {
+  const { viewTransitions = true, reducedMotion = false, spreadOnScreen = true, readerOpen = false } = options;
   const finishers: Finish[] = [];
   const root = {
     dataset: {} as Record<string, string>,
     classList: { contains: (name: string) => name === "platform-ios" },
     ownerDocument: {
       defaultView: { matchMedia: () => ({ matches: reducedMotion }) },
-      querySelector: () => (spreadOnScreen ? {} : null),
+      querySelector: (selector: string) =>
+        (selector.includes("epub-reader") ? readerOpen : spreadOnScreen) ? {} : null,
       startViewTransition: viewTransitions
         ? (update: () => void) => {
             update();
@@ -52,7 +53,8 @@ test("a change made mid-flight keeps its own direction when the first one ends",
 for (const [name, options] of [
   ["reduced motion is on", { reducedMotion: true }],
   ["view transitions are unavailable", { viewTransitions: false }],
-  ["the spread is not on screen", { spreadOnScreen: false }]
+  ["the spread is not on screen", { spreadOnScreen: false }],
+  ["the full-screen reader covers the spread", { readerOpen: true }]
 ] as const) {
   test(`applies the change without motion when ${name}`, () => {
     const { root, dataset } = fakeRoot(options);

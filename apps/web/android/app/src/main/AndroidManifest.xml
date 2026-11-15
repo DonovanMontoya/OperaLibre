@@ -20,6 +20,14 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Explicit custom-scheme activation only; not an HTTPS App Link.
+                 JavaScript validates the complete URI before using a gift. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="operalibre" android:host="gift" />
+            </intent-filter>
         </activity>
 
         <provider

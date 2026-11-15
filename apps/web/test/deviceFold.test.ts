@@ -177,6 +177,7 @@ test("a deferred fold transition cannot overwrite a newer closed state", async (
     classList: { contains: () => true },
     ownerDocument: {
       defaultView: { matchMedia: () => ({ matches: false }) },
+      querySelector: () => null,
       startViewTransition: (update: () => void) => {
         updates.push(update);
         return { finished: new Promise<void>(resolve => finishes.push(resolve)), skipTransition() {} };
@@ -195,6 +196,29 @@ test("a deferred fold transition cannot overwrite a newer closed state", async (
   await Promise.resolve();
   assert.equal(dataset.foldPosture, "closed");
   assert.equal(attributes.has("data-fold-active"), false);
+  assert.equal(dataset.foldTransition, undefined);
+});
+
+test("rotating the open phone under the full-screen reader changes the layout without animating the page behind it", () => {
+  const { root, dataset } = fakeRoot();
+  let transitions = 0;
+  Object.assign(root, {
+    classList: { contains: () => true },
+    ownerDocument: {
+      defaultView: { matchMedia: () => ({ matches: false }) },
+      querySelector: (selector: string) => (selector === ".epub-reader.immersive" ? {} : null),
+      startViewTransition: () => {
+        transitions += 1;
+        return { finished: Promise.resolve(), skipTransition() {} };
+      }
+    }
+  });
+  applyDeviceFold(root, { posture: "flat", angle: 180,
+    fold: { x: 460, y: 0, width: 31, height: 669, axis: "vertical", active: false } });
+  applyDeviceFold(root, { posture: "flat", angle: 180,
+    fold: { x: 0, y: 460, width: 669, height: 31, axis: "horizontal", active: false } });
+  assert.equal(transitions, 0);
+  assert.equal(dataset.foldAxis, "horizontal");
   assert.equal(dataset.foldTransition, undefined);
 });
 

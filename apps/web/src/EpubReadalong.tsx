@@ -1,9 +1,11 @@
+import { useColorVision } from "./useColorVision";
+import { sentenceHighlightStyle } from "./readerTheme";
 import { isBookPosture, isFlatSidePosture, useDeviceFold } from "./deviceFold";
 import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { restrictEpubContent } from "./readerContentPolicy";
 import { Capacitor } from "@capacitor/core";
 import { classifyPageGesture, narrationTextOffset, pageTurnAtEdge } from "./readerPagination";
-import { beginPageTurnDrag, pageTurnAnimates, runPageTurn, type PageTurnDirection, type PageTurnDrag } from "./readerPageTurn";
+import { beginPageTurnDrag, cancelPageTurn, pageTurnAnimates, runPageTurn, type PageTurnDirection, type PageTurnDrag } from "./readerPageTurn";
 import { type AnnotationStore, type MarkedView, pruneUntrackedHighlights, removeHighlight } from "./readerAnnotations";
 import {
   ALargeSmall,
@@ -29,20 +31,17 @@ import {
   anchorAfterRelocation,
   anchorOnPage,
   findActiveFragmentIndex,
-  findTocHrefForChapterTitle,
   hrefsMatch,
   inSyncRecoveryGap,
   normalizeSyncNeedle,
   readerStorageKey,
   repeatedNarratedPageTurn,
-  shouldTurnToIllustration,
-  shouldOpenPlayingChapter
+  shouldTurnToIllustration
 } from "./readalong";
 import {
   applyReaderThemeColors,
   currentAppPrefersDark,
   READER_THEME_CHOICES,
-  type ReaderTheme,
   type ReaderThemeChoice,
   readReaderThemeChoice,
   resolveReaderTheme,
@@ -72,17 +71,20 @@ import { errorMessage } from "./formatting";
 
 const EMPTY_ILLUSTRATION_GAPS: IllustrationGap[] = [];
 
-function flattenToc(items: NavItem[], depth = 0): Array<NavItem & { depth: number }> {
-  return items.flatMap((item) => [
-    { ...item, depth },
-    ...flattenToc(item.subitems ?? [], depth + 1)
-  ]);
+function flattenToc(items: NavItem[], book: EpubBook, depth = 0): Array<NavItem & { depth: number }> {
+  const navigationPath = book.packaging.navPath || book.packaging.ncxPath;
+  return items.flatMap((item) => {
+    let href = item.href;
+    // Contents links are relative to the navigation document; epub.js's
+    // display() expects paths relative to the package instead.
+    if (href && navigationPath) {
+      const target = new URL(href, new URL(book.resolve(navigationPath), "https://epub.invalid/"));
+      const path = book.path.relative(target.pathname);
+      href = `${book.spine.get(path)?.href ?? path}${target.hash}`;
+    }
+    return [{ ...item, href, depth }, ...flattenToc(item.subitems ?? [], book, depth + 1)];
+  });
 }
-
-type EpubSyncTarget = {
-  id: string;
-  title: string;
-};
 
 type DocumentSearchIndex = {
   doc: Document;
@@ -247,14 +249,6 @@ function caretAtPoint(doc: Document, x: number, y: number): { node: Node; offset
   return null;
 }
 
-/** Marker colours for the narrated sentence, per reading theme. */
-function sentenceHighlightStyle(theme: ReaderTheme) {
-  // The night page is dark, so the marker must lighten instead of darken.
-  return theme === "night"
-    ? { fill: "#e8b64c", "fill-opacity": "0.4", "mix-blend-mode": "screen" }
-    : { fill: "#d9a441", "fill-opacity": "0.32", "mix-blend-mode": "multiply" };
-}
-
 /** Erases narrated-sentence marks that a relayout drew twice and orphaned. */
 function pruneReadalongMarks(rendition: Rendition) {
   const views = rendition.views() as unknown as MarkedView[] | { all(): MarkedView[] };
@@ -270,7 +264,6 @@ export function EpubReadalong({
   loadCachedSource,
   loadWholeFile,
   listeningChapter,
-  syncTarget,
   syncFragments,
   syncRecoveryGaps,
   audioChapters,
@@ -297,7 +290,6 @@ export function EpubReadalong({
   loadCachedSource?: (signal?: AbortSignal) => Promise<ArrayBuffer | null>;
   loadWholeFile?: (url: string, signal: AbortSignal) => Promise<ArrayBuffer>;
   listeningChapter: string | null;
-  syncTarget: EpubSyncTarget | null;
   syncFragments: SyncFragment[] | null;
   syncRecoveryGaps?: SyncRecoveryGap[];
   audioChapters?: Chapter[];
@@ -337,14 +329,13 @@ export function EpubReadalong({
   pageTurnAnimationRef.current = pageTurnAnimation;
   const bookRef = useRef<EpubBook | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
-  const syncedTargetRef = useRef<string | null>(null);
   const epubCfiClassRef = useRef<typeof EpubCFI | null>(null);
   const searchIndexRef = useRef<DocumentSearchIndex | null>(null);
   const searchCursorRef = useRef(0);
   const fragmentRangesRef = useRef<{ doc: Document; href: string; ranges: FragmentRange[] } | null>(null);
   const highlightCfiRef = useRef<string | null>(null);
   const narratedRangeRef = useRef<{ index: DocumentSearchIndex; start: number; length: number; contents: Contents } | null>(null);
-  const highlightThemeRef = useRef<ReaderTheme | null>(null);
+  const highlightStyleRef = useRef("");
   const highlightedFragmentRef = useRef(-1);
   const autoNavHrefRef = useRef<string | null>(null);
   const lastLocationRef = useRef<Location | null>(null);
@@ -354,9 +345,6 @@ export function EpubReadalong({
   // off screen, so a relayout that starts the same page a few words earlier
   // does not walk the remembered place backwards on every reopen.
   const anchorCfiRef = useRef<string | null>(null);
-  // Chapter following clears the old CFI before epub.js reports the new one.
-  // Relayouts in that gap must keep the requested chapter as their target.
-  const pendingChapterHrefRef = useRef<string | null>(null);
   const pendingFollowTargetRef = useRef<{
     target: { href: string } | { cfi: string };
     retried: boolean;
@@ -376,7 +364,6 @@ export function EpubReadalong({
     restoringUntilRef.current = performance.now() + 5000;
   }, []);
   const syncFragmentsRef = useRef<SyncFragment[] | null>(syncFragments);
-  const syncTargetRef = useRef<EpubSyncTarget | null>(syncTarget);
   const onSeekToRef = useRef(onSeekTo);
   const loadSourceRef = useRef(loadSource);
   const loadCachedSourceRef = useRef(loadCachedSource);
@@ -396,13 +383,11 @@ export function EpubReadalong({
     readerUrlRef.current = url;
     lastLocationRef.current = null;
     anchorCfiRef.current = null;
-    pendingChapterHrefRef.current = null;
     pendingFollowTargetRef.current = null;
     restoringUntilRef.current = 0;
     handNavigatedRef.current = false;
   }
   syncFragmentsRef.current = syncFragments;
-  syncTargetRef.current = syncTarget;
   onSeekToRef.current = onSeekTo;
   loadSourceRef.current = loadSource;
   loadCachedSourceRef.current = loadCachedSource;
@@ -447,6 +432,7 @@ export function EpubReadalong({
       return next;
     });
   }, []);
+  const { mode: colorVision, strongerCues } = useColorVision();
   const [readerThemeChoice, setReaderThemeChoice] = useState<ReaderThemeChoice>(() =>
     readReaderThemeChoice()
   );
@@ -468,11 +454,13 @@ export function EpubReadalong({
   const [fontScale, setFontScale] = useState(() => readStoredFontScale(fontScaleBucket, readStoredValue));
   // The look a freshly opened book is styled with, and what the open one has
   // been given so far, so a change re-styles it exactly once.
+  const colorVisionRef = useRef(colorVision);
+  colorVisionRef.current = colorVision;
   const readerThemeRef = useRef(readerTheme);
   readerThemeRef.current = readerTheme;
   const fontScaleRef = useRef(fontScale);
   fontScaleRef.current = fontScale;
-  const appliedThemeRef = useRef<ReaderTheme | null>(null);
+  const appliedReaderColorsRef = useRef("");
   const appliedFontScaleRef = useRef<number | null>(null);
   const fontScaleBucketRef = useRef(fontScaleBucket);
   const fontScaleBucketChanged = fontScaleBucketRef.current !== fontScaleBucket;
@@ -520,7 +508,7 @@ export function EpubReadalong({
       // resize that follows then finds nothing to do, so the page would
       // overflow the stage. Lay it out again instead.
       rendition.clear();
-      void rendition.display(pendingChapterHrefRef.current ?? anchor ?? undefined).catch(() => undefined);
+      void rendition.display(anchor ?? undefined).catch(() => undefined);
       setRelayoutTick((tick) => tick + 1);
     };
     if (!webSpreadWindow) {
@@ -548,7 +536,7 @@ export function EpubReadalong({
   const openingChoiceRef = useRef({
     enabled: openAtListening,
     chapter: listeningChapter,
-    following: follow && (!!syncTarget || !!syncFragments?.length)
+    following: follow && !!syncFragments?.length
   });
   const [returnLocation, setReturnLocation] = useState(() => readStoredValue(returnLocationKey));
   const [catchUpCfi, setCatchUpCfi] = useState<string | null>(null);
@@ -599,8 +587,6 @@ export function EpubReadalong({
     // A chapter jump that was pulled back or never landed must be retried:
     // asking to follow again is exactly the listener saying "take me there".
     autoNavHrefRef.current = null;
-    // Let the chapter-sync effect re-open the playing chapter on the next run.
-    syncedTargetRef.current = null;
     setFollow(true);
     setFollowRequest((request) => request + 1);
   },[setFollow]);
@@ -616,14 +602,8 @@ export function EpubReadalong({
   // ask to return.
   const navigateByHand = useCallback((action: () => unknown) => {
     readerNavigationVersionRef.current += 1;
-    pendingChapterHrefRef.current = null;
     pendingFollowTargetRef.current = null;
-    // Chapter-level following pulls the page just as a sentence marker does,
-    // so a page turned by hand has to stop that too, or the reader is
-    // dragged back to the narrator's chapter on the next run.
-    const followingNarration =
-      (syncFragmentsRef.current?.length ?? 0) > 0 || !!syncTargetRef.current;
-    if (followingNarration) {
+    if ((syncFragmentsRef.current?.length ?? 0) > 0) {
       setFollow(false);
     }
     // The listener is driving now; where they stop is the remembered place.
@@ -911,7 +891,8 @@ export function EpubReadalong({
   }, [beginOverlayGesture, endOverlayGesture, handleOverlayPointerCancel, moveOverlayGesture]);
 
   useEffect(() => {
-    if (!viewerRef.current) {
+    const stage = viewerRef.current;
+    if (!stage) {
       return;
     }
 
@@ -930,7 +911,6 @@ export function EpubReadalong({
     setErrorDetail(null);
     setIsReady(false);
     setSlowToOpen(false);
-    syncedTargetRef.current = null;
     handNavigatedRef.current = false;
     searchIndexRef.current = null;
     searchCursorRef.current = 0;
@@ -958,13 +938,6 @@ export function EpubReadalong({
         debugLog(
           `relocated:${nextLocation.start?.cfi}..${nextLocation.end?.cfi}:p${nextLocation.start?.displayed?.page}/${nextLocation.start?.displayed?.total}:sl${container?.scrollLeft}/${container?.clientWidth}/${container?.scrollWidth}:anchor=${anchorCfiRef.current}`
         );
-      }
-      const pendingChapter = pendingChapterHrefRef.current;
-      if (pendingChapter) {
-        // An old page may report while the requested chapter is loading.
-        // It must not become the saved anchor for a subsequent relayout.
-        if (!hrefsMatch(nextLocation.start?.href ?? "", pendingChapter)) return;
-        pendingChapterHrefRef.current = null;
       }
       const EpubCfiClass = epubCfiClassRef.current;
       const pendingNavigation = pendingFollowTargetRef.current;
@@ -1201,18 +1174,15 @@ export function EpubReadalong({
       if (anchorCfiRef.current) {
         beginRestore();
       }
-      void rendition.display(pendingChapterHrefRef.current ?? anchorCfiRef.current ?? undefined).catch(() => undefined);
+      void rendition.display(anchorCfiRef.current ?? undefined).catch(() => undefined);
     };
 
     const openBook = async () => {
+      // The reader's code and the book's first request each cost a round
+      // trip to the server; fetch both at once rather than one after the other.
+      const epubModuleLoad = import("epubjs");
+      epubModuleLoad.catch(() => undefined);
       try {
-        const epubModule = await import("epubjs");
-        const ePub = epubModule.default;
-        epubCfiClassRef.current = epubModule.EpubCFI;
-        if (cancelled || !viewerRef.current) {
-          return;
-        }
-
         readyTimeout = window.setTimeout(() => {
           if (!cancelled) {
             setSlowToOpen(true);
@@ -1228,6 +1198,12 @@ export function EpubReadalong({
           readCached ? () => readCached(abortController.signal) : undefined,
           loadWholeFileRef.current
         );
+        const epubModule = await epubModuleLoad.catch((error: unknown) => {
+          prepared.archive?.destroy();
+          throw error;
+        });
+        const ePub = epubModule.default;
+        epubCfiClassRef.current = epubModule.EpubCFI;
         if (cancelled || !viewerRef.current) {
           prepared.archive?.destroy();
           return;
@@ -1255,9 +1231,16 @@ export function EpubReadalong({
         });
 
         // Keep touch from scrolling the chapter document itself; navigation
-        // is by page turn only.
+        // is by page turn only. The chapter is its own document, so it needs
+        // its own text-size-adjust: without it iOS enlarges the text in
+        // landscape, reflowing the page under the narration highlight.
         const readerLockRules = {
-          html: { "touch-action": "none !important", "overscroll-behavior": "none !important" }
+          html: {
+            "touch-action": "none !important",
+            "overscroll-behavior": "none !important",
+            "-webkit-text-size-adjust": "100% !important",
+            "text-size-adjust": "100% !important"
+          }
         };
         // One stylesheet for every look; the colours come from custom
         // properties set per theme (see applyReaderThemeColors).
@@ -1275,6 +1258,11 @@ export function EpubReadalong({
             "-webkit-hyphens": "auto",
             hyphens: "auto"
           },
+          // Every EPUB built by Project Gutenberg's ebookmaker letterboxes
+          // its cover in a grey box; let the page colour show instead.
+          ".x-ebookmaker-cover": {
+            background: "transparent !important"
+          },
           p: {
             "margin-bottom": "1.15em !important",
             "text-align": "left !important",
@@ -1282,7 +1270,7 @@ export function EpubReadalong({
             hyphens: "auto"
           },
           "p, li, blockquote, div": { "text-align": "left !important" },
-          a: { color: "var(--reader-link) !important" },
+          a: { color: "var(--reader-link) !important", "text-decoration": "underline !important" },
           img: { "max-width": "100% !important", height: "auto !important" },
           ...readerLockRules
         });
@@ -1292,9 +1280,9 @@ export function EpubReadalong({
         // still scrolled to the old page, which then shows earlier words than
         // the remembered place, and that earlier page gets saved in its turn.
         rendition.themes.select("operalibre");
-        applyReaderThemeColors(rendition.themes, readerThemeRef.current);
+        applyReaderThemeColors(rendition.themes, readerThemeRef.current, colorVisionRef.current);
+        appliedReaderColorsRef.current = `${readerThemeRef.current}:${colorVisionRef.current}`;
         rendition.themes.fontSize(`${fontScaleRef.current}%`);
-        appliedThemeRef.current = readerThemeRef.current;
         appliedFontScaleRef.current = fontScaleRef.current;
 
         bookRef.current = book;
@@ -1311,7 +1299,7 @@ export function EpubReadalong({
               void assets.recoverAssets().then((recovered) => {
                 if (!recovered || cancelled || !rendition) return;
                 rendition.clear();
-                void rendition.display(pendingChapterHrefRef.current ?? anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
+                void rendition.display(anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
               }).catch(() => undefined);
             };
             contents.document.addEventListener("error", (event) => {
@@ -1329,8 +1317,8 @@ export function EpubReadalong({
 
         book.loaded.navigation
           .then((navigation) => {
-            if (!cancelled) {
-              setToc(flattenToc(navigation.toc));
+            if (!cancelled && book) {
+              setToc(flattenToc(navigation.toc, book));
             }
           })
           .catch(() => {
@@ -1350,7 +1338,7 @@ export function EpubReadalong({
         if (openingChoice.enabled && !openingChoice.following) {
           try {
             const navigation = await book.loaded.navigation;
-            const target = await resolveListeningCfi(book, flattenToc(navigation.toc), openingChoice.chapter);
+            const target = await resolveListeningCfi(book, flattenToc(navigation.toc, book), openingChoice.chapter);
             if (cancelled) return;
             if (!handNavigatedRef.current && canCatchUp(startAt, target, (a, b) => new epubModule.EpubCFI().compare(a, b))) {
               writeStoredValue(returnLocationKey, startAt!);
@@ -1389,10 +1377,8 @@ export function EpubReadalong({
             await rendition.display();
           }
         }
-        // Keep the saved page as the reading anchor, but do not mark the
-        // playing chapter handled. When Follow is on, chapter sync can move
-        // there immediately while a sentence map is still loading; the map
-        // refines the position afterward without delaying the first jump.
+        // Keep the saved page as the reading anchor; once the sentence map
+        // loads, Follow moves from it to the narrated sentence.
         // The chapter's pictures and web fonts arrive after the first
         // layout and push the text along, so the page epub.js first shows
         // for a remembered place is usually an earlier one. Check back while
@@ -1459,7 +1445,7 @@ export function EpubReadalong({
         (rendition as unknown as { resize(width: number, height: number, cfi?: string): void }).resize(
           Math.floor(bounds.width),
           Math.floor(bounds.height),
-          pendingChapterHrefRef.current ?? anchorCfiRef.current ?? undefined
+          anchorCfiRef.current ?? undefined
         );
         // epub.js can measure the new stage during its own layout pass before
         // this observer runs. resize() then skips rebuilding the old-height
@@ -1468,18 +1454,18 @@ export function EpubReadalong({
         if (manager.layout?.name === "reflowable" && frame
           && frame.offsetHeight !== Math.floor(bounds.height)) {
           rendition.clear();
-          void rendition.display(pendingChapterHrefRef.current ?? anchorCfiRef.current ?? undefined)
+          void rendition.display(anchorCfiRef.current ?? undefined)
             .catch(() => undefined);
         }
         setRelayoutTick((tick) => tick + 1);
       }
     });
-    resizeObserver.observe(viewerRef.current);
+    resizeObserver.observe(stage);
     void openBook();
 
     return () => {
       cancelled = true;
-      pendingChapterHrefRef.current = null;
+      cancelPageTurn(stage);
       pendingFollowTargetRef.current = null;
       debugLog("cleanup");
       abortController.abort();
@@ -1556,11 +1542,12 @@ export function EpubReadalong({
 
   useEffect(() => {
     const rendition = renditionRef.current;
-    if (isReady && rendition && appliedThemeRef.current !== readerTheme) {
-      applyReaderThemeColors(rendition.themes, readerTheme);
-      appliedThemeRef.current = readerTheme;
+    const key = `${readerTheme}:${colorVision}`;
+    if (isReady && rendition && appliedReaderColorsRef.current !== key) {
+      applyReaderThemeColors(rendition.themes, readerTheme, colorVision);
+      appliedReaderColorsRef.current = key;
     }
-  }, [isReady, readerTheme]);
+  }, [isReady, readerTheme, colorVision]);
 
   useEffect(() => {
     // The first render after a screen/orientation change still carries the
@@ -1581,7 +1568,7 @@ export function EpubReadalong({
     // the old page, which now holds different words. Lay the chapter out
     // afresh and turn to the place being read.
     rendition.clear();
-    void rendition.display(pendingChapterHrefRef.current ?? anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
+    void rendition.display(anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
     setRelayoutTick((tick) => tick + 1);
   }, [beginRestore, fontScale, fontScaleBucket, fontScaleBucketChanged, isReady]);
 
@@ -1608,45 +1595,20 @@ export function EpubReadalong({
     };
   }, [fullscreen, immersive]);
 
-  // Chapter-level sync: with no sentence map, follow keeps the reader on the
-  // chapter being played. Turning a page (which clears follow) stops it, so a
-  // listener can read ahead; turning follow back on re-opens the chapter.
-  useEffect(() => {
-    if (!syncTarget || !isReady || toc.length === 0 || syncFragments?.length) {
-      return;
-    }
-    if (!followRef.current || !shouldOpenPlayingChapter(follow, syncTarget.id, syncedTargetRef.current)) {
-      return;
-    }
-    const href = findTocHrefForChapterTitle(toc, syncTarget.title);
-    if (!href) {
-      return;
-    }
-    syncedTargetRef.current = syncTarget.id;
-    // Following has taken ownership from the remembered reading page. Let the
-    // relocation establish a new anchor in the narrated chapter so the
-    // post-open settling loop cannot pull the reader back a moment later.
-    anchorCfiRef.current = null;
-    pendingChapterHrefRef.current = href;
-    restoringUntilRef.current = 0;
-    setActiveHref(href);
-    void renditionRef.current?.display(href);
-  }, [follow, followRequest, isReady, syncFragments, syncTarget, toc]);
-
   useEffect(() => {
     const book = bookRef.current;
     if (!isReady || !book || !syncFragments?.length) {
       setIllustrationResult(null);
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
     const fragments = syncFragments;
-    void findIllustrationGaps(book, fragments, audioChapters).then((gaps) => {
-      if (!cancelled) setIllustrationResult({ url, fragments, audioChapters, toc, gaps });
+    void findIllustrationGaps(book, fragments, audioChapters, controller.signal).then((gaps) => {
+      if (!controller.signal.aborted) setIllustrationResult({ url, fragments, audioChapters, toc, gaps });
     }).catch(() => {
-      if (!cancelled) setIllustrationResult({ url, fragments, audioChapters, toc, gaps: [] });
+      if (!controller.signal.aborted) setIllustrationResult({ url, fragments, audioChapters, toc, gaps: [] });
     });
-    return () => { cancelled = true; };
+    return () => controller.abort();
   }, [audioChapters, isReady, syncFragments, toc, url]);
 
   const illustrationGapsReady = illustrationResult?.url === url
@@ -1686,7 +1648,8 @@ export function EpubReadalong({
   // it on screen, following page turns and chapter boundaries.
   useEffect(() => {
     const rendition = renditionRef.current;
-    const sentenceStyle = sentenceHighlightStyle(readerTheme);
+    const sentenceStyle = sentenceHighlightStyle(readerTheme, colorVision, strongerCues);
+    const sentenceStyleKey = `${readerTheme}:${colorVision}:${strongerCues}`;
     // followRef, not the follow state: a page turned by hand stops following
     // at once (see navigateByHand), but this effect can still re-run once
     // more — retriggered by the turn's own relocation — before React
@@ -1732,7 +1695,7 @@ export function EpubReadalong({
     if (highlightedFragmentRef.current !== fragmentIndex) {
       removeAnnotation(highlightCfiRef.current);
       highlightCfiRef.current = null;
-      highlightThemeRef.current = null;
+      highlightStyleRef.current = "";
       narratedRangeRef.current = null;
       lastKeepRef.current = null;
     }
@@ -1792,7 +1755,7 @@ export function EpubReadalong({
     };
     if (highlightedFragmentRef.current === fragmentIndex) {
       const relaid = handledRelayoutRef.current !== relayoutTick;
-      if ((highlightThemeRef.current !== readerTheme || relaid) && highlightCfiRef.current) {
+      if ((highlightStyleRef.current !== sentenceStyleKey || relaid) && highlightCfiRef.current) {
         // Redraw against the current layout.
         removeAnnotation(highlightCfiRef.current);
         rendition.annotations.highlight(
@@ -1802,7 +1765,7 @@ export function EpubReadalong({
           "readalong-highlight",
           sentenceStyle
         );
-        highlightThemeRef.current = readerTheme;
+        highlightStyleRef.current = sentenceStyleKey;
         handledRelayoutRef.current = relayoutTick;
       }
       if (highlightCfiRef.current) {
@@ -1849,9 +1812,9 @@ export function EpubReadalong({
     );
     narratedRangeRef.current = { index, start: found.endOffset - needle.length, length: needle.length, contents };
     highlightCfiRef.current = cfi;
-    highlightThemeRef.current = readerTheme;
+    highlightStyleRef.current = sentenceStyleKey;
     keepOnPage(spokenCfi() ?? cfi);
-  }, [ensureSearchIndex, follow, followLeadSeconds, followRequest, followTakesPage, syncFragments, fragmentIndex, illustrationGap, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, tapFragment]);
+  }, [ensureSearchIndex, follow, followLeadSeconds, followRequest, followTakesPage, syncFragments, fragmentIndex, illustrationGap, isReady, location, positionSeconds, readerTheme, colorVision, strongerCues, relayoutTick, removeAnnotation, tapFragment]);
 
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
@@ -1873,10 +1836,8 @@ export function EpubReadalong({
     return match;
   }, [location, toc]);
   const selectedTocHref = currentTocItem?.href ?? activeHref;
+  // Without a sentence map there is nothing to follow, so there is no toggle.
   const hasSync = !!syncFragments && syncFragments.length > 0;
-  // Chapter-sync books have no marker but still follow the narrated chapter,
-  // so they get the same follow toggle.
-  const canFollow = hasSync || !!syncTarget;
   const followLabel = "Following by sentence";
   const awayFromNarration = hasSync && !follow && fragmentIndex >= 0;
 
@@ -1890,9 +1851,13 @@ export function EpubReadalong({
     : "Tap any sentence to play from there. Turning a page pauses following.";
   const goToHref = (href: string) => {
     setActiveHref(href);
-    syncedTargetRef.current = null;
     if (href) {
-      navigateByHand(() => renditionRef.current?.display(href));
+      navigateByHand(() => {
+        // A resize while the jump is queued must not restore the old chapter
+        // or keep its CFI as the saved place after the new chapter arrives.
+        anchorCfiRef.current = null;
+        return renditionRef.current?.display(href);
+      });
     }
   };
   const handleReaderKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -1945,10 +1910,8 @@ export function EpubReadalong({
       </button>
     </div>
   );
-  const followActionLabel = hasSync
-    ? (follow ? "Stop following narration" : "Follow narration")
-    : (follow ? "Stop following chapters" : "Follow chapters");
-  const followButton = canFollow ? (
+  const followActionLabel = follow ? "Stop following narration" : "Follow narration";
+  const followButton = hasSync ? (
     <button
       type="button"
       className={`epub-tool-button ${follow ? "selected" : ""}`}
@@ -1958,7 +1921,7 @@ export function EpubReadalong({
       title={followActionLabel}
     >
       <LocateFixed size={15} />
-      <span>{hasSync ? "Follow" : "Chapter sync"}</span>
+      <span>Follow</span>
     </button>
   ) : null;
   // The page itself. It must keep its place in the tree between the inline
@@ -2027,15 +1990,13 @@ export function EpubReadalong({
     }
   }, [fullscreen, selectedTocHref]);
   const closeFullscreen = () => (immersive || !roomFits ? onClose?.() : setFocusMode(false));
-  const followState = hasSync
-    ? follow
-      ? fragmentIndex >= 0
-        ? "Following narration"
-        : illustrationGap
-          ? illustrationGap.divider ? "Illustrated page" : illustrationGap.heading ? "Chapter heading" : "Narrated illustration"
-          : recoveringSync ? "Waiting for a reliable match" : "Waiting for narration"
-      : "Reading freely"
-    : follow ? "Following by chapter" : "Reading freely";
+  const followState = follow
+    ? fragmentIndex >= 0
+      ? "Following narration"
+      : illustrationGap
+        ? illustrationGap.divider ? "Illustrated page" : illustrationGap.heading ? "Chapter heading" : "Narrated illustration"
+        : recoveringSync ? "Waiting for a reliable match" : "Waiting for narration"
+    : "Reading freely";
   const tocList = (onPicked?: () => void) => (
     <ul className="epub-toc">
       {toc.map((item) => {
@@ -2080,7 +2041,7 @@ export function EpubReadalong({
             {chapterLabel ? <span>{chapterLabel}</span> : null}
           </div>
           <div className="epub-topbar-actions">
-            {canFollow ? (
+            {hasSync ? (
               <button
                 type="button"
                 className={`epub-icon-button ${follow ? "selected" : ""}`}
@@ -2103,7 +2064,7 @@ export function EpubReadalong({
         <header className="epub-roombar">
           <div className="epub-roombar-files">{companionSwitcher}</div>
           <div className="epub-roombar-actions">
-            {canFollow && !roomAside ? (
+            {hasSync && !roomAside ? (
               <button
                 type="button"
                 className={`epub-room-button ${follow ? "selected" : ""}`}
@@ -2175,11 +2136,7 @@ export function EpubReadalong({
                     ? followLabel
                     : recoveringSync ? "Waiting for a reliable match" : "Waiting for narration"
                   : "Reading freely"
-                : syncTarget
-                  ? follow
-                    ? "Following by chapter"
-                    : "Reading freely"
-                  : locationLabel}
+                : locationLabel}
             </span>
             <span>{pageInfo ?? locationLabel}</span>
           </div>
@@ -2248,7 +2205,7 @@ export function EpubReadalong({
             <ChevronLeft size={17} />
           </button>
           <p aria-live="polite">
-            {canFollow && !roomAside ? <span>{followState}</span> : null}
+            {hasSync && !roomAside ? <span>{followState}</span> : null}
             {chapterLabel ? <span>{chapterLabel}</span> : null}
             <span>{pageInfo ?? locationLabel}</span>
           </p>
@@ -2321,17 +2278,13 @@ export function EpubReadalong({
                   </select>
                 </label>
                 <p className="epub-sheet-hint">Opens at the beginning of your listening chapter when it is ahead. Your previous page stays available. Follow is controlled separately. Saved for this account on this device.</p>
-                {(fullscreen || !roomAside) && (canFollow || syncTools) ? (
+                {(fullscreen || !roomAside) && (hasSync || syncTools) ? (
                   <>
                     <h3>Narration</h3>
-                    {canFollow ? (
+                    {hasSync ? (
                       <>
                         {fullscreen ? <div className="epub-sheet-row">{followButton}</div> : null}
-                        <p className="epub-sheet-hint">
-                          {hasSync
-                            ? hint
-                            : "This book follows by chapter: the reader opens to the chapter being played. Turn following off to read ahead on your own."}
-                        </p>
+                        <p className="epub-sheet-hint">{hint}</p>
                       </>
                     ) : null}
                     {syncTools}
@@ -2360,17 +2313,13 @@ export function EpubReadalong({
       )}
       {!fullscreen && roomAside ? (
         <aside className="epub-aside" aria-label="Narration and sync">
-          {canFollow ? (
+          {hasSync ? (
             <section className="epub-aside-follow">
               <h3 role="status">{followState}</h3>
               <p>
-                {hasSync
-                  ? follow
-                    ? "Turning a page pauses following. Tap any sentence to play from there."
-                    : "You’re turning pages yourself. Tap any sentence to play from there."
-                  : follow
-                    ? "The reader keeps to the chapter being played."
-                    : "You’re reading ahead of the audio on your own."}
+                {follow
+                  ? "Turning a page pauses following. Tap any sentence to play from there."
+                  : "You’re turning pages yourself. Tap any sentence to play from there."}
               </p>
               {followButton}
             </section>

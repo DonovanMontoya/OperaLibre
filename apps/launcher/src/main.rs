@@ -1,5 +1,8 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+#[path = "../../shared/update_backups.rs"]
+mod update_backups;
+
 use std::{
     env,
     fs::{self, OpenOptions},
@@ -426,32 +429,46 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     let trial_token = update_trial_token()?;
     wait_for_server_exit(server_pid, port)?;
 
-    let backup_root = data_dir(&install_root).join("update-backups").join(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("Could not create an update timestamp: {error}"))?
-            .as_secs()
-            .to_string(),
-    );
+    let backups = data_dir(&install_root).join("update-backups");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("Could not create an update timestamp: {error}"))?
+        .as_secs();
     let server_name = server_binary_name();
     let install_server = install_root.join(server_name);
     let install_web = install_root.join("web");
     let install_version = install_root.join("VERSION.txt");
-    let data_snapshot = backup_root.join("data");
-    if let Err(staging_error) = prepare_update(&install_root, &backup_root, includes_web) {
-        // No new build has run, so the data is still the previous build's.
-        let _ = fs::remove_dir_all(&data_snapshot);
-        let restart = start_server(&install_root, false, None).and_then(require_ready_start);
-        return Err(match restart {
-            Ok(()) => format!(
-                "Could not prepare the update; the previous server was restarted: {staging_error}"
-            ),
-            Err(restart_error) => format!(
-                "Could not prepare the update ({staging_error}), and could not restart the previous server ({restart_error}). Check {}.",
-                backup_root.display()
-            ),
+    let preparation = create_backup_generation(&backups, timestamp)
+        .map_err(|error| {
+            format!(
+                "Could not create an update backup in {}: {error}",
+                backups.display()
+            )
+        })
+        .and_then(|backup_root| {
+            let result = prepare_update(&install_root, &backup_root, includes_web);
+            if result.is_err() {
+                // Only clean up a snapshot made by this transaction.
+                let _ = fs::remove_dir_all(backup_root.join("data"));
+            }
+            result.map(|()| backup_root)
         });
-    }
+    let backup_root = match preparation {
+        Ok(backup_root) => backup_root,
+        Err(staging_error) => {
+            let restart = start_server(&install_root, false, None).and_then(require_ready_start);
+            return Err(match restart {
+                Ok(()) => format!(
+                    "Could not prepare the update; the previous server was restarted: {staging_error}"
+                ),
+                Err(restart_error) => format!(
+                    "Could not prepare the update ({staging_error}), and could not restart the previous server ({restart_error}). Check {}.",
+                    backups.display()
+                ),
+            });
+        }
+    };
+    let data_snapshot = backup_root.join("data");
 
     let install_result = (|| -> Result<(), String> {
         move_required(&package_root.join(server_name), &install_server)?;
@@ -495,7 +512,30 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     let _ = fs::remove_dir_all(&data_snapshot);
     let _ = fs::remove_file(backup_root.join(RESTORE_PENDING));
     let _ = fs::remove_dir(backup_root.join(FAILED_DATA_PARTIAL));
+    if let Err(error) = update_backups::complete_and_prune(&backup_root) {
+        append_log(
+            &install_root,
+            &format!("could not finish pruning update backups: {error}"),
+        );
+    }
     Ok(())
+}
+
+/// A rolled-back update keeps its generation for recovery, and a retry can
+/// start within the same second. Take the next free number so the retry gets
+/// its own generation and still sorts after the one it follows.
+fn create_backup_generation(backups: &Path, mut timestamp: u64) -> std::io::Result<PathBuf> {
+    // Outside the loop: a file in place of the folder also reports
+    // AlreadyExists, and must fail the update rather than retry forever.
+    fs::create_dir_all(backups)?;
+    loop {
+        let backup = backups.join(timestamp.to_string());
+        match update_backups::create_generation(&backup) {
+            Ok(()) => return Ok(backup),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => timestamp += 1,
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn required_update_argument(
@@ -1703,6 +1743,88 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn an_update_in_the_same_second_keeps_the_rolled_back_generation() {
+        let root = scratch("backup-same-second");
+        let backups = root.join("update-backups");
+        let failed = super::create_backup_generation(&backups, 100).unwrap();
+        fs::write(failed.join("restore-required"), "kept for recovery").unwrap();
+        let retry = super::create_backup_generation(&backups, 100).unwrap();
+        assert_eq!(retry, backups.join("101"));
+        assert_eq!(
+            fs::read_to_string(failed.join("restore-required")).unwrap(),
+            "kept for recovery"
+        );
+        assert_eq!(fs::read_dir(&retry).unwrap().count(), 0);
+        let file = root.join("not-a-folder");
+        fs::write(&file, "").unwrap();
+        assert!(super::create_backup_generation(&file, 100).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pruning_preserves_current_generation_for_rollback() {
+        let root = scratch("pruning-rollback");
+        let backups = root.join("data/update-backups");
+        fs::create_dir_all(root.join("web")).unwrap();
+        fs::write(root.join("server.config"), "data_dir = data\n").unwrap();
+        fs::write(root.join(super::server_binary_name()), "previous server").unwrap();
+        fs::write(root.join("web/index.html"), "previous web").unwrap();
+        fs::write(root.join("VERSION.txt"), "1.0.0").unwrap();
+        let connection = seed_data(&root.join("data"), 4, r#"{"version":1}"#);
+        drop(connection);
+        for name in ["1", "2"] {
+            let backup = backups.join(name);
+            super::update_backups::create_generation(&backup).unwrap();
+            fs::write(backup.join(super::server_binary_name()), "older server").unwrap();
+            super::update_backups::complete_and_prune(&backup).unwrap();
+        }
+        let current = backups.join("3");
+        super::update_backups::create_generation(&current).unwrap();
+        super::prepare_update(&root, &current, true).unwrap();
+        let frontend = backups.join("4-frontend");
+        super::update_backups::create_generation(&frontend).unwrap();
+        fs::write(frontend.join("web"), "previous frontend").unwrap();
+        super::update_backups::complete_and_prune(&frontend).unwrap();
+        assert!(!backups.join("1").exists());
+        assert!(backups.join("2").is_dir());
+        assert!(current.join("data/operalibre.db").is_file());
+        let data = root.join("data");
+        rusqlite::Connection::open(data.join("operalibre.db"))
+            .unwrap()
+            .execute_batch("UPDATE schema_version SET version = 5; INSERT INTO progress VALUES ('failed-build', 60);")
+            .unwrap();
+        fs::write(data.join("library-identities.json"), r#"{"version":2}"#).unwrap();
+        assert!(super::data_was_upgraded(&data, &current.join("data")));
+        super::roll_back_data(&root, &data, &current).unwrap();
+        assert_eq!(super::schema_version(&data.join("operalibre.db")), Ok(4));
+        assert_eq!(progress_books(&data), ["before-update"]);
+        assert_eq!(
+            fs::read_to_string(data.join("library-identities.json")).unwrap(),
+            r#"{"version":1}"#
+        );
+        assert_eq!(
+            super::schema_version(&current.join("failed-data/operalibre.db")),
+            Ok(5)
+        );
+        for name in [super::server_binary_name(), "web", "VERSION.txt"] {
+            super::restore_backed_up(&current.join(name), &root.join(name)).unwrap();
+        }
+        assert_eq!(
+            fs::read_to_string(root.join(super::server_binary_name())).unwrap(),
+            "previous server"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("web/index.html")).unwrap(),
+            "previous web"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("VERSION.txt")).unwrap(),
+            "1.0.0"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     /// A data folder shaped like the server's: a WAL database at `schema` with

@@ -107,13 +107,13 @@ export function readStoredLightTheme(): LightTheme {
 }
 
 /* Warm and Parchment are the base appearances, so they carry no attribute. */
-export function applyDarkTheme(theme: DarkTheme): void {
+function applyDarkTheme(theme: DarkTheme): void {
   const root = document.documentElement;
   if (theme === "warm") root.removeAttribute("data-dark-theme");
   else root.setAttribute("data-dark-theme", theme);
 }
 
-export function applyLightTheme(theme: LightTheme): void {
+function applyLightTheme(theme: LightTheme): void {
   const root = document.documentElement;
   if (theme === "parchment") root.removeAttribute("data-light-theme");
   else root.setAttribute("data-light-theme", theme);

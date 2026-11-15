@@ -54,12 +54,46 @@ export type Book = {
   deviceBookId?: string;
   /** Cover art extracted from an imported file's tags, stored in app storage. */
   localCoverPath?: string;
+  /** Receipt-bound gift map and its exact local text/audio timeline. No URLs or
+   * sender identities; validated again when the local reader opens the map. */
+  localSyncMap?: {
+    asset: { name: string; size: number; sha256: string };
+    ebook: { name: string; size: number; sha256: string };
+    audio: { name: string; size: number; sha256: string; durationSeconds: number }[];
+  };
   /**
    * The viewer's own playback gain for this book, as a linear multiplier of the
    * file's level. Absent on device-only books and on servers released before
    * per-book volume; both mean unity.
    */
   volumeGain?: number;
+  /**
+   * Where `volumeGain` came from: the listener's own level, the suggested gain
+   * from the server's loudness analysis, or neither. Absent wherever
+   * `volumeGain` is, and on servers released before loudness analysis.
+   */
+  volumeGainSource?: VolumeGainSource;
+  /** The listener's switch for the suggested gain on this book. */
+  autoVolume?: boolean;
+  /** Present once the server has measured the book's current audio. */
+  audioAnalysis?: AudioAnalysis;
+};
+
+export type VolumeGainSource = "default" | "manual" | "auto";
+
+export type AudioFlag = "quiet" | "inconsistent" | "lopsided";
+
+export type AudioAnalysis = {
+  integratedLufs: number;
+  truePeakDbtp: number;
+  /** Loudest minus quietest track; absent for single-track books. */
+  trackSpreadLu?: number;
+  /** Absent for mono files. 60 means one channel is silent. */
+  channelImbalanceDb?: number;
+  louderChannel?: "left" | "right";
+  flags: AudioFlag[];
+  /** Linear multiplier toward the speech target; 1 when nothing is needed. */
+  suggestedGain: number;
 };
 
 export type BookTag = {
@@ -527,6 +561,7 @@ export type SyncAddonStatus = {
   installed: boolean;
   enabled: boolean;
   managed: boolean;
+  canToggle?: boolean;
   installedVersion: string | null;
   latestVersion: string | null;
   updateAvailable: boolean;

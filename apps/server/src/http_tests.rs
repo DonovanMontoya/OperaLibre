@@ -15,6 +15,15 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
+#[path = "chapter_notes_http_tests.rs"]
+mod chapter_notes_http_tests;
+#[path = "cloud_recognition_http_tests.rs"]
+mod cloud_recognition_http_tests;
+#[path = "share_recovery_service_tests.rs"]
+mod share_recovery_service_tests;
+#[path = "share_setup_http_tests.rs"]
+mod share_setup_http_tests;
+
 #[tokio::test]
 async fn libro_nicknames_are_private_persistent_and_do_not_change_purchase_identity() {
     let server = TestServer::start(0).await;
@@ -348,6 +357,128 @@ async fn deleting_user_removes_libro_credentials_under_the_account_guard() {
     );
 }
 
+#[tokio::test]
+async fn deleted_user_activity_is_removed_from_cache_database_and_backup() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let deleted = server.add_reader(&owner, "deleted-reader").await;
+    let survivor = server.add_reader(&owner, "surviving-reader").await;
+    let deleted_auth = resolve_session(&server.state, &deleted).await.unwrap();
+    let survivor_auth = resolve_session(&server.state, &survivor).await.unwrap();
+    record_activity(&server.state, &deleted_auth.id, 7200.0, 0).await;
+    record_activity(&server.state, &survivor_auth.id, 3600.0, 0).await;
+    let before = server.get("/api/profile/stats", &survivor).await;
+    assert_eq!(before.status, StatusCode::OK);
+    assert_eq!(before.json()["totalHoursRead"], 1.0);
+    let survivor_days = server.state.activity.read().await.by_user[&survivor_auth.id].clone();
+
+    let deletion = server
+        .send_json(
+            "DELETE",
+            &format!("/api/users/{}", deleted_auth.id),
+            &owner,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(deletion.status, StatusCode::OK, "{}", deletion.text());
+    assert_eq!(
+        server.get("/api/profile/stats", &deleted).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let cached = server.state.activity.read().await.clone();
+    assert!(!cached.by_user.contains_key(&deleted_auth.id));
+    assert_eq!(cached.by_user[&survivor_auth.id], survivor_days);
+    let stored = server
+        .state
+        .database
+        .call(|connection| {
+            read_activity_rows(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+    assert!(!stored.by_user.contains_key(&deleted_auth.id));
+    assert_eq!(stored.by_user[&survivor_auth.id], survivor_days);
+    let backup = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(backup.status, StatusCode::OK, "{}", backup.text());
+    let activity = &backup.json()["data"]["activity"];
+    assert!(activity.get(&deleted_auth.id).is_none());
+    assert_eq!(
+        activity[&survivor_auth.id],
+        serde_json::json!(survivor_days)
+    );
+    let after = server.get("/api/profile/stats", &survivor).await;
+    assert_eq!(after.status, StatusCode::OK);
+    assert_eq!(after.json(), before.json());
+}
+
+#[tokio::test]
+async fn deleted_user_activity_stays_absent_after_late_progress_bookkeeping() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "late-reader").await;
+    // Middleware gives an admitted request this owned snapshot, which can
+    // outlive the account while the request waits to record its checkpoint.
+    let auth = resolve_session(&server.state, &reader).await.unwrap();
+    let book = server.state.library.read().await.books[0].clone();
+    let previous = fresh_progress(&book, &book.tracks[0], None, unix_now_millis() - 1000);
+    let mut saved = previous.clone();
+    saved.position_seconds = 1.0;
+    saved.book_position_seconds = 1.0;
+    saved.updated_at = unix_now_millis().to_string();
+    assert_eq!(
+        plausible_listened_delta(Some(&previous), &saved, false),
+        1.0
+    );
+
+    let deletion = server
+        .send_json(
+            "DELETE",
+            &format!("/api/users/{}", auth.id),
+            &owner,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(deletion.status, StatusCode::OK, "{}", deletion.text());
+    record_progress_bookkeeping(
+        &server.state,
+        &auth,
+        &book,
+        &saved,
+        Some(&previous),
+        ProgressBookkeeping {
+            intentional_seek: false,
+            tz_offset_minutes: Some(0),
+            speed: None,
+            client: None,
+            completion_source: None,
+        },
+    )
+    .await;
+    assert!(
+        !server
+            .state
+            .activity
+            .read()
+            .await
+            .by_user
+            .contains_key(&auth.id)
+    );
+    let stored = server
+        .state
+        .database
+        .call(|connection| {
+            read_activity_rows(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+    assert!(!stored.by_user.contains_key(&auth.id));
+    let backup = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(backup.status, StatusCode::OK, "{}", backup.text());
+    assert!(backup.json()["data"]["activity"].get(&auth.id).is_none());
+}
+
 /// A booted server with a temporary data directory and a fixture library.
 struct TestServer {
     router: Router,
@@ -426,8 +557,9 @@ impl TestServer {
                 auto_refresh_hours: None,
                 reader_refreshes_per_hour: DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR,
             },
-            alignment_config: AlignmentConfig { cli_path: None },
+            alignment_config: AlignmentConfig::Managed,
             faststart_tools: None,
+            audio_analysis: Arc::new(AudioAnalysisStore::new(database.clone())),
             update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
             sync_dir: data_dir.join("sync"),
             sync_schedule_lock: Arc::new(Mutex::new(())),
@@ -502,6 +634,7 @@ impl TestServer {
             password_request_slots: Arc::new(Semaphore::new(PASSWORD_REQUEST_CAPACITY)),
             password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
             download_task_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS)),
+            gift_sender_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS)),
             catalogue_slots: Arc::new(Semaphore::new(CATALOGUE_CONCURRENCY)),
             catalogue_account_slots: Arc::new(Mutex::new(HashMap::new())),
             epub_entry_slots: Arc::new(Semaphore::new(EPUB_ENTRY_CONCURRENCY)),
@@ -512,6 +645,9 @@ impl TestServer {
         };
 
         rescan_library(&state).await.unwrap();
+        // The gift suites exercise an experiment the owner has turned on;
+        // `book_gifts_stay_off_until_the_owner_turns_them_on` covers off.
+        crate::share_setup::enable_experiment_for_test(&state).await;
 
         let library_root = state.library_root.clone();
         Self {
@@ -1097,6 +1233,697 @@ struct TestResponse {
     body: Vec<u8>,
 }
 
+#[tokio::test]
+async fn share_recovery_route_requires_owner_and_https_broker() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "share-recovery-reader").await;
+    let route = "/api/admin/shares/revocations/retry";
+    let body = serde_json::json!({"brokerOrigin":"http://127.0.0.1:9/","ownerSecret":"secret"});
+    assert_eq!(
+        server
+            .send_json("POST", route, &reader, body.clone())
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        server.send_json("POST", route, &owner, body).await.status,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn corrupt_share_store_fails_closed_instead_of_discarding_revocations() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    server
+        .state
+        .database
+        .transaction(|transaction| {
+            write_document(
+                transaction,
+                crate::share::SHARE_INVITATIONS_DOCUMENT,
+                "{invalid",
+            )
+        })
+        .await
+        .unwrap();
+    let response = server.get("/api/shares/not-a-token/preview", "").await;
+    assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let created = server.send_json("POST", "/api/shares", &owner, serde_json::json!({"manifest": {"version":1,"bookId":book_id,"title":"not a matching book","senderDisplayName":"Owner","assets":[],"totalBytes":0}})).await;
+    assert_ne!(created.status, StatusCode::OK);
+    let stored = server
+        .state
+        .database
+        .call(|connection| read_document(connection, crate::share::SHARE_INVITATIONS_DOCUMENT))
+        .await
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("{invalid"));
+}
+
+#[tokio::test]
+async fn revocation_serializes_with_sender_registration() {
+    let server = TestServer::start(1).await;
+    let owner_token = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner_token).await;
+    assert_eq!(
+        server
+            .upload_ebook(
+                &book_id,
+                &owner_token,
+                "book.epub",
+                alignment::build_test_epub()
+            )
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let library = server.state.library.read().await;
+    let book = library.book(&book_id).unwrap().clone();
+    let reading = book.reading_file.as_ref().unwrap();
+    let size = std::fs::metadata(library.reading_paths.get(&reading.id).unwrap())
+        .unwrap()
+        .len();
+    let selected_bytes = std::fs::read(library.reading_paths.get(&reading.id).unwrap()).unwrap();
+    drop(library);
+    let response = server.send_json("POST", "/api/shares", &owner_token, serde_json::json!({"manifest":{"version":1,"bookId":book_id,"title":book.title,"senderDisplayName":"Owner","assets":[{"id":reading.id,"kind":"ebook","fileName":"book.epub","sizeBytes":size,"sha256":"a".repeat(64)}],"totalBytes":size}})).await;
+    assert_eq!(response.status, StatusCode::OK);
+    let token = response.json()["token"].as_str().unwrap().to_string();
+    let auth = {
+        let users = server.state.users.read().await;
+        AuthUser::from(&users.users[0])
+    };
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let preview = Arc::new(std::sync::Mutex::new(None));
+    let revocations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let app = Router::new().route(
+        "/{*path}",
+        post({
+            let entered = entered.clone();
+            let release = release.clone();
+            let preview = preview.clone();
+            let revocations = revocations.clone();
+            move |Path(path): Path<String>, Json(body): Json<serde_json::Value>| {
+                let entered = entered.clone();
+                let release = release.clone();
+                let preview = preview.clone();
+                let revocations = revocations.clone();
+                async move {
+                    if path == "issue" && body["role"] == "recipient" {
+                        entered.notify_one();
+                        release.notified().await;
+                        return (
+                            StatusCode::OK,
+                            Json(serde_json::json!({"payload":"test","signature":"test"})),
+                        );
+                    }
+                    if path == "issue" {
+                        return (
+                            StatusCode::OK,
+                            Json(serde_json::json!({"payload":"test","signature":"test"})),
+                        );
+                    }
+                    if path.starts_with("preview-put/") {
+                        *preview.lock().unwrap() = Some(body);
+                    }
+                    if path.starts_with("cleanup/")
+                        && revocations.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+                    {
+                        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({})));
+                    }
+                    (StatusCode::OK, Json(serde_json::json!([])))
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let broker_server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let broker = crate::share_broker::BrokerClient::local(&format!("http://{address}/")).unwrap();
+    let state = server.state.clone();
+    let sender_auth = auth.clone();
+    let sender_token = token.clone();
+    let sender_broker = broker.clone();
+    let start = tokio::spawn(async move {
+        crate::share::start_invitation_sender(
+            true,
+            &state,
+            &sender_auth,
+            &sender_token,
+            &sender_broker,
+            "owner",
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .unwrap();
+    let state = server.state.clone();
+    let revoke_auth = auth.clone();
+    let revoke_token = token.clone();
+    let revoke = tokio::spawn(async move {
+        crate::share::revoke_share(State(state), Extension(revoke_auth), Path(revoke_token)).await
+    });
+    tokio::task::yield_now().await;
+    assert!(!revoke.is_finished());
+    release.notify_one();
+    let session = start.await.unwrap().unwrap();
+    {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use ed25519_dalek::Verifier;
+        use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+        let url = reqwest::Url::parse(&session.gift_url).unwrap();
+        assert!(url.query().is_none());
+        let query = reqwest::Url::parse(&format!(
+            "https://example.test/?{}",
+            url.fragment().unwrap()
+        ))
+        .unwrap();
+        let fields: std::collections::HashMap<_, _> = query.query_pairs().into_owned().collect();
+        let key = URL_SAFE_NO_PAD.decode(&fields["key"]).unwrap();
+        let public: [u8; 32] = URL_SAFE_NO_PAD
+            .decode(&fields["signing"])
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let stored = preview.lock().unwrap().clone().unwrap();
+        assert!(!stored.to_string().contains("Owner"));
+        let nonce: [u8; 12] = URL_SAFE_NO_PAD
+            .decode(stored["nonce"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let mut ciphertext = URL_SAFE_NO_PAD
+            .decode(stored["ciphertext"].as_str().unwrap())
+            .unwrap();
+        let plaintext = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &key).unwrap())
+            .open_in_place(
+                Nonce::assume_unique_for_key(nonce),
+                Aad::from(b"operalibre-gift-preview-v1".as_slice()),
+                &mut ciphertext,
+            )
+            .unwrap();
+        let signed: serde_json::Value = serde_json::from_slice(plaintext).unwrap();
+        let payload = URL_SAFE_NO_PAD
+            .decode(signed["payload"].as_str().unwrap())
+            .unwrap();
+        let signature = ed25519_dalek::Signature::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(signed["signature"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        ed25519_dalek::VerifyingKey::from_bytes(&public)
+            .unwrap()
+            .verify(&payload, &signature)
+            .unwrap();
+        let decoded: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(decoded["sender"], "Owner");
+        assert_eq!(decoded["assets"].as_array().unwrap().len(), 1);
+        assert_eq!(decoded["assets"][0]["name"], "book.epub");
+        assert_ne!(decoded["assets"][0]["sha256"], "a".repeat(64));
+        use sha2::Digest;
+        let actual: String = sha2::Sha256::digest(&selected_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(decoded["assets"][0]["sha256"], actual);
+    }
+    assert!(
+        matches!(revoke.await.unwrap(), Err(error) if error.status == StatusCode::SERVICE_UNAVAILABLE)
+    );
+    let saved = server
+        .state
+        .database
+        .call(|connection| {
+            Ok(read_document(connection, crate::share::SHARE_INVITATIONS_DOCUMENT)?.unwrap())
+        })
+        .await
+        .unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    let rooms = saved[0]["brokerRooms"].as_array().unwrap();
+    assert_eq!(rooms.len(), 1);
+    assert_eq!(rooms[0]["room"].as_str().unwrap().len(), 43);
+    assert_eq!(
+        rooms[0].as_object().unwrap().len(),
+        5,
+        "credentials must not be persisted"
+    );
+    // Simulate losing runtime state after the local revoke was persisted.
+    crate::share::forget_invitation_runtime_for_test(&server.state, &token).await;
+    let mut restarted = server.state.clone();
+    restarted.database = Database::open(&server.state.database_path).unwrap();
+    assert!(
+        matches!(crate::share::revoke_share(State(restarted.clone()), Extension(auth.clone()), Path(token.clone())).await, Err(error) if error.status == StatusCode::SERVICE_UNAVAILABLE)
+    );
+    let wrong_broker = crate::share_broker::BrokerClient::local("http://127.0.0.1:9/").unwrap();
+    let mut stranger = auth.clone();
+    stranger.id = "other-user".into();
+    assert!(
+        crate::share::retry_share_broker_revocation(
+            &restarted, &stranger, &token, &broker, "owner"
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        crate::share::retry_share_broker_revocation(
+            &restarted,
+            &auth,
+            &token,
+            &wrong_broker,
+            "owner"
+        )
+        .await
+        .is_err()
+    );
+    let retried = crate::share::retry_revocations_for_owner(&restarted, &broker, "owner")
+        .await
+        .unwrap();
+    assert_eq!((retried.completed, retried.pending), (1, 0));
+    assert_eq!(revocations.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), session.wait())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    let after =
+        crate::share::start_invitation_sender(true, &server.state, &auth, &token, &broker, "owner")
+            .await;
+    assert!(matches!(after, Err(error) if error.status == StatusCode::NOT_FOUND));
+    broker_server.abort();
+}
+
+#[tokio::test]
+async fn failed_reserved_setup_is_cleaned_or_durably_retried() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    assert_eq!(
+        server
+            .upload_ebook(&book_id, &owner, "book.epub", alignment::build_test_epub())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let library = server.state.library.read().await;
+    let book = library.book(&book_id).unwrap().clone();
+    let reading = book.reading_file.as_ref().unwrap();
+    let size = std::fs::metadata(library.reading_paths.get(&reading.id).unwrap())
+        .unwrap()
+        .len();
+    drop(library);
+    let created = server.send_json("POST", "/api/shares", &owner, serde_json::json!({"manifest":{"version":1,"bookId":book_id,"title":book.title,"senderDisplayName":"Owner","assets":[{"id":reading.id,"kind":"ebook","fileName":"book.epub","sizeBytes":size,"sha256":"a".repeat(64)}],"totalBytes":size}})).await;
+    assert_eq!(created.status, StatusCode::OK);
+    let token = created.json()["token"].as_str().unwrap().to_string();
+    let auth = {
+        let users = server.state.users.read().await;
+        AuthUser::from(&users.users[0])
+    };
+    let fail_cleanup = Arc::new(AtomicBool::new(false));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = Router::new().route(
+        "/{*path}",
+        post({
+            let fail_cleanup = fail_cleanup.clone();
+            let calls = calls.clone();
+            move |Path(path): Path<String>,
+                  headers: HeaderMap,
+                  Json(body): Json<serde_json::Value>| {
+                let fail_cleanup = fail_cleanup.clone();
+                let calls = calls.clone();
+                async move {
+                    assert_eq!(
+                        headers.get(AUTHORIZATION).and_then(|h| h.to_str().ok()),
+                        Some("Bearer owner")
+                    );
+                    if path == "issue" {
+                        return StatusCode::SERVICE_UNAVAILABLE;
+                    }
+                    if path.starts_with("reserve/") || path.starts_with("cleanup/") {
+                        assert_eq!(body["reservationId"].as_str().unwrap().len(), 43);
+                    }
+                    if path.starts_with("cleanup/") {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        if fail_cleanup.load(Ordering::SeqCst) {
+                            return StatusCode::SERVICE_UNAVAILABLE;
+                        }
+                    }
+                    StatusCode::NO_CONTENT
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let broker = crate::share_broker::BrokerClient::local(&format!("http://{address}/")).unwrap();
+    assert!(
+        crate::share::start_invitation_sender(true, &server.state, &auth, &token, &broker, "owner")
+            .await
+            .is_err()
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let saved = server
+        .state
+        .database
+        .call(|db| Ok(read_document(db, crate::share::SHARE_INVITATIONS_DOCUMENT)?.unwrap()))
+        .await
+        .unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert!(saved[0]["brokerRooms"].as_array().unwrap().is_empty());
+    fail_cleanup.store(true, Ordering::SeqCst);
+    assert!(
+        crate::share::start_invitation_sender(true, &server.state, &auth, &token, &broker, "owner")
+            .await
+            .is_err()
+    );
+    let saved = server
+        .state
+        .database
+        .call(|db| Ok(read_document(db, crate::share::SHARE_INVITATIONS_DOCUMENT)?.unwrap()))
+        .await
+        .unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(saved[0]["brokerRooms"][0]["cleanupPending"], true);
+    fail_cleanup.store(false, Ordering::SeqCst);
+    let result = crate::share::retry_revocations_for_owner(&server.state, &broker, "owner")
+        .await
+        .unwrap();
+    assert_eq!((result.completed, result.pending), (1, 0));
+    // Permanently uncleanable legacy entries must not starve a later room.
+    let template = saved[0]["brokerRooms"][0].clone();
+    let mut rooms = Vec::new();
+    for index in 0..16 {
+        let mut legacy = template.clone();
+        legacy["room"] = format!("unreserved_{index:06}").into();
+        legacy["reservationVersion"] = 0.into();
+        rooms.push(legacy);
+    }
+    let mut later = template;
+    later["room"] = "recoverable_room_".into();
+    rooms.push(later);
+    let mut document = saved;
+    document[0]["brokerRooms"] = rooms.into();
+    let payload = serde_json::to_string(&document).unwrap();
+    server
+        .state
+        .database
+        .transaction(move |tx| {
+            write_document(tx, crate::share::SHARE_INVITATIONS_DOCUMENT, &payload)
+        })
+        .await
+        .unwrap();
+    let first = crate::share::retry_revocations_for_owner(&server.state, &broker, "owner")
+        .await
+        .unwrap();
+    assert_eq!((first.completed, first.pending), (0, 17));
+    let second = crate::share::retry_revocations_for_owner(&server.state, &broker, "owner")
+        .await
+        .unwrap();
+    assert_eq!((second.completed, second.pending), (1, 16));
+    task.abort();
+}
+
+#[tokio::test]
+async fn owner_can_cleanup_unrevoked_orphan_after_runtime_restart() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    assert_eq!(
+        server
+            .upload_ebook(&book_id, &owner, "book.epub", alignment::build_test_epub())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let library = server.state.library.read().await;
+    let book = library.book(&book_id).unwrap().clone();
+    let reading = book.reading_file.as_ref().unwrap();
+    let size = std::fs::metadata(library.reading_paths.get(&reading.id).unwrap())
+        .unwrap()
+        .len();
+    drop(library);
+    let created = server.send_json("POST", "/api/shares", &owner, serde_json::json!({"manifest":{"version":1,"bookId":book_id,"title":book.title,"senderDisplayName":"Owner","assets":[{"id":reading.id,"kind":"ebook","fileName":"book.epub","sizeBytes":size,"sha256":"a".repeat(64)}],"totalBytes":size}})).await;
+    let token = created.json()["token"].as_str().unwrap().to_string();
+    let auth = {
+        let users = server.state.users.read().await;
+        AuthUser::from(&users.users[0])
+    };
+    let app = Router::new().route(
+        "/{*path}",
+        post(|Path(path): Path<String>| async move {
+            if path.starts_with("session/") {
+                return (StatusCode::OK, Json(serde_json::json!({"generation": 0})));
+            }
+            if path == "issue" {
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({"payload":"test","signature":"test"})),
+                );
+            }
+            (StatusCode::OK, Json(serde_json::json!([])))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let broker = crate::share_broker::BrokerClient::local(&format!("http://{address}/")).unwrap();
+    let session =
+        crate::share::start_invitation_sender(true, &server.state, &auth, &token, &broker, "owner")
+            .await
+            .unwrap();
+    let active = crate::share::retry_revocations_for_owner(&server.state, &broker, "owner")
+        .await
+        .unwrap();
+    assert_eq!((active.completed, active.pending), (0, 0));
+    crate::share::forget_invitation_runtime_for_test(&server.state, &token).await;
+    let mut restarted = server.state.clone();
+    restarted.database = Database::open(&server.state.database_path).unwrap();
+    let orphan = crate::share::retry_revocations_for_owner(&restarted, &broker, "owner")
+        .await
+        .unwrap();
+    assert_eq!((orphan.completed, orphan.pending), (1, 0));
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), session.wait())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn invitation_archive_runs_through_experimental_service_and_peer() -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let server = TestServer::start(1).await;
+        let owner = server.setup_owner().await;
+        let (book_id, _) = server.first_book_and_track(&owner).await;
+        let upload = server.upload_ebook(&book_id, &owner, "book.epub", alignment::build_test_epub()).await;
+        assert_eq!(upload.status, StatusCode::OK);
+        let library = server.state.library.read().await;
+        let book = library.book(&book_id).unwrap().clone();
+        let reading = book.reading_file.as_ref().unwrap();
+        let size = std::fs::metadata(library.reading_paths.get(&reading.id).unwrap())?.len();
+        drop(library);
+        let created = server.send_json("POST", "/api/shares", &owner, serde_json::json!({"manifest": {
+            "version":1,"bookId":book_id,"title":book.title,"senderDisplayName":"Owner",
+            "assets":[{"id":reading.id,"kind":"ebook","fileName":"book.epub","sizeBytes":size,"sha256":"a".repeat(64)}],"totalBytes":size
+        }})).await;
+        assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+        let token = created.json()["token"].as_str().unwrap().to_string();
+        let download = server.get(&format!("/api/shares/{token}/download"), "").await;
+        assert_eq!(download.status, StatusCode::OK);
+        let archive = download.body;
+        let broker_app = Router::new().route("/{*path}", post(|Path(path): Path<String>| async move {
+            if path == "issue" { return (StatusCode::OK, Json(serde_json::json!({"payload":"producer","signature":"test"}))); }
+            (StatusCode::OK, Json(serde_json::json!({})))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let broker_task = tokio::spawn(async move { axum::serve(listener, broker_app).await });
+        let broker = crate::share_broker::BrokerClient::local(&format!("http://{address}/"))?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+        let session = crate::share_service::start(true, &broker, "owner", "room____________", "nonce___________", now + 60, move |_, _| async move {
+            let digest = Sha256::digest(&archive).into();
+            let mut staged = crate::share_transfer::Receiver::resume(tempfile::tempfile()?, 0, archive.len() as u64, digest)?;
+            crate::share_peer_tests::transfer_round(&archive, 0, archive.len(), &mut staged, false, false).await?;
+            let mut zip = zip::ZipArchive::new(staged.finish()?)?;
+            assert_eq!(zip.len(), 1);
+            assert!(zip.by_name("book.epub").is_ok());
+            assert!(zip.by_name("01 Track.wav").is_err());
+            Ok(())
+        }).await?;
+        session.wait().await?;
+        broker_task.abort();
+        Ok::<(), anyhow::Error>(())
+    }).await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn share_http_download_contains_only_selected_ebook_and_generated_metadata() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let upload = server
+        .upload_ebook(&book_id, &owner, "book.epub", alignment::build_test_epub())
+        .await;
+    assert_eq!(upload.status, StatusCode::OK, "{}", upload.text());
+    let library = server.state.library.read().await;
+    let book = library.book(&book_id).unwrap().clone();
+    let reading = book.reading_file.as_ref().unwrap();
+    let ebook_size = std::fs::metadata(library.reading_paths.get(&reading.id).unwrap())
+        .unwrap()
+        .len();
+    let metadata_size = canonical_share_metadata(&book).unwrap().len() as u64;
+    drop(library);
+    let created = server.send_json("POST", "/api/shares", &owner, serde_json::json!({
+        "manifest": {
+            "version": 1, "bookId": book_id, "title": book.title,
+            "senderDisplayName": "Owner", "personalMessage": "Enjoy",
+            "assets": [
+                {"id": reading.id, "kind": "ebook", "fileName": "book.epub", "sizeBytes": ebook_size, "sha256": "a".repeat(64)},
+                {"id": format!("metadata:{}", book.id), "kind": "metadata", "fileName": "metadata.json", "sizeBytes": metadata_size, "sha256": "b".repeat(64)}
+            ], "totalBytes": ebook_size + metadata_size
+        }
+    })).await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let token = created.json()["token"].as_str().unwrap().to_string();
+    let reader_token = server.add_reader(&owner, "unrelated-share-reader").await;
+    let reader_json = server.get("/api/auth/me", &reader_token).await.json();
+    let reader_id = reader_json["id"].as_str().unwrap();
+    let reader = {
+        let users = server.state.users.read().await;
+        AuthUser::from(
+            users
+                .users
+                .iter()
+                .find(|user| user.id == reader_id)
+                .unwrap(),
+        )
+    };
+    let broker = crate::share_broker::BrokerClient::local("http://127.0.0.1:9/").unwrap();
+    let unauthorized = crate::share::start_invitation_sender(
+        true,
+        &server.state,
+        &reader,
+        &token,
+        &broker,
+        "secret",
+    )
+    .await;
+    assert!(matches!(unauthorized, Err(error) if error.status == StatusCode::NOT_FOUND));
+    let preview = server
+        .get(&format!("/api/shares/{token}/preview"), "")
+        .await;
+    assert_eq!(preview.status, StatusCode::OK);
+    let download = server
+        .get(&format!("/api/shares/{token}/download"), "")
+        .await;
+    assert_eq!(download.status, StatusCode::OK, "{}", download.text());
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(download.body)).unwrap();
+    assert!(zip.by_name("book.epub").is_ok());
+    assert!(zip.by_name("metadata.json").is_ok());
+    assert!(zip.by_name("01 Track.wav").is_err());
+}
+
+#[tokio::test]
+async fn share_http_revoke_and_expiry_are_enforced() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    assert_eq!(
+        server
+            .upload_ebook(&book_id, &owner, "book.epub", alignment::build_test_epub())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let library = server.state.library.read().await;
+    let book = library.book(&book_id).unwrap().clone();
+    let reading = book.reading_file.as_ref().unwrap();
+    let size = std::fs::metadata(library.reading_paths.get(&reading.id).unwrap())
+        .unwrap()
+        .len();
+    drop(library);
+    let created = server.send_json("POST", "/api/shares", &owner, serde_json::json!({
+        "manifest": {"version": 1, "bookId": book_id, "title": book.title, "senderDisplayName": "Owner", "assets": [{"id": reading.id, "kind": "ebook", "fileName": "book.epub", "sizeBytes": size, "sha256": "a".repeat(64)}], "totalBytes": size}
+    })).await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let token = created.json()["token"].as_str().unwrap().to_string();
+    let expired_payload = server
+        .state
+        .database
+        .call(|connection| read_document(connection, SHARE_INVITATIONS_DOCUMENT))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut invitations: Vec<ShareInvitation> = serde_json::from_str(&expired_payload).unwrap();
+    invitations[0].expires_at = 0;
+    let expired_payload = serde_json::to_string(&invitations).unwrap();
+    server
+        .state
+        .database
+        .transaction(move |transaction| {
+            write_document(transaction, SHARE_INVITATIONS_DOCUMENT, &expired_payload)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        server
+            .get(&format!("/api/shares/{token}/preview"), "")
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // A fresh invitation exercises revocation independently of expiry.
+    let created = server.send_json("POST", "/api/shares", &owner, serde_json::json!({
+        "manifest": {"version": 1, "bookId": book.id, "title": book.title, "senderDisplayName": "Owner", "assets": [{"id": reading.id, "kind": "ebook", "fileName": "book.epub", "sizeBytes": size, "sha256": "a".repeat(64)}], "totalBytes": size}
+    })).await;
+    assert_eq!(created.status, StatusCode::OK);
+    let token = created.json()["token"].as_str().unwrap().to_string();
+    let reader = server.add_reader(&owner, "share-reader").await;
+    assert_eq!(
+        server
+            .send_json(
+                "DELETE",
+                &format!("/api/shares/{token}"),
+                &reader,
+                serde_json::json!({})
+            )
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        server
+            .send_json(
+                "DELETE",
+                &format!("/api/shares/{token}"),
+                &owner,
+                serde_json::json!({})
+            )
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        server
+            .get(&format!("/api/shares/{token}/preview"), "")
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+}
+
 impl TestResponse {
     fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).to_string()
@@ -1317,6 +2144,7 @@ async fn book_access_grants_are_enforced_on_every_book_route() {
         format!("/api/books/{denied}"),
         format!("/api/books/{denied}/cover"),
         format!("/api/books/{denied}/tracks/{denied_track}/stream"),
+        format!("/api/books/{denied}/tracks/{denied_track}/packet-stream?op=bootstrap"),
     ] {
         let response = server.get(&uri, &reader).await;
         assert!(
@@ -1474,6 +2302,104 @@ async fn an_audio_stream_is_never_compressed_even_when_the_client_accepts_it() {
     assert_eq!(response.header(header::CONTENT_ENCODING), "");
     assert_eq!(response.header(header::CONTENT_LENGTH), "100");
     assert_eq!(response.body, whole[100..200]);
+}
+
+#[tokio::test]
+async fn compact_audio_stream_ranges_use_the_compact_representation() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&token).await;
+    let original = compact_audio::tests::fixture(true, true);
+    let path = server.state.library_root.join("compact.m4b");
+    fs::write(&path, &original).await.unwrap();
+    server
+        .state
+        .library
+        .write()
+        .await
+        .track_paths
+        .insert(track.clone(), path);
+    let route = format!("/api/books/{book}/tracks/{track}/stream");
+    assert_eq!(server.get(&route, &token).await.body, original);
+    let compact = server.get(&format!("{route}?compact=1"), &token).await;
+    assert_eq!(compact.status, StatusCode::OK);
+    assert_eq!(compact.body.len(), original.len() - 8);
+    assert_eq!(compact.header(header::CACHE_CONTROL), "private");
+    assert_eq!(compact.header(header::CONTENT_TYPE), "audio/mp4");
+    assert!(compact.body.windows(4).any(|bytes| bytes == b"stz2"));
+    assert_eq!(&compact.body[compact.body.len() - 14..], b"abcdefghijklmn");
+    let length = compact.body.len();
+    for (range, start, end) in [
+        ("bytes=0-1".to_string(), 0, 1),
+        ("bytes=10-31".to_string(), 10, 31),
+        (
+            format!("bytes={}-{}", length - 22, length - 5),
+            length - 22,
+            length - 5,
+        ),
+        (format!("bytes={}-", length - 7), length - 7, length - 1),
+        ("bytes=-3".to_string(), length - 3, length - 1),
+    ] {
+        let response = server
+            .send(
+                Request::builder()
+                    .uri(format!("{route}?compact=1"))
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::RANGE, range)
+                    .header(header::ACCEPT_ENCODING, "gzip")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.header(header::CONTENT_RANGE),
+            format!("bytes {start}-{end}/{length}")
+        );
+        assert_eq!(
+            response.header(header::CONTENT_LENGTH),
+            (end - start + 1).to_string()
+        );
+        assert_eq!(response.header(header::CONTENT_ENCODING), "");
+        assert_eq!(response.body, compact.body[start..=end]);
+    }
+    let response = server
+        .send(
+            Request::builder()
+                .uri(format!("{route}?compact=1"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::RANGE, format!("bytes={length}-"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(
+        response.header(header::CONTENT_RANGE),
+        format!("bytes */{length}")
+    );
+    assert_eq!(
+        server.get(&format!("{route}?compact=0"), &token).await.body,
+        original
+    );
+    // WAV and malformed MP4 inputs keep the exact existing response bytes.
+    fs::write(
+        server
+            .state
+            .library
+            .read()
+            .await
+            .track_paths
+            .get(&track)
+            .unwrap(),
+        fixture_wav(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        server.get(&format!("{route}?compact=1"), &token).await.body,
+        fixture_wav()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2060,6 +2986,188 @@ async fn one_listeners_gain_does_not_follow_another_listener() {
             < 1e-9,
         "a gain set by one listener leaked to another"
     );
+}
+
+/// Seeds a measured analysis for a book's current audio, as the background
+/// pass would have stored it.
+async fn seed_quiet_analysis(server: &TestServer, book_id: &str) {
+    let fingerprint = server
+        .state
+        .library
+        .read()
+        .await
+        .book(book_id)
+        .unwrap()
+        .audio_fingerprint
+        .clone();
+    server
+        .state
+        .audio_analysis
+        .record(
+            book_id,
+            StoredAnalysis {
+                fingerprint,
+                analyzer_version: ANALYZER_VERSION,
+                measurements: Some(Measurements {
+                    integrated_lufs: -30.0,
+                    true_peak_dbtp: -20.0,
+                    track_spread_lu: Some(1.0),
+                    channel_balance_db: Some(0.0),
+                }),
+            },
+            60.0,
+        )
+        .await
+        .unwrap();
+}
+
+fn gain_of(book: &serde_json::Value) -> f64 {
+    book["volumeGain"].as_f64().unwrap()
+}
+
+#[tokio::test]
+async fn a_quiet_book_plays_at_its_suggested_gain_until_the_listener_says_otherwise() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "other-ear").await;
+    let (book, _) = server.first_book_and_track(&owner).await;
+    seed_quiet_analysis(&server, &book).await;
+    let suggested = 10f64.powf(12.0 / 20.0);
+
+    let view = server
+        .get(&format!("/api/books/{book}"), &owner)
+        .await
+        .json();
+    assert!((gain_of(&view) - suggested).abs() < 1e-9, "{view}");
+    assert_eq!(view["volumeGainSource"], "auto");
+    assert_eq!(view["autoVolume"], true);
+    assert_eq!(view["audioAnalysis"]["flags"], serde_json::json!(["quiet"]));
+    assert_eq!(view["audioAnalysis"]["integratedLufs"], -30.0);
+
+    // "Original" chosen by hand wins over the suggestion.
+    let manual = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/volume"),
+            &owner,
+            serde_json::json!({ "volumeGain": 1.0 }),
+        )
+        .await
+        .json();
+    assert_eq!(gain_of(&manual), 1.0);
+    assert_eq!(manual["volumeGainSource"], "manual");
+    let listed = server.get("/api/books", &owner).await.json();
+    assert_eq!(listed[0]["volumeGainSource"], "manual");
+
+    // Switching automatic back on clears the listener's own level.
+    let auto = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/auto-volume"),
+            &owner,
+            serde_json::json!({ "enabled": true }),
+        )
+        .await
+        .json();
+    assert!((gain_of(&auto) - suggested).abs() < 1e-9);
+    assert_eq!(auto["volumeGainSource"], "auto");
+
+    // The off switch plays the file's own level and survives a reload.
+    let off = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/auto-volume"),
+            &owner,
+            serde_json::json!({ "enabled": false }),
+        )
+        .await;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.text());
+    let listed = server.get("/api/books", &owner).await.json();
+    assert_eq!(gain_of(&listed[0]), 1.0);
+    assert_eq!(listed[0]["volumeGainSource"], "default");
+    assert_eq!(listed[0]["autoVolume"], false);
+    // The analysis is still reported, so the switch can be turned back on.
+    assert_eq!(
+        listed[0]["audioAnalysis"]["flags"],
+        serde_json::json!(["quiet"])
+    );
+
+    // A level set while the switch is off still applies, and keeps the switch off.
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/volume"),
+            &owner,
+            serde_json::json!({ "volumeGain": 2.0 }),
+        )
+        .await;
+    let view = server
+        .get(&format!("/api/books/{book}"), &owner)
+        .await
+        .json();
+    assert_eq!(gain_of(&view), 2.0);
+    assert_eq!(view["autoVolume"], false);
+
+    // None of this followed the owner to another listener.
+    let theirs = server
+        .get(&format!("/api/books/{book}"), &reader)
+        .await
+        .json();
+    assert!((gain_of(&theirs) - suggested).abs() < 1e-9);
+    assert_eq!(theirs["volumeGainSource"], "auto");
+}
+
+#[tokio::test]
+async fn an_analysis_of_audio_that_has_since_changed_is_not_applied() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&owner).await;
+    seed_quiet_analysis(&server, &book).await;
+    server
+        .state
+        .library
+        .write()
+        .await
+        .books
+        .iter_mut()
+        .find(|candidate| candidate.id == book)
+        .unwrap()
+        .audio_fingerprint = "replaced-audio".into();
+
+    let view = server
+        .get(&format!("/api/books/{book}"), &owner)
+        .await
+        .json();
+    assert_eq!(gain_of(&view), 1.0);
+    assert_eq!(view["volumeGainSource"], "default");
+    assert!(view.get("audioAnalysis").is_none(), "{view}");
+}
+
+/// Without ffmpeg there is no analysis: a scan and a pass both finish without
+/// errors, and every book plays at the level it always did.
+#[tokio::test]
+async fn without_ffmpeg_the_analysis_is_skipped_and_books_are_untouched() {
+    let server = TestServer::start(2).await;
+    let owner = server.setup_owner().await;
+    assert!(server.state.faststart_tools.is_none());
+    rescan_library(&server.state).await.unwrap();
+    run_pass(&server.state).await;
+
+    let stored: i64 = server
+        .state
+        .database
+        .call(|connection| {
+            connection.query_row("SELECT COUNT(*) FROM audio_analysis", [], |row| row.get(0))
+        })
+        .await
+        .unwrap();
+    assert_eq!(stored, 0);
+    let books = server.get("/api/books", &owner).await.json();
+    for book in books.as_array().unwrap() {
+        assert_eq!(gain_of(book), 1.0);
+        assert_eq!(book["volumeGainSource"], "default");
+        assert!(book.get("audioAnalysis").is_none());
+    }
 }
 
 #[tokio::test]
@@ -4928,6 +6036,144 @@ async fn paged_books_keep_progress_gains_and_sharing_and_ignore_inaccessible_cur
 }
 
 #[tokio::test]
+async fn path_runtime_owner_toggle_gates_jobs_schedules_and_sentence_following() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "path-reader").await;
+    let admin = server.add_reader(&owner, "path-admin").await;
+    let admin_user = server.get("/api/auth/me", &admin).await.json();
+    let role = server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{}/role", admin_user["id"].as_str().unwrap()),
+            &owner,
+            serde_json::json!({"isAdmin":true,"isOwner":false}),
+        )
+        .await;
+    assert_eq!(role.status, StatusCode::OK, "{}", role.text());
+    let (book_id, track_id) = server.first_book_and_track(&owner).await;
+    save_position(
+        &server,
+        &reader,
+        &book_id,
+        &track_id,
+        42.0,
+        serde_json::json!({}),
+    )
+    .await;
+    {
+        let mut library = server.state.library.write().await;
+        library.books[0].reading_file = Some(ReadingFile {
+            id: "epub".into(),
+            file_name: "book.epub".into(),
+            extension: "epub".into(),
+            content_type: "application/epub+zip".into(),
+            url: "/readalong".into(),
+        });
+    }
+    fs::create_dir_all(&server.state.sync_dir).await.unwrap();
+    let map = server.state.sync_dir.join(format!("{book_id}.sync.json"));
+    fs::write(&map, b"existing sentence timings").await.unwrap();
+    let before = server.get("/api/books", &reader).await.json();
+    let cli = server._root.path().join("echogarden");
+    fs::write(&cli, b"fixture").await.unwrap();
+    server.state.alignment_config = AlignmentConfig::Path(cli);
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    let status_uri = "/api/experimental-features/readalong-sync";
+    let toggle_uri = "/api/experimental-features/readalong-sync/enabled";
+    let schedule_uri = format!("/api/sync-schedules/{book_id}");
+    let schedule = serde_json::json!({"runAt": unix_now_millis() + 3_600_000});
+    for token in [&reader, &admin] {
+        assert_eq!(
+            server
+                .send_json(
+                    "PUT",
+                    toggle_uri,
+                    token,
+                    serde_json::json!({"enabled":false})
+                )
+                .await
+                .status,
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(server.get(status_uri, &owner).await.json()["enabled"], true);
+    assert_eq!(
+        server
+            .send_json("PUT", &schedule_uri, &owner, schedule.clone())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        server
+            .send_json(
+                "PUT",
+                toggle_uri,
+                &owner,
+                serde_json::json!({"enabled":false})
+            )
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let status = server.get(status_uri, &admin).await.json();
+    assert_eq!(status["enabled"], false);
+    assert_eq!(status["canToggle"], true);
+    assert_eq!(
+        server.get("/api/alignment/status", &reader).await.json(),
+        serde_json::json!({"enabled":false,"cliPath":null})
+    );
+    for (method, uri, body) in [
+        (
+            "POST",
+            format!("/api/books/{book_id}/sync/generate"),
+            serde_json::json!({}),
+        ),
+        ("PUT", schedule_uri.clone(), schedule.clone()),
+        ("POST", "/api/sync-sweep/run".into(), serde_json::json!({})),
+    ] {
+        let response = server.send_json(method, &uri, &owner, body).await;
+        assert_eq!(
+            response.status,
+            StatusCode::BAD_REQUEST,
+            "{uri}: {}",
+            response.text()
+        );
+    }
+    assert!(server.state.jobs.read().await.is_empty());
+    assert_eq!(
+        server.get("/api/sync-schedules", &owner).await.json()[0]["status"],
+        "scheduled"
+    );
+    assert_eq!(
+        server
+            .send_json(
+                "PUT",
+                toggle_uri,
+                &owner,
+                serde_json::json!({"enabled":true})
+            )
+            .await
+            .json()["enabled"],
+        true
+    );
+    assert_eq!(
+        server.get("/api/alignment/status", &reader).await.json()["enabled"],
+        true
+    );
+    assert_eq!(
+        server
+            .send_json("PUT", &schedule_uri, &owner, schedule)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(fs::read(map).await.unwrap(), b"existing sentence timings");
+    assert_eq!(server.get("/api/books", &reader).await.json(), before);
+}
+
+#[tokio::test]
 async fn readers_can_check_whether_sentence_following_is_enabled() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;
@@ -5249,7 +6495,7 @@ async fn sync_schedules_persist_replace_cancel_and_validate() {
     // never executed because all requests below target future times.
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     server.router = build_router(server.state.clone(), None, &[]).unwrap();
     let saved = server.send_json("PUT", &uri, &owner, request).await;
     assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
@@ -5344,7 +6590,7 @@ async fn due_sync_schedule_joins_existing_job_once_and_records_completion() {
     let (book_id, _) = server.first_book_and_track(&owner).await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     {
         let mut library = server.state.library.write().await;
         library.books[0].reading_file = Some(ReadingFile {
@@ -6013,6 +7259,34 @@ async fn sign_in_from(
     .await
 }
 
+/// An oversized password is only timed against the dummy hash. Its first
+/// characters must not sign in, even when they are the account's password.
+#[tokio::test]
+async fn an_oversized_password_is_refused_even_when_its_prefix_is_correct() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let password = "p".repeat(super::MAX_PASSWORD_CHARS);
+    let created = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({"username": "longpass", "password": password, "isAdmin": false}),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let address = std::net::IpAddr::from([127, 0, 0, 1]);
+
+    let error = sign_in_from(&server, address, "longpass", &format!("{password}x"))
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+    let (user, _) = sign_in_from(&server, address, "longpass", &password)
+        .await
+        .unwrap();
+    assert_eq!(user.username, "longpass");
+}
+
 /// A reader account with a generated password, for sign-in tests.
 async fn reader_with_generated_password(server: &TestServer, username: &str) -> String {
     let owner = server.setup_owner().await;
@@ -6344,7 +7618,7 @@ async fn sync_queue_restores_ids_order_and_results_and_retries_interrupted_books
     assert!(server.state.jobs.read().await[&first].resume_pending);
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     // Recovery revalidates inputs: neither a removed book nor a missing EPUB
     // disappears silently, and failures retain their original job IDs.
     crate::sync::resume_queue(&server.state).await;
@@ -6355,6 +7629,117 @@ async fn sync_queue_restores_ids_order_and_results_and_retries_interrupted_books
     crate::sync::restore_queue(&server.state).await.unwrap();
     assert_eq!(server.state.jobs.read().await[&first].status, "failed");
     assert!(!server.state.jobs.read().await[&first].resume_pending);
+}
+
+#[tokio::test]
+async fn recovery_retries_when_the_runtime_is_disabled_after_its_availability_check() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let cli = server._root.path().join("echogarden");
+    fs::write(&cli, b"fixture").await.unwrap();
+    server.state.alignment_config = AlignmentConfig::Path(cli);
+    {
+        let mut library = server.state.library.write().await;
+        library.books[0].reading_file = Some(ReadingFile {
+            id: "epub".into(),
+            file_name: "book.epub".into(),
+            extension: "epub".into(),
+            content_type: "application/epub+zip".into(),
+            url: "/readalong".into(),
+        });
+        library
+            .reading_paths
+            .insert("epub".into(), server._root.path().join("missing.epub"));
+    }
+    let (id, _) = create_queued_job(&server.state, "sync-generate", Some(book_id)).await;
+    let (paused, _) =
+        create_queued_job(&server.state, "sync-generate", Some("paused-book".into())).await;
+    let (invalid, _) =
+        create_queued_job(&server.state, "sync-generate", Some("removed-book".into())).await;
+    {
+        let mut jobs = server.state.jobs.write().await;
+        jobs.get_mut(&paused).unwrap().status = "paused".into();
+        jobs.get_mut(&paused).unwrap().pause_requested = true;
+    }
+    crate::sync::save_queue(&server.state, &*server.state.jobs.read().await)
+        .await
+        .unwrap();
+    server.state.jobs = Arc::default();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+
+    // Stop at recovery's availability/dispatch boundary, then complete the
+    // owner's disable before dispatch takes its lifecycle read lock.
+    let pending = server
+        .state
+        .jobs
+        .read()
+        .await
+        .values()
+        .filter(|job| job.resume_pending)
+        .cloned()
+        .collect();
+    assert!(
+        server
+            .state
+            .update_manager
+            .sync_addon_runtime(&server.state.alignment_config)
+            .await
+            .is_some()
+    );
+    server
+        .state
+        .update_manager
+        .set_sync_addon_enabled(false, &server.state.alignment_config)
+        .await
+        .unwrap();
+    crate::sync::resume_pending_jobs(&server.state, pending).await;
+    {
+        let jobs = server.state.jobs.read().await;
+        assert_eq!(jobs[&id].status, "queued");
+        assert!(jobs[&id].resume_pending);
+        assert!(jobs[&invalid].resume_pending);
+        assert_eq!(jobs[&paused].status, "paused");
+        assert!(!jobs[&paused].resume_pending);
+    }
+    server.state.jobs = Arc::default();
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    assert!(server.state.jobs.read().await[&id].resume_pending);
+    server
+        .state
+        .update_manager
+        .set_sync_addon_enabled(true, &server.state.alignment_config)
+        .await
+        .unwrap();
+    let slot = server
+        .state
+        .update_manager
+        .sync_slots
+        .acquire()
+        .await
+        .unwrap();
+    crate::sync::resume_queue(&server.state).await;
+    {
+        let jobs = server.state.jobs.read().await;
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(jobs[&id].status, "queued");
+        assert!(!jobs[&id].resume_pending);
+        assert_eq!(jobs[&invalid].status, "failed");
+        assert!(!jobs[&invalid].resume_pending);
+        assert_eq!(jobs[&paused].status, "paused");
+        assert!(!jobs[&paused].resume_pending);
+    }
+    let finished = server.state.update_manager.sync_queue_changed.notified();
+    tokio::pin!(finished);
+    finished.as_mut().enable();
+    drop(slot);
+    // Missing input files still produce a real failure once work resumes.
+    tokio::time::timeout(Duration::from_secs(5), finished)
+        .await
+        .unwrap();
+    let jobs = server.state.jobs.read().await;
+    assert_eq!(jobs[&id].status, "failed");
+    assert!(jobs[&id].running_at.is_some());
 }
 
 /// Puts `server` into an update trial with `token`, serving a web app too.
@@ -6574,7 +7959,7 @@ async fn accepted_sync_queue_is_durable_and_deduplicated_before_work_starts() {
     let (book_id, _) = server.first_book_and_track(&owner).await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     let _slot = server
         .state
         .update_manager
@@ -6613,7 +7998,7 @@ async fn nightly_sync_limits_batches_and_includes_outdated_maps() {
     let owner = server.setup_owner().await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     {
         let mut library = server.state.library.write().await;
         for book in &mut library.books {
@@ -6671,7 +8056,7 @@ async fn full_sync_accepts_a_durable_batch_or_none_when_storage_fails() {
     let owner = server.setup_owner().await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     server.router = build_router(server.state.clone(), None, &[]).unwrap();
     {
         let mut library = server.state.library.write().await;
@@ -6727,7 +8112,7 @@ async fn update_before_batch_dispatch_preserves_every_accepted_job() {
     let mut server = TestServer::start(3).await;
     let cli = server._root.path().join("sync-cli");
     fs::write(&cli, "fixture").await.unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     let book_ids = server
         .state
         .library
@@ -6778,7 +8163,7 @@ async fn recovered_sync_starts_work_once_under_its_original_id() {
     let (book_id, _) = server.first_book_and_track(&owner).await;
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     {
         let mut library = server.state.library.write().await;
         library.books[0].reading_file = Some(ReadingFile {
@@ -6978,6 +8363,102 @@ async fn cover_upload_persists_rescans_restarts_metadata_edits_and_restores_orig
     assert_eq!(server.get(&url, &owner).await.status, StatusCode::NOT_FOUND);
     rescan_library(&server.state).await.unwrap();
     assert!(server.get(&format!("/api/books/{id}"), &owner).await.json()["coverArtUrl"].is_null());
+}
+
+/// Reopening the app must show covers from the device's cache without waiting
+/// on the server. A URL under the current revision may be kept; anything else
+/// is revalidated, so a replaced cover never sticks.
+#[tokio::test]
+async fn only_current_cover_revisions_are_cacheable_without_revalidation() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (id, _) = server.first_book_and_track(&owner).await;
+    let upload = server
+        .upload_cover(&id, &owner, "first.png", &cover_fixture([10, 20, 30]))
+        .await;
+    assert_eq!(upload.status, StatusCode::OK, "{}", upload.text());
+    let url = upload.json()["coverArtUrl"].as_str().unwrap().to_string();
+    let immutable = VERSIONED_COVER_CACHE_CONTROL;
+
+    let versioned = server.get(&url, &owner).await;
+    assert_eq!(versioned.status, StatusCode::OK);
+    assert_eq!(versioned.header(header::CACHE_CONTROL), immutable);
+    // The media token rides beside the revision on app image requests.
+    let with_token = server.get(&format!("{url}&token=ignored"), &owner).await;
+    assert_eq!(with_token.header(header::CACHE_CONTROL), immutable);
+    let revalidated = server
+        .send(
+            Request::builder()
+                .uri(&url)
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::IF_NONE_MATCH, versioned.header(header::ETAG))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(revalidated.status, StatusCode::NOT_MODIFIED);
+    assert_eq!(revalidated.header(header::CACHE_CONTROL), immutable);
+
+    let display_url = format!("{url}&size=display");
+    let display = server.get(&display_url, &owner).await;
+    assert_eq!(display.status, StatusCode::OK);
+    assert_eq!(display.header(header::CONTENT_TYPE), "image/jpeg");
+    assert_eq!(display.header(header::CACHE_CONTROL), immutable);
+    assert_ne!(display.header(header::ETAG), versioned.header(header::ETAG));
+    assert!(image::load_from_memory(&display.body).is_ok());
+    let display_revalidated = server
+        .send(
+            Request::builder()
+                .uri(&display_url)
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::IF_NONE_MATCH, display.header(header::ETAG))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(display_revalidated.status, StatusCode::NOT_MODIFIED);
+    assert_eq!(server.get(&url, &owner).await.body, versioned.body);
+
+    let unversioned = format!("/api/books/{id}/cover");
+    for path in [
+        unversioned.clone(),
+        format!("{unversioned}?v="),
+        format!("{unversioned}?v=other"),
+        format!("{unversioned}?token=x"),
+    ] {
+        let response = server.get(&path, &owner).await;
+        assert_eq!(response.status, StatusCode::OK, "{path}");
+        assert_eq!(
+            response.header(header::CACHE_CONTROL),
+            COVER_CACHE_CONTROL,
+            "{path}"
+        );
+    }
+
+    let replacement = server
+        .upload_cover(&id, &owner, "next.png", &cover_fixture([0, 200, 30]))
+        .await;
+    assert_eq!(replacement.status, StatusCode::OK);
+    let stale = server.get(&url, &owner).await;
+    assert_eq!(stale.status, StatusCode::OK);
+    assert_eq!(stale.header(header::CACHE_CONTROL), COVER_CACHE_CONTROL);
+    let current = replacement.json()["coverArtUrl"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let replaced_display = server.get(&format!("{current}&size=display"), &owner).await;
+    assert_eq!(replaced_display.status, StatusCode::OK);
+    assert_ne!(
+        replaced_display.header(header::ETAG),
+        display.header(header::ETAG)
+    );
+    assert_eq!(
+        server
+            .get(&current, &owner)
+            .await
+            .header(header::CACHE_CONTROL),
+        immutable
+    );
 }
 
 #[tokio::test]
@@ -7568,7 +9049,7 @@ exec sleep 60
     fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
         .await
         .unwrap();
-    server.state.alignment_config.cli_path = Some(cli.clone());
+    server.state.alignment_config = AlignmentConfig::Manual(cli.clone());
     let Json(created) = crate::sync::enqueue_sync_map(server.state.clone(), book_id)
         .await
         .unwrap();
@@ -7670,7 +9151,7 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
     fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
         .await
         .unwrap();
-    server.state.alignment_config.cli_path = Some(cli.clone());
+    server.state.alignment_config = AlignmentConfig::Manual(cli.clone());
     let Json(created) = crate::sync::enqueue_sync_map(server.state.clone(), book_id.clone())
         .await
         .unwrap();
@@ -8283,7 +9764,7 @@ async fn chapter_reruns_need_a_current_generated_map_and_survive_restarts() {
     }
     let cli = server._root.path().join("sync-cli");
     std::fs::write(&cli, "fixture").unwrap();
-    server.state.alignment_config.cli_path = Some(cli);
+    server.state.alignment_config = AlignmentConfig::Manual(cli);
     server.router = build_router(server.state.clone(), None, &[]).unwrap();
     // Keep accepted jobs queued rather than running the fixture.
     let _slot = server
@@ -8597,7 +10078,7 @@ async fn scopes_decide_which_tools_an_agent_has() {
 
     let everything =
         create_agent(&server, &owner, &["library", "progress", "history", "text"]).await;
-    assert_eq!(tool_names(&server, &everything).await.len(), 9);
+    assert_eq!(tool_names(&server, &everything).await.len(), 10);
 
     // Getting books is its own grant, and the one tool that acts says so.
     let shopper = create_agent(&server, &owner, &["getBooks"]).await;
@@ -9514,4 +10995,102 @@ async fn a_burst_of_six_legitimate_logins_can_wait_for_password_workers() {
             .expect("a bounded legitimate burst can wait");
         assert!(!token.is_empty());
     }
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn packet_audio_stream_is_bounded_private_and_pins_the_source() {
+    use std::io::Read;
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&owner).await;
+    let original = packet_audio::tests::fixture();
+    let path = server.state.library_root.join("packet.m4b");
+    fs::write(&path, &original).await.unwrap();
+    server
+        .state
+        .library
+        .write()
+        .await
+        .track_paths
+        .insert(track.clone(), path.clone());
+    let media = media_token_for_session(&owner);
+    fn decoded(response: &TestResponse) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        flate2::read::GzDecoder::new(response.body.as_slice())
+            .read_to_end(&mut bytes)
+            .unwrap();
+        bytes
+    }
+    let route = format!("/api/books/{book}/tracks/{track}/packet-stream");
+    let get = |uri: String| Request::builder().uri(uri).body(Body::empty()).unwrap();
+    assert_eq!(
+        server
+            .send(get(format!("{route}?op=bootstrap")))
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    let mut revision = String::new();
+    let mut expected = Vec::new();
+    for prefix in ["/api", "/abs/api"] {
+        let response = server
+            .send(get(format!(
+                "{prefix}/books/{book}/tracks/{track}/packet-stream?op=bootstrap&token={media}"
+            )))
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+        assert_eq!(response.header(header::CACHE_CONTROL), "private, no-store");
+        assert_eq!(response.header(header::CONTENT_ENCODING), "gzip");
+        let json: serde_json::Value = serde_json::from_slice(&decoded(&response)).unwrap();
+        revision = json["revision"].as_str().unwrap().into();
+        expected = general_purpose::STANDARD
+            .decode(json["data"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(json["length"].as_u64().unwrap(), expected.len() as u64);
+    }
+    let range = format!("{route}?op=range&offset=3&count=20&revision={revision}&token={media}");
+    let response = server.send(get(range.clone())).await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(decoded(&response), expected[3..23]);
+    for suffix in [
+        "count=65537&offset=0",
+        "count=1&offset=18446744073709551615",
+        "count=0&offset=0",
+    ] {
+        let response = server
+            .send(get(format!(
+                "{route}?op=range&{suffix}&revision={revision}&token={media}"
+            )))
+            .await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(
+        server
+            .send(get(format!(
+                "{route}?op=range&offset=0&count=1&revision=old&token={media}"
+            )))
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
+    let mut replaced = original.clone();
+    *replaced.last_mut().unwrap() = b'X';
+    fs::write(&path, &replaced).await.unwrap();
+    assert_eq!(server.send(get(range)).await.status, StatusCode::CONFLICT);
+    assert_eq!(
+        server
+            .get(&format!("/api/books/{book}/tracks/{track}/stream"), &owner)
+            .await
+            .body,
+        replaced
+    );
+    fs::write(&path, b"not an MP4").await.unwrap();
+    assert_eq!(
+        server
+            .send(get(format!("{route}?op=bootstrap&token={media}")))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
 }
