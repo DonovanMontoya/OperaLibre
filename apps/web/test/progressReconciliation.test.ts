@@ -1769,6 +1769,24 @@ for (const settled of [false, true]) {
   });
 }
 
+for (const popOut of [false, true]) {
+  test(`a hidden tab ${popOut ? "adopts" : "leaves"} another device's newer position ${popOut ? "while the pop-out player is on screen" : "with no pop-out"}`, async () => {
+    const f = fixture();
+    f.options.restoredProgressBookId.current = "book";
+    f.write(reliability.syncedProgress(f.server));
+    const elsewhere = { ...f.server, positionSeconds: 2400, bookPositionSeconds: 2400,
+      updatedAt: String(Number(f.server.updatedAt) + 60_000) };
+    Object.assign(f.dependencies["./api"], { getProgress: async () => elsewhere });
+    f.options.setPendingSeek = (seek: any) => { f.seeks.push(seek); f.options.pendingSeekRef.current = seek; };
+    if (popOut) f.options.playerOnScreen = () => true;
+    Object.assign(globalThis, { document: { visibilityState: "hidden" } });
+    const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+    await sync.foregroundProgressActionsRef.current.adoptNewerServerProgress();
+    if (popOut) assert.equal(f.options.pendingSeekRef.current?.positionSeconds, 2400);
+    else assert.equal(f.seeks.length, 0);
+  });
+}
+
 test("clip previews leave the durable checkpoint and progress queue untouched", async () => {
   const f = fixture();
   f.write(f.local);

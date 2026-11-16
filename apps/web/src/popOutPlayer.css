@@ -1,0 +1,405 @@
+/* The pop-out window carries the tab's stylesheets, so its document undoes
+   the page rules that assume a full-size app. */
+html.popout-document,
+html.popout-document body {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+}
+
+html.popout-document body {
+  background: var(--spine-deep);
+  background-image: none;
+  color: var(--on-spine);
+}
+
+/* The mount is the size container so the player itself can change layout. */
+.popout-mount {
+  height: 100%;
+  container-type: size;
+}
+
+.popout-player {
+  --popout-pad: 20px;
+  --popout-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --popout-text-2: rgba(var(--on-spine-rgb), 0.64);
+  --popout-text-3: rgba(var(--on-spine-rgb), 0.42);
+  --popout-line: rgba(var(--spine-gold-rgb), 0.2);
+  position: relative;
+  box-sizing: border-box;
+  height: 100%;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 16px;
+  padding: var(--popout-pad) var(--popout-pad) calc(var(--popout-pad) + 4px);
+  background: linear-gradient(180deg, var(--spine-top), var(--spine-deep));
+  font-family: "Fraunces", "Times New Roman", serif;
+  color: var(--on-spine);
+}
+
+/* The cover is the one object in the window. It keeps its own proportions
+   and is sized by whichever side of the window runs out first. */
+.popout-cover {
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.popout-player .popout-cover .large-cover {
+  width: auto;
+  height: min(100%, calc((100cqw - 2 * var(--popout-pad)) / var(--cover-art-ratio, 0.6667)));
+  aspect-ratio: var(--cover-art-ratio, 2 / 3);
+  box-shadow:
+    0 16px 32px -12px rgba(0, 0, 0, 0.7),
+    0 2px 6px -2px rgba(0, 0, 0, 0.5);
+}
+
+.popout-player .popout-cover .large-cover:not(.cover-art-frame) {
+  box-shadow:
+    inset 6px 0 0 rgba(0, 0, 0, 0.3),
+    inset 8px 0 0 rgba(184, 137, 58, 0.4),
+    inset 10px 0 0 rgba(0, 0, 0, 0.3),
+    0 16px 32px -12px rgba(0, 0, 0, 0.7);
+}
+
+.popout-body {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.popout-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.popout-copy h1 {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 400;
+  line-height: 1.25;
+  color: var(--on-spine);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.popout-copy p {
+  margin: 0;
+  font-family: "Instrument Serif", serif;
+  font-size: 1rem;
+  line-height: 1.25;
+  color: var(--spine-gold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.popout-timeline {
+  display: grid;
+  gap: 2px;
+}
+
+.popout-player input[type="range"] {
+  height: 16px;
+  margin: 0;
+}
+
+.popout-player input[type="range"]::-webkit-slider-runnable-track {
+  background:
+    linear-gradient(var(--gold-soft), var(--gold-soft)) left center / var(--scrub-progress, 0%) 2px no-repeat,
+    linear-gradient(rgba(var(--on-spine-rgb), 0.2), rgba(var(--on-spine-rgb), 0.2)) left center / 100% 2px no-repeat;
+}
+
+.popout-player input[type="range"]::-moz-range-track {
+  background:
+    linear-gradient(var(--gold-soft), var(--gold-soft)) left center / var(--scrub-progress, 0%) 2px no-repeat,
+    linear-gradient(rgba(var(--on-spine-rgb), 0.2), rgba(var(--on-spine-rgb), 0.2)) left center / 100% 2px no-repeat;
+}
+
+.popout-player input[type="range"]::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  background: var(--gold-soft);
+  box-shadow: 0 0 0 3px var(--spine);
+}
+
+.popout-player input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: var(--gold-soft);
+  border: 3px solid var(--spine);
+  box-shadow: none;
+}
+
+.popout-player input[type="range"]:focus-visible {
+  outline: 2px solid rgba(var(--spine-gold-rgb), 0.6);
+  outline-offset: 2px;
+}
+
+.popout-times {
+  display: flex;
+  justify-content: space-between;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--popout-text-3);
+}
+
+.popout-transport {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.popout-player button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--spine-gold);
+  transition: color 0.16s var(--popout-ease), background-color 0.16s var(--popout-ease),
+    border-color 0.16s var(--popout-ease), transform 0.12s var(--popout-ease);
+}
+
+.popout-player button:focus-visible {
+  outline: 2px solid rgba(var(--spine-gold-rgb), 0.6);
+  outline-offset: 2px;
+}
+
+.popout-player button:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.popout-player button:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.popout-chapter {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
+
+.popout-chapter:hover:not(:disabled) {
+  color: var(--on-spine);
+}
+
+.popout-seek {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--popout-line);
+  border-radius: 50%;
+}
+
+.popout-seek small {
+  position: absolute;
+  padding-top: 1px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.5rem;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.popout-seek:hover {
+  color: var(--on-spine);
+  background-color: rgba(var(--spine-gold-rgb), 0.1);
+}
+
+.popout-play {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+}
+
+.popout-player .popout-play {
+  color: var(--spine);
+  background-color: var(--gold-soft);
+}
+
+.popout-player .popout-play:hover {
+  color: var(--spine);
+  background-color: var(--on-spine);
+}
+
+.popout-play .play-pending-ring {
+  inset: -5px;
+  border-top-color: var(--gold-soft);
+  border-right-color: var(--gold-soft);
+}
+
+.popout-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8px;
+  border-top: 1px solid var(--popout-line);
+}
+
+.popout-speed,
+.popout-return {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.popout-speed {
+  min-width: 52px;
+  margin-left: -8px;
+  justify-content: flex-start;
+}
+
+.popout-return {
+  gap: 8px;
+  margin-right: -8px;
+}
+
+.popout-player .popout-return {
+  color: var(--popout-text-2);
+}
+
+.popout-speed:hover,
+.popout-player .popout-return:hover {
+  color: var(--on-spine);
+  background-color: rgba(var(--spine-gold-rgb), 0.1);
+}
+
+/* The book along the window's bottom edge, notched at each chapter. */
+.popout-foil {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  overflow: hidden;
+  background: rgba(var(--spine-gold-rgb), 0.16);
+}
+
+.popout-foil-fill {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, var(--gold-soft), var(--gold));
+  transform: scaleX(var(--book-share, 0));
+  transform-origin: left center;
+}
+
+.popout-foil-notch {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--spine-deep);
+}
+
+/* Wider than tall: cover beside the controls. */
+@container (min-aspect-ratio: 5 / 4) and (min-height: 220px) {
+  .popout-player {
+    grid-template-rows: none;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 20px;
+    align-items: center;
+  }
+
+  .popout-cover {
+    height: 100%;
+  }
+
+  .popout-player .popout-cover .large-cover {
+    height: min(100%, calc(45cqw / var(--cover-art-ratio, 0.6667)));
+  }
+}
+
+/* Short: one strip, cover at the left and the controls in two rows. */
+@container (max-height: 219px) {
+  .popout-player {
+    --popout-pad: 12px;
+    grid-template-rows: none;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 12px;
+    align-items: center;
+  }
+
+  .popout-cover {
+    height: 100%;
+  }
+
+  .popout-player .popout-cover .large-cover {
+    height: min(100%, calc(30cqw / var(--cover-art-ratio, 0.6667)));
+  }
+
+  .popout-body {
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 12px;
+    row-gap: 8px;
+    align-items: center;
+  }
+
+  .popout-copy,
+  .popout-timeline {
+    grid-column: 1 / -1;
+  }
+
+  .popout-copy h1 {
+    font-size: 1rem;
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+  }
+
+  .popout-copy p {
+    font-size: 0.9375rem;
+  }
+
+  .popout-transport {
+    justify-content: flex-start;
+    gap: 8px;
+  }
+
+  .popout-play {
+    width: 40px;
+    height: 40px;
+  }
+
+  .popout-seek {
+    width: 32px;
+    height: 32px;
+  }
+
+  .popout-footer {
+    padding-top: 0;
+    border-top: 0;
+    gap: 4px;
+  }
+
+  .popout-speed {
+    margin-left: 0;
+  }
+
+  .popout-return span {
+    display: none;
+  }
+}
+
+@container (max-height: 139px) {
+  .popout-times,
+  .popout-copy p {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .popout-player button {
+    transition: none;
+  }
+}
