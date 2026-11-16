@@ -2306,6 +2306,205 @@ const WINDOW_TEXT_LOOKAHEAD: f64 = 1.8;
 /// a new text cursor. Overlap keeps a sentence at a scan boundary recoverable.
 const RECOVERY_SCAN_SECONDS: f64 = 60.0;
 const RECOVERY_OVERLAP_SECONDS: f64 = 15.0;
+/// OpenAI recognition of a windowed scope is requested ahead of the window
+/// loop, in pieces of about this length. A window's start depends on where
+/// the previous one anchored, so windows cannot be sent ahead themselves;
+/// fixed pieces can, and each window takes its words from them.
+const PREFETCH_PIECE_SECONDS: f64 = 240.0;
+/// Extra audio sent on each side of a piece, so words near its edges are
+/// heard in context. Only words centred inside the piece are kept.
+const PREFETCH_OVERLAP_SECONDS: f64 = 15.0;
+/// Pieces requested beyond the one a window needs. Bounds the audio billed
+/// for nothing when a job is paused, cancelled, or fails.
+const PREFETCH_AHEAD: usize = 3;
+
+/// OpenAI word timings for one windowed scope, fetched a few pieces ahead of
+/// the window being aligned so that waiting on OpenAI overlaps alignment.
+struct CloudPrefetch {
+    state: AppState,
+    cloud: Arc<cloud_recognition::CloudRecognizer>,
+    language: Option<String>,
+    ffmpeg: PathBuf,
+    source: PathBuf,
+    temp_dir: PathBuf,
+    scope_number: usize,
+    /// Track seconds each piece supplies words for.
+    cores: Vec<(f64, f64)>,
+    scope_range: (f64, f64),
+    pieces: Vec<PrefetchPiece>,
+}
+
+/// Where a window's audio is, for re-checking uncertain recognition: a file
+/// cut to the window, or a stretch of the track starting at `start`.
+#[derive(Clone, Copy)]
+enum WindowAudio<'a> {
+    Sliced(&'a FsPath),
+    Track { path: &'a FsPath, start: f64 },
+}
+
+enum PrefetchPiece {
+    Pending(tokio::task::JoinHandle<anyhow::Result<Vec<alignment::RecognizedWord>>>),
+    /// Word timings in track seconds.
+    Ready(Vec<alignment::RecognizedWord>),
+    /// Passed over before any window needed it.
+    Skipped,
+}
+
+impl CloudPrefetch {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        state: &AppState,
+        cloud: Arc<cloud_recognition::CloudRecognizer>,
+        language: Option<String>,
+        ffmpeg: &FsPath,
+        source: &FsPath,
+        temp_dir: &FsPath,
+        scope_number: usize,
+        scope_start: f64,
+        scope_end: f64,
+    ) -> Self {
+        let length = (scope_end - scope_start).max(0.0);
+        let count = (length / PREFETCH_PIECE_SECONDS).ceil().max(1.0) as usize;
+        let piece = length / count as f64;
+        let cores = (0..count)
+            .map(|index| {
+                let start = scope_start + piece * index as f64;
+                let end = if index + 1 == count {
+                    scope_end
+                } else {
+                    start + piece
+                };
+                (start, end)
+            })
+            .collect();
+        Self {
+            state: state.clone(),
+            cloud,
+            language,
+            ffmpeg: ffmpeg.to_path_buf(),
+            source: source.to_path_buf(),
+            temp_dir: temp_dir.to_path_buf(),
+            scope_number,
+            cores,
+            scope_range: (scope_start, scope_end),
+            pieces: Vec::new(),
+        }
+    }
+
+    fn piece_at(&self, seconds: f64) -> usize {
+        self.cores
+            .iter()
+            .position(|&(_, end)| seconds < end)
+            .unwrap_or(self.cores.len() - 1)
+    }
+
+    /// Requests the pieces from `first` through `last`. Earlier pieces are
+    /// no longer needed: a recovery scan can pass over several, which are
+    /// then never sent.
+    fn request(&mut self, first: usize, last: usize) {
+        for piece in self.pieces.iter_mut().take(first) {
+            if let PrefetchPiece::Pending(task) = piece {
+                task.abort();
+            }
+            *piece = PrefetchPiece::Skipped;
+        }
+        for index in first..=last.min(self.cores.len() - 1) {
+            while self.pieces.len() <= index {
+                self.pieces.push(PrefetchPiece::Skipped);
+            }
+            if matches!(self.pieces[index], PrefetchPiece::Skipped) {
+                self.pieces[index] = self.spawn(index);
+            }
+        }
+    }
+
+    fn spawn(&self, index: usize) -> PrefetchPiece {
+        let (core_start, core_end) = self.cores[index];
+        let start = (core_start - PREFETCH_OVERLAP_SECONDS).max(self.scope_range.0);
+        let end = (core_end + PREFETCH_OVERLAP_SECONDS).min(self.scope_range.1);
+        let state = self.state.clone();
+        let cloud = self.cloud.clone();
+        let language = self.language.clone();
+        let ffmpeg = self.ffmpeg.clone();
+        let source = self.source.clone();
+        let audio = self
+            .temp_dir
+            .join(format!("audio-{}-{index}-prefetch.wav", self.scope_number));
+        let last_piece = index + 1 == self.cores.len();
+        PrefetchPiece::Pending(tokio::spawn(async move {
+            extract_alignment_audio(&ffmpeg, &source, &audio, start, end).await?;
+            // Turning OpenAI off stops audio leaving at the next piece,
+            // including pieces cut while it was being turned off.
+            if !cloud_recognition::still_enabled(&state).await {
+                let _ = fs::remove_file(&audio).await;
+                anyhow::bail!(
+                    "OpenAI transcription was turned off while this book was syncing. Sync it again to use on-device recognition."
+                );
+            }
+            let entries = cloud.transcribe(&audio, language.as_deref()).await;
+            let _ = fs::remove_file(&audio).await;
+            let mut words = alignment::recognized_words(&entries?);
+            words.retain(|word| {
+                let middle = start + (word.start_time + word.end_time) / 2.0;
+                middle >= core_start && (middle < core_end || last_piece)
+            });
+            for word in &mut words {
+                word.start_time += start;
+                word.end_time += start;
+            }
+            Ok(words)
+        }))
+    }
+
+    /// The words heard between two track times, timed from `start`, as a
+    /// recognition of just that window would report them.
+    async fn words(
+        &mut self,
+        start: f64,
+        end: f64,
+    ) -> anyhow::Result<Vec<alignment::RecognizedWord>> {
+        let first = self.piece_at(start);
+        let last = self.piece_at((end - 0.001).max(start));
+        self.request(first, last + PREFETCH_AHEAD);
+        let mut words = Vec::new();
+        for piece in &mut self.pieces[first..=last] {
+            if let PrefetchPiece::Pending(task) = piece {
+                let heard = task
+                    .await
+                    .map_err(|error| anyhow::anyhow!("OpenAI transcription stopped: {error}"))??;
+                *piece = PrefetchPiece::Ready(heard);
+            }
+            let PrefetchPiece::Ready(heard) = piece else {
+                unreachable!("pieces from `first` on are requested and awaited above");
+            };
+            words.extend(
+                heard
+                    .iter()
+                    .filter(|word| {
+                        let middle = (word.start_time + word.end_time) / 2.0;
+                        (start..end).contains(&middle)
+                    })
+                    .cloned()
+                    .map(|mut word| {
+                        word.start_time -= start;
+                        word.end_time -= start;
+                        word
+                    }),
+            );
+        }
+        Ok(words)
+    }
+}
+
+impl Drop for CloudPrefetch {
+    fn drop(&mut self) {
+        for piece in &self.pieces {
+            if let PrefetchPiece::Pending(task) = piece {
+                task.abort();
+            }
+        }
+    }
+}
 
 /// Which recognizer model to anchor windows with. English books get the
 /// English-only model, which is markedly better at the same size.
@@ -2643,6 +2842,19 @@ impl<'a> Aligner<'a> {
         let mut recovery_start = None;
         let mut recovery_gaps = Vec::new();
         let mut skipped_text = 0;
+        let mut prefetch = self.recognition.cloud.clone().map(|cloud| {
+            CloudPrefetch::new(
+                self.state,
+                cloud,
+                self.recognition.language.clone(),
+                ffmpeg,
+                &track.path,
+                self.temp_dir,
+                scope_number,
+                scope_start,
+                scope_end,
+            )
+        });
 
         while position < scope_end - 0.5 && cursor < text_len {
             windows += 1;
@@ -2815,28 +3027,18 @@ impl<'a> Aligner<'a> {
             }
             let (segment_end, text_end, lead_in, recognized) =
                 if remaining <= MAX_SINGLE_PASS_SECONDS {
-                    let audio = self
-                        .slice(
-                            ffmpeg,
-                            &track.path,
-                            position,
-                            scope_end,
-                            scope_number,
-                            windows,
-                            "window",
-                        )
-                        .await?;
                     let recognition_text = transcript.window(cursor, text_len);
                     let recognized = self
-                        .transcribe_checked(
-                            &audio,
+                        .window_words(
+                            prefetch.as_mut(),
+                            ffmpeg,
+                            track,
+                            (position, scope_end),
                             scope_number,
                             windows,
                             &recognition_text.text,
-                            scope_end - position,
                         )
                         .await?;
-                    let _ = fs::remove_file(audio).await;
                     skipped_text += self
                         .mask_unspoken_sentences(&mut transcript, &recognized, cursor..text_len)
                         .await;
@@ -2873,31 +3075,21 @@ impl<'a> Aligner<'a> {
                     let mut window = WINDOW_SECONDS;
                     let (anchor, recognized) = loop {
                         let window_end = (position + window).min(scope_end);
-                        let audio = self
-                            .slice(
-                                ffmpeg,
-                                &track.path,
-                                position,
-                                window_end,
-                                scope_number,
-                                windows,
-                                "window",
-                            )
-                            .await?;
                         let lookahead =
                             ((window_end - position) * pace * WINDOW_TEXT_LOOKAHEAD).ceil() as u64;
                         let recognition_end = (cursor + lookahead).min(text_len);
                         let recognition_text = transcript.window(cursor, recognition_end);
                         let recognized = self
-                            .transcribe_checked(
-                                &audio,
+                            .window_words(
+                                prefetch.as_mut(),
+                                ffmpeg,
+                                track,
+                                (position, window_end),
                                 scope_number,
                                 windows,
                                 &recognition_text.text,
-                                window_end - position,
                             )
                             .await?;
-                        let _ = fs::remove_file(audio).await;
                         // Inspect the recognition lookahead before cutting the
                         // alignment window. An omission may cross that cut.
                         skipped_text += self
@@ -3052,6 +3244,54 @@ impl<'a> Aligner<'a> {
         Ok(path)
     }
 
+    /// The checked recognition of one stretch of a windowed scope: from
+    /// prefetched OpenAI pieces when there are any, otherwise by cutting the
+    /// window and recognizing it.
+    #[allow(clippy::too_many_arguments)]
+    async fn window_words(
+        &self,
+        prefetch: Option<&mut CloudPrefetch>,
+        ffmpeg: &FsPath,
+        track: &SyncTrackInput,
+        (start, end): (f64, f64),
+        scope_number: usize,
+        window: usize,
+        text: &str,
+    ) -> anyhow::Result<Vec<alignment::RecognizedWord>> {
+        if let Some(prefetch) = prefetch {
+            let heard = prefetch.words(start, end).await?;
+            return self
+                .check_window(
+                    WindowAudio::Track {
+                        path: &track.path,
+                        start,
+                    },
+                    Some(heard),
+                    scope_number,
+                    window,
+                    text,
+                    end - start,
+                )
+                .await;
+        }
+        let audio = self
+            .slice(
+                ffmpeg,
+                &track.path,
+                start,
+                end,
+                scope_number,
+                window,
+                "window",
+            )
+            .await?;
+        let recognized = self
+            .transcribe_checked(&audio, scope_number, window, text, end - start)
+            .await;
+        let _ = fs::remove_file(audio).await;
+        recognized
+    }
+
     async fn transcribe_checked(
         &self,
         audio_path: &FsPath,
@@ -3060,8 +3300,30 @@ impl<'a> Aligner<'a> {
         text: &str,
         duration: f64,
     ) -> anyhow::Result<Vec<alignment::RecognizedWord>> {
+        self.check_window(
+            WindowAudio::Sliced(audio_path),
+            None,
+            scope_number,
+            window,
+            text,
+            duration,
+        )
+        .await
+    }
+
+    /// Recognizes a window, or takes the words already heard in it, and
+    /// re-checks uncertain results the same way either way.
+    async fn check_window(
+        &self,
+        audio: WindowAudio<'_>,
+        heard: Option<Vec<alignment::RecognizedWord>>,
+        scope_number: usize,
+        window: usize,
+        text: &str,
+        duration: f64,
+    ) -> anyhow::Result<Vec<alignment::RecognizedWord>> {
         let words = self
-            .recognize_window(audio_path, scope_number, window, text, duration)
+            .recognize_window(audio, heard, scope_number, window, text, duration)
             .await?;
         self.record(|heard| {
             heard.evidence.windows += 1;
@@ -3073,20 +3335,28 @@ impl<'a> Aligner<'a> {
 
     async fn recognize_window(
         &self,
-        audio_path: &FsPath,
+        audio: WindowAudio<'_>,
+        heard: Option<Vec<alignment::RecognizedWord>>,
         scope_number: usize,
         window: usize,
         text: &str,
         duration: f64,
     ) -> anyhow::Result<Vec<alignment::RecognizedWord>> {
-        let recognized = self
-            .transcribe(
-                audio_path,
-                scope_number,
-                &window.to_string(),
-                self.recognition.model,
-            )
-            .await?;
+        let recognized = match heard {
+            Some(words) => words,
+            None => {
+                let WindowAudio::Sliced(audio_path) = audio else {
+                    anyhow::bail!("A window without prefetched words needs its own audio.");
+                };
+                self.transcribe(
+                    audio_path,
+                    scope_number,
+                    &window.to_string(),
+                    self.recognition.model,
+                )
+                .await?
+            }
+        };
         if !alignment::recognition_needs_retry(&recognized, text) {
             return Ok(recognized);
         }
@@ -3105,10 +3375,18 @@ impl<'a> Aligner<'a> {
                 "  Retrying uncertain speech recognition in this window.\n",
             )
             .await;
-            match self
-                .transcribe(audio_path, scope_number, &window.to_string(), model)
-                .await
-            {
+            let retried = match audio {
+                WindowAudio::Sliced(audio_path) => {
+                    self.transcribe(audio_path, scope_number, &window.to_string(), model)
+                        .await
+                }
+                // Prefetched words come only from OpenAI, which has no
+                // retry model.
+                WindowAudio::Track { .. } => Err(anyhow::anyhow!(
+                    "A prefetched window has no audio of its own to retry."
+                )),
+            };
+            match retried {
                 Ok(retry) => retry,
                 Err(error) => {
                     self.note_failed_retry(&error).await;
@@ -3134,13 +3412,25 @@ impl<'a> Aligner<'a> {
             ("left", 0.0, (midpoint + 10.0).min(duration)),
             ("right", (midpoint - 10.0).max(0.0), duration),
         ] {
-            let audio = self
-                .slice(ffmpeg, audio_path, start, end, scope_number, window, part)
+            let (source, offset) = match audio {
+                WindowAudio::Sliced(audio_path) => (audio_path, 0.0),
+                WindowAudio::Track { path, start } => (path, start),
+            };
+            let half = self
+                .slice(
+                    ffmpeg,
+                    source,
+                    offset + start,
+                    offset + end,
+                    scope_number,
+                    window,
+                    part,
+                )
                 .await?;
             let result = self
-                .transcribe(&audio, scope_number, &format!("{window}-{part}"), model)
+                .transcribe(&half, scope_number, &format!("{window}-{part}"), model)
                 .await;
-            let _ = fs::remove_file(audio).await;
+            let _ = fs::remove_file(half).await;
             let words = match result {
                 Ok(words) => words,
                 Err(error) => {
@@ -5232,13 +5522,34 @@ esac
             }
         }
 
-        /// Answers like OpenAI with the scripted narration words inside the
-        /// time range the fake ffmpeg wrote into the uploaded "audio".
+        /// What a stand-in for OpenAI was asked for.
+        #[derive(Default)]
+        struct OpenAiCalls {
+            in_flight: usize,
+            most_in_flight: usize,
+            /// Seconds of audio sent as whole pieces.
+            seconds_sent: f64,
+            starts: Vec<f64>,
+        }
+
         async fn fake_openai(narration: PathBuf) -> String {
+            fake_openai_with_delay(narration, Duration::ZERO).await.0
+        }
+
+        /// Answers like OpenAI with the scripted narration words inside the
+        /// time range the fake ffmpeg wrote into the uploaded "audio", each
+        /// reply taking `delay`.
+        async fn fake_openai_with_delay(
+            narration: PathBuf,
+            delay: Duration,
+        ) -> (String, Arc<std::sync::Mutex<OpenAiCalls>>) {
+            let calls = Arc::new(std::sync::Mutex::new(OpenAiCalls::default()));
+            let seen = calls.clone();
             let app = Router::new().route(
                 "/v1/audio/transcriptions",
                 post(move |body: axum::body::Bytes| {
                     let narration = narration.clone();
+                    let seen = seen.clone();
                     async move {
                         let body = String::from_utf8_lossy(&body);
                         let audio = body
@@ -5247,6 +5558,20 @@ esac
                             .unwrap();
                         let mut range = audio.split_whitespace().map(|value| value.parse::<f64>().unwrap());
                         let (start, duration) = (range.next().unwrap(), range.next().unwrap());
+                        {
+                            let mut calls = seen.lock().unwrap();
+                            calls.in_flight += 1;
+                            calls.starts.push(start);
+                            calls.most_in_flight = calls.most_in_flight.max(calls.in_flight);
+                            // The scripted narration makes every window
+                            // uncertain, so each is re-checked in two halves
+                            // of about two minutes. Count the pieces only.
+                            if duration > 200.0 {
+                                calls.seconds_sent += duration;
+                            }
+                        }
+                        tokio::time::sleep(delay).await;
+                        seen.lock().unwrap().in_flight -= 1;
                         let words = std::fs::read_to_string(narration)
                             .unwrap()
                             .lines()
@@ -5265,7 +5590,144 @@ esac
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-            format!("http://{address}/v1/audio/transcriptions")
+            (format!("http://{address}/v1/audio/transcriptions"), calls)
+        }
+
+        #[tokio::test]
+        async fn openai_pieces_are_requested_ahead_of_the_window_being_aligned() {
+            let count = 400;
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("narration.txt");
+            std::fs::write(&path, narration(count, &[])).unwrap();
+            let (endpoint, calls) = fake_openai_with_delay(path, Duration::from_millis(150)).await;
+            let (fragments, output) = align_fake_book_with_settings(
+                count,
+                &[],
+                None,
+                None,
+                0.0,
+                None,
+                false,
+                Some(&endpoint),
+            )
+            .await;
+            assert_eq!(fragments.len(), count, "{output}");
+            assert_monotonic(&fragments);
+            for (index, fragment) in fragments.iter().enumerate() {
+                assert_eq!(fragment.text, sentence(index));
+                assert!(
+                    (fragment.start_seconds - narrated_start(index)).abs() < 0.75,
+                    "sentence {index} starts at {:.2}",
+                    fragment.start_seconds
+                );
+            }
+            let calls = calls.lock().unwrap();
+            assert!(
+                calls.most_in_flight > 1,
+                "pieces were requested one at a time"
+            );
+            // Each second of narration goes to OpenAI in about one piece: the
+            // pieces' overlaps are the only audio sent twice.
+            let narrated = narrated_start(count);
+            assert!(
+                calls.seconds_sent < narrated * 1.2,
+                "sent {:.0} s for {narrated:.0} s of narration",
+                calls.seconds_sent
+            );
+        }
+
+        /// A prefetch over a long scope of scripted narration, recognized by
+        /// a stand-in for OpenAI. The fake ffmpeg takes `extract_delay`.
+        async fn fake_prefetch(
+            root: &FsPath,
+            extract_delay: &str,
+        ) -> (AppState, CloudPrefetch, Arc<std::sync::Mutex<OpenAiCalls>>) {
+            let (state, _) = crate::unit_tests::fake_libation_state(root);
+            let narration_path = root.join("narration.txt");
+            std::fs::write(&narration_path, narration(1000, &[])).unwrap();
+            let (endpoint, calls) = fake_openai_with_delay(narration_path, Duration::ZERO).await;
+            let ffmpeg = root.join("ffmpeg");
+            write_executable(
+                &ffmpeg,
+                &FAKE_FFMPEG.replace(
+                    "#!/bin/sh\n",
+                    &format!(
+                        "#!/bin/sh\ntouch '{}'\nsleep {extract_delay}\n",
+                        root.join("cutting").display()
+                    ),
+                ),
+            );
+            cloud_recognition::enable_for_test(&state).await;
+            let prefetch = CloudPrefetch::new(
+                &state,
+                Arc::new(cloud_recognition::CloudRecognizer::for_test(&endpoint)),
+                Some("en".into()),
+                &ffmpeg,
+                &root.join("book.m4b"),
+                root,
+                0,
+                0.0,
+                4000.0,
+            );
+            (state, prefetch, calls)
+        }
+
+        #[tokio::test]
+        async fn pieces_a_recovery_scan_passed_over_are_never_sent() {
+            let root = tempfile::tempdir().unwrap();
+            let (_state, mut prefetch, calls) = fake_prefetch(root.path(), "0").await;
+            prefetch.words(0.0, 240.0).await.unwrap();
+            // Recovery moved the window far ahead of the pieces requested.
+            let words = prefetch.words(2400.0, 2640.0).await.unwrap();
+            assert!(!words.is_empty());
+            assert!(
+                words
+                    .iter()
+                    .all(|word| (0.0..240.0).contains(&word.start_time))
+            );
+            for piece in &mut prefetch.pieces {
+                if let PrefetchPiece::Pending(task) = piece {
+                    let _ = task.await;
+                }
+            }
+            let calls = calls.lock().unwrap();
+            // The first window covers pieces 0 and 1 and requests three more;
+            // the second covers 10 and 11 and requests through 14. None in
+            // between is sent.
+            let mut sent = calls
+                .starts
+                .iter()
+                .map(|&start| {
+                    prefetch
+                        .cores
+                        .iter()
+                        .position(|&(core, _)| {
+                            ((core - PREFETCH_OVERLAP_SECONDS).max(0.0) - start).abs() < 0.01
+                        })
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            sent.sort_unstable();
+            assert_eq!(sent, [0, 1, 2, 3, 4, 10, 11, 12, 13, 14]);
+        }
+
+        #[tokio::test]
+        async fn turning_openai_off_while_a_piece_is_cut_keeps_it_on_the_server() {
+            let root = tempfile::tempdir().unwrap();
+            let (state, mut prefetch, calls) = fake_prefetch(root.path(), "0.5").await;
+            prefetch.request(0, 0);
+            let cutting = root.path().join("cutting");
+            while !cutting.exists() {
+                tokio::task::yield_now().await;
+            }
+            state
+                .database
+                .transaction(|db| delete_document(db, "readalong-cloud-recognition-v1"))
+                .await
+                .unwrap();
+            let error = prefetch.words(0.0, 240.0).await.unwrap_err();
+            assert!(error.to_string().contains("turned off"), "{error}");
+            assert!(calls.lock().unwrap().starts.is_empty());
         }
 
         #[tokio::test]
