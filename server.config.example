@@ -55,10 +55,11 @@ libation_reader_refreshes_per_hour = 3
 # simply disabled and user-provided .sync.json sidecars still work.
 alignment_cli_path =
 
-# Optional MP4 faststart conversion (Administration -> Downloaded books). Leave blank
-# to look for ffmpeg/ffprobe on PATH; without ffmpeg the control is simply
-# disabled. ffprobe is used to verify each converted file against the original,
-# so a conversion is only ever swapped in after its duration, streams, and
-# chapters match.
+# Optional MP4 faststart conversion (Administration -> Downloaded books). Leave
+# blank to look for ffmpeg/ffprobe on PATH; without ffmpeg the control is
+# simply disabled. ffprobe is used to verify each converted file against the
+# original, so a conversion is only ever swapped in after its duration,
+# streams, and chapters match. The same ffmpeg also measures each book's
+# loudness in the background after a scan, and without ffmpeg this is skipped.
 ffmpeg_path =
 ffprobe_path =
