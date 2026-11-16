@@ -6,7 +6,7 @@ nav_order: 10
 # OperaLibre Privacy Policy
 
 **Effective date:** July 18, 2026  
-**Last updated:** November 15, 2026
+**Last updated:** November 16, 2026
 
 OperaLibre is an audiobook player that can use audio files stored on your device or connect to an OperaLibre server chosen by you. This Privacy Policy explains how the OperaLibre application (the **“App”**) handles information.
 
@@ -127,11 +127,31 @@ You can remove an assistant in Settings (or the account menu's assistant control
 
 An OperaLibre server owner can enable optional chapter notes and choose a language model to write them, either a hosted provider such as Anthropic or an endpoint the owner runs. When an administrator makes notes for a book, that book's text or a transcript of its narration is sent from the server to the chosen model, under that provider's own terms. The book's title and author are included; your account, listening progress, and history are not. Transcripts are made on the server itself. Notes and transcripts are kept in the server's data directory until an administrator removes them.
 
+### Optional book gifts (experimental)
+
+Book gifts are an experiment that is off until an OperaLibre server owner turns it on under **Administration → Experiments**. A gift sends one book from that server to one person's phone as a private link. To use gifts, the owner sets up a small gift broker that runs in the owner's own Cloudflare account. The developer does not run a broker. Only the owner can send gifts unless the owner also allows readers to send them, and readers can gift only books they can already open.
+
+When someone creates a gift, the server stores an encrypted preview on the owner's broker. The preview contains the sender's display name, the book's title, author, and description, the cover when it fits, the personal message, the list of included files with their sizes and checksums, and the connection settings the recipient's app needs, which can include temporary relay credentials. The keys that decrypt the preview exist only in the gift link, in the part after `#`, and are not sent to the broker. Anyone who has the link can read the preview and claim the gift once.
+
+The book itself never passes through the broker. When the recipient accepts, the server and the phone exchange connection details through the broker and then connect directly over an encrypted WebRTC connection, or through a TURN relay if the owner set one up. Because of this, network addresses are visible to:
+
+- the broker, which sees the IP addresses of the server and the recipient's phone, along with the connection details they exchange;
+- the STUN server the owner configured, by default Cloudflare's `stun.cloudflare.com`, which the server and the phone each contact to learn their public addresses;
+- a TURN relay, if the owner adds one, which sees both addresses and carries the encrypted transfer; and
+- the recipient's phone, which learns the server's public address, and the server, which learns the phone's. The owner can keep the server's address from recipients by using a TURN relay with **Always use the relay** turned on.
+
+Cloudflare, the STUN provider, and any relay operator handle this information under their own terms.
+
+The broker stops serving the preview once the link expires, after at most 24 hours. The server asks the broker to clear the preview and any queued connection details when the link is revoked or the gift is no longer waiting. The server keeps a record of each gift link, including the book, the sender, the message, and the selected files, in its database until the link has expired or been revoked and the broker has been cleaned up. The broker's secrets are stored in the server's database and therefore in its backups. If the owner turns on **Keep waiting gifts across restarts**, each waiting gift, including the prepared copy of the book and the keys for its link, is also stored in the server's data folder until it is received or expires. The Cloudflare API token an owner pastes to install the broker is used once and is not stored.
+
+On the recipient's phone, the app asks before opening its first gift, and receiving can be turned off again in **Settings → Receive book gifts**. An accepted book is saved in the App's private storage as a book on that device, and it stays there after the link expires. A book that has been accepted cannot be taken back by the sender.
+
 ## Disclosure and third parties
 
 The App sends information only as needed to services you choose or that are required to deliver the App:
 
 - **Your selected OperaLibre server.** Information described above is sent directly to that server for app functionality.
+- **A server owner's gift broker and connection servers.** If you send or receive a book gift, the owner's Cloudflare broker, STUN server, and any TURN relay receive the information described under Optional book gifts (experimental).
 - **Your chosen assistant.** If you connect one, the selected assistant and its provider can receive the information permitted by your token, as described under Optional assistant access. Their own practices govern processing and retention of received copies.
 - **Apple.** Apple may process App Store, download, purchase, diagnostic, or device information independently under Apple’s own privacy policies. The developer does not control information Apple processes independently.
 
@@ -152,6 +172,7 @@ You can:
 - decline local-network access in your device settings, although local servers may then be unavailable;
 - sign out or change the selected server;
 - delete downloaded books and imported on-device books in the App;
+- turn off receiving book gifts in **Settings → Receive book gifts**;
 - uninstall the App to remove its locally stored data, subject to normal device backup behavior;
 - ask the operator of an OperaLibre server to delete your reader account, listening progress, and reading log.
 
