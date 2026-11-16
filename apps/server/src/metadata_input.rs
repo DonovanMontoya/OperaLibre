@@ -4,7 +4,9 @@
 use crate::*;
 use std::io::{Seek, SeekFrom as StdSeekFrom};
 
-const TAG_BYTES: u64 = 8 * 1024 * 1024;
+// A tag over this budget is skipped whole, title and chapters included, so it
+// has to fit full-resolution artwork: a 3000-pixel PNG cover is often 10 MiB.
+pub(crate) const TAG_BYTES: u64 = 32 * 1024 * 1024;
 const CONTAINER_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ITEMS: usize = 10_000;
 pub(crate) const READ_BYTES: u64 = 64 * 1024 * 1024;
@@ -776,6 +778,13 @@ mod tests {
                 .build(),
         );
         assert!(extract_cover_art(&invalid).is_none());
+        let mut oversized = Tag::new(lofty::tag::TagType::Id3v2);
+        oversized.push_picture(
+            Picture::unchecked(vec![0; TAG_BYTES as usize + 1])
+                .pic_type(PictureType::CoverFront)
+                .build(),
+        );
+        assert!(extract_cover_art(&oversized).is_none());
     }
 }
 
@@ -1119,5 +1128,78 @@ mod chapter_container_compatibility_tests {
         assert_eq!(parsed.chapters[0].end_seconds, Some(0.5));
         assert_eq!(parsed.chapters[1].start_seconds, 0.5);
         assert_eq!(parsed.chapters[0].source, "mp4-chapter-track");
+    }
+
+    #[test]
+    fn bounded_metadata_keeps_tags_beside_full_resolution_m4b_art() {
+        let Some(tools) = faststart::discover_tools(None, None) else {
+            eprintln!("skipping: ffmpeg is not installed");
+            return;
+        };
+        let root = tempfile::tempdir().unwrap();
+        // Noise barely compresses, so this PNG is about 12 MiB: past the old
+        // 8 MiB tag budget, like a real 3000-pixel cover.
+        let mut seed = 0x9e37_79b9_u32;
+        let art = image::RgbImage::from_fn(2000, 2000, |_, _| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let [r, g, b, _] = seed.to_le_bytes();
+            image::Rgb([r, g, b])
+        });
+        let cover = root.path().join("cover.png");
+        art.save(&cover).unwrap();
+        assert!(std::fs::metadata(&cover).unwrap().len() > 8 * 1024 * 1024);
+        let metadata = root.path().join("chapters.ffmetadata");
+        std::fs::write(&metadata, ";FFMETADATA1\ntitle=Large Art\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=500\ntitle=One\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=500\nEND=1000\ntitle=Two\n").unwrap();
+        let path = root.path().join("book.m4b");
+        let generated = std::process::Command::new(&tools.ffmpeg)
+            .args([
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-f",
+                "ffmetadata",
+                "-i",
+            ])
+            .arg(&metadata)
+            .arg("-i")
+            .arg(&cover)
+            .args([
+                "-map",
+                "0:a",
+                "-map",
+                "2:v",
+                "-map_metadata",
+                "1",
+                "-map_chapters",
+                "1",
+                "-c:a",
+                "aac",
+                "-c:v",
+                "copy",
+                "-disposition:v",
+                "attached_pic",
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            generated.status.success(),
+            "{}",
+            String::from_utf8_lossy(&generated.stderr)
+        );
+        let parsed = read_track_metadata(&path);
+        assert_eq!(parsed.title.as_deref(), Some("Large Art"));
+        assert_eq!(parsed.chapters.len(), 2);
+        let cover = parsed.cover_art.expect("embedded cover");
+        assert_eq!(cover.mime_type, "image/png");
+        assert_eq!(image::load_from_memory(&cover.data).unwrap().width(), 1600);
     }
 }
