@@ -313,7 +313,7 @@ final class PerformanceTests: XCTestCase {
             defer { timer.invalidate() }
             wait(for: [done], timeout: 10)
         }
-        for pendingSeek in [false, true] {
+        for (pendingSeek, clipPreview) in [(false, false), (true, false), (false, true), (true, true)] {
             let original = SeekControlledQueuePlayer()
             let replacement = SeekControlledQueuePlayer()
             replacement.holdNextSeek = true
@@ -336,10 +336,15 @@ final class PerformanceTests: XCTestCase {
             until("first item playing") { engine.status.isPlaying && original.currentTime().seconds > 3.1 }
             engine.pause()
             until("first item paused") { !engine.status.isPlaying }
+            if clipPreview {
+                engine.seek(toPositionSeconds: 5, clipPreview: true)
+                until("preview seek established") { engine.isClipPreview && abs(engine.status.positionSeconds - 5) < 0.01 }
+            }
+            let listeningCheckpoint = try XCTUnwrap(engine.recoveryState(forScope: scope))
             let failedItem = try XCTUnwrap(original.currentItem)
             if pendingSeek {
                 original.holdNextSeek = true
-                engine.seek(toPositionSeconds: 7)
+                engine.seek(toPositionSeconds: 7, clipPreview: clipPreview)
                 until("pending seek held") { original.heldSeek != nil }
             }
             let expected = pendingSeek ? 7.0 : failedItem.currentTime().seconds
@@ -354,16 +359,21 @@ final class PerformanceTests: XCTestCase {
             XCTAssertEqual(checkpoint.scopeKey, scope)
             XCTAssertEqual(checkpoint.trackId, "retry-first")
             XCTAssertEqual(checkpoint.durationSeconds ?? -1, 10, accuracy: 0.01)
-            XCTAssertEqual(checkpoint.positionSeconds, expected, accuracy: 0.01)
+            let expectedRecovery = clipPreview ? listeningCheckpoint.positionSeconds : expected
+            XCTAssertEqual(checkpoint.positionSeconds, expectedRecovery, accuracy: 0.01)
+            XCTAssertEqual(engine.isClipPreview, clipPreview)
+            if clipPreview { XCTAssertEqual(checkpoint.updatedAt, listeningCheckpoint.updatedAt) }
             until("retry resume seek held") { replacement.heldSeek != nil }
             XCTAssertEqual(engine.status.trackId, "retry-first")
             XCTAssertEqual(engine.status.positionSeconds, expected, accuracy: 0.01)
-            XCTAssertEqual(engine.recoveryState(forScope: scope)?.positionSeconds ?? -1, expected, accuracy: 0.01)
+            XCTAssertEqual(engine.recoveryState(forScope: scope)?.positionSeconds ?? -1, expectedRecovery, accuracy: 0.01)
             guard abs(engine.status.positionSeconds - expected) < 0.01 else { return }
             replacement.releaseHeldSeek()
             until("retry reaches its own position") { abs(replacement.currentTime().seconds - expected) < 0.01 }
             XCTAssertEqual(engine.playbackRate, 1.5)
             XCTAssertFalse(engine.status.isPlaying)
+            XCTAssertEqual(engine.isClipPreview, clipPreview)
+            XCTAssertEqual(engine.recoveryState(forScope: scope)?.positionSeconds ?? -1, expectedRecovery, accuracy: 0.01)
         }
     }
 

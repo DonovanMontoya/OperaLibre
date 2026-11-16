@@ -192,6 +192,10 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     /// does not claim the session: a book the phone is playing stays the
     /// phone's, and its progress keeps being saved the way it always was.
     func resume() {
+        if engine.isClipPreview {
+            DispatchQueue.main.async { [weak self] in _ = self?.resumeAudiobook() }
+            return
+        }
         engine.play()
     }
 
@@ -200,7 +204,7 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     @MainActor
     func resumeAudiobook() -> Bool {
         let snapshot = store.snapshot()
-        if engine.status.isLoaded, let book = currentBook() {
+        if !engine.isClipPreview, engine.status.isLoaded, let book = currentBook() {
             if let duration = book.durationSeconds, engine.status.bookPositionSeconds >= duration - 1 {
                 return false
             }
@@ -344,6 +348,7 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     /// filed under the new book — moving it to a position from another book
     /// entirely. Matching on the scope key makes that impossible.
     private func recordSession(force: Bool, finished: Bool = false) {
+        guard !engine.isClipPreview else { return }
         guard let bookId = carOwnedBookId else { return }
         let now = Date().timeIntervalSince1970 * 1000
         if !force && now - lastSessionWrite < Self.sessionWriteIntervalSeconds * 1000 { return }

@@ -54,7 +54,8 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
             recoveryScopeKey: call.getString("recoveryScopeKey"),
             recoveryTrackId: call.getString("recoveryTrackId"),
             recoveryBookOffsetSeconds: call.getDouble("recoveryBookOffsetSeconds") ?? 0,
-            queue: queuedTracks(from: call.getArray("queue", JSObject.self) ?? [])
+            queue: queuedTracks(from: call.getArray("queue", JSObject.self) ?? []),
+            clipPreview: call.getBool("clipPreview") ?? false
         )
         // Loading is how the web player claims the engine. If a car session was
         // running, its position is banked before this load replaces the player
@@ -97,7 +98,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
             call.reject("The playback position is invalid.")
             return
         }
-        engine.seek(toPositionSeconds: positionSeconds)
+        engine.seek(toPositionSeconds: positionSeconds, clipPreview: call.getBool("clipPreview") ?? false)
         call.resolve()
     }
 
