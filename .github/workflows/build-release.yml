@@ -295,6 +295,7 @@ jobs:
           sparse-checkout: |
             script/stage_android_release.mjs
             script/version.mjs
+            script/resolve_release.mjs
           sparse-checkout-cone-mode: false
 
       - name: Setup Node
