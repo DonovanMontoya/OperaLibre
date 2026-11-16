@@ -273,8 +273,8 @@ explicit; a release or dependency version bump alone is not a reason to remap.
 There are two version lines, and they are independent of each other:
 
 - **Server line**: the server and launcher crates (and their lockfiles). It
-  follows the stable release tags, such as `0.5.1`; nightlies between releases
-  are `0.5.2-nightly.<date>.<run>`. Release builds take their version from the
+  follows the stable release tags, such as `0.5.5`; nightlies between releases
+  are `0.5.6-nightly.<date>.<run>`. Release builds take their version from the
   tag (`OPERALIBRE_VERSION`), which also stamps the web bundle, so the crate
   version only shows in source builds. Keep it at the latest stable release.
   The macOS app is on this line too: `script/build_and_run.sh` stamps the

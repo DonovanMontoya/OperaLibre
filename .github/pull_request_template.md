@@ -49,7 +49,7 @@ personal library contents, server addresses, and account names. -->
 
 <!-- Commands you ran and where you tested: browser, iOS simulator, Android
 emulator, physical device. Name the surfaces you checked (web, mini player,
-phones, CarPlay, Jellyfin, third-party clients). -->
+phones, CarPlay, third-party clients). -->
 
 ## AI assistance
 
