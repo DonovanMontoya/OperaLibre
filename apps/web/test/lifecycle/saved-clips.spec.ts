@@ -12,7 +12,7 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await server?.close(); });
 
-async function setup(page: Page, progressAvailable = true) {
+async function setup(page: Page, progressAvailable = true, enableClips = true) {
   const books = library(2);
   const user = { id: 'clip-reader', username: 'Reader', isAdmin: false, isOwner: false,
     allowedBookIds: null, libationAccess: 'none', createdAt: '1700000000' };
@@ -37,6 +37,9 @@ async function setup(page: Page, progressAvailable = true) {
     const end = range[2] ? Number(range[2]) : audio.length - 1;
     return route.fulfill({ status: 206, contentType: 'audio/wav', body: audio.subarray(start, end + 1),
       headers: { 'Accept-Ranges': 'bytes', 'Content-Range': `bytes ${start}-${end}/${audio.length}` } });
+  });
+  if (enableClips) await page.addInitScript(() => {
+    if (localStorage.getItem('operalibre.clippingEnabled') === null) localStorage.setItem('operalibre.clippingEnabled', '1');
   });
   await page.addInitScript(() => {
     localStorage.setItem('operalibre.serverUrl', location.origin);
@@ -179,31 +182,33 @@ test('a book with no clips explains how to save the first passage', async ({ pag
   expect(fixture.writes).toEqual([]);
 });
 
-test('Audio clips behavior preference persists and restores saved passages without changing playback', async ({ page }) => {
-  const fixture = await setup(page);
+test('Audio clips defaults off; opting in and out persists without changing playback', async ({ page }) => {
+  const fixture = await setup(page, true, false);
   await page.getByRole('button', { name: `Play ${fixture.books[0].title}`, exact: true }).click();
   const audio = page.locator('audio');
   await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThan(60);
   const source = await audio.getAttribute('src');
   const ribbon = page.getByRole('button', { name: 'Save a clip of the last 30 seconds and the next 10', exact: true });
-  await expect(ribbon).toBeVisible();
+  await expect(ribbon).toHaveCount(0);
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
-  await page.locator('.user-menu summary').filter({ hasText: 'Playback, navigation, and reading preferences' }).click();
-  const preference = page.getByRole('switch', { name: 'Show audio clips', exact: true });
-  await expect(preference).toHaveAttribute('aria-checked', 'true');
+  await page.locator('.user-menu summary').filter({ hasText: 'Beta Features' }).click();
+  const preference = page.getByRole('switch', { name: 'Audio clips', exact: true });
+  await expect(preference).toHaveAttribute('aria-checked', 'false');
+  await preference.click();
+  await expect(ribbon).toBeVisible();
   await preference.click();
   await expect(ribbon).toHaveCount(0);
   expect(await audio.getAttribute('src')).toBe(source);
   expect(await audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(false);
   await page.reload();
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
-  await page.locator('.user-menu summary').filter({ hasText: 'Playback, navigation, and reading preferences' }).click();
+  await page.locator('.user-menu summary').filter({ hasText: 'Beta Features' }).click();
   await expect(preference).toHaveAttribute('aria-checked', 'false');
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
   await page.locator('.book-row').nth(1).click();
   await expect(page.getByRole('tab', { name: 'Clips', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
-  await page.locator('.user-menu summary').filter({ hasText: 'Playback, navigation, and reading preferences' }).click();
+  await page.locator('.user-menu summary').filter({ hasText: 'Beta Features' }).click();
   await preference.click();
   await expect(preference).toHaveAttribute('aria-checked', 'true');
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();

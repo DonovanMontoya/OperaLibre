@@ -10,8 +10,8 @@ import { selectionHaptic } from "./native";
 
 export function useReaderPreferences() {
   const [clippingEnabled, setClippingEnabled] = useState(() => {
-    try { return window.localStorage.getItem("operalibre.clippingEnabled") !== "0"; }
-    catch { return true; }
+    try { return window.localStorage.getItem("operalibre.clippingEnabled") === "1"; }
+    catch { return false; }
   });
   const [followAggressiveness, setFollowAggressiveness] = useState(readFollowAggressiveness);
   const [pageTurnAnimation, setPageTurnAnimation] = useState(readPageTurnAnimation);
