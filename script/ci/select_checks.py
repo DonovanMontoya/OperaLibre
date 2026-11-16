@@ -50,7 +50,7 @@ def only_package_version(path, before, after):
             if path.endswith('.toml'):
                 packages = [packages]
             own = [package for package in packages if package['name'] == VERSION_FILES[path]]
-            if len(own) != 1 or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', own[0]['version']):
+            if len(own) != 1 or not re.fullmatch(r'(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){2}', own[0]['version']):
                 return False
             del own[0]['version']
             documents.append(json.dumps(document, sort_keys=True))

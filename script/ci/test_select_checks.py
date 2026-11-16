@@ -76,3 +76,13 @@ class PackageVersionTests(unittest.TestCase):
                       before + '[[package]]\nname = "operalibre-launcher"\nversion = "0.5.5"\n']:
             with self.subTest(after=after):
                 self.assertFalse(only_package_version(path, before, after))
+
+    def test_leading_zero_versions_keep_cargo_checks(self):
+        for path, name in VERSION_FILES.items():
+            before = self.fixture(path, name)
+            for version in ['00.5.4', '0.05.4', '0.5.04']:
+                with self.subTest(path=path, version=version):
+                    self.assertFalse(only_package_version(path, before, before.replace('0.5.4', version)))
+            for version in ['0.0.0', '10.50.400']:
+                with self.subTest(path=path, version=version):
+                    self.assertTrue(only_package_version(path, before, before.replace('0.5.4', version)))
