@@ -8,6 +8,15 @@ import test from "node:test";
 const installer = await readFile(new URL("./install.sh", import.meta.url), "utf8");
 const releaseWorkflow = await readFile(new URL("../.github/workflows/build-release.yml", import.meta.url), "utf8");
 
+test("Historical Android rebuilds use current staging tools with release-source metadata", () => {
+  const androidJob = releaseWorkflow.match(/^  android:\n[\s\S]*?^  native:/m)?.[0];
+  assert.ok(androidJob, "Missing Android release job");
+  assert.match(androidJob, /name: Checkout Android release tools[\s\S]*?ref: \$\{\{ github\.workflow_sha \}\}/);
+  assert.match(androidJob, /script\/stage_android_release\.mjs[\s\S]*?script\/version\.mjs/);
+  assert.match(androidJob,
+    /node release-android-tools\/script\/stage_android_release\.mjs[\s\S]*?dist \\\n\s+apps\/web\/android\/app\/build\.gradle/);
+});
+
 test("Release archive checks consume long listings and reject invalid packages", async (t) => {
   const fixture = await mkdtemp(path.join(os.tmpdir(), "operalibre-release-guard-"));
   const packageName = "operalibre-1.2.3-combined-linux-x64";

@@ -21,11 +21,11 @@ export function androidReleaseName(badging, gradle) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [apk, aapt, output = "dist"] = process.argv.slice(2);
-  assert.ok(apk && aapt, "Usage: stage_android_release.mjs APK AAPT [OUTPUT]");
+  const [apk, aapt, output = "dist", gradlePath] = process.argv.slice(2);
+  assert.ok(apk && aapt, "Usage: stage_android_release.mjs APK AAPT [OUTPUT] [GRADLE]");
   const root = fileURLToPath(new URL("../", import.meta.url));
   const badging = execFileSync(aapt, ["dump", "badging", apk], { encoding: "utf8" });
-  const gradle = readFileSync(join(root, "apps/web/android/app/build.gradle"), "utf8");
+  const gradle = readFileSync(gradlePath ?? join(root, "apps/web/android/app/build.gradle"), "utf8");
   const destination = join(output, androidReleaseName(badging, gradle));
   mkdirSync(output, { recursive: true });
   copyFileSync(apk, destination);
