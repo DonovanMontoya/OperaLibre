@@ -322,6 +322,11 @@ Client authors should treat the API as the contract and the bundled web app as a
 
 ## Android / Capacitor
 
+Android release downloads name the app version and build, for example
+`operalibre-app-1.3.2-build.6-android-unsigned.apk`. The app version is independent
+of the server release containing the download. These APKs are unsigned and need
+your own signing setup before installation.
+
 The checked-in Capacitor Android project packages the web app as a native Android 7+ app. With Android Studio, the Android SDK, and JDK 21 installed, build a debug APK from the repository root with:
 
 ```bash

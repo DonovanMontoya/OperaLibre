@@ -322,10 +322,9 @@ jobs:
       - name: Stage Android release package
         shell: bash
         run: |
-          version="${RELEASE_TAG#v}"
-          mkdir -p dist
-          cp apps/web/android/app/build/outputs/apk/release/app-release-unsigned.apk \
-            "dist/operalibre-${version}-android-unsigned.apk"
+          node script/stage_android_release.mjs \
+            apps/web/android/app/build/outputs/apk/release/app-release-unsigned.apk \
+            "$ANDROID_HOME/build-tools/37.0.0/aapt"
 
       - name: Upload Android release package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
