@@ -3,7 +3,7 @@
 //! The audiobook library, server configuration, and Libation's external
 //! sign-in profile files are intentionally outside this format. All database
 //! state is included: OperaLibre account credentials and permissions, sessions,
-//! progress and its rollback rows, per-book settings, activity, reading
+//! progress and its rollback rows, per-book settings, clips, activity, reading
 //! history, metadata, works, Libation records, and the identity index that
 //! keeps those rows attached to books.
 //!
@@ -61,6 +61,11 @@ struct BackupData {
     progress: Vec<BackupProgress>,
     progress_backups: Vec<BackupProgressBackup>,
     book_settings: Vec<BackupBookSettings>,
+    /// Absent from backups written before clips existed. Left out when empty
+    /// too: older servers reject unknown fields, so a backup without clips
+    /// stays restorable on them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    clips: Vec<BackupClip>,
     activity: ActivityStore,
     documents: BTreeMap<String, serde_json::Value>,
 }
@@ -98,6 +103,13 @@ struct BackupBookSettings {
 
 fn default_true() -> bool {
     true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BackupClip {
+    user_id: String,
+    clip: Clip,
 }
 
 #[derive(Debug, Serialize)]
@@ -425,6 +437,31 @@ fn read_database(path: &FsPath) -> anyhow::Result<BackupData> {
         book_settings.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
     }
 
+    let mut clips = Vec::new();
+    {
+        let mut statement = transaction.prepare(
+            "SELECT user_id, id, book_id, start_seconds, end_seconds, title, note,
+                    created_at, updated_at
+             FROM clips ORDER BY user_id, book_id, start_seconds, id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(BackupClip {
+                user_id: row.get(0)?,
+                clip: Clip {
+                    id: row.get(1)?,
+                    book_id: row.get(2)?,
+                    start_seconds: row.get(3)?,
+                    end_seconds: row.get(4)?,
+                    title: row.get(5)?,
+                    note: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                },
+            })
+        })?;
+        clips.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+
     let mut documents = BTreeMap::new();
     {
         let mut statement =
@@ -444,6 +481,7 @@ fn read_database(path: &FsPath) -> anyhow::Result<BackupData> {
         progress,
         progress_backups,
         book_settings,
+        clips,
         activity,
         documents,
     })
@@ -469,6 +507,7 @@ fn restore_database(
     transaction.execute("DELETE FROM progress", [])?;
     transaction.execute("DELETE FROM progress_backups", [])?;
     transaction.execute("DELETE FROM book_settings", [])?;
+    transaction.execute("DELETE FROM clips", [])?;
     transaction.execute("DELETE FROM activity", [])?;
     transaction.execute("DELETE FROM users", [])?;
     transaction.execute("DELETE FROM documents", [])?;
@@ -536,6 +575,25 @@ fn restore_database(
                 row.volume_gain,
                 row.manual,
                 row.auto_volume
+            ],
+        )?;
+    }
+    for row in &data.clips {
+        transaction.execute(
+            "INSERT INTO clips (
+                user_id, id, book_id, start_seconds, end_seconds,
+                title, note, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                row.user_id,
+                row.clip.id,
+                row.clip.book_id,
+                row.clip.start_seconds,
+                row.clip.end_seconds,
+                row.clip.title,
+                row.clip.note,
+                row.clip.created_at,
+                row.clip.updated_at,
             ],
         )?;
     }

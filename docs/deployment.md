@@ -342,7 +342,7 @@ In Xcode, select your development team and an attached iPhone or iPad, then pres
 
 ## Backups
 
-The owner can choose **Administration → Overview → Server backup → Export backup** while the server is running. This downloads a portable JSON snapshot of accounts, permissions, listening progress, per-book settings, reading history, metadata, work links, Libation records, and stable library IDs. Keep it private: it contains sensitive account data.
+The owner can choose **Administration → Overview → Server backup → Export backup** while the server is running. This downloads a portable JSON snapshot of accounts, permissions, listening progress, per-book settings, saved clips, reading history, metadata, work links, Libation records, and stable library IDs. Keep it private: it contains sensitive account data. A backup that holds saved clips can only be restored on a server version that has clips.
 
 The portable export does not include audiobook or companion files, uploaded covers, generated sync maps, sync queue/schedule files, import-account credentials, or `server.config`. Back up `library_root` separately, including its hidden OperaLibre files, and preserve the configuration. Keep `data_dir/sync/`, `sync-jobs.json`, `sync-schedules.json`, `sync-sweep.json`, and `sync-checkpoints/` when moving an installation that uses follow-along generation. Optional import accounts may need to be reconnected after a move.
 

@@ -1,3 +1,4 @@
+import { BetaFeaturesSettings } from "./BetaFeaturesSettings";
 import { PrivacyPolicyLink } from "./PrivacyPolicyLink";
 import type { useDisplaySettings } from "./useDisplaySettings";
 import type { useOfflineDownloads } from "./useOfflineDownloads";
@@ -163,6 +164,8 @@ export function SettingsPage({
     removeOfflineDownload
   } = offlineDownloads;
   const {
+    clippingEnabled,
+    toggleClippingEnabled,
     followAggressiveness,
     pageTurnAnimationEnabled,
     togglePageTurnAnimation,
@@ -239,6 +242,10 @@ export function SettingsPage({
           updateDarkTheme={updateDarkTheme}
           updateLightTheme={updateLightTheme}
         />
+
+        {capabilities.clips ? <section className="settings-card">
+          <BetaFeaturesSettings enabled={clippingEnabled} onToggle={toggleClippingEnabled} />
+        </section> : null}
 
         <BehaviorSettings
           bookPreviewsAvailable={!demoMode && !localMode}

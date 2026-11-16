@@ -27,6 +27,7 @@ import { acknowledgeProgressSeekIntent, progressSeekStorage, progressSeekOptions
 
 
 export function useProgressSync({
+  clipPreviewBookIdRef,
   acknowledgedSeekGenerationRef,
   acknowledgedServerPositionRef,
   activeTrackIndex,
@@ -72,6 +73,7 @@ export function useProgressSync({
   showMediaClock,
   wantsAutoplayRef
 }: {
+  clipPreviewBookIdRef: RefObject<string | null>;
   acknowledgedSeekGenerationRef: RefObject<Map<string, number>>;
   acknowledgedServerPositionRef: RefObject<Map<string, number>>;
   activeTrackIndex: number;
@@ -128,6 +130,8 @@ export function useProgressSync({
   };
 
   function persistProgress(options?: { keepalive?: boolean }): Promise<void> {
+    // Preview positions never enter the local journal or server save queue.
+    if (playbackBook && clipPreviewBookIdRef.current === playbackBook.id) return Promise.resolve();
     if (
       !playbackBook ||
       restoredProgressBookId.current !== playbackBook.id ||
