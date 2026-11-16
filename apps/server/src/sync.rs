@@ -2346,6 +2346,8 @@ enum PrefetchPiece {
     Pending(tokio::task::JoinHandle<anyhow::Result<Vec<alignment::RecognizedWord>>>),
     /// Word timings in track seconds.
     Ready(Vec<alignment::RecognizedWord>),
+    /// Passed over before any window needed it.
+    Skipped,
 }
 
 impl CloudPrefetch {
@@ -2396,43 +2398,62 @@ impl CloudPrefetch {
             .unwrap_or(self.cores.len() - 1)
     }
 
-    fn request_through(&mut self, last: usize) {
-        while self.pieces.len() <= last.min(self.cores.len() - 1) {
-            let index = self.pieces.len();
-            let (core_start, core_end) = self.cores[index];
-            let start = (core_start - PREFETCH_OVERLAP_SECONDS).max(self.scope_range.0);
-            let end = (core_end + PREFETCH_OVERLAP_SECONDS).min(self.scope_range.1);
-            let state = self.state.clone();
-            let cloud = self.cloud.clone();
-            let language = self.language.clone();
-            let ffmpeg = self.ffmpeg.clone();
-            let source = self.source.clone();
-            let audio = self
-                .temp_dir
-                .join(format!("audio-{}-{index}-prefetch.wav", self.scope_number));
-            let last_piece = index + 1 == self.cores.len();
-            self.pieces
-                .push(PrefetchPiece::Pending(tokio::spawn(async move {
-                    // Turning OpenAI off stops audio leaving at the next piece.
-                    anyhow::ensure!(
-                        cloud_recognition::still_enabled(&state).await,
-                        "OpenAI transcription was turned off while this book was syncing. Sync it again to use on-device recognition."
-                    );
-                    extract_alignment_audio(&ffmpeg, &source, &audio, start, end).await?;
-                    let entries = cloud.transcribe(&audio, language.as_deref()).await;
-                    let _ = fs::remove_file(&audio).await;
-                    let mut words = alignment::recognized_words(&entries?);
-                    words.retain(|word| {
-                        let middle = start + (word.start_time + word.end_time) / 2.0;
-                        middle >= core_start && (middle < core_end || last_piece)
-                    });
-                    for word in &mut words {
-                        word.start_time += start;
-                        word.end_time += start;
-                    }
-                    Ok(words)
-                })));
+    /// Requests the pieces from `first` through `last`. Earlier pieces are
+    /// no longer needed: a recovery scan can pass over several, which are
+    /// then never sent.
+    fn request(&mut self, first: usize, last: usize) {
+        for piece in self.pieces.iter_mut().take(first) {
+            if let PrefetchPiece::Pending(task) = piece {
+                task.abort();
+            }
+            *piece = PrefetchPiece::Skipped;
         }
+        for index in first..=last.min(self.cores.len() - 1) {
+            while self.pieces.len() <= index {
+                self.pieces.push(PrefetchPiece::Skipped);
+            }
+            if matches!(self.pieces[index], PrefetchPiece::Skipped) {
+                self.pieces[index] = self.spawn(index);
+            }
+        }
+    }
+
+    fn spawn(&self, index: usize) -> PrefetchPiece {
+        let (core_start, core_end) = self.cores[index];
+        let start = (core_start - PREFETCH_OVERLAP_SECONDS).max(self.scope_range.0);
+        let end = (core_end + PREFETCH_OVERLAP_SECONDS).min(self.scope_range.1);
+        let state = self.state.clone();
+        let cloud = self.cloud.clone();
+        let language = self.language.clone();
+        let ffmpeg = self.ffmpeg.clone();
+        let source = self.source.clone();
+        let audio = self
+            .temp_dir
+            .join(format!("audio-{}-{index}-prefetch.wav", self.scope_number));
+        let last_piece = index + 1 == self.cores.len();
+        PrefetchPiece::Pending(tokio::spawn(async move {
+            extract_alignment_audio(&ffmpeg, &source, &audio, start, end).await?;
+            // Turning OpenAI off stops audio leaving at the next piece,
+            // including pieces cut while it was being turned off.
+            if !cloud_recognition::still_enabled(&state).await {
+                let _ = fs::remove_file(&audio).await;
+                anyhow::bail!(
+                    "OpenAI transcription was turned off while this book was syncing. Sync it again to use on-device recognition."
+                );
+            }
+            let entries = cloud.transcribe(&audio, language.as_deref()).await;
+            let _ = fs::remove_file(&audio).await;
+            let mut words = alignment::recognized_words(&entries?);
+            words.retain(|word| {
+                let middle = start + (word.start_time + word.end_time) / 2.0;
+                middle >= core_start && (middle < core_end || last_piece)
+            });
+            for word in &mut words {
+                word.start_time += start;
+                word.end_time += start;
+            }
+            Ok(words)
+        }))
     }
 
     /// The words heard between two track times, timed from `start`, as a
@@ -2444,7 +2465,7 @@ impl CloudPrefetch {
     ) -> anyhow::Result<Vec<alignment::RecognizedWord>> {
         let first = self.piece_at(start);
         let last = self.piece_at((end - 0.001).max(start));
-        self.request_through(last + PREFETCH_AHEAD);
+        self.request(first, last + PREFETCH_AHEAD);
         let mut words = Vec::new();
         for index in first..=last {
             if let PrefetchPiece::Pending(task) = &mut self.pieces[index] {
@@ -2454,7 +2475,7 @@ impl CloudPrefetch {
                 self.pieces[index] = PrefetchPiece::Ready(heard);
             }
             let PrefetchPiece::Ready(heard) = &self.pieces[index] else {
-                unreachable!("awaited above");
+                unreachable!("pieces from `first` on are requested and awaited above");
             };
             words.extend(
                 heard
@@ -5508,6 +5529,7 @@ esac
             most_in_flight: usize,
             /// Seconds of audio sent as whole pieces.
             seconds_sent: f64,
+            starts: Vec<f64>,
         }
 
         async fn fake_openai(narration: PathBuf) -> String {
@@ -5539,6 +5561,7 @@ esac
                         {
                             let mut calls = seen.lock().unwrap();
                             calls.in_flight += 1;
+                            calls.starts.push(start);
                             calls.most_in_flight = calls.most_in_flight.max(calls.in_flight);
                             // The scripted narration makes every window
                             // uncertain, so each is re-checked in two halves
@@ -5611,6 +5634,100 @@ esac
                 "sent {:.0} s for {narrated:.0} s of narration",
                 calls.seconds_sent
             );
+        }
+
+        /// A prefetch over a long scope of scripted narration, recognized by
+        /// a stand-in for OpenAI. The fake ffmpeg takes `extract_delay`.
+        async fn fake_prefetch(
+            root: &FsPath,
+            extract_delay: &str,
+        ) -> (AppState, CloudPrefetch, Arc<std::sync::Mutex<OpenAiCalls>>) {
+            let (state, _) = crate::unit_tests::fake_libation_state(root);
+            let narration_path = root.join("narration.txt");
+            std::fs::write(&narration_path, narration(1000, &[])).unwrap();
+            let (endpoint, calls) = fake_openai_with_delay(narration_path, Duration::ZERO).await;
+            let ffmpeg = root.join("ffmpeg");
+            write_executable(
+                &ffmpeg,
+                &FAKE_FFMPEG.replace(
+                    "#!/bin/sh\n",
+                    &format!(
+                        "#!/bin/sh\ntouch '{}'\nsleep {extract_delay}\n",
+                        root.join("cutting").display()
+                    ),
+                ),
+            );
+            cloud_recognition::enable_for_test(&state).await;
+            let prefetch = CloudPrefetch::new(
+                &state,
+                Arc::new(cloud_recognition::CloudRecognizer::for_test(&endpoint)),
+                Some("en".into()),
+                &ffmpeg,
+                &root.join("book.m4b"),
+                root,
+                0,
+                0.0,
+                4000.0,
+            );
+            (state, prefetch, calls)
+        }
+
+        #[tokio::test]
+        async fn pieces_a_recovery_scan_passed_over_are_never_sent() {
+            let root = tempfile::tempdir().unwrap();
+            let (_state, mut prefetch, calls) = fake_prefetch(root.path(), "0").await;
+            prefetch.words(0.0, 240.0).await.unwrap();
+            // Recovery moved the window far ahead of the pieces requested.
+            let words = prefetch.words(2400.0, 2640.0).await.unwrap();
+            assert!(!words.is_empty());
+            assert!(
+                words
+                    .iter()
+                    .all(|word| (0.0..240.0).contains(&word.start_time))
+            );
+            for piece in &mut prefetch.pieces {
+                if let PrefetchPiece::Pending(task) = piece {
+                    let _ = task.await;
+                }
+            }
+            let calls = calls.lock().unwrap();
+            // The first window covers pieces 0 and 1 and requests three more;
+            // the second covers 10 and 11 and requests through 14. None in
+            // between is sent.
+            let mut sent = calls
+                .starts
+                .iter()
+                .map(|&start| {
+                    prefetch
+                        .cores
+                        .iter()
+                        .position(|&(core, _)| {
+                            ((core - PREFETCH_OVERLAP_SECONDS).max(0.0) - start).abs() < 0.01
+                        })
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            sent.sort_unstable();
+            assert_eq!(sent, [0, 1, 2, 3, 4, 10, 11, 12, 13, 14]);
+        }
+
+        #[tokio::test]
+        async fn turning_openai_off_while_a_piece_is_cut_keeps_it_on_the_server() {
+            let root = tempfile::tempdir().unwrap();
+            let (state, mut prefetch, calls) = fake_prefetch(root.path(), "0.5").await;
+            prefetch.request(0, 0);
+            let cutting = root.path().join("cutting");
+            while !cutting.exists() {
+                tokio::task::yield_now().await;
+            }
+            state
+                .database
+                .transaction(|db| delete_document(db, "readalong-cloud-recognition-v1"))
+                .await
+                .unwrap();
+            let error = prefetch.words(0.0, 240.0).await.unwrap_err();
+            assert!(error.to_string().contains("turned off"), "{error}");
+            assert!(calls.lock().unwrap().starts.is_empty());
         }
 
         #[tokio::test]
