@@ -178,7 +178,7 @@ import { SettingsPage } from "./SettingsPage";
 import { AgentAccessDialog } from "./AgentAccess";
 import { MiniPlayer } from "./MiniPlayer";
 import { PopOutPlayer } from "./PopOutPlayer";
-import { playerOnScreen, usePopOutPlayer, type PopOutControl } from "./popOutPlayer";
+import { playerOnScreen, usePopOutPlayer, type PopOutControl } from "./usePopOutPlayer";
 import { DeskView, useDeskView } from "./DeskView";
 import { PlayerPane } from "./PlayerPane";
 import { LibraryPane } from "./LibraryPane";

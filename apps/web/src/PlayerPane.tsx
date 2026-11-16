@@ -1,7 +1,7 @@
 import { BookClips, useBookClips } from "./BookClips";
 import type { Clip } from "./clips";
 import { createPortal } from "react-dom";
-import type { PopOutControl } from "./popOutPlayer";
+import type { PopOutControl } from "./usePopOutPlayer";
 import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BookPreviewBar, type PreviewPosition } from "./BookPreviewBar";
 import { BookCredits } from "./BookCredits";
