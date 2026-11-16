@@ -806,7 +806,13 @@ export type VoiceEdit =
   | { kind: "keep"; id?: string; chapter: number; startSeconds: number; endSeconds: number };
 export type VoiceStretch = { startSeconds: number; endSeconds: number };
 /** A voice heard in the book and what replaces it, over exactly the stretches listed. */
-export type VoiceCastMember = { id?: string; name: string; voice: VoiceChoice; stretches: VoiceStretch[] };
+export type VoiceCastMember = { id?: string; name: string; voice: VoiceChoice; method?: VoiceCastMethod; stretches: VoiceStretch[] };
+/**
+ * How a voice in the cast is replaced. The voice changer keeps the original performance, over everything or only over
+ * what is said; reading speaks the transcript afresh, with the usual speech model or the one that costs half as much.
+ * Left out, it is `keepPerformance`, which is also how it is sent: a server from before the choice refuses the field.
+ */
+export type VoiceCastMethod = "keepPerformance" | "skipPauses" | "readText" | "readTextCheaply";
 /** A run of a chapter between two spoken headings, such as a character's name. */
 export type VoicePassage = { headings: string[]; startSeconds: number; endSeconds: number };
 export type VoiceSpeaker = { id: string; seconds: number; lines: number; sampleStartSeconds: number; sampleEndSeconds: number };
@@ -817,11 +823,15 @@ export type VoiceProject = { bookId: string; chapters: VoiceChapter[]; edits: Vo
 export type VoiceLine = { speaker: string; startSeconds: number; endSeconds: number; text: string };
 export type VoiceEstimate = {
   voiceChangerSeconds: number;
+  /** Pauses left out of that for voices set to skip them. */
+  pausesSkippedSeconds?: number;
+  /** Stretches whose pauses are not found yet and so are counted whole. Asking again finds more. */
+  pausesUnmeasuredSeconds?: number;
   speechCharacters: number;
   credits: number;
   chaptersChanged: number;
   chaptersWithoutText: string[];
-  cast: { id: string; seconds: number; credits: number }[];
+  cast: { id: string; seconds: number; credits: number; withoutText?: boolean }[];
 };
 
 const VOICE_REPLACEMENT = "/api/experimental-features/voice-replacement";
@@ -923,8 +933,9 @@ export async function previewVoiceEdit(bookId: string, edit: VoiceEdit) {
  * Up to thirty seconds of the book in a voice as it is set, after `leadSeconds`
  * of the book as it is. ElevenLabs bills it like any other clip.
  */
-export async function auditionVoice(bookId: string, voice: VoiceChoice, startSeconds: number, endSeconds: number, leadSeconds: number) {
-  return requestAudio(`${voiceProjectRoute(bookId)}/audition`, { method: "POST", body: JSON.stringify({ voice, startSeconds, endSeconds, leadSeconds }) });
+export async function auditionVoice(bookId: string, voice: VoiceChoice, startSeconds: number, endSeconds: number, leadSeconds: number, method?: VoiceCastMethod) {
+  const how = method && method !== "keepPerformance" ? { method } : {};
+  return requestAudio(`${voiceProjectRoute(bookId)}/audition`, { method: "POST", body: JSON.stringify({ voice, startSeconds, endSeconds, leadSeconds, ...how }) });
 }
 
 async function requestAt<T>(

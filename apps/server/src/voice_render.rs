@@ -180,6 +180,43 @@ pub(crate) async fn extract_clip(
     Ok(())
 }
 
+/// The filter that keeps only `stretches` of the audio it is given and closes
+/// the gaps between them. Times are from the start of that audio. One input
+/// is read once however many stretches there are: opening a long book once
+/// per stretch would hold its whole index in memory each time.
+fn only_filter(stretches: &[(f64, f64)]) -> String {
+    let kept = stretches
+        .iter()
+        .map(|(start, end)| format!("between(t,{start:.3},{end:.3})"))
+        .collect::<Vec<_>>()
+        .join("+");
+    // Small frames, so a stretch is cut to within a millisecond or two.
+    format!("aresample=44100,asetnsamples=n=64:p=0,aselect='{kept}',asetpts=N/SR/TB")
+}
+
+/// A mono clip of only `stretches` of `pieces`, end to end. Times are from
+/// the start of `pieces`.
+pub(crate) async fn extract_stretches(
+    ffmpeg: &FsPath,
+    pieces: &[Piece],
+    stretches: &[(f64, f64)],
+    output: &FsPath,
+    sample_rate: u32,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !pieces.is_empty() && !stretches.is_empty(),
+        "That part of the book has no audio."
+    );
+    let mut command = base_command(ffmpeg);
+    command
+        .args(source_args(pieces, Some(&only_filter(stretches))))
+        .args(["-ac", "1", "-ar"])
+        .arg(sample_rate.to_string())
+        .arg(output);
+    run(command, "cut a clip from the book").await?;
+    Ok(())
+}
+
 /// Pauses in the audio, as times from the start of `pieces`.
 pub(crate) async fn silences(ffmpeg: &FsPath, pieces: &[Piece]) -> anyhow::Result<Vec<(f64, f64)>> {
     let mut command = Command::new(ffmpeg);
@@ -231,10 +268,12 @@ fn parse_mean_level(log: &str) -> Option<f64> {
 
 /// The gain that brings `clip` to the loudness of the stretch of the book it
 /// replaces, so a new voice does not sit quieter or louder than the voices
-/// around it. Nothing when either cannot be measured.
+/// around it. Nothing when either cannot be measured. With `only`, the clip
+/// replaces just those stretches of `pieces`, and they are what is measured.
 pub(crate) async fn matching_gain(
     ffmpeg: &FsPath,
     pieces: &[Piece],
+    only: &[(f64, f64)],
     clip: &FsPath,
     format: AudioFormat,
 ) -> f64 {
@@ -245,7 +284,12 @@ pub(crate) async fn matching_gain(
         2 => "aformat=channel_layouts=stereo,volumedetect",
         _ => "volumedetect",
     };
-    let original = mean_level(ffmpeg, source_args(pieces, Some(measure))).await;
+    let original = if only.is_empty() {
+        mean_level(ffmpeg, source_args(pieces, Some(measure))).await
+    } else {
+        let measured = format!("{},{measure}", only_filter(only));
+        mean_level(ffmpeg, source_args(pieces, Some(&measured))).await
+    };
     let replacement = mean_level(
         ffmpeg,
         vec!["-i".into(), clip.into(), "-af".into(), measure.into()],
@@ -291,6 +335,58 @@ pub(crate) fn windows(length: f64, max_seconds: f64, silences: &[(f64, f64)]) ->
     }
     cuts.push(length);
     cuts.windows(2).map(|pair| (pair[0], pair[1])).collect()
+}
+
+/// What is left of `length` seconds once pauses of `min_pause` or longer are
+/// taken out: the stretches with sound in them, each keeping `pad` seconds of
+/// the quiet on either side. `min_pause` is more than twice `pad`, so no two
+/// stretches meet.
+pub(crate) fn spoken(
+    length: f64,
+    silences: &[(f64, f64)],
+    min_pause: f64,
+    pad: f64,
+) -> Vec<(f64, f64)> {
+    let mut found = Vec::new();
+    let mut sound_from = 0.0_f64;
+    for &(start, end) in silences {
+        let start = start.clamp(0.0, length);
+        let end = end.clamp(0.0, length);
+        if end - start < min_pause {
+            continue;
+        }
+        if start - sound_from > 0.01 {
+            found.push(((sound_from - pad).max(0.0), start + pad));
+        }
+        sound_from = end;
+    }
+    if length - sound_from > 0.01 {
+        found.push(((sound_from - pad).max(0.0), length));
+    }
+    found
+}
+
+/// Gathers stretches, in order, into batches that each hold no more than
+/// `max_seconds` of audio. A stretch longer than that is cut first.
+pub(crate) fn batches(stretches: &[(f64, f64)], max_seconds: f64) -> Vec<Vec<(f64, f64)>> {
+    let mut found: Vec<Vec<(f64, f64)>> = Vec::new();
+    let mut held = 0.0;
+    for &(start, end) in stretches {
+        let mut from = start;
+        while end - from > 0.0005 {
+            let to = end.min(from + max_seconds);
+            if found.is_empty() || held + (to - from) > max_seconds {
+                found.push(Vec::new());
+                held = 0.0;
+            }
+            if let Some(batch) = found.last_mut() {
+                batch.push((from, to));
+            }
+            held += to - from;
+            from = to;
+        }
+    }
+    found
 }
 
 pub(crate) struct Tags<'a> {
@@ -416,6 +512,10 @@ pub(crate) struct Insert {
     pub(crate) fit: bool,
     /// Decibels to raise the clips by, or lower them with a negative number.
     pub(crate) gain_db: f64,
+    /// Its clip is the one the insert before it was reading, carried on from
+    /// where that stopped. One clip made from several stretches of the book,
+    /// with the pauses between them left out, goes back in this way.
+    pub(crate) continues: bool,
 }
 
 type Pcm = Pin<Box<dyn AsyncRead + Send>>;
@@ -521,6 +621,8 @@ where
 {
     let frame = format.frame_bytes() as u64;
     let mut position = 0u64;
+    // The clip last read, for an insert that carries on with it.
+    let mut carried: Option<Pcm> = None;
     for insert in inserts {
         let start = format.frames(insert.start_seconds).max(position);
         let end = format.frames(insert.end_seconds).max(start);
@@ -538,7 +640,10 @@ where
         let mut written = 0u64;
         for clip in &insert.clips {
             let limit = insert.fit.then(|| room - written);
-            let mut clip = open_clip(clip, insert.gain_db)?;
+            let mut clip = match carried.take() {
+                Some(open) if insert.continues => open,
+                _ => open_clip(clip, insert.gain_db)?,
+            };
             let copied = pump(&mut clip, Some(&mut *out), limit).await?;
             // A clip ends on a whole sample or the channels would swap.
             let stray = copied % frame;
@@ -546,6 +651,7 @@ where
                 out.write_all(&vec![0u8; (frame - stray) as usize]).await?;
             }
             written += copied + (frame - stray) % frame;
+            carried = Some(clip);
         }
         if insert.fit && written < room {
             pump(
@@ -650,6 +756,27 @@ mod tests {
         assert_eq!(windows(120.0, 270.0, &found), [(0.0, 120.0)]);
     }
 
+    #[test]
+    fn long_pauses_are_left_out_and_what_is_said_is_gathered_into_requests() {
+        let pauses = [(0.0, 1.0), (4.0, 4.2), (6.0, 8.0), (19.0, 20.0)];
+        // The short pause stays inside its stretch. The long ones go, each
+        // leaving a little of its quiet on the stretches around it.
+        let kept = spoken(20.0, &pauses, 0.5, 0.1);
+        assert_eq!(kept, [(0.9, 6.1), (7.9, 19.1)]);
+        assert_eq!(spoken(5.0, &[], 0.5, 0.1), [(0.0, 5.0)]);
+        assert!(spoken(5.0, &[(0.0, 5.0)], 0.5, 0.1).is_empty());
+
+        assert_eq!(
+            batches(&[(0.0, 4.0), (5.0, 9.0), (10.0, 13.0)], 8.0),
+            [vec![(0.0, 4.0), (5.0, 9.0)], vec![(10.0, 13.0)]]
+        );
+        // A stretch too long for one request is cut.
+        assert_eq!(
+            batches(&[(0.0, 20.0)], 8.0),
+            [vec![(0.0, 8.0)], vec![(8.0, 16.0)], vec![(16.0, 20.0)]]
+        );
+    }
+
     /// Mono 16-bit audio at ten samples a second, each sample carrying `value`.
     fn tone(samples: usize, value: i16) -> Vec<u8> {
         std::iter::repeat_n(value.to_le_bytes(), samples)
@@ -669,6 +796,11 @@ mod tests {
             ("long", tone(30, 3)),
             // Half a sample too many, as a damaged decode might leave.
             ("ragged", [tone(4, 4), vec![9]].concat()),
+            // Twenty samples that count up from ten.
+            (
+                "counted",
+                (10..30i16).flat_map(i16::to_le_bytes).collect::<Vec<u8>>(),
+            ),
         ]);
         let run = |inserts: Vec<Insert>| {
             let clips = clips.clone();
@@ -692,6 +824,7 @@ mod tests {
             clips: vec![PathBuf::from(clip)],
             fit,
             gain_db: 0.0,
+            continues: false,
         };
 
         // A fitted clip that runs short is padded and one that runs long is
@@ -715,6 +848,27 @@ mod tests {
         let ragged = run(vec![insert(0.0, 1.0, "ragged", false)]).await;
         assert_eq!(ragged.len(), 95);
         assert_eq!(&ragged[..6], [4, 4, 4, 4, 9, 1]);
+
+        // One clip made from two stretches goes back into both, the second
+        // carrying on where the first stopped, with the pause between them
+        // left as it was.
+        let carried = run(vec![
+            insert(1.0, 2.0, "counted", true),
+            Insert {
+                continues: true,
+                ..insert(5.0, 6.0, "counted", true)
+            },
+        ])
+        .await;
+        assert_eq!(carried.len(), 100);
+        assert_eq!(
+            &carried[9..21],
+            [1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 1]
+        );
+        assert_eq!(
+            &carried[49..61],
+            [1, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 1]
+        );
 
         // An insert past the end of the audio changes nothing.
         assert_eq!(

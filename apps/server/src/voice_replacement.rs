@@ -28,6 +28,16 @@ const MAX_EDITS: usize = 500;
 /// The least quiet on either side of a spoken heading.
 const HEADING_PAUSE_SECONDS: f64 = 1.5;
 const MAX_CAST: usize = 40;
+/// A pause this long is left out of what the voice changer is sent, for a
+/// voice set to skip pauses.
+const SKIPPED_PAUSE_SECONDS: f64 = 0.5;
+/// How much of a skipped pause stays on the speech either side of it, so no
+/// breath or trailing sound is cut.
+const PAUSE_PAD_SECONDS: f64 = 0.12;
+/// How much of the book one estimate listens through for pauses it has not
+/// found before. What is left over is counted in full until a later estimate
+/// reaches it.
+const ESTIMATE_LISTEN_SECONDS: f64 = 30.0 * 60.0;
 const MAX_STRETCHES: usize = 2_000;
 /// How much of a voice can be tried before it is put in the plan.
 const AUDITION_SECONDS: f64 = 30.0;
@@ -465,6 +475,38 @@ pub(crate) struct Stretch {
     end_seconds: f64,
 }
 
+/// How a voice in the cast is replaced. The ways differ in what they cost
+/// and in how much of the original performance is left.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum CastMethod {
+    /// The voice changer over every second of its stretches.
+    #[default]
+    KeepPerformance,
+    /// The voice changer over what is said. Pauses stay as they are in the
+    /// book and are not paid for.
+    SkipPauses,
+    /// Its words, from the transcript, spoken afresh.
+    ReadText,
+    /// The same, by the speech model that costs half as much.
+    ReadTextCheaply,
+}
+
+impl CastMethod {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn source(self) -> SlotSource {
+        match self {
+            Self::KeepPerformance => SlotSource::Performance,
+            Self::SkipPauses => SlotSource::Spoken,
+            Self::ReadText => SlotSource::Heard { cheaply: false },
+            Self::ReadTextCheaply => SlotSource::Heard { cheaply: true },
+        }
+    }
+}
+
 /// A voice heard in the book and what replaces it: a name to know it by,
 /// the new voice, and every stretch it covers. The stretches are the whole
 /// of it; nothing is replaced that is not listed.
@@ -475,6 +517,8 @@ pub(crate) struct CastMember {
     id: String,
     name: String,
     voice: VoiceChoice,
+    #[serde(default, skip_serializing_if = "CastMethod::is_default")]
+    method: CastMethod,
     #[serde(default)]
     stretches: Vec<Stretch>,
 }
@@ -719,10 +763,14 @@ fn passages(section: &Section, lines: &[Line]) -> Vec<Passage> {
 enum SlotSource {
     /// Change the voice of what is there.
     Performance,
+    /// Change the voice of what is said there, and leave the pauses alone.
+    Spoken,
     /// Speak these words.
     Text(String),
     /// Speak the chapter's own words, found when the copy is made.
     Narration,
+    /// Speak what the transcript heard in this stretch.
+    Heard { cheaply: bool },
 }
 
 /// A stretch of the book to replace, and how.
@@ -820,7 +868,7 @@ fn resolve(section: &Section, edits: &[&Edit], cast: &[CastMember], lines: &[Lin
                         end_seconds: clamp(stretch.end_seconds),
                         voice_id: member.voice.voice_id.clone(),
                         settings: member.voice.settings,
-                        source: SlotSource::Performance,
+                        source: member.method.source(),
                     },
                 );
             }
@@ -972,6 +1020,125 @@ async fn planned_slots(
         planned.push((section, slots));
     }
     planned
+}
+
+/// What a transcript heard in a stretch: the lines that mostly fall in it.
+fn heard_text(lines: &[Line], start_seconds: f64, end_seconds: f64) -> String {
+    lines
+        .iter()
+        .filter(|line| {
+            let middle = (line.start_seconds + line.end_seconds) / 2.0;
+            middle >= start_seconds && middle < end_seconds
+        })
+        .map(|line| line.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The words a copy speaks afresh, by chapter.
+struct Words {
+    /// Chapters read whole from their text.
+    narration: HashMap<usize, String>,
+    /// The transcripts of chapters where a voice in the cast is read from
+    /// what it says.
+    heard: HashMap<usize, Vec<Line>>,
+}
+
+/// The transcripts behind every stretch set to be read from its text. A
+/// chapter that has none is missing from the answer.
+async fn heard_lines(
+    state: &AppState,
+    book_id: &str,
+    project: &Project,
+    planned: &[(Section, Vec<Slot>)],
+) -> HashMap<usize, Vec<Line>> {
+    let mut heard = HashMap::new();
+    for (section, slots) in planned {
+        let wanted = slots
+            .iter()
+            .any(|slot| matches!(slot.source, SlotSource::Heard { .. }));
+        if wanted && project.analysis_of(section).is_some() {
+            heard.insert(
+                section.index,
+                load_lines(state, book_id, section.index).await,
+            );
+        }
+    }
+    heard
+}
+
+/// The first chapter with a stretch to read from text that has no transcript.
+fn unheard<'a>(
+    planned: &'a [(Section, Vec<Slot>)],
+    heard: &HashMap<usize, Vec<Line>>,
+) -> Option<&'a Section> {
+    planned
+        .iter()
+        .find(|(section, slots)| {
+            !heard.contains_key(&section.index)
+                && slots
+                    .iter()
+                    .any(|slot| matches!(slot.source, SlotSource::Heard { .. }))
+        })
+        .map(|(section, _)| section)
+}
+
+/// Where a stretch's pauses are kept once found: finding them means decoding
+/// the stretch, which an estimate should not do twice.
+fn pauses_path(pauses_dir: &FsPath, start_seconds: f64, end_seconds: f64) -> PathBuf {
+    pauses_dir.join(format!("{start_seconds:.3}-{end_seconds:.3}.json"))
+}
+
+async fn saved_pauses(
+    pauses_dir: &FsPath,
+    start_seconds: f64,
+    end_seconds: f64,
+) -> Option<Vec<(f64, f64)>> {
+    let bytes = fs::read(pauses_path(pauses_dir, start_seconds, end_seconds))
+        .await
+        .ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// The pauses in a stretch of the book, as times from its start.
+async fn stretch_pauses(
+    pauses_dir: &FsPath,
+    ffmpeg: &FsPath,
+    tracks: &[(PathBuf, f64)],
+    start_seconds: f64,
+    end_seconds: f64,
+) -> anyhow::Result<Vec<(f64, f64)>> {
+    if let Some(saved) = saved_pauses(pauses_dir, start_seconds, end_seconds).await {
+        return Ok(saved);
+    }
+    let pauses =
+        render::silences(ffmpeg, &render::pieces(tracks, start_seconds, end_seconds)).await?;
+    fs::create_dir_all(pauses_dir).await?;
+    // A torn file does not read back and is simply found again.
+    fs::write(
+        pauses_path(pauses_dir, start_seconds, end_seconds),
+        serde_json::to_vec(&pauses)?,
+    )
+    .await?;
+    Ok(pauses)
+}
+
+/// What is said in a stretch, on the book's timeline: the stretch without
+/// its longer pauses.
+fn speech_in(start_seconds: f64, end_seconds: f64, pauses: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    render::spoken(
+        end_seconds - start_seconds,
+        pauses,
+        SKIPPED_PAUSE_SECONDS,
+        PAUSE_PAD_SECONDS,
+    )
+    .into_iter()
+    .map(|(from, to)| (start_seconds + from, start_seconds + to))
+    .collect()
+}
+
+fn seconds_in(stretches: &[(f64, f64)]) -> f64 {
+    stretches.iter().map(|(start, end)| end - start).sum()
 }
 
 // ---------------------------------------------------------------------------
@@ -1163,15 +1330,21 @@ impl Workshop<'_> {
         ))
     }
 
-    /// A stretch of the book in another voice. At most what one voice
-    /// changer request takes.
+    fn pauses_dir(&self) -> PathBuf {
+        self.clips_dir.with_file_name("pauses")
+    }
+
+    /// Stretches of the book in another voice, as one clip that runs them end
+    /// to end. Together at most what one voice changer request takes.
     async fn performance(
         &self,
         voice_id: &str,
         settings: Option<&elevenlabs::ChangerSettings>,
-        start_seconds: f64,
-        end_seconds: f64,
+        stretches: &[(f64, f64)],
     ) -> anyhow::Result<PathBuf> {
+        let (Some(first), Some(last)) = (stretches.first(), stretches.last()) else {
+            anyhow::bail!("There is nothing there to change the voice of.");
+        };
         // Settings are part of what was asked for: changing one must not
         // find the clip made with the old ones.
         let asked = settings.map_or(String::new(), |settings| {
@@ -1180,23 +1353,34 @@ impl Workshop<'_> {
                 settings.stability, settings.similarity, settings.style, settings.remove_noise
             )
         });
+        // One stretch is named as it always was, so clips made before pauses
+        // could be skipped are still found.
+        let covered = match stretches {
+            [(start, end)] => format!("{start:.3}|{end:.3}"),
+            _ => stretches
+                .iter()
+                .map(|(start, end)| format!("{start:.3}-{end:.3}"))
+                .collect::<Vec<_>>()
+                .join(","),
+        };
         let clip = self.clip_path(&format!(
-            "performance|{}|{voice_id}|{:.3}|{:.3}{asked}",
+            "performance|{}|{voice_id}|{covered}{asked}",
             elevenlabs::VOICE_CHANGER_MODEL,
-            start_seconds,
-            end_seconds
         ));
         if fs::try_exists(&clip).await? {
             return Ok(clip);
         }
         let source = self.work_dir.join(format!("{}.flac", random_hex_id()));
-        render::extract_clip(
-            self.ffmpeg,
-            &render::pieces(self.tracks, start_seconds, end_seconds),
-            &source,
-            44_100,
-        )
-        .await?;
+        let pieces = render::pieces(self.tracks, first.0, last.1);
+        if stretches.len() == 1 {
+            render::extract_clip(self.ffmpeg, &pieces, &source, 44_100).await?;
+        } else {
+            let within: Vec<(f64, f64)> = stretches
+                .iter()
+                .map(|(start, end)| (start - first.0, end - first.0))
+                .collect();
+            render::extract_stretches(self.ffmpeg, &pieces, &within, &source, 44_100).await?;
+        }
         let changed = self
             .provider
             .change_voice(voice_id, &source, &clip, settings)
@@ -1206,15 +1390,132 @@ impl Workshop<'_> {
         Ok(clip)
     }
 
-    async fn speech(&self, voice_id: &str, text: &str) -> anyhow::Result<PathBuf> {
-        let clip = self.clip_path(&format!(
-            "speech|{}|{voice_id}|{text}",
-            elevenlabs::SPEECH_MODEL
-        ));
+    async fn speech(&self, voice_id: &str, text: &str, model: &str) -> anyhow::Result<PathBuf> {
+        let clip = self.clip_path(&format!("speech|{model}|{voice_id}|{text}"));
         if !fs::try_exists(&clip).await? {
-            self.provider.speak(voice_id, text, &clip).await?;
+            self.provider.speak(voice_id, text, model, &clip).await?;
         }
         Ok(clip)
+    }
+
+    /// The voice changer requests a stretch takes, each as the stretches of
+    /// the book it carries. Skipping pauses, a request carries only what is
+    /// said; otherwise it carries one unbroken run.
+    async fn changer_requests(
+        &self,
+        start_seconds: f64,
+        end_seconds: f64,
+        skip_pauses: bool,
+    ) -> anyhow::Result<Vec<Vec<(f64, f64)>>> {
+        let length = end_seconds - start_seconds;
+        if skip_pauses {
+            let pauses = stretch_pauses(
+                &self.pauses_dir(),
+                self.ffmpeg,
+                self.tracks,
+                start_seconds,
+                end_seconds,
+            )
+            .await?;
+            return Ok(render::batches(
+                &speech_in(start_seconds, end_seconds, &pauses),
+                elevenlabs::VOICE_CHANGER_SECONDS,
+            ));
+        }
+        let windows = if length > elevenlabs::VOICE_CHANGER_SECONDS {
+            let pauses = render::silences(
+                self.ffmpeg,
+                &render::pieces(self.tracks, start_seconds, end_seconds),
+            )
+            .await?;
+            render::windows(length, elevenlabs::VOICE_CHANGER_SECONDS, &pauses)
+        } else {
+            vec![(0.0, length)]
+        };
+        Ok(windows
+            .into_iter()
+            .map(|(from, to)| vec![(start_seconds + from, start_seconds + to)])
+            .collect())
+    }
+
+    /// One request's clip, fetched or found, as the inserts that put it back:
+    /// one for each stretch it carries. `origin` is where the audio being
+    /// written starts on the book's timeline.
+    async fn changed(
+        &self,
+        origin: f64,
+        voice_id: &str,
+        settings: Option<&elevenlabs::ChangerSettings>,
+        stretches: &[(f64, f64)],
+    ) -> anyhow::Result<Vec<Insert>> {
+        let (Some(first), Some(last)) = (stretches.first(), stretches.last()) else {
+            return Ok(Vec::new());
+        };
+        let clip = self.performance(voice_id, settings, stretches).await?;
+        let only: Vec<(f64, f64)> = if stretches.len() > 1 {
+            stretches
+                .iter()
+                .map(|(start, end)| (start - first.0, end - first.0))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // One gain for the whole clip: a gain for each stretch would have the
+        // level moving from sentence to sentence.
+        let gain_db = render::matching_gain(
+            self.ffmpeg,
+            &render::pieces(self.tracks, first.0, last.1),
+            &only,
+            &clip,
+            self.format,
+        )
+        .await;
+        Ok(stretches
+            .iter()
+            .enumerate()
+            .map(|(at, (start, end))| Insert {
+                start_seconds: start - origin,
+                end_seconds: end - origin,
+                clips: vec![clip.clone()],
+                fit: true,
+                gain_db,
+                continues: at > 0,
+            })
+            .collect())
+    }
+
+    /// Text spoken in place of a stretch, as the insert that puts it there.
+    /// It runs as long as it runs. With `matched`, it is brought to the level
+    /// of what it replaces.
+    async fn spoken(
+        &self,
+        origin: f64,
+        start_seconds: f64,
+        end_seconds: f64,
+        clips: Vec<PathBuf>,
+        matched: bool,
+    ) -> Insert {
+        let gain_db = match clips.first() {
+            Some(first) if matched => {
+                render::matching_gain(
+                    self.ffmpeg,
+                    &render::pieces(self.tracks, start_seconds, end_seconds),
+                    &[],
+                    first,
+                    self.format,
+                )
+                .await
+            }
+            _ => 0.0,
+        };
+        Insert {
+            start_seconds: start_seconds - origin,
+            end_seconds: end_seconds - origin,
+            clips,
+            fit: false,
+            gain_db,
+            continues: false,
+        }
     }
 }
 
@@ -1367,6 +1668,19 @@ async fn make_copy(state: AppState, run: RunHandle) -> Result<(), RunError> {
             missing.title
         )));
     }
+    let heard = heard_lines(&state, &run.book_id, &project, &planned).await;
+    if let Some(missing) = unheard(&planned, &heard) {
+        // Never the voice changer in its place: that would cost more than
+        // was agreed to.
+        return Err(RunError::Failed(format!(
+            "{} has not been transcribed, so a voice set to be read from its text has nothing to read there.",
+            missing.title
+        )));
+    }
+    let words = Words {
+        narration: texts,
+        heard,
+    };
 
     let directory = project_dir(&state, &run.book_id);
     fs::create_dir_all(&directory).await?;
@@ -1394,7 +1708,7 @@ async fn make_copy(state: AppState, run: RunHandle) -> Result<(), RunError> {
     ));
     fs::create_dir(&staging).await?;
     let built = build_copy(
-        &run, &workshop, &audio, &planned, &texts, format, &title, &staging,
+        &run, &workshop, &audio, &planned, &words, format, &title, &staging,
     )
     .await;
     let published = match built {
@@ -1413,7 +1727,7 @@ async fn build_copy(
     workshop: &Workshop<'_>,
     audio: &BookAudio,
     planned: &[(Section, Vec<Slot>)],
-    texts: &HashMap<usize, String>,
+    words: &Words,
     format: render::AudioFormat,
     title: &str,
     staging: &FsPath,
@@ -1449,7 +1763,7 @@ async fn build_copy(
                 for slot in slots {
                     run.check()?;
                     inserts
-                        .extend(slot_inserts(run, workshop, section, slot, texts, &label).await?);
+                        .extend(slot_inserts(run, workshop, section, slot, words, &label).await?);
                 }
                 run.update(|status| status.step = format!("{label}: writing"))
                     .await;
@@ -1475,71 +1789,80 @@ async fn slot_inserts(
     workshop: &Workshop<'_>,
     section: &Section,
     slot: &Slot,
-    texts: &HashMap<usize, String>,
+    words: &Words,
     label: &str,
 ) -> Result<Vec<Insert>, RunError> {
-    let text = match &slot.source {
-        SlotSource::Performance => None,
-        SlotSource::Text(text) => Some(text.as_str()),
-        SlotSource::Narration => texts.get(&section.index).map(String::as_str),
-    };
-    let Some(text) = text else {
-        let length = slot.end_seconds - slot.start_seconds;
-        let windows = if length > elevenlabs::VOICE_CHANGER_SECONDS {
-            let pauses = render::silences(
-                workshop.ffmpeg,
-                &render::pieces(workshop.tracks, slot.start_seconds, slot.end_seconds),
-            )
-            .await?;
-            render::windows(length, elevenlabs::VOICE_CHANGER_SECONDS, &pauses)
+    let part = |number: usize, total: usize| {
+        if total > 1 {
+            format!(" (part {} of {total})", number + 1)
         } else {
-            vec![(0.0, length)]
-        };
-        let mut inserts = Vec::new();
-        for (number, (from, to)) in windows.iter().enumerate() {
-            run.check()?;
-            run.update(|status| {
-                status.step = format!(
-                    "{label}: changing the voice at {}{}",
-                    clock(slot.start_seconds + from),
-                    if windows.len() > 1 {
-                        format!(" (part {} of {})", number + 1, windows.len())
-                    } else {
-                        String::new()
-                    }
-                );
-            })
-            .await;
-            let clip = workshop
-                .performance(
-                    &slot.voice_id,
-                    slot.settings.as_ref(),
-                    slot.start_seconds + from,
-                    slot.start_seconds + to,
+            String::new()
+        }
+    };
+    let (text, model) = match &slot.source {
+        SlotSource::Performance | SlotSource::Spoken => {
+            let requests = workshop
+                .changer_requests(
+                    slot.start_seconds,
+                    slot.end_seconds,
+                    slot.source == SlotSource::Spoken,
                 )
                 .await?;
-            let gain_db = render::matching_gain(
-                workshop.ffmpeg,
-                &render::pieces(
-                    workshop.tracks,
-                    slot.start_seconds + from,
-                    slot.start_seconds + to,
-                ),
-                &clip,
-                workshop.format,
-            )
-            .await;
-            inserts.push(Insert {
-                start_seconds: slot.start_seconds + from - section.start_seconds,
-                end_seconds: slot.start_seconds + to - section.start_seconds,
-                clips: vec![clip],
-                fit: true,
-                gain_db,
-            });
+            let mut inserts = Vec::new();
+            for (number, stretches) in requests.iter().enumerate() {
+                run.check()?;
+                let at = stretches
+                    .first()
+                    .map_or(slot.start_seconds, |first| first.0);
+                run.update(|status| {
+                    status.step = format!(
+                        "{label}: changing the voice at {}{}",
+                        clock(at),
+                        part(number, requests.len())
+                    );
+                })
+                .await;
+                inserts.extend(
+                    workshop
+                        .changed(
+                            section.start_seconds,
+                            &slot.voice_id,
+                            slot.settings.as_ref(),
+                            stretches,
+                        )
+                        .await?,
+                );
+            }
+            return Ok(inserts);
         }
-        return Ok(inserts);
+        SlotSource::Text(text) => (Some(text.clone()), elevenlabs::SPEECH_MODEL),
+        SlotSource::Narration => (
+            words.narration.get(&section.index).cloned(),
+            elevenlabs::SPEECH_MODEL,
+        ),
+        SlotSource::Heard { cheaply } => (
+            words
+                .heard
+                .get(&section.index)
+                .map(|lines| heard_text(lines, slot.start_seconds, slot.end_seconds)),
+            if *cheaply {
+                elevenlabs::CHEAP_SPEECH_MODEL
+            } else {
+                elevenlabs::SPEECH_MODEL
+            },
+        ),
     };
-    let chunks = speech_chunks(text, elevenlabs::SPEECH_CHARACTERS);
+    let Some(text) = text else {
+        return Err(RunError::Failed(format!(
+            "{} has no text to read from.",
+            section.title
+        )));
+    };
+    let chunks = speech_chunks(&text, elevenlabs::SPEECH_CHARACTERS);
+    if chunks.is_empty() {
+        // Nothing was heard there, so there is nothing to say in its place.
+        return Ok(Vec::new());
+    }
     let mut clips = Vec::new();
     for (number, chunk) in chunks.iter().enumerate() {
         run.check()?;
@@ -1547,24 +1870,27 @@ async fn slot_inserts(
             status.step = format!(
                 "{label}: speaking at {}{}",
                 clock(slot.start_seconds),
-                if chunks.len() > 1 {
-                    format!(" (part {} of {})", number + 1, chunks.len())
-                } else {
-                    String::new()
-                }
+                part(number, chunks.len())
             );
         })
         .await;
-        clips.push(workshop.speech(&slot.voice_id, chunk).await?);
+        clips.push(workshop.speech(&slot.voice_id, chunk, model).await?);
     }
-    Ok(vec![Insert {
-        start_seconds: slot.start_seconds - section.start_seconds,
-        end_seconds: slot.end_seconds - section.start_seconds,
-        clips,
-        fit: false,
-        // Fresh speech has no original of its own length to be matched to.
-        gain_db: 0.0,
-    }])
+    // A line rewritten by hand may be meant louder or softer than what it
+    // replaces. A voice read from the transcript is meant to sit where the
+    // old one did.
+    let matched = matches!(slot.source, SlotSource::Heard { .. });
+    Ok(vec![
+        workshop
+            .spoken(
+                section.start_seconds,
+                slot.start_seconds,
+                slot.end_seconds,
+                clips,
+                matched,
+            )
+            .await,
+    ])
 }
 
 fn clock(seconds: f64) -> String {
@@ -2048,6 +2374,12 @@ pub(crate) async fn put_voice_plan(
 pub(crate) struct Estimate {
     /// Narration that goes through the voice changer.
     voice_changer_seconds: f64,
+    /// Pauses left out of that for voices set to skip them.
+    pauses_skipped_seconds: f64,
+    /// Stretches set to skip pauses whose pauses have not been found yet.
+    /// They are counted in full, so the credits are still the most it can
+    /// cost; asking again finds more of them.
+    pauses_unmeasured_seconds: f64,
     /// Text that is spoken afresh.
     speech_characters: usize,
     /// What ElevenLabs bills for both, at most: clips already made are free.
@@ -2066,6 +2398,19 @@ struct CastEstimate {
     id: String,
     seconds: f64,
     credits: u64,
+    /// Set to be read from its text, with a stretch in a chapter that has
+    /// no transcript.
+    without_text: bool,
+}
+
+/// What speech costs: a credit a character, or half that from the cheaper
+/// model.
+fn speech_credits(characters: usize, cheaply: bool) -> u64 {
+    if cheaply {
+        characters.div_ceil(2) as u64
+    } else {
+        characters as u64
+    }
 }
 
 fn changer_credits(seconds: f64) -> u64 {
@@ -2091,8 +2436,13 @@ pub(crate) async fn get_voice_estimate(
         .map(|(section, _)| section)
         .collect();
     let texts = narration_texts(&state, &audio, &project, &narrated).await;
+    let heard = heard_lines(&state, &book_id, &project, &planned).await;
+    let tools = audio_tools(&state);
+    let pauses_dir = project_dir(&state, &book_id).join("pauses");
     let mut estimate = Estimate {
         voice_changer_seconds: 0.0,
+        pauses_skipped_seconds: 0.0,
+        pauses_unmeasured_seconds: 0.0,
         speech_characters: 0,
         credits: 0,
         chapters_changed: planned
@@ -2104,40 +2454,137 @@ pub(crate) async fn get_voice_estimate(
             .filter(|section| !texts.contains_key(&section.index))
             .map(|section| section.title.clone())
             .collect(),
-        cast: project
-            .cast
-            .iter()
-            .map(|member| {
-                let seconds = member
-                    .stretches
-                    .iter()
-                    .map(|stretch| stretch.end_seconds - stretch.start_seconds)
-                    .sum();
-                CastEstimate {
-                    id: member.id.clone(),
-                    seconds,
-                    credits: changer_credits(seconds),
-                }
-            })
-            .collect(),
+        cast: Vec::new(),
     };
+    let mut speech = 0u64;
+    let mut listen_left = ESTIMATE_LISTEN_SECONDS;
     for (section, slots) in &planned {
         for slot in slots {
+            let length = slot.end_seconds - slot.start_seconds;
             match &slot.source {
-                SlotSource::Performance => {
-                    estimate.voice_changer_seconds += slot.end_seconds - slot.start_seconds;
+                SlotSource::Performance => estimate.voice_changer_seconds += length,
+                SlotSource::Spoken => {
+                    let mut pauses =
+                        saved_pauses(&pauses_dir, slot.start_seconds, slot.end_seconds).await;
+                    if pauses.is_none()
+                        && length <= listen_left
+                        && let Some(tools) = &tools
+                    {
+                        listen_left -= length;
+                        pauses = stretch_pauses(
+                            &pauses_dir,
+                            &tools.ffmpeg,
+                            &audio.tracks,
+                            slot.start_seconds,
+                            slot.end_seconds,
+                        )
+                        .await
+                        .ok();
+                    }
+                    match pauses {
+                        Some(pauses) => {
+                            let sent = seconds_in(&speech_in(
+                                slot.start_seconds,
+                                slot.end_seconds,
+                                &pauses,
+                            ));
+                            estimate.voice_changer_seconds += sent;
+                            estimate.pauses_skipped_seconds += length - sent;
+                        }
+                        None => {
+                            estimate.voice_changer_seconds += length;
+                            estimate.pauses_unmeasured_seconds += length;
+                        }
+                    }
                 }
-                SlotSource::Text(text) => estimate.speech_characters += text.chars().count(),
+                SlotSource::Text(text) => {
+                    let characters = text.chars().count();
+                    estimate.speech_characters += characters;
+                    speech += speech_credits(characters, false);
+                }
                 SlotSource::Narration => {
-                    estimate.speech_characters += texts
+                    let characters = texts
                         .get(&section.index)
                         .map_or(0, |text| text.chars().count());
+                    estimate.speech_characters += characters;
+                    speech += speech_credits(characters, false);
                 }
+                SlotSource::Heard { cheaply } => match heard.get(&section.index) {
+                    Some(lines) => {
+                        let characters = heard_text(lines, slot.start_seconds, slot.end_seconds)
+                            .chars()
+                            .count();
+                        estimate.speech_characters += characters;
+                        speech += speech_credits(characters, *cheaply);
+                    }
+                    None => {
+                        if !estimate.chapters_without_text.contains(&section.title) {
+                            estimate.chapters_without_text.push(section.title.clone());
+                        }
+                    }
+                },
             }
         }
     }
-    estimate.credits =
-        changer_credits(estimate.voice_changer_seconds) + estimate.speech_characters as u64;
+    estimate.credits = changer_credits(estimate.voice_changer_seconds) + speech;
+    // After the plan's own stretches, whose pauses have been found by now.
+    let known = sections(&audio.book);
+    for member in &project.cast {
+        let seconds: f64 = member
+            .stretches
+            .iter()
+            .map(|stretch| stretch.end_seconds - stretch.start_seconds)
+            .sum();
+        let mut without_text = false;
+        let credits = match member.method {
+            CastMethod::KeepPerformance => changer_credits(seconds),
+            CastMethod::SkipPauses => {
+                let mut sent = 0.0;
+                for stretch in &member.stretches {
+                    sent +=
+                        match saved_pauses(&pauses_dir, stretch.start_seconds, stretch.end_seconds)
+                            .await
+                        {
+                            Some(pauses) => seconds_in(&speech_in(
+                                stretch.start_seconds,
+                                stretch.end_seconds,
+                                &pauses,
+                            )),
+                            None => stretch.end_seconds - stretch.start_seconds,
+                        };
+                }
+                changer_credits(sent)
+            }
+            CastMethod::ReadText | CastMethod::ReadTextCheaply => {
+                let mut characters = 0;
+                for stretch in &member.stretches {
+                    let lines = known
+                        .iter()
+                        .find(|section| {
+                            stretch.start_seconds >= section.start_seconds - 0.001
+                                && stretch.end_seconds <= section.end_seconds + 0.001
+                        })
+                        .and_then(|section| heard.get(&section.index));
+                    match lines {
+                        Some(lines) => {
+                            characters +=
+                                heard_text(lines, stretch.start_seconds, stretch.end_seconds)
+                                    .chars()
+                                    .count();
+                        }
+                        None => without_text = true,
+                    }
+                }
+                speech_credits(characters, member.method == CastMethod::ReadTextCheaply)
+            }
+        };
+        estimate.cast.push(CastEstimate {
+            id: member.id.clone(),
+            seconds,
+            credits,
+            without_text,
+        });
+    }
     Ok(Json(estimate))
 }
 
@@ -2292,7 +2739,7 @@ pub(crate) async fn preview_voice_edit(
                 .expect("a valid edit names a found narrator");
             let (start, end) = performance(sample.sample_start_seconds, sample.sample_end_seconds);
             workshop
-                .performance(&voice_id, settings, start, end)
+                .performance(&voice_id, settings, &[(start, end)])
                 .await
         }
         Edit::Line {
@@ -2303,19 +2750,23 @@ pub(crate) async fn preview_voice_edit(
         } => {
             // The whole line, so the copy reuses this clip.
             workshop
-                .performance(&voice_id, settings, *start_seconds, *end_seconds)
+                .performance(&voice_id, settings, &[(*start_seconds, *end_seconds)])
                 .await
         }
         Edit::Line {
             text: Some(text), ..
-        } => workshop.speech(&voice_id, text).await,
+        } => {
+            workshop
+                .speech(&voice_id, text, elevenlabs::SPEECH_MODEL)
+                .await
+        }
         Edit::Chapter {
             method: ChapterMethod::KeepPerformance,
             ..
         } => {
             let (start, end) = performance(section.start_seconds, section.end_seconds);
             workshop
-                .performance(&voice_id, settings, start, end)
+                .performance(&voice_id, settings, &[(start, end)])
                 .await
         }
         Edit::Chapter {
@@ -2332,7 +2783,9 @@ pub(crate) async fn preview_voice_edit(
                 .into_iter()
                 .next()
                 .unwrap_or_default();
-            workshop.speech(&voice_id, &opening).await
+            workshop
+                .speech(&voice_id, &opening, elevenlabs::SPEECH_MODEL)
+                .await
         }
         Edit::Keep { .. } => unreachable!("a kept stretch has no voice"),
     }
@@ -2349,6 +2802,10 @@ pub(crate) struct AuditionInput {
     /// Seconds of the book as it is, heard first, so the join can be judged.
     #[serde(default)]
     lead_seconds: f64,
+    /// The way the voice would be replaced, so what is heard is what a copy
+    /// made that way would hold.
+    #[serde(default)]
+    method: CastMethod,
 }
 
 /// Up to half a minute of the book in a voice as it is set, before anything
@@ -2394,35 +2851,79 @@ pub(crate) async fn audition_voice(
         work_dir: work_dir.path(),
         format,
     };
-    let clip = workshop
-        .performance(
-            &input.voice.voice_id,
-            input.voice.settings.as_ref(),
-            input.start_seconds,
-            input.end_seconds,
-        )
-        .await
-        .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
-    let gain_db = render::matching_gain(
-        &tools.ffmpeg,
-        &render::pieces(&audio.tracks, input.start_seconds, input.end_seconds),
-        &clip,
-        format,
-    )
-    .await;
     let from = (input.start_seconds - input.lead_seconds).max(0.0);
+    let voice_id = input.voice.voice_id.as_str();
+    let provider_failed = |error: anyhow::Error| ApiError::bad_gateway(error.to_string());
+    let inserts = match input.method {
+        CastMethod::KeepPerformance | CastMethod::SkipPauses => {
+            let requests = workshop
+                .changer_requests(
+                    input.start_seconds,
+                    input.end_seconds,
+                    input.method == CastMethod::SkipPauses,
+                )
+                .await?;
+            let mut inserts = Vec::new();
+            for stretches in &requests {
+                inserts.extend(
+                    workshop
+                        .changed(from, voice_id, input.voice.settings.as_ref(), stretches)
+                        .await
+                        .map_err(provider_failed)?,
+                );
+            }
+            inserts
+        }
+        CastMethod::ReadText | CastMethod::ReadTextCheaply => {
+            let project = load_project(&state, &book_id).await;
+            let transcribed = sections(&audio.book).into_iter().find(|section| {
+                input.start_seconds >= section.start_seconds - 0.001
+                    && input.end_seconds <= section.end_seconds + 0.001
+                    && project.analysis_of(section).is_some()
+            });
+            let Some(section) = transcribed else {
+                return Err(ApiError::bad_request(
+                    "This chapter has not been transcribed, so there is no text to read from.",
+                ));
+            };
+            let lines = load_lines(&state, &book_id, section.index).await;
+            let text = heard_text(&lines, input.start_seconds, input.end_seconds);
+            let Some(text) = speech_chunks(&text, elevenlabs::SPEECH_CHARACTERS)
+                .into_iter()
+                .next()
+            else {
+                return Err(ApiError::bad_request(
+                    "The transcript holds nothing said in that part.",
+                ));
+            };
+            let model = if input.method == CastMethod::ReadTextCheaply {
+                elevenlabs::CHEAP_SPEECH_MODEL
+            } else {
+                elevenlabs::SPEECH_MODEL
+            };
+            let clip = workshop
+                .speech(voice_id, &text, model)
+                .await
+                .map_err(provider_failed)?;
+            vec![
+                workshop
+                    .spoken(
+                        from,
+                        input.start_seconds,
+                        input.end_seconds,
+                        vec![clip],
+                        true,
+                    )
+                    .await,
+            ]
+        }
+    };
     let heard = work_dir.path().join("audition.m4a");
     let title = "Audition";
     render::splice_section(
         &tools.ffmpeg,
         &render::pieces(&audio.tracks, from, input.end_seconds),
-        &[Insert {
-            start_seconds: input.start_seconds - from,
-            end_seconds: input.end_seconds - from,
-            clips: vec![clip],
-            fit: true,
-            gain_db,
-        }],
+        &inserts,
         format,
         &heard,
         &render::Tags {
@@ -2730,6 +3231,7 @@ mod tests {
             id: "m".into(),
             name: "Mara".into(),
             voice: performer.clone(),
+            method: CastMethod::default(),
             stretches: vec![
                 Stretch {
                     start_seconds: 120.0,
@@ -2780,12 +3282,63 @@ mod tests {
     }
 
     #[test]
+    fn a_voice_in_the_cast_is_replaced_the_way_it_is_set() {
+        let member = |method| CastMember {
+            id: "m".into(),
+            name: "Mara".into(),
+            voice: voice("lily"),
+            method,
+            stretches: vec![Stretch {
+                start_seconds: 120.0,
+                end_seconds: 160.0,
+            }],
+        };
+        let source = |method| {
+            resolve(&section(), &[], &[member(method)], &[])
+                .remove(0)
+                .source
+        };
+        assert_eq!(source(CastMethod::KeepPerformance), SlotSource::Performance);
+        assert_eq!(source(CastMethod::SkipPauses), SlotSource::Spoken);
+        assert_eq!(
+            source(CastMethod::ReadTextCheaply),
+            SlotSource::Heard { cheaply: true }
+        );
+        // A plan saved before there was a choice keeps the whole performance,
+        // and one that still does is saved as it was.
+        let saved = serde_json::json!({
+            "id": "m", "name": "Mara", "voice": { "voiceId": "lily", "name": "lily" },
+            "stretches": [{ "startSeconds": 120.0, "endSeconds": 160.0 }],
+        });
+        let read: CastMember = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(read.method, CastMethod::KeepPerformance);
+        assert_eq!(serde_json::to_value(&read).unwrap(), saved);
+        assert_eq!(
+            serde_json::to_value(member(CastMethod::SkipPauses)).unwrap()["method"],
+            "skipPauses"
+        );
+
+        // Read from its text, a stretch says the lines that fall in it, and
+        // the cheaper model bills half.
+        let lines = [
+            said("Before.", 110.0, 119.0),
+            said("First line.", 121.0, 125.0),
+            said("Second line.", 150.0, 158.0),
+            said("After.", 159.0, 163.0),
+        ];
+        assert_eq!(heard_text(&lines, 120.0, 160.0), "First line. Second line.");
+        assert_eq!(speech_credits(25, false), 25);
+        assert_eq!(speech_credits(25, true), 13);
+    }
+
+    #[test]
     fn a_cast_member_is_checked_against_the_book() {
         let known = [section()];
         let member = |stretches: Vec<(f64, f64)>| CastMember {
             id: String::new(),
             name: "  Mara ".into(),
             voice: voice("lily"),
+            method: CastMethod::default(),
             stretches: stretches
                 .into_iter()
                 .map(|(start_seconds, end_seconds)| Stretch {

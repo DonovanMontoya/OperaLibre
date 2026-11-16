@@ -12,6 +12,8 @@ pub(crate) const VOICE_CHANGER_MODEL: &str = "eleven_multilingual_sts_v2";
 /// Follows delivery directions written in square brackets, such as
 /// `[whispers]`.
 pub(crate) const SPEECH_MODEL: &str = "eleven_v3";
+/// Speaks plainly, without directions, and is billed half as much a character.
+pub(crate) const CHEAP_SPEECH_MODEL: &str = "eleven_flash_v2_5";
 /// What one speech request may carry, with room to spare under the model's
 /// limit so a direction or two never tips it over.
 pub(crate) const SPEECH_CHARACTERS: usize = 2_800;
@@ -238,18 +240,19 @@ impl ElevenLabs {
         save_audio(reply, output).await
     }
 
-    /// `text` spoken in a voice, saved to `output`.
+    /// `text` spoken in a voice by `model`, saved to `output`.
     pub(crate) async fn speak(
         &self,
         voice_id: &str,
         text: &str,
+        model: &str,
         output: &FsPath,
     ) -> anyhow::Result<()> {
         let url = format!(
             "{}/v1/text-to-speech/{voice_id}?output_format={OUTPUT_FORMAT}",
             self.base
         );
-        let body = serde_json::json!({ "text": text, "model_id": SPEECH_MODEL });
+        let body = serde_json::json!({ "text": text, "model_id": model });
         let reply = self
             .send_retrying("speak the text", || {
                 std::future::ready(Ok(self.client.post(&url).json(&body)))

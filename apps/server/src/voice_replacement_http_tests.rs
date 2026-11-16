@@ -6,9 +6,25 @@ const STATUS: &str = "/api/experimental-features/voice-replacement";
 /// Two seconds of a steady tone as a WAV, standing in for a provider's clip.
 /// ffmpeg reads the format from the bytes, whatever the file is called.
 fn tone_wav() -> Vec<u8> {
-    let samples: Vec<u8> = (0..16_000)
-        .flat_map(|sample: i32| (((sample % 40) - 20) as i16 * 400).to_le_bytes())
-        .collect();
+    wav((0..16_000).map(|sample: i32| ((sample % 40) - 20) as i16 * 400))
+}
+
+/// Ten seconds in which something is said twice, from 1 to 4 seconds and
+/// from 6 to 9, with nothing between or around.
+fn two_sentences_wav() -> Vec<u8> {
+    wav((0..80_000).map(|sample: i32| {
+        let second = sample / 8_000;
+        if (1..4).contains(&second) || (6..9).contains(&second) {
+            ((sample % 40) - 20) as i16 * 400
+        } else {
+            0
+        }
+    }))
+}
+
+/// Mono 16-bit audio at 8,000 samples a second.
+fn wav(samples: impl Iterator<Item = i16>) -> Vec<u8> {
+    let samples: Vec<u8> = samples.flat_map(i16::to_le_bytes).collect();
     let mut wav = Vec::new();
     wav.extend_from_slice(b"RIFF");
     wav.extend_from_slice(&(36u32 + samples.len() as u32).to_le_bytes());
@@ -35,6 +51,8 @@ struct Calls {
     voices: std::sync::Mutex<Vec<String>>,
     /// The text each speech request carried.
     spoken: std::sync::Mutex<Vec<String>>,
+    /// The model each speech request asked for.
+    speech_models: std::sync::Mutex<Vec<String>>,
     /// The settings each changed clip was asked for with, where it had any.
     settings: std::sync::Mutex<Vec<Option<String>>>,
 }
@@ -122,6 +140,11 @@ async fn fake_elevenlabs() -> (String, Arc<Calls>) {
                             .lock()
                             .unwrap()
                             .push(body["text"].as_str().unwrap().to_string());
+                        calls
+                            .speech_models
+                            .lock()
+                            .unwrap()
+                            .push(body["model_id"].as_str().unwrap().to_string());
                         tone_wav()
                     }
                 }
@@ -698,6 +721,173 @@ async fn a_voice_in_the_cast_is_tried_then_replaced_over_its_stretches() {
         .await
         .json();
     assert_eq!(estimate["voiceChangerSeconds"], 3.0);
+}
+
+#[tokio::test]
+async fn a_voice_in_the_cast_can_skip_pauses_or_be_read_from_its_text() {
+    if faststart::discover_tools(None, None).is_none() {
+        eprintln!("skipped: this test cuts and writes real audio, which needs ffmpeg");
+        return;
+    }
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    std::fs::write(
+        server.library_root.join("Book 00").join("01 Track.wav"),
+        two_sentences_wav(),
+    )
+    .unwrap();
+    rescan_library(&server.state).await.unwrap();
+    let (book, _) = server.first_book_and_track(&owner).await;
+    let (base, calls) = fake_elevenlabs().await;
+    crate::voice_replacement::enable_for_test(&server.state, &base).await;
+    let project = format!("/api/books/{book}/voice-replacement");
+    let opened = server.get(&project, &owner).await.json();
+    let title = opened["chapters"][0]["title"].as_str().unwrap().to_string();
+    let start = opened["chapters"][0]["startSeconds"].as_f64().unwrap();
+    let plan = |method: &str| {
+        serde_json::json!({ "edits": [], "cast": [{
+            "name": "Mara", "method": method,
+            "voice": { "voiceId": "voiceA", "name": "Alder" },
+            "stretches": [{ "startSeconds": start, "endSeconds": start + 10.0 }],
+        }] })
+    };
+    let audition = |method: &str, seconds: f64| {
+        serde_json::json!({
+            "voice": { "voiceId": "voiceA", "name": "Alder" }, "method": method,
+            "startSeconds": start, "endSeconds": start + seconds,
+        })
+    };
+    let estimate = || async {
+        server
+            .get(&format!("{project}/estimate"), &owner)
+            .await
+            .json()
+    };
+    let render = || async {
+        let started = server
+            .send_json(
+                "POST",
+                &format!("{project}/render"),
+                &owner,
+                serde_json::json!({ "acknowledgeCost": true }),
+            )
+            .await;
+        assert_eq!(started.status, StatusCode::OK, "{}", started.text());
+        wait_for_run(&server, &owner, &book).await
+    };
+
+    // Skipping pauses, only what is said is sent and paid for: about six of
+    // the ten seconds, where all ten would be 167 credits.
+    let saved = server
+        .send_json(
+            "PUT",
+            &format!("{project}/plan"),
+            &owner,
+            plan("skipPauses"),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    assert_eq!(saved.json()["cast"][0]["method"], "skipPauses");
+    let cost = estimate().await;
+    let sent = cost["voiceChangerSeconds"].as_f64().unwrap();
+    assert!((6.0..7.6).contains(&sent), "{cost}");
+    assert!(
+        cost["pausesSkippedSeconds"].as_f64().unwrap() > 2.0,
+        "{cost}"
+    );
+    assert_eq!(cost["pausesUnmeasuredSeconds"], 0.0);
+    let credits = cost["cast"][0]["credits"].as_u64().unwrap();
+    assert!((100..130).contains(&credits), "{cost}");
+    assert_eq!(cost["credits"], credits);
+
+    // Both sentences go in one request, and the copy uses the clip that was
+    // tried.
+    let tried = server
+        .send_json(
+            "POST",
+            &format!("{project}/audition"),
+            &owner,
+            audition("skipPauses", 10.0),
+        )
+        .await;
+    assert_eq!(tried.status, StatusCode::OK, "{}", tried.text());
+    assert_eq!(&tried.body[4..8], b"ftyp");
+    assert_eq!(calls.voice_changes.load(Ordering::SeqCst), 1);
+    let made = render().await;
+    assert_eq!(made["copies"].as_array().unwrap().len(), 1, "{made}");
+    assert_eq!(calls.voice_changes.load(Ordering::SeqCst), 1);
+
+    // Read from its text, a voice needs the chapter's transcript. Without
+    // one the estimate says so and nothing is tried.
+    let saved = server
+        .send_json("PUT", &format!("{project}/plan"), &owner, plan("readText"))
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    let cost = estimate().await;
+    assert_eq!(cost["cast"][0]["withoutText"], true);
+    assert_eq!(cost["chaptersWithoutText"][0], title.as_str());
+    let refused = server
+        .send_json(
+            "POST",
+            &format!("{project}/audition"),
+            &owner,
+            audition("readText", 3.0),
+        )
+        .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        refused.text()
+    );
+    assert_eq!(calls.speeches.load(Ordering::SeqCst), 0);
+
+    server
+        .send_json(
+            "POST",
+            &format!("{project}/analysis"),
+            &owner,
+            serde_json::json!({ "chapters": [0] }),
+        )
+        .await;
+    wait_for_run(&server, &owner, &book).await;
+    let whole = "First narrator. Second narrator.";
+    let cost = estimate().await;
+    assert_eq!(cost["cast"][0]["withoutText"], false);
+    assert_eq!(cost["speechCharacters"], whole.len());
+    assert_eq!(cost["credits"], whole.len());
+
+    // The cheaper model bills half, and is the one asked.
+    let saved = server
+        .send_json(
+            "PUT",
+            &format!("{project}/plan"),
+            &owner,
+            plan("readTextCheaply"),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    let cost = estimate().await;
+    assert_eq!(cost["credits"], whole.len() / 2);
+    assert_eq!(cost["cast"][0]["credits"], whole.len() / 2);
+    let tried = server
+        .send_json(
+            "POST",
+            &format!("{project}/audition"),
+            &owner,
+            audition("readTextCheaply", 3.0),
+        )
+        .await;
+    assert_eq!(tried.status, StatusCode::OK, "{}", tried.text());
+    assert_eq!(calls.spoken.lock().unwrap()[0], "First narrator.");
+    let made = render().await;
+    assert_eq!(made["copies"].as_array().unwrap().len(), 2, "{made}");
+    assert_eq!(calls.spoken.lock().unwrap()[1], whole);
+    assert_eq!(
+        *calls.speech_models.lock().unwrap(),
+        ["eleven_flash_v2_5", "eleven_flash_v2_5"]
+    );
+    assert_eq!(calls.voice_changes.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

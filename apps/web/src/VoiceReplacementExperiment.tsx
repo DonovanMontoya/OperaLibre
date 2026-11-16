@@ -21,6 +21,7 @@ import {
   stopVoiceRun,
   type ReplacementVoice,
   type VoiceCastMember,
+  type VoiceCastMethod,
   type VoiceChapter,
   type VoiceChoice,
   type VoiceEdit,
@@ -52,6 +53,36 @@ const sameName = (left: string, right: string) => left.trim().toLowerCase() === 
 const headingNames = (heading: string, name: string) => {
   const wanted = name.trim().toLowerCase();
   return wanted !== "" && (sameName(heading, name) || heading.toLowerCase().split(/[^\p{L}\p{N}'’-]+/u).includes(wanted));
+};
+/** The ways a voice in the cast can be replaced, dearest first, with what a minute of narration costs each way. */
+const CAST_METHODS: { method: VoiceCastMethod; label: string; detail: string }[] = [
+  {
+    method: "keepPerformance",
+    label: "Same performance, all of it sent",
+    detail: "The voice changer keeps the original timing and delivery. Every second is sent, pauses too: 1,000 credits a minute."
+  },
+  {
+    method: "skipPauses",
+    label: "Same performance, pauses left out",
+    detail: "The voice changer keeps the original timing and delivery. Pauses of half a second or more stay as they are in the book and are not sent or paid for, which usually saves about a fifth."
+  },
+  {
+    method: "readText",
+    label: "Read afresh from the transcript",
+    detail: "The new voice reads the words in its own way, so the original delivery and pacing are lost. A credit a character, about 750 a minute. Needs the chapter transcribed."
+  },
+  {
+    method: "readTextCheaply",
+    label: "Read afresh, cheaper speech model",
+    detail: "The same, by a plainer speech model at half a credit a character, about 375 a minute. Needs the chapter transcribed."
+  }
+];
+/** A cast member set to be replaced one way. Keeping the performance is the absence of a method. */
+const withMethod = (member: VoiceCastMember, method: VoiceCastMethod): VoiceCastMember => {
+  const next = { ...member };
+  if (method === "keepPerformance") delete next.method;
+  else next.method = method;
+  return next;
 };
 const overlaps = (stretch: VoiceStretch, other: VoiceStretch) =>
   stretch.startSeconds < other.endSeconds && stretch.endSeconds > other.startSeconds;
@@ -514,6 +545,7 @@ function VoiceStudio({
                 voices={voices ?? []}
                 suggested={passagesNamed(member.name).filter(passage => !member.stretches.some(stretch => overlaps(stretch, passage)))}
                 credits={estimate?.cast.find(entry => entry.id === member.id)?.credits}
+                withoutText={estimate?.cast.find(entry => entry.id === member.id)?.withoutText === true}
                 disabled={busy || running}
                 playing={playing}
                 onPlay={play}
@@ -594,6 +626,8 @@ function VoiceStudio({
                 {estimate.voiceChangerSeconds > 0 && estimate.speechCharacters > 0 ? " and " : ""}
                 {estimate.speechCharacters > 0 ? `${estimate.speechCharacters.toLocaleString()} characters spoken afresh` : ""}
                 {`: up to ${estimate.credits.toLocaleString()} ElevenLabs credits.`}
+                {(estimate.pausesSkippedSeconds ?? 0) > 0 ? ` ${formatDurationLabel(estimate.pausesSkippedSeconds ?? 0)} of pauses are left out.` : ""}
+                {(estimate.pausesUnmeasuredSeconds ?? 0) > 0 ? ` Pauses in ${formatDurationLabel(estimate.pausesUnmeasuredSeconds ?? 0)} are not measured yet and are counted in full; opening the plan again measures more.` : ""}
                 {creditsLeft !== null ? ` About ${creditsLeft.toLocaleString()} left this period.` : ""}
                 {estimate.chaptersWithoutText.length > 0 ? ` No text yet for ${estimate.chaptersWithoutText.join(", ")}: find its narrators first, which also transcribes it.` : ""}
               </p>
@@ -885,6 +919,7 @@ function CastMemberEditor({
   voices,
   suggested,
   credits,
+  withoutText,
   disabled,
   playing,
   onPlay,
@@ -898,6 +933,8 @@ function CastMemberEditor({
   /** Parts of the book headed with this name that the voice does not cover yet. */
   suggested: VoicePassage[];
   credits?: number;
+  /** Set to be read from text it does not have yet. */
+  withoutText: boolean;
   disabled: boolean;
   playing: string | null;
   onPlay: (key: string, load: () => Promise<Blob>) => Promise<void>;
@@ -920,11 +957,14 @@ function CastMemberEditor({
     if (JSON.stringify(settings ?? null) !== savedSettings) saveSettings(settings);
   };
   const total = member.stretches.reduce((sum, stretch) => sum + stretch.endSeconds - stretch.startSeconds, 0);
-  const tryKey = (stretch: VoiceStretch, from: number) => `try:${from}:${stretch.endSeconds}:${JSON.stringify(drafted)}`;
+  const method = member.method ?? "keepPerformance";
+  const how = CAST_METHODS.find(candidate => candidate.method === method) ?? CAST_METHODS[0];
+  const reads = method === "readText" || method === "readTextCheaply";
+  const tryKey = (stretch: VoiceStretch, from: number) => `try:${from}:${stretch.endSeconds}:${method}:${JSON.stringify(drafted)}`;
   const tryFrom = (stretch: VoiceStretch, from: number) => {
     const end = Math.min(stretch.endSeconds, from + TRY_SECONDS);
     const chapterStart = chapters.find(chapter => from >= chapter.startSeconds && from < chapter.endSeconds)?.startSeconds ?? from;
-    void onPlay(tryKey(stretch, from), () => auditionVoice(bookId, drafted, from, end, Math.min(TRY_LEAD_SECONDS, from - chapterStart)));
+    void onPlay(tryKey(stretch, from), () => auditionVoice(bookId, drafted, from, end, Math.min(TRY_LEAD_SECONDS, from - chapterStart), method));
   };
   const slider = (label: string, hint: string, field: "stability" | "similarity" | "style") => settings ? (
     <label>
@@ -972,13 +1012,27 @@ function CastMemberEditor({
             {voices.map(candidate => <option key={candidate.voiceId} value={candidate.voiceId}>{candidate.name}{candidate.category ? ` (${candidate.category})` : ""}</option>)}
           </select>
         </label>
+        <label>
+          <span>How it is replaced</span>
+          <select value={method} disabled={disabled} onChange={event => onChange(withMethod(member, event.target.value as VoiceCastMethod))}>
+            {CAST_METHODS.map(candidate => <option key={candidate.method} value={candidate.method}>{candidate.label}</option>)}
+          </select>
+        </label>
       </div>
+      <p className="admin-experiment-detail">{how.detail}</p>
+      {withoutText ? (
+        <p className="admin-experiment-detail" role="status">
+          Some of what {member.name} says is in a chapter with no transcript yet, so there is nothing to read from. Transcribe that chapter, or choose another way.
+        </p>
+      ) : null}
 
-      <label className="voice-studio-check">
-        <input type="checkbox" checked={settings !== undefined} disabled={disabled} onChange={event => saveSettings(event.target.checked ? DEFAULT_SETTINGS : undefined)} />
-        <span>Set how {member.voice.name} performs</span>
-      </label>
-      {settings ? (
+      {reads ? null : (
+        <label className="voice-studio-check">
+          <input type="checkbox" checked={settings !== undefined} disabled={disabled} onChange={event => saveSettings(event.target.checked ? DEFAULT_SETTINGS : undefined)} />
+          <span>Set how {member.voice.name} performs</span>
+        </label>
+      )}
+      {settings && !reads ? (
         <>
           {slider("Stability", "lower follows the original's ups and downs more", "stability")}
           {slider("Likeness", "how closely it keeps to the new voice", "similarity")}
@@ -1032,8 +1086,8 @@ function CastMemberEditor({
       ) : null}
       <p className="admin-experiment-detail">
         {formatDurationLabel(total)} to replace{credits !== undefined ? `: up to ${credits.toLocaleString()} ElevenLabs credits` : ""}.
-        Trying {TRY_SECONDS} seconds uses about {Math.round(TRY_SECONDS / 60 * CREDITS_PER_MINUTE).toLocaleString()} credits and plays a few
-        seconds of the book first, so you hear the join. The same try again is free; a different voice or setting is a new one.
+        Trying {TRY_SECONDS} seconds uses {reads ? "a credit or half a credit for each character said in them" : method === "skipPauses" ? `up to ${Math.round(TRY_SECONDS / 60 * CREDITS_PER_MINUTE).toLocaleString()} credits` : `about ${Math.round(TRY_SECONDS / 60 * CREDITS_PER_MINUTE).toLocaleString()} credits`} and plays a few
+        seconds of the book first, so you hear the join. The same try again is free; a different voice, setting or way of replacing is a new one.
       </p>
       <div className="admin-update-actions">
         <button type="button" className="quiet-button" disabled={disabled} onClick={onRemove}><Trash2 size={13} /> Remove {member.name} from the cast</button>
