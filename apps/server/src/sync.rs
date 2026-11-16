@@ -3787,6 +3787,10 @@ impl<'a> Aligner<'a> {
         duration: f64,
     ) -> anyhow::Result<ScopeAlignment> {
         let mut interruptions = alignment::interrupted_passages(transcript, recognized);
+        let candidates = interruptions
+            .iter()
+            .map(|gap| (gap.text_start_utf16, gap.text_end_utf16))
+            .collect::<Vec<_>>();
         let confirmation;
         let recognized = if interruptions.is_empty() || !self.recognition.has_retry_model() {
             recognized
@@ -3828,6 +3832,70 @@ impl<'a> Aligner<'a> {
             } else {
                 recognized
             }
+        };
+        // Long windows can lose the opening words after an interruption,
+        // which leaves it without an end. Recognizing the span alone can hear
+        // them; otherwise the window is aligned whole as before.
+        let unheard = alignment::unheard_interruption_endings(transcript, recognized);
+        let spliced;
+        let recognized = match self.ffmpeg_path {
+            Some(ffmpeg) if !unheard.is_empty() && self.recognition.has_retry_model() => {
+                update_job_output(
+                    self.state,
+                    self.job_id,
+                    "  Rechecking where narration resumes after apparently missing narration.\n",
+                )
+                .await;
+                // Only passages this recheck completes are new; any other
+                // passage keeps the confirmation's verdict.
+                let mut known = candidates;
+                known.extend(
+                    alignment::interrupted_passages(transcript, recognized)
+                        .iter()
+                        .map(|gap| (gap.text_start_utf16, gap.text_end_utf16)),
+                );
+                let mut words = recognized.to_vec();
+                for (part, (start, end)) in unheard.into_iter().enumerate() {
+                    let audio = self
+                        .slice(
+                            ffmpeg,
+                            audio_path,
+                            start,
+                            end,
+                            scope_number,
+                            window,
+                            &format!("opening-{part}"),
+                        )
+                        .await?;
+                    let heard = self
+                        .transcribe(
+                            &audio,
+                            scope_number,
+                            &format!("{window}-opening-{part}"),
+                            self.recognition.retry_model,
+                        )
+                        .await;
+                    let _ = fs::remove_file(audio).await;
+                    match heard {
+                        Ok(clip) => {
+                            words = alignment::splice_recognition(&words, start, end, &clip)
+                        }
+                        Err(error) => {
+                            self.note_failed_retry(&error).await;
+                            break;
+                        }
+                    }
+                }
+                interruptions.extend(
+                    alignment::interrupted_passages(transcript, &words)
+                        .into_iter()
+                        .filter(|gap| !known.contains(&(gap.text_start_utf16, gap.text_end_utf16))),
+                );
+                interruptions.sort_by_key(|gap| gap.text_start_utf16);
+                spliced = words;
+                &spliced
+            }
+            _ => recognized,
         };
         let mut fragments: Vec<alignment::SyncFragment> = Vec::new();
         let mut recovery_gaps = Vec::new();
