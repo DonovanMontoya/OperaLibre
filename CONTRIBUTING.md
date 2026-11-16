@@ -123,8 +123,8 @@ Fill in the pull request template. In particular:
   Crop out or blur personal library contents, server addresses, and account
   names.
 - **Check every surface the change touches.** A feature fixed in the web
-  player may also appear in the mini player, on phones, in CarPlay, or for a
-  Jellyfin server. Note which ones you checked.
+  player may also appear in the mini player, on phones, or in CarPlay. Note
+  which ones you checked.
 - **Performance changes:** include before/after numbers from the
   [performance suite](script/performance/README.md).
 - Keep the PR in draft until CI passes and you're ready for review.
