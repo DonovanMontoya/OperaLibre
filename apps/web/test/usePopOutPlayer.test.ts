@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { nextPresetSpeed, popOutKeyAction } from "../src/popOutPlayer.ts";
+import { nextPresetSpeed, popOutKeyAction } from "../src/usePopOutPlayer.ts";
 
 test("the pop-out speed button steps through the presets and wraps", () => {
   assert.equal(nextPresetSpeed(1), 1.25);
