@@ -75,6 +75,7 @@ import { LibroImports } from "./LibroImports";
 import { LibroCatalog } from "./LibroCatalog";
 import { BookGiftsExperiment } from "./BookGiftsExperiment";
 import { ChapterNotesExperiment } from "./ChapterNotesExperiment";
+import { VoiceReplacementExperiment } from "./VoiceReplacementExperiment";
 import { isDemoMode } from "./demo";
 
 type AdminSection = "overview" | "users" | "requests" | "books" | "experiments" | "imports";
@@ -1079,6 +1080,7 @@ export function AdminPanel({
               <AgentAccessExperiment isOwner={currentUser.isOwner} />
               {currentUser.isOwner && !isDemoMode() ? <BookGiftsExperiment /> : null}
               {!isDemoMode() ? <ChapterNotesExperiment isOwner={currentUser.isOwner} /> : null}
+              {!isDemoMode() ? <VoiceReplacementExperiment isOwner={currentUser.isOwner} books={books} onOpenBook={onOpenBook} onBooksChanged={onBooksChanged} /> : null}
             </div>
           </section>
         </div>

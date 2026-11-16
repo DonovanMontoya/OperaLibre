@@ -127,6 +127,10 @@ You can remove an assistant in Settings (or the account menu's assistant control
 
 An OperaLibre server owner can enable optional chapter notes and choose a language model to write them, either a hosted provider such as Anthropic or an endpoint the owner runs. When an administrator makes notes for a book, that book's text or a transcript of its narration is sent from the server to the chosen model, under that provider's own terms. The book's title and author are included; your account, listening progress, and history are not. Transcripts are made on the server itself. Notes and transcripts are kept in the server's data directory until an administrator removes them.
 
+### Optional voice replacement
+
+An OperaLibre server owner can enable optional voice replacement and save an ElevenLabs API key. When an administrator finds the narrators in a chapter, previews a change, or makes a revoiced copy of a book, the parts of that book being worked on are sent from the server to ElevenLabs as audio or text, under ElevenLabs' own terms, and billed to the owner's key. Your account, listening progress, and history are not sent. Transcripts, returned clips, and the plan for each book are kept in the server's data directory until an administrator clears them, and revoiced copies stay in the library until removed.
+
 ## Disclosure and third parties
 
 The App sends information only as needed to services you choose or that are required to deliver the App:

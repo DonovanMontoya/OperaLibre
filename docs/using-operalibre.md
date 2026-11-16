@@ -354,6 +354,24 @@ An administrator makes a book's notes from the book's page with **Make notes** (
 
 Notes appear on the book's page and in the player's details. Summaries of chapters you have not finished stay hidden until you choose **Show spoilers**. Assistants with **Book text so far** can read them the same way: everything for chapters you have heard, only the synopsis for the chapter you are in, and nothing later unless you ask the assistant to spoil it.
 
+### Voice replacement
+
+Voice replacement makes a second copy of a book with some of its narration in another voice, using your own [ElevenLabs](https://elevenlabs.io) account. It can replace one narrator in a full-cast recording, deliver a single line differently, or revoice a whole book. It is an experiment the owner turns on under **Administration → Experiments**, and it needs ffmpeg on the server. The original book is never changed; the copy appears in the library as its own book, named after the original with **(Revoiced)**, with its own listening position.
+
+After turning it on, the owner pastes an ElevenLabs API key on the same card. Then open **Replace voices in a book**, choose a book, and choose the voice to use from your ElevenLabs voices.
+
+- **One character's narrator, through the whole book.** Add them to the **Cast**. Many full-cast recordings open each character's part by saying the character's name, and those parts are found when a chapter is transcribed: choose a name under **Cast** to add every part headed with it, or open a chapter and add its parts one at a time. A voice in the cast is replaced over exactly the stretches listed under it and nowhere else. Each stretch shows where it starts and ends, both of which you can change, and plays its first and last seconds so you can check them. Parts are found from pauses around short lines, so listen before trusting one. Transcribe more chapters and the cast offers the new parts with the same name.
+- **One narrator in a chapter.** Open a chapter and choose **Find the narrators in this chapter**. ElevenLabs transcribes the chapter and tells its narrators apart by voice. **Listen** plays each one, **Hear as** plays a few seconds in the new voice, and **Replace** adds the change to the plan. Narrators are found one chapter at a time, so a narrator who reads several chapters is replaced in each. One narrator performing several characters counts as one voice and cannot be split.
+- **One line.** In a chapter whose narrators have been found, show its lines, search for the one you want, and either keep the delivery and change the voice, or perform it again from text. The text can carry directions in square brackets, such as `[whispers]` or `[angry]`.
+- **Leaving something alone.** On any line, **Keep the original here** holds that line as it is, whatever else covers it.
+- **A whole chapter or book.** Keep the performance and change the voice, or have the chapter read afresh from its text. Reading afresh uses the book's own text when it has a follow-along map, and the chapter's transcript otherwise, and changes the chapter's length.
+
+Each voice in the cast has its own new voice and, if you turn on **Set how it performs**, its own stability, likeness, style, and noise removal. **Try the start** and **Try the middle** play twenty seconds of a stretch in the new voice as it is set, after a few seconds of the book as it is, so you hear the join. Each replaced stretch is brought to the loudness of what it replaces, in a try and in the copy. A try costs about 330 credits; the same try again is free, and a different voice or setting is a new one. Under each voice is how much audio it replaces and the most credits that can cost.
+
+Nothing is made until you choose **Make the revoiced copy**, which shows the most ElevenLabs credits the plan can use and asks first. Keeping a performance costs about 1,000 credits per minute of audio, and spoken text costs one credit per character; finding narrators costs roughly 40 credits per minute of audio transcribed, and hearing samples is billed too. Each clip that comes back is saved, so making the copy again, or trying again after a failure, does not pay for it twice. **Clear saved work** removes a book's plan, transcripts, and saved clips.
+
+The parts of the book you work on are sent to ElevenLabs as audio and text. Use it for your own listening, with voices and books you have the right to use this way. The copy is one audio file per chapter, without the original's follow-along map. Remove a copy from **Copies made** on the same card.
+
 ## Import Audible books with Libation (optional)
 
 Install a recent [Libation](https://github.com/rmcrackan/Libation) CLI on the same computer as OperaLibre, or use the OperaLibre installer's optional Audible setup. Add the CLI path and `libation_files_dir` for an existing installation to `server.config`, then restart.
