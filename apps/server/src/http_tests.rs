@@ -23,6 +23,8 @@ mod cloud_recognition_http_tests;
 mod share_recovery_service_tests;
 #[path = "share_setup_http_tests.rs"]
 mod share_setup_http_tests;
+#[path = "voice_replacement_http_tests.rs"]
+mod voice_replacement_http_tests;
 
 #[tokio::test]
 async fn libro_nicknames_are_private_persistent_and_do_not_change_purchase_identity() {

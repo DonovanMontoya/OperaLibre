@@ -76,6 +76,7 @@ mod companions;
 mod config;
 mod covers;
 mod db;
+mod elevenlabs;
 mod error;
 mod faststart;
 mod faststart_jobs;
@@ -143,6 +144,8 @@ mod update_trial;
 mod updates;
 mod upload;
 mod util;
+mod voice_render;
+mod voice_replacement;
 mod works;
 
 use abs::*;

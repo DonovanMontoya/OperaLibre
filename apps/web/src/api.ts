@@ -791,6 +791,159 @@ export async function deleteBookChapterNotes(bookId: string) {
   await request<void>(chapterNotesRoute(bookId), { method: "DELETE" });
 }
 
+export type VoiceReplacementStatus = { enabled: boolean; hasApiKey: boolean; audioToolsAvailable: boolean };
+export type ReplacementVoice = { voiceId: string; name: string; category?: string; description?: string };
+/** How the voice changer performs with a voice. Each number runs from 0 to 1. */
+export type VoiceSettings = { stability: number; similarity: number; style: number; removeNoise: boolean };
+/** A voice as it is set. Without settings, the voice's own saved ones apply. */
+export type VoiceChoice = { voiceId: string; name: string; settings?: VoiceSettings };
+/** One change to a book's narration. Times are on the book's timeline. */
+export type VoiceEdit =
+  | { kind: "speaker"; id?: string; chapter: number; speaker: string; voice: VoiceChoice }
+  | { kind: "line"; id?: string; chapter: number; startSeconds: number; endSeconds: number; voice: VoiceChoice; text?: string }
+  | { kind: "chapter"; id?: string; chapter: number; voice: VoiceChoice; method: "keepPerformance" | "readText" }
+  /** A stretch left as it is, whatever else covers it. */
+  | { kind: "keep"; id?: string; chapter: number; startSeconds: number; endSeconds: number };
+export type VoiceStretch = { startSeconds: number; endSeconds: number };
+/** A voice heard in the book and what replaces it, over exactly the stretches listed. */
+export type VoiceCastMember = { id?: string; name: string; voice: VoiceChoice; method?: VoiceCastMethod; stretches: VoiceStretch[] };
+/**
+ * How a voice in the cast is replaced. The voice changer keeps the original performance, over everything or only over
+ * what is said; reading speaks the transcript afresh, with the usual speech model or the one that costs half as much.
+ * Left out, it is `keepPerformance`, which is also how it is sent: a server from before the choice refuses the field.
+ */
+export type VoiceCastMethod = "keepPerformance" | "skipPauses" | "readText" | "readTextCheaply";
+/** A run of a chapter between two spoken headings, such as a character's name. */
+export type VoicePassage = { headings: string[]; startSeconds: number; endSeconds: number };
+export type VoiceSpeaker = { id: string; seconds: number; lines: number; sampleStartSeconds: number; sampleEndSeconds: number };
+export type VoiceChapter = { index: number; title: string; startSeconds: number; endSeconds: number; speakers?: VoiceSpeaker[]; passages?: VoicePassage[]; headingsOnly?: boolean };
+export type VoiceRun = { kind: "analysis" | "render"; state: "running" | "failed"; step: string; completed: number; total: number; error?: string };
+export type VoiceCopy = { id: string; folder: string; createdAt: string; bookId?: string };
+export type VoiceProject = { bookId: string; chapters: VoiceChapter[]; edits: VoiceEdit[]; cast: VoiceCastMember[]; run?: VoiceRun; copies: VoiceCopy[] };
+export type VoiceLine = { speaker: string; startSeconds: number; endSeconds: number; text: string };
+export type VoiceEstimate = {
+  voiceChangerSeconds: number;
+  /** Pauses left out of that for voices set to skip them. */
+  pausesSkippedSeconds?: number;
+  /** Stretches whose pauses are not found yet and so are counted whole. Asking again finds more. */
+  pausesUnmeasuredSeconds?: number;
+  speechCharacters: number;
+  credits: number;
+  chaptersChanged: number;
+  chaptersWithoutText: string[];
+  cast: { id: string; seconds: number; credits: number; withoutText?: boolean }[];
+};
+
+const VOICE_REPLACEMENT = "/api/experimental-features/voice-replacement";
+const voiceProjectRoute = (bookId: string) => `/api/books/${encodeURIComponent(bookId)}/voice-replacement`;
+
+export async function getVoiceReplacementStatus() {
+  return request<VoiceReplacementStatus>(VOICE_REPLACEMENT);
+}
+
+export async function setVoiceReplacementEnabled(enabled: boolean) {
+  return request<VoiceReplacementStatus>(`${VOICE_REPLACEMENT}/enabled`, { method: "PUT", body: JSON.stringify({ enabled }) });
+}
+
+/** Lets the server send book audio and text to ElevenLabs with the owner's key. */
+export async function saveVoiceReplacementKey(apiKey: string) {
+  return request<VoiceReplacementStatus>(`${VOICE_REPLACEMENT}/key`, { method: "PUT", body: JSON.stringify({ apiKey, acknowledgePrivacy: true }) });
+}
+
+export async function removeVoiceReplacementKey() {
+  return request<VoiceReplacementStatus>(`${VOICE_REPLACEMENT}/key`, { method: "DELETE" });
+}
+
+export async function listReplacementVoices() {
+  return request<{ voices: ReplacementVoice[]; creditsLeft?: number }>("/api/voice-replacement/voices");
+}
+
+export async function getVoiceProject(bookId: string) {
+  return request<VoiceProject>(voiceProjectRoute(bookId));
+}
+
+export async function clearVoiceProject(bookId: string) {
+  await request<void>(voiceProjectRoute(bookId), { method: "DELETE" });
+}
+
+/**
+ * Transcribes chapters, which tells their narrators apart and finds their parts. With `headingsOnly`, the server looks
+ * for spoken headings by their pauses and sends only those few seconds: the parts are found for a small fraction of
+ * the cost, with no transcript and no narrators.
+ */
+export async function findVoiceSpeakers(bookId: string, chapters: number[], headingsOnly = false) {
+  const body = headingsOnly ? { chapters, headingsOnly } : { chapters };
+  return request<VoiceProject>(`${voiceProjectRoute(bookId)}/analysis`, { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function getVoiceLines(bookId: string, chapter: number) {
+  return (await request<{ lines: VoiceLine[] }>(`${voiceProjectRoute(bookId)}/chapters/${chapter}/lines`)).lines;
+}
+
+export async function saveVoicePlan(bookId: string, edits: VoiceEdit[], cast: VoiceCastMember[]) {
+  return request<VoiceProject>(`${voiceProjectRoute(bookId)}/plan`, { method: "PUT", body: JSON.stringify({ edits, cast }) });
+}
+
+export async function getVoiceEstimate(bookId: string) {
+  return request<VoiceEstimate>(`${voiceProjectRoute(bookId)}/estimate`);
+}
+
+/** Starts the copy. The caller has shown the cost and had it confirmed. */
+export async function makeVoiceCopy(bookId: string) {
+  return request<VoiceProject>(`${voiceProjectRoute(bookId)}/render`, { method: "POST", body: JSON.stringify({ acknowledgeCost: true }) });
+}
+
+export async function stopVoiceRun(bookId: string) {
+  return request<VoiceProject>(`${voiceProjectRoute(bookId)}/run`, { method: "DELETE" });
+}
+
+export async function removeVoiceCopy(bookId: string, copyId: string) {
+  // Removing a copy rescans the library before it answers.
+  return request<VoiceProject>(`${voiceProjectRoute(bookId)}/copies/${encodeURIComponent(copyId)}`, { method: "DELETE" }, 5 * 60_000);
+}
+
+async function requestAudio(path: string, init?: RequestInit): Promise<Blob> {
+  const headers = authenticatedHeaders(init?.headers);
+  if (init?.body) headers.set("Content-Type", "application/json");
+  return fetchWithTimeout(`${currentApiBase()}${path}`, {
+    ...init,
+    headers,
+    cache: "no-store",
+    credentials: usesNativeCredentialStorage() ? "omit" : "include"
+  }, async (response) => {
+    if (!response.ok) {
+      let message = `Request failed: ${response.status}`;
+      try {
+        const body = await response.json();
+        if (typeof body?.message === "string") message = body.message;
+      } catch {
+        // Keep the HTTP fallback when the server did not return JSON.
+      }
+      throw new ApiError(message, response.status);
+    }
+    return response.blob();
+  }, 5 * 60_000);
+}
+
+/** A short stretch of the book as it is now. */
+export async function getOriginalVoiceClip(bookId: string, startSeconds: number, endSeconds: number) {
+  return requestAudio(`${voiceProjectRoute(bookId)}/original?startSeconds=${startSeconds}&endSeconds=${endSeconds}`);
+}
+
+/** How an edit would sound. ElevenLabs bills it like any other clip. */
+export async function previewVoiceEdit(bookId: string, edit: VoiceEdit) {
+  return requestAudio(`${voiceProjectRoute(bookId)}/preview`, { method: "POST", body: JSON.stringify(edit) });
+}
+
+/**
+ * Up to thirty seconds of the book in a voice as it is set, after `leadSeconds`
+ * of the book as it is. ElevenLabs bills it like any other clip.
+ */
+export async function auditionVoice(bookId: string, voice: VoiceChoice, startSeconds: number, endSeconds: number, leadSeconds: number, method?: VoiceCastMethod) {
+  const how = method && method !== "keepPerformance" ? { method } : {};
+  return requestAudio(`${voiceProjectRoute(bookId)}/audition`, { method: "POST", body: JSON.stringify({ voice, startSeconds, endSeconds, leadSeconds, ...how }) });
+}
+
 async function requestAt<T>(
   base: string,
   token: string | null,

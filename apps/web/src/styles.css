@@ -25158,6 +25158,141 @@ html:not(.native-app) .book-heading .book-quick-start .book-quick-return {
   font-size: 0.78rem;
 }
 
+.voice-studio,
+.voice-studio-chapter-body,
+.voice-studio-plan,
+.voice-studio-line-editor {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.voice-studio label:not(.voice-studio-check) {
+  display: grid;
+  gap: 4px;
+  max-width: 440px;
+  font-size: 0.78rem;
+}
+
+.voice-studio ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-experiment-list .voice-studio strong {
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.voice-studio-run,
+.voice-studio-plan,
+.voice-studio-chapter-body {
+  padding: 12px;
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
+  border-radius: 8px;
+}
+
+/* Rows that open, not the pill buttons the rest of the card uses. */
+.admin-card .voice-studio button.voice-studio-chapter,
+.admin-card .voice-studio button.voice-studio-line {
+  display: grid;
+  justify-content: stretch;
+  gap: 2px;
+  width: 100%;
+  min-height: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  color: inherit;
+  background: none;
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.admin-card .voice-studio button.voice-studio-chapter:hover,
+.admin-card .voice-studio button.voice-studio-line:hover,
+.admin-card .voice-studio button[aria-expanded="true"] {
+  background: rgba(var(--ink-rgb), 0.05);
+}
+
+/* Voice names are long; on a phone a button wraps instead of widening the card. */
+.voice-studio button { white-space: normal; text-align: left; }
+.voice-studio select,
+.voice-studio input[type="search"],
+.voice-studio textarea { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; }
+
+.voice-studio small { color: var(--ink-faded); font-size: 0.72rem; }
+
+.voice-studio-chapter-body li,
+.voice-studio-plan li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+}
+
+.voice-studio-chapter-body li > span,
+.voice-studio-plan li > span {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.voice-studio-lines {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.voice-studio-lines li { display: grid; }
+.voice-studio-line-editor { padding: 4px 10px 10px; }
+
+.voice-studio-cast {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.12);
+}
+
+.voice-studio-cast-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.voice-studio-cast-head label { flex: 1 1 200px; }
+
+.voice-studio-cast li,
+.voice-studio-cast li > span {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+}
+
+.voice-studio-cast li > span { flex: 1 1 100%; }
+
+.voice-studio input[type="text"],
+.voice-studio input[type="range"] { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; }
+
+.voice-studio label.voice-studio-seconds { max-width: 110px; }
+.voice-studio-seconds input { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; }
+.voice-studio-chapter-body li select { width: auto; max-width: 200px; }
+
+.voice-studio-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+}
+
 /* Artwork keeps a quiet, solid cover until the complete image is available. */
 .cover-art-frame {
   position: relative;

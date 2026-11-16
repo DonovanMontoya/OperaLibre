@@ -585,12 +585,89 @@ pub(crate) fn build_router(
             auth_middleware,
         ));
 
+    // The voice replacement experiment, gated like book gifts. Its routes
+    // have no request timeout: a preview waits on the provider, and removing
+    // a copy rescans the library.
+    let voice_replacement_routes = Router::new()
+        .route(
+            "/api/voice-replacement/voices",
+            get(crate::voice_replacement::list_replacement_voices),
+        )
+        .route(
+            "/api/books/{book_id}/voice-replacement",
+            get(crate::voice_replacement::get_voice_project)
+                .delete(crate::voice_replacement::delete_voice_project),
+        )
+        .route(
+            "/api/books/{book_id}/voice-replacement/analysis",
+            post(crate::voice_replacement::start_voice_analysis),
+        )
+        .route(
+            "/api/books/{book_id}/voice-replacement/chapters/{index}/lines",
+            get(crate::voice_replacement::get_voice_lines),
+        )
+        .route(
+            "/api/books/{book_id}/voice-replacement/plan",
+            put(crate::voice_replacement::put_voice_plan),
+        )
+        .route(
+            "/api/books/{book_id}/voice-replacement/estimate",
+            get(crate::voice_replacement::get_voice_estimate),
+        )
+        .route(
+            "/api/books/{book_id}/voice-replacement/original",
+            get(crate::voice_replacement::listen_to_original),
+        )
+        .route(
+            "/api/books/{book_id}/voice-replacement/preview",
+            post(crate::voice_replacement::preview_voice_edit),
+        )
+        .route(
+            "/api/books/{book_id}/voice-replacement/audition",
+            post(crate::voice_replacement::audition_voice),
+        )
+        .route(
+            "/api/books/{book_id}/voice-replacement/render",
+            post(crate::voice_replacement::start_voice_render),
+        )
+        .route(
+            "/api/books/{book_id}/voice-replacement/run",
+            delete(crate::voice_replacement::stop_voice_run),
+        )
+        .route(
+            "/api/books/{book_id}/voice-replacement/copies/{copy_id}",
+            delete(crate::voice_replacement::delete_voice_copy),
+        )
+        .route(
+            "/api/experimental-features/voice-replacement/key",
+            put(crate::voice_replacement::set_voice_replacement_key)
+                .delete(crate::voice_replacement::remove_voice_replacement_key),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::voice_replacement::require_experiment,
+        ))
+        .route(
+            "/api/experimental-features/voice-replacement",
+            get(crate::voice_replacement::voice_replacement_experiment),
+        )
+        .route(
+            "/api/experimental-features/voice-replacement/enabled",
+            put(crate::voice_replacement::set_voice_replacement_enabled),
+        )
+        .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
     // Added before the web app's static files, which stay open during an
     // update trial so a reloaded page can load and wait for the API.
     let mut app = public_routes
         .merge(public_share_routes)
         .merge(protected_share_routes)
         .merge(chapter_notes_routes)
+        .merge(voice_replacement_routes)
         .merge(protected_routes)
         .merge(long_running_routes)
         .merge(agent_routes)
