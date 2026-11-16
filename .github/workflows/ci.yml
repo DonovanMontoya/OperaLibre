@@ -15,30 +15,7 @@ concurrency:
 
 jobs:
   changes:
-    name: Select affected checks
-    runs-on: ubuntu-latest
-    outputs:
-      server: ${{ steps.select.outputs.server }}
-      server_windows: ${{ steps.select.outputs.server_windows }}
-      launcher: ${{ steps.select.outputs.launcher }}
-      web: ${{ steps.select.outputs.web }}
-      playback: ${{ steps.select.outputs.playback }}
-      android: ${{ steps.select.outputs.android }}
-      apple: ${{ steps.select.outputs.apple }}
-      carplay: ${{ steps.select.outputs.carplay }}
-      bookplayer: ${{ steps.select.outputs.bookplayer }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-      - name: Test change selection
-        run: python3 -m unittest discover -s script/ci -p 'test_*.py'
-      - name: Select checks
-        id: select
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 script/ci/select_checks.py
+    uses: ./.github/workflows/select-checks.yml
 
   server:
     needs: changes
