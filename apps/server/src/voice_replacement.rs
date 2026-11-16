@@ -103,10 +103,14 @@ async fn save_settings(state: &AppState, settings: &StoredSettings) -> Result<()
 /// Guards everything but the switch. The app hides voice replacement on this
 /// 404, as it does for a server that predates it.
 pub(crate) async fn require_experiment(
-    State(state): State<AppState>,
+    // `.0` instead of a `State(state)` pattern, here and in every handler
+    // below, keeps CodeQL from treating the data directory as request
+    // input; see `install_update`.
+    state: State<AppState>,
     request: axum::extract::Request,
     next: middleware::Next,
 ) -> Response {
+    let state = state.0;
     if load_settings(&state).await.enabled {
         next.run(request).await
     } else {
@@ -142,17 +146,19 @@ async fn status(state: &AppState) -> VoiceReplacementStatus {
 }
 
 pub(crate) async fn voice_replacement_experiment(
-    State(state): State<AppState>,
+    state: State<AppState>,
     _: AdminUser,
 ) -> Json<VoiceReplacementStatus> {
+    let state = state.0;
     Json(status(&state).await)
 }
 
 pub(crate) async fn set_voice_replacement_enabled(
-    State(state): State<AppState>,
+    state: State<AppState>,
     _: OwnerUser,
     Json(input): Json<ExperimentalFeatureEnabled>,
 ) -> Result<Json<VoiceReplacementStatus>, ApiError> {
+    let state = state.0;
     let mut settings = load_settings(&state).await;
     settings.enabled = input.enabled;
     save_settings(&state, &settings).await?;
@@ -173,10 +179,11 @@ pub(crate) struct KeyInput {
 }
 
 pub(crate) async fn set_voice_replacement_key(
-    State(state): State<AppState>,
+    state: State<AppState>,
     _: OwnerUser,
     Json(input): Json<KeyInput>,
 ) -> Result<Json<VoiceReplacementStatus>, ApiError> {
+    let state = state.0;
     if !input.acknowledge_privacy {
         return Err(ApiError::bad_request(
             "Confirm that book audio and text will be sent to ElevenLabs before saving a key.",
@@ -194,9 +201,10 @@ pub(crate) async fn set_voice_replacement_key(
 
 /// The key is deleted, not kept for later, and nothing more is sent.
 pub(crate) async fn remove_voice_replacement_key(
-    State(state): State<AppState>,
+    state: State<AppState>,
     _: OwnerUser,
 ) -> Result<Json<VoiceReplacementStatus>, ApiError> {
+    let state = state.0;
     let mut settings = load_settings(&state).await;
     settings.api_key = None;
     save_settings(&state, &settings).await?;
@@ -246,9 +254,10 @@ pub(crate) struct VoiceList {
 }
 
 pub(crate) async fn list_replacement_voices(
-    State(state): State<AppState>,
+    state: State<AppState>,
     _: AdminUser,
 ) -> Result<Json<VoiceList>, ApiError> {
+    let state = state.0;
     let provider = provider(&state).await?;
     let voices = provider
         .voices()
@@ -2261,10 +2270,11 @@ async fn project_view(state: &AppState, book_id: &str) -> Result<ProjectView, Ap
 }
 
 pub(crate) async fn get_voice_project(
-    State(state): State<AppState>,
+    state: State<AppState>,
     AdminUser(auth): AdminUser,
     Path(book_id): Path<String>,
 ) -> Result<Json<ProjectView>, ApiError> {
+    let state = state.0;
     ensure_book(&state, &auth, &book_id).await?;
     Ok(Json(project_view(&state, &book_id).await?))
 }
@@ -2272,10 +2282,11 @@ pub(crate) async fn get_voice_project(
 /// Forgets a book's plan, transcripts and saved clips. Copies already made
 /// stay in the library.
 pub(crate) async fn delete_voice_project(
-    State(state): State<AppState>,
+    state: State<AppState>,
     AdminUser(auth): AdminUser,
     Path(book_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    let state = state.0;
     ensure_book(&state, &auth, &book_id).await?;
     {
         let key = run_key(&state, &book_id);
@@ -2311,11 +2322,12 @@ pub(crate) struct AnalysisInput {
 }
 
 pub(crate) async fn start_voice_analysis(
-    State(state): State<AppState>,
+    state: State<AppState>,
     AdminUser(auth): AdminUser,
     Path(book_id): Path<String>,
     Json(input): Json<AnalysisInput>,
 ) -> Result<Json<ProjectView>, ApiError> {
+    let state = state.0;
     ensure_book(&state, &auth, &book_id).await?;
     let audio = book_audio(&state, &book_id).await?;
     let known = sections(&audio.book);
@@ -2351,10 +2363,11 @@ pub(crate) struct LinesView {
 }
 
 pub(crate) async fn get_voice_lines(
-    State(state): State<AppState>,
+    state: State<AppState>,
     AdminUser(auth): AdminUser,
     Path((book_id, index)): Path<(String, usize)>,
 ) -> Result<Json<LinesView>, ApiError> {
+    let state = state.0;
     ensure_book(&state, &auth, &book_id).await?;
     let audio = book_audio(&state, &book_id).await?;
     let project = load_project(&state, &book_id).await;
@@ -2549,11 +2562,12 @@ pub(crate) struct PlanInput {
 }
 
 pub(crate) async fn put_voice_plan(
-    State(state): State<AppState>,
+    state: State<AppState>,
     AdminUser(auth): AdminUser,
     Path(book_id): Path<String>,
     Json(input): Json<PlanInput>,
 ) -> Result<Json<ProjectView>, ApiError> {
+    let state = state.0;
     ensure_book(&state, &auth, &book_id).await?;
     if input.edits.len() > MAX_EDITS {
         return Err(ApiError::bad_request(format!(
@@ -2635,10 +2649,11 @@ fn changer_credits(seconds: f64) -> u64 {
 }
 
 pub(crate) async fn get_voice_estimate(
-    State(state): State<AppState>,
+    state: State<AppState>,
     AdminUser(auth): AdminUser,
     Path(book_id): Path<String>,
 ) -> Result<Json<Estimate>, ApiError> {
+    let state = state.0;
     ensure_book(&state, &auth, &book_id).await?;
     let audio = book_audio(&state, &book_id).await?;
     let project = load_project(&state, &book_id).await;
@@ -2813,11 +2828,12 @@ pub(crate) struct RenderInput {
 }
 
 pub(crate) async fn start_voice_render(
-    State(state): State<AppState>,
+    state: State<AppState>,
     AdminUser(auth): AdminUser,
     Path(book_id): Path<String>,
     Json(input): Json<RenderInput>,
 ) -> Result<Json<ProjectView>, ApiError> {
+    let state = state.0;
     ensure_book(&state, &auth, &book_id).await?;
     if !input.acknowledge_cost {
         return Err(ApiError::bad_request(
@@ -2838,10 +2854,11 @@ pub(crate) async fn start_voice_render(
 
 /// Stops the work on a book, or dismisses a failure.
 pub(crate) async fn stop_voice_run(
-    State(state): State<AppState>,
+    state: State<AppState>,
     AdminUser(auth): AdminUser,
     Path(book_id): Path<String>,
 ) -> Result<Json<ProjectView>, ApiError> {
+    let state = state.0;
     ensure_book(&state, &auth, &book_id).await?;
     {
         let key = run_key(&state, &book_id);
@@ -2880,11 +2897,12 @@ fn audio_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
 
 /// A short stretch of the book as it is now, to tell narrators apart by ear.
 pub(crate) async fn listen_to_original(
-    State(state): State<AppState>,
+    state: State<AppState>,
     AdminUser(auth): AdminUser,
     Path(book_id): Path<String>,
     Query(query): Query<ListenQuery>,
 ) -> Result<Response, ApiError> {
+    let state = state.0;
     ensure_book(&state, &auth, &book_id).await?;
     let length = query.end_seconds - query.start_seconds;
     if !(query.start_seconds >= 0.0 && length > 0.0 && length <= MAX_LISTEN_SECONDS) {
@@ -2910,11 +2928,12 @@ pub(crate) async fn listen_to_original(
 /// A few seconds of an edit as it would sound. It is billed like any other
 /// clip, and a line's preview is the clip its copy will use.
 pub(crate) async fn preview_voice_edit(
-    State(state): State<AppState>,
+    state: State<AppState>,
     AdminUser(auth): AdminUser,
     Path(book_id): Path<String>,
     Json(edit): Json<Edit>,
 ) -> Result<Response, ApiError> {
+    let state = state.0;
     ensure_book(&state, &auth, &book_id).await?;
     let audio = book_audio(&state, &book_id).await?;
     let project = load_project(&state, &book_id).await;
@@ -3029,11 +3048,12 @@ pub(crate) struct AuditionInput {
 /// is planned. It is joined to what comes before it the way a copy is, and
 /// billed like any other clip.
 pub(crate) async fn audition_voice(
-    State(state): State<AppState>,
+    state: State<AppState>,
     AdminUser(auth): AdminUser,
     Path(book_id): Path<String>,
     Json(mut input): Json<AuditionInput>,
 ) -> Result<Response, ApiError> {
+    let state = state.0;
     ensure_book(&state, &auth, &book_id).await?;
     valid_voice(&mut input.voice)?;
     let audio = book_audio(&state, &book_id).await?;
@@ -3154,10 +3174,11 @@ pub(crate) async fn audition_voice(
 /// Removes a copy this feature made, folder and all, while the folder is
 /// still that copy.
 pub(crate) async fn delete_voice_copy(
-    State(state): State<AppState>,
+    state: State<AppState>,
     AdminUser(auth): AdminUser,
     Path((book_id, copy_id)): Path<(String, String)>,
 ) -> Result<Json<ProjectView>, ApiError> {
+    let state = state.0;
     ensure_book(&state, &auth, &book_id).await?;
     let mut copies = load_copies(&state).await;
     let at = copies
