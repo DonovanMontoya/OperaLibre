@@ -1225,7 +1225,13 @@ fn unheard<'a>(
 /// Where a stretch's pauses are kept once found: finding them means decoding
 /// the stretch, which an estimate should not do twice.
 fn pauses_path(pauses_dir: &FsPath, start_seconds: f64, end_seconds: f64) -> PathBuf {
-    pauses_dir.join(format!("{start_seconds:.3}-{end_seconds:.3}.json"))
+    // Named by a digest, as clips are: the times can come from a request,
+    // and a file name should not be built from one.
+    let stretch = format!("{start_seconds:.3}-{end_seconds:.3}");
+    pauses_dir.join(format!(
+        "{}.json",
+        hex_digest(Sha256::digest(stretch.as_bytes()))
+    ))
 }
 
 async fn saved_pauses(
@@ -2371,16 +2377,18 @@ pub(crate) async fn get_voice_lines(
     ensure_book(&state, &auth, &book_id).await?;
     let audio = book_audio(&state, &book_id).await?;
     let project = load_project(&state, &book_id).await;
-    let analysed = sections(&audio.book)
-        .iter()
-        .any(|section| section.index == index && project.transcript_of(section).is_some());
-    if !analysed {
+    // The chapter as the book has it, not the number that was asked for,
+    // names the file that is read.
+    let transcribed = sections(&audio.book)
+        .into_iter()
+        .find(|section| section.index == index && project.transcript_of(section).is_some());
+    let Some(section) = transcribed else {
         return Err(ApiError::not_found(
             "This chapter's speakers have not been found yet.",
         ));
-    }
+    };
     Ok(Json(LinesView {
-        lines: load_lines(&state, &book_id, index).await,
+        lines: load_lines(&state, &book_id, section.index).await,
     }))
 }
 
