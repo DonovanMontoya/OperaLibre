@@ -177,6 +177,8 @@ import { AudibleManagement } from "./AudibleManagement";
 import { SettingsPage } from "./SettingsPage";
 import { AgentAccessDialog } from "./AgentAccess";
 import { MiniPlayer } from "./MiniPlayer";
+import { PopOutPlayer } from "./PopOutPlayer";
+import { playerOnScreen, usePopOutPlayer, type PopOutControl } from "./popOutPlayer";
 import { DeskView, useDeskView } from "./DeskView";
 import { PlayerPane } from "./PlayerPane";
 import { LibraryPane } from "./LibraryPane";
@@ -1010,6 +1012,7 @@ function MainApp({
     position,
     progressMutationVersion,
     progressSaveAbortController,
+    playerOnScreen,
     progressSaveDrainPromiseRef,
     queuedProgressSaves,
     restoredProgressBookId,
@@ -2139,6 +2142,8 @@ function MainApp({
   });
 
   const deskView = useDeskView(native, ipad, !!(playbackBook && currentTrack), readalongOpen);
+  const popOut = usePopOutPlayer(native, !!(playbackBook && currentTrack));
+  const popOutControl: PopOutControl | null = popOut.supported ? { open: popOut.current !== null, toggle: popOut.toggle } : null;
   const nativeChrome = useNativeChrome({
     deskView,
     startupViewReady,
@@ -2556,6 +2561,7 @@ function MainApp({
         sleepTimer={sleepTimer}
         sliderMax={sliderMax}
         speed={speed}
+        popOut={popOutControl}
         togglePlayback={togglePlayback}
         trackListSectionRef={trackListSectionRef}
         upcomingChapters={upcomingChapters}
@@ -2584,6 +2590,7 @@ function MainApp({
           nextChapter={nextChapter}
           playPending={playPending}
           playbackBook={playbackBook}
+          popOut={popOutControl}
           position={position}
           readerTools={!native && readalongPanelElement && isViewingPlayingBook ? {
             speed,
@@ -2600,6 +2607,41 @@ function MainApp({
           setScrubPreview={setScrubPreview}
           sliderMax={sliderMax}
           togglePlayback={togglePlayback}
+        />
+      ) : null}
+
+      {popOut.current && playbackBook && currentTrack ? (
+        <PopOutPlayer
+          activeChapter={activeChapter}
+          bookDuration={bookDuration}
+          bookPosition={bookPosition}
+          chapterDuration={chapterDuration}
+          chapterElapsed={chapterElapsed}
+          chapterSegments={chapterSegments}
+          currentTrack={currentTrack}
+          hasNextChapter={hasNextChapter}
+          hasPreviousChapter={hasPreviousChapter}
+          isPlaying={isPlaying}
+          nextChapter={nextChapter}
+          onReturn={() => {
+            window.focus();
+            popOut.close();
+          }}
+          playPending={playPending}
+          playbackBook={playbackBook}
+          popOut={popOut.current}
+          position={position}
+          reconcileBeforeResume={() => foregroundProgressActionsRef.current.adoptNewerServerProgress()}
+          restartOrPreviousChapter={restartOrPreviousChapter}
+          scrubbedElapsed={scrubbedElapsed}
+          seekBookPosition={seekBookPosition}
+          seekBy={seekBy}
+          seekTo={seekTo}
+          setScrubPreview={setScrubPreview}
+          sliderMax={sliderMax}
+          speed={speed}
+          togglePlayback={togglePlayback}
+          updateSpeed={updateSpeed}
         />
       ) : null}
 
