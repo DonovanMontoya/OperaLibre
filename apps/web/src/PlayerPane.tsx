@@ -1,9 +1,13 @@
+import { BookClips, useBookClips } from "./BookClips";
+import type { Clip } from "./clips";
 import { createPortal } from "react-dom";
+import type { PopOutControl } from "./popOutPlayer";
 import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BookPreviewBar, type PreviewPosition } from "./BookPreviewBar";
 import { BookCredits } from "./BookCredits";
 import { ChapterNotesPanel } from "./ChapterNotesPanel";
 import type { useBookCompletion } from "./useBookCompletion";
+import type { useClips } from "./useClips";
 import type { useMetadataEditor } from "./useMetadataEditor";
 import type { useOfflineDownloads } from "./useOfflineDownloads";
 import type { useReadalong } from "./useReadalong";
@@ -31,6 +35,7 @@ import {
   LoaderCircle,
   Pause,
   Pencil,
+  PictureInPicture2,
   Play,
   Plus,
   RotateCcw,
@@ -42,7 +47,8 @@ import {
   Timer,
   Users,
   Volume2,
-  X
+  X,
+  Scissors
 } from "lucide-react";
 import { CoverArt, DownloadRing } from "./CoverArt";
 import { PlaybackSpeedControl, ScrubSlider } from "./PlaybackControls";
@@ -74,6 +80,9 @@ import { GiftShareAction, GiftShareDialog, useBookGiftSending } from "./GiftShar
 // borders/gaps overflow a phone screen; fall back to one continuous bar.
 const MAX_CHAPTER_SEGMENTS = 32;
 
+/** Height the notice above the cover needs: 44px pill, its gap, and the card's rounded corner. */
+const CLIP_CALLOUT_ROOM = 64;
+
 export function PlayerPane({
   activeChapter,
   activeTrackIndex,
@@ -90,6 +99,7 @@ export function PlayerPane({
   chapterSegments,
   chaptersListRef,
   chaptersOpen,
+  clips,
   closeReadalong,
   completionError,
   completionPendingBookId,
@@ -117,6 +127,11 @@ export function PlayerPane({
   nativeTab,
   nextChapter,
   offlineDownloads,
+  openBookClips,
+  previewBookClip,
+  clipPreviewPending,
+  clipsRefreshKey,
+  userId,
   openNativePlayerSheet,
   openPlaybackView,
   openBookPreview,
@@ -124,6 +139,7 @@ export function PlayerPane({
   stopBookPreview,
   continueBookPreview,
   playPending,
+  popOut = null,
   playSelectedBook,
   playbackBook,
   playbackDescription,
@@ -182,6 +198,7 @@ export function PlayerPane({
   chapterSegments: ChapterSegment[];
   chaptersListRef: RefObject<HTMLDivElement | null>;
   chaptersOpen: boolean;
+  clips: ReturnType<typeof useClips>;
   closeReadalong: () => void;
   completionError: DeviceNotice | null;
   completionPendingBookId: string | null;
@@ -209,6 +226,11 @@ export function PlayerPane({
   nativeTab: NativeTab;
   nextChapter: () => void;
   offlineDownloads: ReturnType<typeof useOfflineDownloads>;
+  openBookClips: (book: Book, clipId?: string) => void;
+  previewBookClip: (book: Book, clip: Clip) => void;
+  clipPreviewPending: boolean;
+  clipsRefreshKey: string | null;
+  userId: string;
   openNativePlayerSheet: (sheet: Exclude<NativePlayerSheet, null>) => void;
   openPlaybackView: (view: "now" | "details" | "chapters") => void;
   openBookPreview: ((book: Book) => void) | null;
@@ -216,6 +238,8 @@ export function PlayerPane({
   stopBookPreview: () => void;
   continueBookPreview: (book: Book, position?: PreviewPosition) => Promise<boolean>;
   playPending: boolean;
+  /** The web's pop-out window, where the browser can open one. */
+  popOut?: PopOutControl | null;
   playSelectedBook: (book: Book) => Promise<void>;
   playbackBook: Book | null;
   playbackDescription: string | null;
@@ -306,6 +330,49 @@ export function PlayerPane({
     setEbookUploadFile
   } = uploads;
 
+  const nowArtworkRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const artwork = nowArtworkRef.current;
+    const cover = artwork?.querySelector<HTMLElement>(".large-cover");
+    if (!artwork || !cover) return;
+    const positionRibbon = () => {
+      const frame = artwork.getBoundingClientRect();
+      const bounds = cover.getBoundingClientRect();
+      // The clip notice sits above the cover so it never covers the
+      // art. A screen too short to leave room for it inside the card scales
+      // the cover down from its bottom edge, which moves nothing else. The
+      // cover's box is worked out unscaled so the result does not feed back.
+      const card = artwork.closest(".native-now-playing")?.getBoundingClientRect() ?? frame;
+      const applied = artwork.classList.contains("has-clips") ? Number(artwork.style.getPropertyValue("--clip-cover-scale")) || 1 : 1;
+      const width = bounds.width / applied;
+      const height = bounds.height / applied;
+      const centre = bounds.left + bounds.width / 2;
+      const shortfall = Math.max(0, Math.ceil(CLIP_CALLOUT_ROOM - (bounds.bottom - height - card.top)));
+      const scale = clips.visible && height > 0 ? Math.max(0.6, (height - shortfall) / height) : 1;
+      artwork.style.setProperty("--clip-cover-scale", String(scale));
+      artwork.style.setProperty("--cover-left", `${centre - (width * scale) / 2 - frame.left}px`);
+      artwork.style.setProperty("--cover-top", `${bounds.bottom - height * scale - frame.top}px`);
+      artwork.style.setProperty("--cover-width", `${width * scale}px`);
+      artwork.style.setProperty("--cover-height", `${height * scale}px`);
+    };
+    positionRibbon();
+    const observer = new ResizeObserver(positionRibbon);
+    observer.observe(artwork);
+    observer.observe(cover);
+    window.addEventListener("resize", positionRibbon);
+    return () => { observer.disconnect(); window.removeEventListener("resize", positionRibbon); };
+  }, [playbackBook?.id, nativePlayerView, isViewingPlayingBook, clips.visible]);
+  const [contentsTab, setContentsTab] = useState<"chapters" | "clips">("chapters");
+  const contentsId = useId();
+  /** Chapters and clips share the book's contents area as two tabs. */
+  const contentsTabbed = Boolean(capabilities.clips && readerPreferences.clippingEnabled && selectedBook && selectedBook.source !== "device");
+  function selectContentsTab(tab: "chapters" | "clips") {
+    setContentsTab(tab);
+    // Choosing the tab asks for the list; it stays collapsible from its header.
+    if (tab === "chapters") setChaptersOpen(true);
+  }
+  useEffect(() => setContentsTab("chapters"), [selectedBook?.id]);
+  const bookClips = useBookClips(contentsTabbed ? selectedBook : null, userId, clipsRefreshKey);
   const phoneWidth = usePhoneWidthWindow();
   // The books most recently in progress, offered when nothing is open.
   const resumeBooks = useMemo(() => books
@@ -646,8 +713,20 @@ export function PlayerPane({
                   them either side of its fold. Everywhere else they take no
                   box and their children lay out in the card's grid. */}
               <div className="native-now-half native-now-lead">
-                <div className="native-now-artwork">
+                <div className={`native-now-artwork${clips.visible ? " has-clips" : ""}`} ref={nowArtworkRef}>
                   <CoverArt book={playbackBook} size="large" />
+                  {clips.visible ? (
+                    <button type="button" className={`native-cover-clip${clips.lastSavedId && !clips.error ? " saved" : ""}`} aria-label="Save a clip of the last 30 seconds and the next 10" title="Save a clip: the last 30 seconds and the next 10" onClick={clips.saveMoment}>
+                      {clips.lastSavedId && !clips.error ? <Check size={17} aria-hidden="true" /> : <Scissors size={17} aria-hidden="true" />}
+                      <span aria-hidden="true">{clips.lastSavedId && !clips.error ? "Saved" : "Clip"}</span>
+                    </button>
+                  ) : null}
+                  {clips.visible && (clips.error || clips.lastSavedId) ? (
+                    <button type="button" className="native-cover-clip-notice" aria-label={clips.error ? `${clips.error} Open clips` : "Clip saved. Open clips"} onClick={() => openBookClips(playbackBook)}>
+                      <span role="status">{clips.error ? "Clip not saved" : "Clip saved"}</span>
+                      <span className="native-cover-clip-notice-action" aria-hidden="true">{clips.error ? "Details" : "Edit"} <ChevronRight size={13} /></span>
+                    </button>
+                  ) : null}
                 </div>
 
                 <div className="native-now-copy">
@@ -785,6 +864,16 @@ export function PlayerPane({
                   >
                     <ListMusic size={16} /> Chapters
                   </button>
+                  {popOut ? (
+                    <button
+                      type="button"
+                      className="native-now-popout"
+                      aria-pressed={popOut.open}
+                      onClick={popOut.toggle}
+                    >
+                      <PictureInPicture2 size={16} /> {popOut.open ? "Bring back" : "Pop out"}
+                    </button>
+                  ) : null}
                   {readalongEnabled && playbackBook?.readingFile ? (
                     <button
                       type="button"
@@ -1502,7 +1591,34 @@ export function PlayerPane({
             </div>
           ) : null}
 
-          {selectedChapterSegments.length > 0 ? (
+          {contentsTabbed ? (
+            <div className="book-contents-tabs" role="tablist" aria-label="Book contents">
+              {(["chapters", "clips"] as const).map((tab) => (
+                <button type="button" role="tab" key={tab} id={`${contentsId}-${tab}`}
+                  aria-selected={contentsTab === tab} aria-controls={`${contentsId}-panel`}
+                  tabIndex={contentsTab === tab ? 0 : -1}
+                  onKeyDown={(event) => {
+                    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                    event.preventDefault();
+                    const next = event.key === "Home" ? "chapters" : event.key === "End" ? "clips" : tab === "chapters" ? "clips" : "chapters";
+                    selectContentsTab(next);
+                    document.getElementById(`${contentsId}-${next}`)?.focus();
+                  }}
+                  onClick={() => { haptic("light"); selectContentsTab(tab); }}>
+                  {tab === "chapters" ? "Chapters" : "Clips"}
+                  {tab === "clips" && bookClips.clips.length > 0 ? <span className="book-contents-count" aria-hidden="true">{bookClips.clips.length}</span> : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div role={contentsTabbed ? "tabpanel" : undefined}
+            id={`${contentsId}-panel`} aria-labelledby={`${contentsId}-${contentsTab}`}>
+          {contentsTab === "clips" && contentsTabbed ? (
+            <BookClips key={selectedBook.id} book={selectedBook} state={bookClips}
+              open={(clipId) => openBookClips(selectedBook, clipId)}
+              preview={(clip) => previewBookClip(selectedBook, clip)} stop={clips.stopAudition}
+              playingClipId={clips.playingClipId} previewPending={clipPreviewPending} />
+          ) : selectedChapterSegments.length > 0 ? (
             <section className="track-list-section" ref={trackListSectionRef}>
               <button
                 type="button"
@@ -1539,7 +1655,8 @@ export function PlayerPane({
                 </div>
               ) : null}
             </section>
-          ) : null}
+          ) : contentsTabbed ? <p className="book-no-chapters">This book has no chapter markers.</p> : null}
+          </div>
           {native && nativeTab === "shelf" && nativePlayerView === "details" && showChapterJumpTop ? (
             <button type="button" className="chapter-jump-top" onClick={jumpToPlayerTop} aria-label="Jump to top of book details">
               <ArrowUp size={16} />

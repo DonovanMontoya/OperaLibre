@@ -160,7 +160,7 @@ The same ffmpeg measures each book's loudness in the background after a scan, so
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `ffmpeg_path` | *(empty)* | Path to the ffmpeg binary used for faststart conversion and loudness analysis. |
+| `ffmpeg_path` | *(empty)* | Path to the ffmpeg binary used for faststart conversion, loudness analysis, and sharing clips as audio. |
 | `ffprobe_path` | *(empty)* | Path to the ffprobe binary used to verify converted files. |
 
 ## Environment variables

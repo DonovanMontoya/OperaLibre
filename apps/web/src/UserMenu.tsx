@@ -1,3 +1,4 @@
+import { BetaFeaturesSettings } from "./BetaFeaturesSettings";
 import { ColorVisionSettings, type ColorVisionSettingsProps } from "./ColorVisionSettings";
 import { PrivacyPolicyLink } from "./PrivacyPolicyLink";
 import { BehaviorSection } from "./BehaviorSection";
@@ -227,6 +228,7 @@ export function renderUserMenu({
         <summary><span><strong>Display</strong><small>Color vision and visual cues</small></span></summary>
         <div className="behavior-settings-body"><ColorVisionSettings {...displaySettings} /></div>
       </details> : null}
+      {!native && capabilities.clips ? <BetaFeaturesSettings enabled={readerPreferences.clippingEnabled} onToggle={readerPreferences.toggleClippingEnabled} /> : null}
       {!native ? <BehaviorSection>
         <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
         {!demoMode && !localMode ? <BookPreviewSetting enabled={bookPreviewsEnabled} onToggle={toggleBookPreviewsEnabled} /> : null}

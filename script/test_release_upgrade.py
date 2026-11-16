@@ -13,6 +13,7 @@ from pathlib import Path
 import secrets
 import shutil
 import socket
+import sqlite3
 import subprocess
 import tarfile
 import tempfile
@@ -238,6 +239,7 @@ def scenario(baseline, candidate, layout, rollback, round_trip=False):
                         "trackId": track_id, "positionSeconds": 75, "bookPositionSeconds": 75,
                         "durationSeconds": 120, "intentionalSeek": True}, "PUT")
                     request(f"/api/books/{book_id}/volume", {"volumeGain": 0.8}, "PUT")
+                    request(f"/api/books/{book_id}/clips", {"startSeconds": 10, "endSeconds": 50})
                     request(f"/api/books/{book_id}/metadata", {"title": "Changed on nightly", "genres": []}, "PUT")
                     reader = request("/api/users", {"username": "nightly-reader",
                                       "password": secrets.token_urlsafe(24)})
@@ -273,6 +275,14 @@ def scenario(baseline, candidate, layout, rollback, round_trip=False):
                     restored_book = request(f"/api/books/{book_id}")
                     require(restored_book["title"] == "Changed on nightly", "Metadata written on nightly was lost")
                     require(restored_book["volumeGain"] == 0.8, "Settings written on nightly were lost")
+                    # Stable may predate clips and have no route to read them
+                    # back; it must still leave them in place for the return.
+                    database = sqlite3.connect((root / "data/operalibre.db").as_uri() + "?mode=ro", uri=True)
+                    try:
+                        require(database.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 1,
+                                "A clip saved on nightly was lost")
+                    finally:
+                        database.close()
                     require(any(user["id"] == reader["id"] for user in request("/api/users")),
                             "Account created on nightly was lost")
                     require((root / "audiobooks/nightly-added.txt").read_text() == "Added on nightly",
@@ -285,7 +295,7 @@ def scenario(baseline, candidate, layout, rollback, round_trip=False):
                     else:
                         require(not (root / "web").exists(), "Server-only gained a web folder")
                     print(f"PASS: {layout}/round-trip: {old_version} -> {new_version} -> {old_version}; "
-                          "nightly progress, settings, metadata, accounts and files preserved", flush=True)
+                          "nightly progress, settings, clips, metadata, accounts and files preserved", flush=True)
                 print(f"PASS: {label}: {old_version} -> {expected_version}; "
                       "healthy, account/session, configuration and files preserved", flush=True)
             except Exception:

@@ -16,6 +16,7 @@ import {
   serverRevisionFromSummary
 } from "./reliability";
 import { getNativeAudioRecovery } from "./nativeAudio";
+import { forgetInterruptedClipPreview, interruptedClipPreviewStart } from "./clips";
 import { nativeAudioRecoveryScope } from "./appStorage";
 import { getCachedProgress } from "./offline";
 import { getDeviceBooks, getDeviceProgress } from "./localLibrary";
@@ -168,8 +169,13 @@ export function usePlaybackRestore({
           : Promise.resolve(null),
         getCachedProgress(currentUser.id, playbackBook.id).catch(() => null)
       ]);
-      const recoveryTrack = recoveredNative
-        ? playbackBook.tracks.find((track) => track.id === recoveredNative.trackId)
+      // A clip preview the app never came back from leaves the native
+      // checkpoint at the clip. The listener's place was saved before it began.
+      const previewStartedAt = interruptedClipPreviewStart(
+        window.localStorage, getServerStorageKey(), currentUser.id, playbackBook.id
+      );
+      const recoveryTrack = recoveredNative && recoveredNative.updatedAt < (previewStartedAt ?? Infinity)
+        ?playbackBook.tracks.find((track) => track.id === recoveredNative.trackId)
         : null;
       let nativeProgress: Progress | null = recoveredNative && recoveryTrack
         ? {
@@ -218,6 +224,9 @@ export function usePlaybackRestore({
         // Recovery without an observed revision keeps legacy timestamp checks;
         // the current shelf revision was fetched after this listening happened.
         if (nativeProgress && !previousLocal?.syncStatus) nativeProgress.baseUpdatedAt = undefined;
+      }
+      if (!nativeAudio && !cancelled && previewStartedAt !== null) {
+        forgetInterruptedClipPreview(window.localStorage, getServerStorageKey(), currentUser.id, playbackBook.id, previewStartedAt);
       }
       if (playbackBook.source === "device") {
         const local = freshestProgress(...localCopies, nativeProgress);

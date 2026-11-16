@@ -12,6 +12,7 @@ export function serverCapabilities(
     completion: connected,
     sentenceAlignment: connected || mode.demo === true,
     sharedActivity: connected,
+    clips: connected,
     imports: connected,
     administration: connected && user.isAdmin,
     metadataEditing: connected && user.isAdmin,
