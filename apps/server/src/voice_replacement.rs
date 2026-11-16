@@ -1267,6 +1267,23 @@ fn speech_in(start_seconds: f64, end_seconds: f64, pauses: &[(f64, f64)]) -> Vec
     .collect()
 }
 
+/// Stretches as times from where the first of them starts.
+fn from_first(stretches: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let origin = stretches.first().map_or(0.0, |first| first.0);
+    stretches
+        .iter()
+        .map(|(start, end)| (start - origin, end - origin))
+        .collect()
+}
+
+fn speech_model(cheaply: bool) -> &'static str {
+    if cheaply {
+        elevenlabs::CHEAP_SPEECH_MODEL
+    } else {
+        elevenlabs::SPEECH_MODEL
+    }
+}
+
 fn seconds_in(stretches: &[(f64, f64)]) -> f64 {
     stretches.iter().map(|(start, end)| end - start).sum()
 }
@@ -1505,10 +1522,7 @@ impl Workshop<'_> {
         if stretches.len() == 1 {
             render::extract_clip(self.ffmpeg, &pieces, &source, 44_100).await?;
         } else {
-            let within: Vec<(f64, f64)> = stretches
-                .iter()
-                .map(|(start, end)| (start - first.0, end - first.0))
-                .collect();
+            let within = from_first(stretches);
             render::extract_stretches(self.ffmpeg, &pieces, &within, &source, 44_100).await?;
         }
         let changed = self
@@ -1582,11 +1596,8 @@ impl Workshop<'_> {
             return Ok(Vec::new());
         };
         let clip = self.performance(voice_id, settings, stretches).await?;
-        let only: Vec<(f64, f64)> = if stretches.len() > 1 {
-            stretches
-                .iter()
-                .map(|(start, end)| (start - first.0, end - first.0))
-                .collect()
+        let only = if stretches.len() > 1 {
+            from_first(stretches)
         } else {
             Vec::new()
         };
@@ -2043,11 +2054,7 @@ async fn slot_inserts(
                 .heard
                 .get(&section.index)
                 .map(|lines| heard_text(lines, slot.start_seconds, slot.end_seconds)),
-            if *cheaply {
-                elevenlabs::CHEAP_SPEECH_MODEL
-            } else {
-                elevenlabs::SPEECH_MODEL
-            },
+            speech_model(*cheaply),
         ),
     };
     let Some(text) = text else {
@@ -3106,11 +3113,7 @@ pub(crate) async fn audition_voice(
                     "The transcript holds nothing said in that part.",
                 ));
             };
-            let model = if input.method == CastMethod::ReadTextCheaply {
-                elevenlabs::CHEAP_SPEECH_MODEL
-            } else {
-                elevenlabs::SPEECH_MODEL
-            };
+            let model = speech_model(input.method == CastMethod::ReadTextCheaply);
             let clip = workshop
                 .speech(voice_id, &text, model)
                 .await
