@@ -177,7 +177,7 @@ import { AudibleManagement } from "./AudibleManagement";
 import { SettingsPage } from "./SettingsPage";
 import { AgentAccessDialog } from "./AgentAccess";
 import { MiniPlayer } from "./MiniPlayer";
-import { PopOutPlayer } from "./PopOutPlayer";
+import { PopOutPlayer } from "./PopOutPlayerView";
 import { playerOnScreen, usePopOutPlayer, type PopOutControl } from "./popOutPlayer";
 import { DeskView, useDeskView } from "./DeskView";
 import { PlayerPane } from "./PlayerPane";
