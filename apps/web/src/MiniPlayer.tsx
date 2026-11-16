@@ -1,5 +1,5 @@
 import { CoverArt } from "./CoverArt";
-import type { PopOutControl } from "./popOutPlayer";
+import type { PopOutControl } from "./usePopOutPlayer";
 import { ScrubSlider } from "./PlaybackControls";
 import { formatTime } from "./formatting";
 import { ListMusic, Pause, PictureInPicture2, Play, RotateCcw, RotateCw, SkipBack, SkipForward, Timer } from "lucide-react";
