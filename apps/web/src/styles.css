@@ -5616,6 +5616,16 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   transform: translateY(-1px);
 }
 
+.mini-actions .mini-popout {
+  margin-left: 4px;
+  border-color: transparent;
+}
+
+.mini-actions .mini-popout[aria-pressed="true"] {
+  color: var(--on-spine);
+  border-color: rgba(var(--spine-gold-rgb), 0.26);
+}
+
 .mini-actions .mini-play {
   color: var(--spine);
   background: var(--gold-soft);
@@ -10611,6 +10621,20 @@ html:not(.native-app) .web-shell.player-view-details .player-pane
 html:not(.native-app) .native-now-utility:has(.native-now-read),
 html.native-app .native-now-utility:has(.native-now-read) {
   grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+/* The web's pop-out button joins the same row. */
+html:not(.native-app) .native-now-utility:has(.native-now-popout) {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+html:not(.native-app) .native-now-utility:has(.native-now-read):has(.native-now-popout) {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+html:not(.native-app) .native-now-utility .native-now-popout[aria-pressed="true"] {
+  color: var(--oxblood);
+  border-color: rgba(var(--oxblood-rgb), 0.28);
 }
 
 html:not(.native-app) .web-shell.player-view-now .mini-player {

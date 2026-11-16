@@ -33,6 +33,10 @@ The setting is a boost, not a re-recording: past the point where a book’s loud
 
 Safari and other WebKit web players currently allow reductions only because routing audio through their boost engine can distort playback. This also applies to downloaded and imported books. Saved boosts remain available in supported players; Safari plays them at Original. To use boost, use the native iOS app or desktop Chrome or Firefox with a frontend served by OperaLibre.
 
+### Keep the player in its own window
+
+In a desktop browser, **Pop out** in the player (or the window button in the mini player) moves the controls for the book that is playing into a small window of their own, so you can pause, skip, scrub, and change speed while you work in other windows. Resize it to suit: tall shows the cover above the controls, wide puts them side by side, and short leaves a single strip. Space plays and pauses, and the left and right arrow keys skip back 15 and forward 30 seconds. In Chrome and Edge the window stays above your other windows; other browsers, and addresses that use plain `http://` instead of HTTPS or `localhost`, open an ordinary popup, which your browser may ask you to allow. Playback stays in the original tab, so closing that tab closes the window too. **Back to tab** or **Bring back** closes it.
+
 ### Set your own sleep timer
 
 **Nightfall**, on the book’s own page and behind the timer button in the phone player, offers the usual 5, 15, 30, 45, and 60 minute stops. **End of chapter** stops when the chapter you are listening to finishes, however long that takes; if you skip or pick another chapter, it waits for the end of the one you land in. It appears for books that have chapter markers. Choose **Custom** and type any length from 1 to 600 minutes when none of those matches the chapter you are in the middle of. Durations you type are kept on that device — the three most recent sit alongside the presets — so a length you use often is one tap away the next night. The countdown only runs while the book is playing.

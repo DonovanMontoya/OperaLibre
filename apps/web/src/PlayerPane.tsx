@@ -1,4 +1,5 @@
 import { createPortal } from "react-dom";
+import type { PopOutControl } from "./popOutPlayer";
 import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BookPreviewBar, type PreviewPosition } from "./BookPreviewBar";
 import { BookCredits } from "./BookCredits";
@@ -31,6 +32,7 @@ import {
   LoaderCircle,
   Pause,
   Pencil,
+  PictureInPicture2,
   Play,
   Plus,
   RotateCcw,
@@ -124,6 +126,7 @@ export function PlayerPane({
   stopBookPreview,
   continueBookPreview,
   playPending,
+  popOut = null,
   playSelectedBook,
   playbackBook,
   playbackDescription,
@@ -216,6 +219,8 @@ export function PlayerPane({
   stopBookPreview: () => void;
   continueBookPreview: (book: Book, position?: PreviewPosition) => Promise<boolean>;
   playPending: boolean;
+  /** The web's pop-out window, where the browser can open one. */
+  popOut?: PopOutControl | null;
   playSelectedBook: (book: Book) => Promise<void>;
   playbackBook: Book | null;
   playbackDescription: string | null;
@@ -785,6 +790,16 @@ export function PlayerPane({
                   >
                     <ListMusic size={16} /> Chapters
                   </button>
+                  {popOut ? (
+                    <button
+                      type="button"
+                      className="native-now-popout"
+                      aria-pressed={popOut.open}
+                      onClick={popOut.toggle}
+                    >
+                      <PictureInPicture2 size={16} /> {popOut.open ? "Bring back" : "Pop out"}
+                    </button>
+                  ) : null}
                   {readalongEnabled && playbackBook?.readingFile ? (
                     <button
                       type="button"
