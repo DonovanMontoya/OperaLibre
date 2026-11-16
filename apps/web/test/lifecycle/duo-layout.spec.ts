@@ -958,15 +958,15 @@ test('portrait fold bounds the shelf, settings and administration to independent
   expect(gameBoard.width).toBeGreaterThan(320);
   expect(await page.locator('.match-piece').first().evaluate(el => getComputedStyle(el).fontSize)).toBe('16px');
   await page.screenshot({ path: '../../output/duo-games-portrait.png' });
-  await page.getByRole('tab', { name: 'Word Grid', exact: true }).click();
-  await checkPanes('.games-shell', '.word-keys');
-  const wordBoard = (await page.locator('.word-board').boundingBox())!;
-  const wordShell = (await page.locator('.games-shell').boundingBox())!;
-  expect(wordBoard.y).toBeGreaterThanOrEqual(wordShell.y);
-  expect(wordBoard.y + wordBoard.height).toBeLessThanOrEqual(wordShell.y + wordShell.height + 1);
-  expect((await page.locator('.word-key').first().boundingBox())!.height).toBeGreaterThanOrEqual(50);
-  expect(parseFloat(await page.locator('.word-tile').first().evaluate(el => getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(15);
-  await page.screenshot({ path: '../../output/duo-word-grid-portrait.png' });
+  // The other games share Chapter Match's frame, so they play on the lower screen too.
+  for (const [game, piece] of [['Shelf Sort', '.shelf-stack'], ['Cover Grid', '.slide-tile']] as const) {
+    await page.getByRole('tab', { name: game, exact: true }).click();
+    await checkPanes('.games-shell', '.match-board-frame');
+    const board = (await page.locator('.match-board').boundingBox())!;
+    expect(board.y).toBeGreaterThanOrEqual(490.5);
+    expect(board.width).toBeGreaterThan(320);
+    expect((await page.locator(piece).first().boundingBox())!.width).toBeGreaterThanOrEqual(60);
+  }
   await page.getByRole('button', { name: 'Ledger', exact: true }).click();
   await expect(page.locator('.ledger-upper')).toBeVisible();
   await checkPanes('.ledger-upper', '.ledger-lower');

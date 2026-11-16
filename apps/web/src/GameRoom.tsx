@@ -1,198 +1,26 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { BookOpenText, Grid3X3, RotateCcw, Sparkles } from "lucide-react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Grid3X3, Image as ImageIcon, Library, RotateCcw, Sparkles } from "lucide-react";
+import { CoverGrid } from "./CoverGrid";
 import { haptic } from "./native";
+import { ShelfSort } from "./ShelfSortGame";
+import type { Book } from "./types";
 import {
   MATCH_GLYPHS,
   MATCH_GLYPH_NAMES,
   MATCH_KINDS,
   MATCH_SIZE,
-  WORD_ATTEMPTS,
-  WORD_LENGTH,
   cellsAreAdjacent,
   collapseMatches,
-  WORDS,
-  dailyWord,
   findMatches,
   hasLegalMove,
-  loadGuessWords,
   makeMatchBoard,
-  randomWord,
-  scoreWord,
   swapCells,
-  type LetterResult,
   type MatchBoard,
   type MatchCell
 } from "./games";
 
-export type GameName = "words" | "match";
-type WordSave = { word: string; guesses: string[] };
-const WORD_SAVE_KEY = "operalibre.games.word-grid";
+export type GameName = "match" | "shelf" | "cover";
 const MATCH_SAVE_KEY = "operalibre.games.chapter-match";
-
-const LETTER_FEEDBACK = {
-  correct: { symbol: "✓", label: "correct position" },
-  present: { symbol: "↔", label: "different position" },
-  absent: { symbol: "×", label: "not in the word" }
-} satisfies Record<LetterResult, { symbol: string; label: string }>;
-
-function LetterFeedback({ result }: { result: LetterResult | undefined }) {
-  return result ? <small className="word-feedback" aria-hidden="true">{LETTER_FEEDBACK[result].symbol}</small> : null;
-}
-
-function isPlayableGuess(value: unknown): value is string {
-  return typeof value === "string" && value.length === WORD_LENGTH && /^[a-z]+$/.test(value);
-}
-
-function readWordSave(): WordSave {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(WORD_SAVE_KEY) ?? "null") as WordSave | null;
-    // The answer must come from the pool (an arbitrary string may be
-    // unwinnable on the letter-only keyboard) and every guess must be a
-    // well-formed word, or scoring throws mid-render.
-    if (
-      (WORDS as readonly string[]).includes(parsed?.word as string)
-      && Array.isArray(parsed?.guesses)
-      && parsed.guesses.length <= WORD_ATTEMPTS
-      && parsed.guesses.every(isPlayableGuess)
-    ) {
-      return { word: parsed.word, guesses: parsed.guesses };
-    }
-  } catch { /* Start fresh if local storage was cleared or malformed. */ }
-  return { word: dailyWord(), guesses: [] };
-}
-
-const KEY_ROWS = ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
-const RESULT_RANK: Record<LetterResult, number> = { absent: 0, present: 1, correct: 2 };
-
-// "loading" until the dictionary chunk settles, then the words themselves —
-// or "unchecked" if it never arrived, in which case guesses go through
-// unjudged rather than the game refusing every one of them.
-type Dictionary = "loading" | "unchecked" | ReadonlySet<string>;
-
-function WordGrid() {
-  const [save, setSave] = useState(readWordSave);
-  const [draft, setDraft] = useState("");
-  const [message, setMessage] = useState("Guess the shelf’s five-letter word.");
-  const [dictionary, setDictionary] = useState<Dictionary>("loading");
-  // Counts turned-away guesses so each one restarts the row’s shake.
-  const [rejections, setRejections] = useState(0);
-  const answer = save.word;
-  const finished = save.guesses.includes(answer) || save.guesses.length >= WORD_ATTEMPTS;
-  const words = typeof dictionary === "string" ? null : dictionary;
-
-  useEffect(() => {
-    let live = true;
-    void loadGuessWords().then((loaded) => { if (live) setDictionary(loaded ?? "unchecked"); });
-    return () => { live = false; };
-  }, []);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(WORD_SAVE_KEY, JSON.stringify(save));
-    } catch { /* Keep playing without persistence when storage is unavailable. */ }
-  }, [save]);
-
-  const guessResults = useMemo(() => save.guesses.map((guess) => scoreWord(guess, answer)), [save.guesses, answer]);
-
-  // The best result each guessed letter has earned, to shade its key.
-  const keyResults = useMemo(() => {
-    const results: Partial<Record<string, LetterResult>> = {};
-    guessResults.forEach((letterResults, guessIndex) => {
-      letterResults.forEach((result, index) => {
-        const letter = save.guesses[guessIndex][index];
-        const known = results[letter];
-        if (!known || RESULT_RANK[result] > RESULT_RANK[known]) results[letter] = result;
-      });
-    });
-    return results;
-  }, [guessResults, save.guesses]);
-
-  function submit() {
-    const guess = draft.toLowerCase();
-    if (finished) return;
-    if (guess.length !== WORD_LENGTH) {
-      setMessage("Enter five letters first.");
-      return;
-    }
-    // Five letters that spell nothing are a slip, never a guess worth one of
-    // the six attempts — hand them back instead of scoring them.
-    if (words && !words.has(guess)) {
-      haptic("medium");
-      setRejections((count) => count + 1);
-      setMessage(`${guess.toUpperCase()} isn’t in the word list.`);
-      return;
-    }
-    const guesses = [...save.guesses, guess];
-    setSave({ ...save, guesses });
-    setDraft("");
-    setRejections(0);
-    // The end of a game — won or spent — earns a firmer bump than a keystroke.
-    if (guess === answer || guesses.length === WORD_ATTEMPTS) haptic("medium");
-    setMessage(guess === answer ? "Beautifully read." : guesses.length === WORD_ATTEMPTS ? `The word was ${answer.toUpperCase()}.` : "Keep reading between the lines.");
-  }
-
-  function refresh() {
-    haptic("light");
-    setSave({ word: randomWord(answer), guesses: [] });
-    setDraft("");
-    setRejections(0);
-    setMessage("A fresh word is on the shelf.");
-  }
-
-  function pressKey(key: string) {
-    if (finished) return;
-    haptic("light");
-    if (key === "enter") {
-      submit();
-      return;
-    }
-    setRejections(0);
-    if (key === "back") {
-      setDraft((current) => current.slice(0, -1));
-      return;
-    }
-    setDraft((current) => (current.length < WORD_LENGTH ? current + key : current));
-  }
-
-  const rows = Array.from({ length: WORD_ATTEMPTS }, (_, row) => save.guesses[row] ?? (row === save.guesses.length ? draft : ""));
-  return <section className="game-card word-game" aria-label="Word Grid game">
-    <div className="game-title-row">
-      <span className="game-mark"><BookOpenText size={22} /></span>
-      <div><span className="section-label">Word puzzle</span><h2>Word Grid</h2></div>
-      <span className="game-stat">{save.guesses.length}/{WORD_ATTEMPTS}</span>
-      <button className="game-reset" type="button" onClick={refresh} aria-label="New word"><RotateCcw size={16} /></button>
-    </div>
-    <div className="word-board-frame"><div className="word-board" aria-label="Word guesses">
-      {rows.map((word, row) => {
-        const result = guessResults[row] ?? [];
-        // A rejected guess remounts its row, so the shake replays even when
-        // the same word is offered twice.
-        const drafting = row === save.guesses.length;
-        return <div className={`word-row ${drafting && rejections ? "rejected" : ""}`} key={drafting ? `draft-${rejections}` : row}>
-          {Array.from({ length: WORD_LENGTH }, (_, col) => <span className={`word-tile ${result[col] ?? ""}`} key={col}
-            role={result[col] ? "img" : undefined}
-            aria-label={result[col] ? `${word[col]?.toUpperCase()}, ${LETTER_FEEDBACK[result[col]].label}` : undefined}>
-            {word[col]?.toUpperCase() ?? ""}<LetterFeedback result={result[col]} />
-          </span>)}
-        </div>;
-      })}
-    </div></div>
-    <p className="word-feedback-legend">✓ Correct position · ↔ Different position · × Not in word</p>
-    <div className="word-keys" aria-label="Letter keyboard">
-      {KEY_ROWS.map((rowKeys, rowIndex) => <div className="word-keys-row" key={rowIndex}>
-        {rowIndex === 2 && <button type="button" className="word-key wide" disabled={finished || draft.length !== WORD_LENGTH || dictionary === "loading"} onClick={() => pressKey("enter")} aria-label="Submit guess">Enter</button>}
-        {rowKeys.split("").map((letter) => (
-          <button type="button" className={`word-key ${keyResults[letter] ?? ""}`} disabled={finished} onClick={() => pressKey(letter)} key={letter}
-            aria-label={keyResults[letter] ? `${letter.toUpperCase()}, ${LETTER_FEEDBACK[keyResults[letter]].label}` : letter.toUpperCase()}>
-            {letter.toUpperCase()}<LetterFeedback result={keyResults[letter]} />
-          </button>
-        ))}
-        {rowIndex === 2 && <button type="button" className="word-key wide" disabled={finished || !draft.length} onClick={() => pressKey("back")} aria-label="Delete letter">⌫</button>}
-      </div>)}
-    </div>
-    <p className="game-message" aria-live="polite">{message}</p>
-  </section>;
-}
 
 type ScorePopup = { id: number; points: number; cascade: number; left: number; top: number };
 
@@ -564,7 +392,13 @@ function ChapterMatch() {
   </section>;
 }
 
-export function GamesPage({ onGameChange }: { onGameChange?: (game: GameName) => void } = {}) {
+const GAMES = [
+  { id: "match", title: "Chapter Match", icon: Grid3X3 },
+  { id: "shelf", title: "Shelf Sort", icon: Library },
+  { id: "cover", title: "Cover Grid", icon: ImageIcon }
+] as const;
+
+export function GamesPage({ books, onGameChange }: { books: Book[]; onGameChange?: (game: GameName) => void }) {
   const [game, setGame] = useState<GameName>("match");
   // The shell places the now-playing strip by which game is open, and some
   // supported iOS versions cannot ask the page with :has().
@@ -572,10 +406,11 @@ export function GamesPage({ onGameChange }: { onGameChange?: (game: GameName) =>
   return <section className={`games-shell games-${game}`} aria-label="Games">
     <header className="games-head"><span className="eyebrow"><Sparkles size={13} /> The Parlour</span><h1>Games</h1><p>Small diversions for long listens.</p></header>
     <div className="games-switcher" role="tablist" aria-label="Choose a game">
-      <button type="button" role="tab" aria-selected={game === "match"} className={game === "match" ? "active" : ""} onClick={() => setGame("match")}><Grid3X3 size={16} /> Chapter Match</button>
-      <button type="button" role="tab" aria-selected={game === "words"} className={game === "words" ? "active" : ""} onClick={() => setGame("words")}><BookOpenText size={16} /> Word Grid</button>
+      {GAMES.map(({ id, title, icon: Icon }) => (
+        <button type="button" role="tab" aria-selected={game === id} className={game === id ? "active" : ""} onClick={() => setGame(id)} key={id}><Icon size={16} /> {title}</button>
+      ))}
     </div>
-    {game === "words" ? <WordGrid /> : <ChapterMatch />}
+    {game === "match" ? <ChapterMatch /> : game === "shelf" ? <ShelfSort /> : <CoverGrid books={books} />}
     <p className="games-privacy">Saved only on this device. No account or connection needed.</p>
   </section>;
 }

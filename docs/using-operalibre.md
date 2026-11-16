@@ -392,13 +392,13 @@ The milestones are books finished (1, then 10, 25, and 100), a finished book of 
 
 ## Games
 
-The installed iPhone and Android apps include a **Games** tab. **Word Grid** is a five-letter word puzzle: it starts on the day's word, takes six guesses, and can be replaced with another word. **Chapter Match** is a board where you swap adjacent symbols to line up three or more. The tab is in the bottom navigation by default. Turn it off with **Games tab** under **Settings → Behavior**. The games run on the device and send nothing to the server.
+The installed iPhone and Android apps include a **Games** tab. **Chapter Match** is a board where you swap adjacent symbols to line up three or more. **Shelf Sort** deals stacks of mixed-colour books: move books onto an empty stack or a matching colour until each stack holds one colour, with a new colour joining every couple of shelves. **Cover Grid** cuts one of your book covers into a sliding puzzle of 3×3, 4×4 or 5×5 pieces: slide pieces into the gap until the cover is whole. Turn on piece numbers or peek at the whole cover if you get stuck. Covers downloaded to the device work offline. The tab is in the bottom navigation by default. Turn it off with **Games tab** under **Settings → Behavior**. The games run on the device, and Cover Grid only reads covers your server already shows you; nothing about play is sent anywhere.
 
 ## Color vision
 
 Under **Settings → Display → Color vision** in the apps, or **Account menu → Display** on the web, choose **Red–green**, **Blue–yellow**, or **Monochrome** to change interface accents and status colors. The choice stays on this device and works offline. Covers and book illustrations keep their original colors; ebook links and narrated-sentence highlights follow the selected palette.
 
-Turn on **Stronger visual cues** for outlined selections, underlined links, patterned listening progress, and a numbered listening calendar (1–4, from less to more). It works with any palette, including **Default colors**. Word Grid always labels its feedback with symbols: ✓ for the correct position, ↔ for a different position, and × for a letter absent from the word. Chapter Match uses a different symbol for each piece.
+Turn on **Stronger visual cues** for outlined selections, underlined links, patterned listening progress, and a numbered listening calendar (1–4, from less to more). It works with any palette, including **Default colors**. Chapter Match uses a different symbol for each piece, and Shelf Sort prints a volume number on every book, so neither game depends on colour alone.
 
 ## Light and dark themes
 
