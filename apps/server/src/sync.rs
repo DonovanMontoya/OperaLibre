@@ -1350,7 +1350,6 @@ pub(crate) async fn run_sync_generation(
     }
 
     let temp_dir = tempfile::tempdir()?;
-    let aligner = Aligner::new(state, job_id, runtime, temp_dir.path(), &recognition);
     let scope_unit = if tracks.len() > 1 {
         "track"
     } else if scopes.len() > 1 {
@@ -1389,6 +1388,42 @@ pub(crate) async fn run_sync_generation(
             .map(|&index| scope_weights[index])
             .sum();
     }
+    let prefetch = recognition
+        .cloud
+        .clone()
+        .zip(runtime.ffmpeg_path.as_deref())
+        .map(|(cloud, ffmpeg)| {
+            let scopes = selected[run.completed_scopes..]
+                .iter()
+                .filter_map(|&number| {
+                    let scope = &scopes[number];
+                    let track = &tracks[scope.track_index];
+                    let (start, end) = match scope.audio_range {
+                        Some(range) => range,
+                        None => (0.0, track.duration_seconds?),
+                    };
+                    // As `align_scope` decides which scopes are windowed.
+                    (end - start > 0.5 && !scope_transcript(&epub, scope).text.trim().is_empty())
+                        .then(|| {
+                            let pieces = CloudPrefetch::new(
+                                state,
+                                cloud.clone(),
+                                recognition.language.clone(),
+                                ffmpeg,
+                                &track.path,
+                                temp_dir.path(),
+                                number,
+                                start,
+                                end,
+                            );
+                            (number, pieces)
+                        })
+                })
+                .collect();
+            tokio::sync::Mutex::new(BookPrefetch { scopes })
+        });
+    let mut aligner = Aligner::new(state, job_id, runtime, temp_dir.path(), &recognition);
+    aligner.prefetch = prefetch.as_ref();
     let mut attempted = selected[..run.completed_scopes]
         .iter()
         .filter(|&&index| spans[index].text_units > 0)
@@ -2314,9 +2349,11 @@ const PREFETCH_PIECE_SECONDS: f64 = 240.0;
 /// Extra audio sent on each side of a piece, so words near its edges are
 /// heard in context. Only words centred inside the piece are kept.
 const PREFETCH_OVERLAP_SECONDS: f64 = 15.0;
-/// Pieces requested beyond the one a window needs. Bounds the audio billed
-/// for nothing when a job is paused, cancelled, or fails.
-const PREFETCH_AHEAD: usize = 3;
+/// Pieces requested beyond the one a window needs, continuing into the next
+/// chapters. OpenAI takes about as long for one piece as for several sent at
+/// once, so this many in flight keeps recognition ahead of alignment. Bounds
+/// the audio billed for nothing when a job is paused, cancelled, or fails.
+const PREFETCH_AHEAD: usize = 6;
 
 /// OpenAI word timings for one windowed scope, fetched a few pieces ahead of
 /// the window being aligned so that waiting on OpenAI overlaps alignment.
@@ -2398,6 +2435,24 @@ impl CloudPrefetch {
             .unwrap_or(self.cores.len() - 1)
     }
 
+    /// The pieces holding the words between two track times.
+    fn span(&self, start: f64, end: f64) -> (usize, usize) {
+        (
+            self.piece_at(start),
+            self.piece_at((end - 0.001).max(start)),
+        )
+    }
+
+    /// Stops pieces still being recognized and lets go of the words of the
+    /// rest; the scope is finished with.
+    fn finish(&mut self) {
+        for piece in self.pieces.drain(..) {
+            if let PrefetchPiece::Pending(task) = piece {
+                task.abort();
+            }
+        }
+    }
+
     /// Requests the pieces from `first` through `last`. Earlier pieces are
     /// no longer needed: a recovery scan can pass over several, which are
     /// then never sent.
@@ -2463,9 +2518,8 @@ impl CloudPrefetch {
         start: f64,
         end: f64,
     ) -> anyhow::Result<Vec<alignment::RecognizedWord>> {
-        let first = self.piece_at(start);
-        let last = self.piece_at((end - 0.001).max(start));
-        self.request(first, last + PREFETCH_AHEAD);
+        let (first, last) = self.span(start, end);
+        self.request(first, last);
         let mut words = Vec::new();
         for piece in &mut self.pieces[first..=last] {
             if let PrefetchPiece::Pending(task) = piece {
@@ -2503,6 +2557,54 @@ impl Drop for CloudPrefetch {
                 task.abort();
             }
         }
+    }
+}
+
+/// The OpenAI pieces of every scope a run will align, in the order it aligns
+/// them, so that the next chapter's opening is already recognized when the
+/// current one ends instead of each chapter starting with a wait.
+struct BookPrefetch {
+    /// Scope number and its pieces.
+    scopes: Vec<(usize, CloudPrefetch)>,
+}
+
+impl BookPrefetch {
+    /// Pieces for `scope_number` over exactly this audio, if the run planned
+    /// them. A fix that aligns other audio for the scope uses its own.
+    fn has(&self, scope_number: usize, source: &FsPath, start: f64, end: f64) -> bool {
+        self.scopes.iter().any(|(number, prefetch)| {
+            *number == scope_number
+                && prefetch.source == source
+                && prefetch.scope_range == (start, end)
+        })
+    }
+
+    async fn words(
+        &mut self,
+        scope_number: usize,
+        start: f64,
+        end: f64,
+    ) -> anyhow::Result<Vec<alignment::RecognizedWord>> {
+        let at = self
+            .scopes
+            .iter()
+            .position(|(number, _)| *number == scope_number)
+            .expect("callers check `has` first");
+        for (_, earlier) in &mut self.scopes[..at] {
+            earlier.finish();
+        }
+        let (first, last) = self.scopes[at].1.span(start, end);
+        // Pieces past the end of a scope carry over to the next one.
+        let (mut from, mut to) = (first, last + PREFETCH_AHEAD);
+        for (_, prefetch) in &mut self.scopes[at..] {
+            let count = prefetch.cores.len();
+            prefetch.request(from, to);
+            if to < count {
+                break;
+            }
+            (from, to) = (0, to - count);
+        }
+        self.scopes[at].1.words(start, end).await
     }
 }
 
@@ -2618,6 +2720,8 @@ struct Aligner<'a> {
     /// What recognition heard in the scope being aligned, kept even when the
     /// scope fails, since that is when it is wanted.
     heard: std::sync::Mutex<Heard>,
+    /// OpenAI pieces the run requested across its chapters.
+    prefetch: Option<&'a tokio::sync::Mutex<BookPrefetch>>,
 }
 
 #[derive(Default)]
@@ -2656,6 +2760,7 @@ impl<'a> Aligner<'a> {
             temp_dir,
             recognition,
             heard: Default::default(),
+            prefetch: None,
         }
     }
 
@@ -2672,6 +2777,7 @@ impl<'a> Aligner<'a> {
             temp_dir: self.temp_dir,
             recognition,
             heard: Default::default(),
+            prefetch: None,
         }
     }
 
@@ -2842,19 +2948,35 @@ impl<'a> Aligner<'a> {
         let mut recovery_start = None;
         let mut recovery_gaps = Vec::new();
         let mut skipped_text = 0;
-        let mut prefetch = self.recognition.cloud.clone().map(|cloud| {
-            CloudPrefetch::new(
-                self.state,
-                cloud,
-                self.recognition.language.clone(),
-                ffmpeg,
-                &track.path,
-                self.temp_dir,
-                scope_number,
-                scope_start,
-                scope_end,
-            )
-        });
+        let mut planned = match self.prefetch {
+            Some(book) => Some(book.lock().await),
+            None => None,
+        };
+        let mut own = None;
+        let mut prefetch = match (&self.recognition.cloud, planned.as_deref_mut()) {
+            (Some(_), Some(book))
+                if book.has(scope_number, &track.path, scope_start, scope_end) =>
+            {
+                Some(book)
+            }
+            (Some(cloud), _) => Some(own.insert(BookPrefetch {
+                scopes: vec![(
+                    scope_number,
+                    CloudPrefetch::new(
+                        self.state,
+                        cloud.clone(),
+                        self.recognition.language.clone(),
+                        ffmpeg,
+                        &track.path,
+                        self.temp_dir,
+                        scope_number,
+                        scope_start,
+                        scope_end,
+                    ),
+                )],
+            })),
+            (None, _) => None,
+        };
 
         while position < scope_end - 0.5 && cursor < text_len {
             windows += 1;
@@ -3030,7 +3152,7 @@ impl<'a> Aligner<'a> {
                     let recognition_text = transcript.window(cursor, text_len);
                     let recognized = self
                         .window_words(
-                            prefetch.as_mut(),
+                            prefetch.as_deref_mut(),
                             ffmpeg,
                             track,
                             (position, scope_end),
@@ -3081,7 +3203,7 @@ impl<'a> Aligner<'a> {
                         let recognition_text = transcript.window(cursor, recognition_end);
                         let recognized = self
                             .window_words(
-                                prefetch.as_mut(),
+                                prefetch.as_deref_mut(),
                                 ffmpeg,
                                 track,
                                 (position, window_end),
@@ -3250,7 +3372,7 @@ impl<'a> Aligner<'a> {
     #[allow(clippy::too_many_arguments)]
     async fn window_words(
         &self,
-        prefetch: Option<&mut CloudPrefetch>,
+        prefetch: Option<&mut BookPrefetch>,
         ffmpeg: &FsPath,
         track: &SyncTrackInput,
         (start, end): (f64, f64),
@@ -3259,7 +3381,7 @@ impl<'a> Aligner<'a> {
         text: &str,
     ) -> anyhow::Result<Vec<alignment::RecognizedWord>> {
         if let Some(prefetch) = prefetch {
-            let heard = prefetch.words(start, end).await?;
+            let heard = prefetch.words(scope_number, start, end).await?;
             return self
                 .check_window(
                     WindowAudio::Track {
@@ -4608,6 +4730,7 @@ printf '[{"type":"sentence","text":"Kaladin ran.","startTime":0,"endTime":2}]' >
             temp_dir: root.path(),
             recognition: &recognition,
             heard: Default::default(),
+            prefetch: None,
         };
         let fragments = aligner
             .align_pass(&audio, &transcript, 0.0, 0, 0, "Chapter 55", &[])
@@ -5023,6 +5146,7 @@ printf '[{"type":"sentence","text":"Kaladin ran.","startTime":0,"endTime":2}]' >
             temp_dir: root.path(),
             recognition: &recognition,
             heard: Default::default(),
+            prefetch: None,
         };
         for (index, scope) in scopes.iter().enumerate() {
             if selected
@@ -5357,6 +5481,7 @@ esac
                 temp_dir: temp_dir.path(),
                 recognition: &recognition,
                 heard: Default::default(),
+                prefetch: None,
             };
 
             let progress = ScopeProgress {
@@ -5641,7 +5766,7 @@ esac
         async fn fake_prefetch(
             root: &FsPath,
             extract_delay: &str,
-        ) -> (AppState, CloudPrefetch, Arc<std::sync::Mutex<OpenAiCalls>>) {
+        ) -> (AppState, BookPrefetch, Arc<std::sync::Mutex<OpenAiCalls>>) {
             let (state, _) = crate::unit_tests::fake_libation_state(root);
             let narration_path = root.join("narration.txt");
             std::fs::write(&narration_path, narration(1000, &[])).unwrap();
@@ -5658,63 +5783,103 @@ esac
                 ),
             );
             cloud_recognition::enable_for_test(&state).await;
-            let prefetch = CloudPrefetch::new(
-                &state,
-                Arc::new(cloud_recognition::CloudRecognizer::for_test(&endpoint)),
-                Some("en".into()),
-                &ffmpeg,
-                &root.join("book.m4b"),
-                root,
-                0,
-                0.0,
-                4000.0,
-            );
-            (state, prefetch, calls)
+            let cloud = Arc::new(cloud_recognition::CloudRecognizer::for_test(&endpoint));
+            // Two chapters of one file.
+            let scopes = [(0.0, 4000.0), (4000.0, 5000.0)]
+                .into_iter()
+                .enumerate()
+                .map(|(number, (start, end))| {
+                    let pieces = CloudPrefetch::new(
+                        &state,
+                        cloud.clone(),
+                        Some("en".into()),
+                        &ffmpeg,
+                        &root.join("book.m4b"),
+                        root,
+                        number,
+                        start,
+                        end,
+                    );
+                    (number, pieces)
+                })
+                .collect();
+            (state, BookPrefetch { scopes }, calls)
         }
 
         #[tokio::test]
-        async fn pieces_a_recovery_scan_passed_over_are_never_sent() {
+        async fn pieces_are_requested_into_the_next_chapter_but_not_where_a_scan_passed_over() {
             let root = tempfile::tempdir().unwrap();
             let (_state, mut prefetch, calls) = fake_prefetch(root.path(), "0").await;
-            prefetch.words(0.0, 240.0).await.unwrap();
-            // Recovery moved the window far ahead of the pieces requested.
-            let words = prefetch.words(2400.0, 2640.0).await.unwrap();
+            async fn settle(prefetch: &mut BookPrefetch) {
+                for (_, scope) in &mut prefetch.scopes {
+                    for piece in &mut scope.pieces {
+                        if let PrefetchPiece::Pending(task) = piece {
+                            *piece = PrefetchPiece::Ready(task.await.unwrap().unwrap());
+                        }
+                    }
+                }
+            }
+            prefetch.words(0, 0.0, 240.0).await.unwrap();
+            settle(&mut prefetch).await;
+            // Recovery moved the window far ahead of the pieces requested,
+            // close enough to the chapter's end to reach into the next.
+            let words = prefetch.words(0, 2400.0, 2640.0).await.unwrap();
             assert!(!words.is_empty());
             assert!(
                 words
                     .iter()
                     .all(|word| (0.0..240.0).contains(&word.start_time))
             );
-            for piece in &mut prefetch.pieces {
-                if let PrefetchPiece::Pending(task) = piece {
-                    let _ = task.await;
-                }
-            }
-            let calls = calls.lock().unwrap();
-            // The first window covers pieces 0 and 1 and requests three more;
-            // the second covers 10 and 11 and requests through 14. None in
-            // between is sent.
-            let mut sent = calls
-                .starts
+            settle(&mut prefetch).await;
+            let starts = prefetch
+                .scopes
                 .iter()
-                .map(|&start| {
-                    prefetch
+                .flat_map(|(number, scope)| {
+                    scope
                         .cores
                         .iter()
-                        .position(|&(core, _)| {
-                            ((core - PREFETCH_OVERLAP_SECONDS).max(0.0) - start).abs() < 0.01
+                        .enumerate()
+                        .map(move |(index, &(core, _))| {
+                            let start = (core - PREFETCH_OVERLAP_SECONDS).max(scope.scope_range.0);
+                            (start, (*number, index))
                         })
+                })
+                .collect::<Vec<_>>();
+            let mut sent = calls
+                .lock()
+                .unwrap()
+                .starts
+                .iter()
+                .map(|&sent| {
+                    starts
+                        .iter()
+                        .find(|(start, _)| (start - sent).abs() < 0.01)
                         .unwrap()
+                        .1
                 })
                 .collect::<Vec<_>>();
             sent.sort_unstable();
-            assert_eq!(sent, [0, 1, 2, 3, 4, 10, 11, 12, 13, 14]);
+            // The first window covers pieces 0 and 1 and requests six more.
+            // The second covers 10 and 11 of the chapter's 17 and requests
+            // to its end and the next chapter's first piece. None in between
+            // is sent.
+            let expected = (0..8)
+                .chain(10..17)
+                .map(|index| (0, index))
+                .chain([(1, 0)])
+                .collect::<Vec<_>>();
+            assert_eq!(sent, expected);
+
+            // Starting the next chapter lets go of the one before.
+            prefetch.words(1, 4000.0, 4240.0).await.unwrap();
+            assert!(prefetch.scopes[0].1.pieces.is_empty());
         }
 
         #[tokio::test]
         async fn turning_openai_off_while_a_piece_is_cut_keeps_it_on_the_server() {
             let root = tempfile::tempdir().unwrap();
-            let (state, mut prefetch, calls) = fake_prefetch(root.path(), "0.5").await;
+            let (state, mut book, calls) = fake_prefetch(root.path(), "0.5").await;
+            let prefetch = &mut book.scopes[0].1;
             prefetch.request(0, 0);
             let cutting = root.path().join("cutting");
             while !cutting.exists() {
@@ -5933,6 +6098,7 @@ esac
                 temp_dir: root.path(),
                 recognition: &recognition,
                 heard: Default::default(),
+                prefetch: None,
             };
             let text = (0..120)
                 .map(|index| format!("word{index}"))
