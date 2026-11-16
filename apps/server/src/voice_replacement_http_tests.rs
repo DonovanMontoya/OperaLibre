@@ -22,6 +22,18 @@ fn two_sentences_wav() -> Vec<u8> {
     }))
 }
 
+/// Twelve seconds that open with a heading: half a second of sound at 2
+/// seconds, quiet, then four seconds of narration from 5.
+fn headed_wav() -> Vec<u8> {
+    wav((0..96_000).map(|sample: i32| {
+        if (16_000..20_000).contains(&sample) || (40_000..72_000).contains(&sample) {
+            ((sample % 40) - 20) as i16 * 400
+        } else {
+            0
+        }
+    }))
+}
+
 /// Mono 16-bit audio at 8,000 samples a second.
 fn wav(samples: impl Iterator<Item = i16>) -> Vec<u8> {
     let samples: Vec<u8> = samples.flat_map(i16::to_le_bytes).collect();
@@ -51,6 +63,8 @@ struct Calls {
     voices: std::sync::Mutex<Vec<String>>,
     /// The text each speech request carried.
     spoken: std::sync::Mutex<Vec<String>>,
+    /// How much audio each transcription was sent, in bytes of request.
+    transcribed_bytes: std::sync::Mutex<Vec<usize>>,
     /// The model each speech request asked for.
     speech_models: std::sync::Mutex<Vec<String>>,
     /// The settings each changed clip was asked for with, where it had any.
@@ -89,6 +103,7 @@ async fn fake_elevenlabs() -> (String, Arc<Calls>) {
                     let calls = calls.clone();
                     async move {
                         calls.transcriptions.fetch_add(1, Ordering::SeqCst);
+                        calls.transcribed_bytes.lock().unwrap().push(body.len());
                         let body = String::from_utf8_lossy(&body).to_string();
                         assert!(body.contains("name=\"diarize\"\r\n\r\ntrue"), "{body}");
                         Json(serde_json::json!({
@@ -888,6 +903,72 @@ async fn a_voice_in_the_cast_can_skip_pauses_or_be_read_from_its_text() {
         ["eleven_flash_v2_5", "eleven_flash_v2_5"]
     );
     assert_eq!(calls.voice_changes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_chapters_parts_are_found_by_sending_only_its_headings() {
+    if faststart::discover_tools(None, None).is_none() {
+        eprintln!("skipped: this test cuts and writes real audio, which needs ffmpeg");
+        return;
+    }
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    std::fs::write(
+        server.library_root.join("Book 00").join("01 Track.wav"),
+        headed_wav(),
+    )
+    .unwrap();
+    rescan_library(&server.state).await.unwrap();
+    let (book, _) = server.first_book_and_track(&owner).await;
+    let (base, calls) = fake_elevenlabs().await;
+    crate::voice_replacement::enable_for_test(&server.state, &base).await;
+    let project = format!("/api/books/{book}/voice-replacement");
+    let analyse = |input: serde_json::Value| async {
+        let started = server
+            .send_json("POST", &format!("{project}/analysis"), &owner, input)
+            .await;
+        assert_eq!(started.status, StatusCode::OK, "{}", started.text());
+        wait_for_run(&server, &owner, &book).await
+    };
+
+    // The stand-in hears "First" in the first second of whatever it is sent,
+    // which here is the heading and the quiet around it.
+    let found = analyse(serde_json::json!({ "chapters": [0], "headingsOnly": true })).await;
+    let chapter = &found["chapters"][0];
+    assert_eq!(chapter["headingsOnly"], true, "{found}");
+    assert_eq!(
+        chapter["passages"],
+        serde_json::json!([{
+            "headings": ["First"],
+            "startSeconds": chapter["startSeconds"],
+            "endSeconds": chapter["endSeconds"],
+        }])
+    );
+    // No narrators were told apart and there is no transcript to show.
+    assert!(chapter.get("speakers").is_none(), "{found}");
+    assert_eq!(
+        server
+            .get(&format!("{project}/chapters/0/lines"), &owner)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(calls.transcriptions.load(Ordering::SeqCst), 1);
+    // Asking again sends nothing.
+    analyse(serde_json::json!({ "chapters": [0], "headingsOnly": true })).await;
+    assert_eq!(calls.transcriptions.load(Ordering::SeqCst), 1);
+
+    // Transcribing the chapter afterwards still does, and sends more.
+    let transcribed = analyse(serde_json::json!({ "chapters": [0] })).await;
+    assert_eq!(calls.transcriptions.load(Ordering::SeqCst), 2);
+    assert!(transcribed["chapters"][0].get("headingsOnly").is_none());
+    assert!(transcribed["chapters"][0]["speakers"].is_array());
+    let sent = calls.transcribed_bytes.lock().unwrap().clone();
+    assert!(sent[0] < sent[1], "{sent:?}");
+    // And a transcript is not replaced by its headings alone.
+    let kept = analyse(serde_json::json!({ "chapters": [0], "headingsOnly": true })).await;
+    assert_eq!(calls.transcriptions.load(Ordering::SeqCst), 2);
+    assert!(kept["chapters"][0]["speakers"].is_array());
 }
 
 #[tokio::test]

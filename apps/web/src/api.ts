@@ -816,7 +816,7 @@ export type VoiceCastMethod = "keepPerformance" | "skipPauses" | "readText" | "r
 /** A run of a chapter between two spoken headings, such as a character's name. */
 export type VoicePassage = { headings: string[]; startSeconds: number; endSeconds: number };
 export type VoiceSpeaker = { id: string; seconds: number; lines: number; sampleStartSeconds: number; sampleEndSeconds: number };
-export type VoiceChapter = { index: number; title: string; startSeconds: number; endSeconds: number; speakers?: VoiceSpeaker[]; passages?: VoicePassage[] };
+export type VoiceChapter = { index: number; title: string; startSeconds: number; endSeconds: number; speakers?: VoiceSpeaker[]; passages?: VoicePassage[]; headingsOnly?: boolean };
 export type VoiceRun = { kind: "analysis" | "render"; state: "running" | "failed"; step: string; completed: number; total: number; error?: string };
 export type VoiceCopy = { id: string; folder: string; createdAt: string; bookId?: string };
 export type VoiceProject = { bookId: string; chapters: VoiceChapter[]; edits: VoiceEdit[]; cast: VoiceCastMember[]; run?: VoiceRun; copies: VoiceCopy[] };
@@ -866,8 +866,14 @@ export async function clearVoiceProject(bookId: string) {
   await request<void>(voiceProjectRoute(bookId), { method: "DELETE" });
 }
 
-export async function findVoiceSpeakers(bookId: string, chapters: number[]) {
-  return request<VoiceProject>(`${voiceProjectRoute(bookId)}/analysis`, { method: "POST", body: JSON.stringify({ chapters }) });
+/**
+ * Transcribes chapters, which tells their narrators apart and finds their parts. With `headingsOnly`, the server looks
+ * for spoken headings by their pauses and sends only those few seconds: the parts are found for a small fraction of
+ * the cost, with no transcript and no narrators.
+ */
+export async function findVoiceSpeakers(bookId: string, chapters: number[], headingsOnly = false) {
+  const body = headingsOnly ? { chapters, headingsOnly } : { chapters };
+  return request<VoiceProject>(`${voiceProjectRoute(bookId)}/analysis`, { method: "POST", body: JSON.stringify(body) });
 }
 
 export async function getVoiceLines(bookId: string, chapter: number) {

@@ -27,6 +27,11 @@ const COPY_MARKER: &str = ".operalibre-revoiced";
 const MAX_EDITS: usize = 500;
 /// The least quiet on either side of a spoken heading.
 const HEADING_PAUSE_SECONDS: f64 = 1.5;
+/// Sounds closer together than this are one utterance when headings are
+/// looked for by their pauses alone.
+const UTTERANCE_GAP_SECONDS: f64 = 0.6;
+/// How much quiet goes with a possible heading when it is sent to be read.
+const HEADING_SENT_PAD_SECONDS: f64 = 0.3;
 const MAX_CAST: usize = 40;
 /// A pause this long is left out of what the voice changer is sent, for a
 /// voice set to skip pauses.
@@ -465,6 +470,10 @@ struct AnalysedSection {
     /// Absent in analyses saved before passages were found.
     #[serde(default)]
     passages: Option<Vec<Passage>>,
+    /// Only the chapter's headings were read, to find its passages. It has
+    /// no transcript and no narrators told apart.
+    #[serde(default)]
+    headings_only: bool,
 }
 
 /// One exact stretch of the book, inside a single chapter.
@@ -542,6 +551,12 @@ impl Project {
             analysed.start_seconds == section.start_seconds
                 && analysed.end_seconds == section.end_seconds
         })
+    }
+
+    /// A chapter's analysis where the whole chapter was transcribed.
+    fn transcript_of(&self, section: &Section) -> Option<&AnalysedSection> {
+        self.analysis_of(section)
+            .filter(|analysed| !analysed.headings_only)
     }
 }
 
@@ -710,44 +725,69 @@ fn is_heading(lines: &[Line], at: usize) -> bool {
     before.min(after) >= HEADING_PAUSE_SECONDS && before.max(after) >= 2.0
 }
 
+/// A heading as it was said.
+struct Heading {
+    name: String,
+    /// Where the quiet before it begins.
+    from_seconds: f64,
+    /// It comes straight after another heading.
+    joins: bool,
+}
+
+fn heading_name(text: &str) -> String {
+    text.trim()
+        .trim_end_matches(['.', '!', '?', '…', ':', ','])
+        .to_string()
+}
+
 /// Cuts a chapter where headings are said. Headings said one after another
 /// open one passage together, and a chapter with none is one passage.
 fn passages(section: &Section, lines: &[Line]) -> Vec<Passage> {
-    let mut found: Vec<Passage> = Vec::new();
+    let mut headings = Vec::new();
     let mut in_heading = false;
     for (at, line) in lines.iter().enumerate() {
         let heading = is_heading(lines, at);
         if heading {
-            let name = line
-                .text
-                .trim()
-                .trim_end_matches(['.', '!', '?', '…', ':', ','])
-                .to_string();
-            if in_heading && let Some(passage) = found.last_mut() {
-                passage.headings.push(name);
-            } else {
-                // Starts in the quiet before the heading, not on its first sound.
-                let quiet = at.checked_sub(1).map_or(section.start_seconds, |previous| {
+            headings.push(Heading {
+                name: heading_name(&line.text),
+                // In the quiet before the heading, not on its first sound.
+                from_seconds: at.checked_sub(1).map_or(section.start_seconds, |previous| {
                     lines[previous].end_seconds.max(line.start_seconds - 0.4)
-                });
-                let start = quiet.clamp(section.start_seconds, section.end_seconds);
-                if let Some(previous) = found.last_mut() {
-                    previous.end_seconds = start;
-                } else if start - section.start_seconds >= 0.5 {
-                    found.push(Passage {
-                        headings: Vec::new(),
-                        start_seconds: section.start_seconds,
-                        end_seconds: start,
-                    });
-                }
-                found.push(Passage {
-                    headings: vec![name],
-                    start_seconds: start,
-                    end_seconds: section.end_seconds,
-                });
-            }
+                }),
+                joins: in_heading,
+            });
         }
         in_heading = heading;
+    }
+    passages_from(section, headings)
+}
+
+fn passages_from(section: &Section, headings: Vec<Heading>) -> Vec<Passage> {
+    let mut found: Vec<Passage> = Vec::new();
+    for heading in headings {
+        if heading.joins
+            && let Some(passage) = found.last_mut()
+        {
+            passage.headings.push(heading.name);
+            continue;
+        }
+        let start = heading
+            .from_seconds
+            .clamp(section.start_seconds, section.end_seconds);
+        if let Some(previous) = found.last_mut() {
+            previous.end_seconds = start;
+        } else if start - section.start_seconds >= 0.5 {
+            found.push(Passage {
+                headings: Vec::new(),
+                start_seconds: section.start_seconds,
+                end_seconds: start,
+            });
+        }
+        found.push(Passage {
+            headings: vec![heading.name],
+            start_seconds: start,
+            end_seconds: section.end_seconds,
+        });
     }
     if found.is_empty() {
         found.push(Passage {
@@ -757,6 +797,96 @@ fn passages(section: &Section, lines: &[Line]) -> Vec<Passage> {
         });
     }
     found
+}
+
+/// A short sound with quiet on both sides: where a heading may be said,
+/// found from a chapter's pauses without transcribing it. Times are from the
+/// start of the chapter.
+#[derive(Debug, Clone, PartialEq)]
+struct Candidate {
+    start_seconds: f64,
+    end_seconds: f64,
+    /// Where the quiet before it begins.
+    from_seconds: f64,
+    /// The utterance before it is one too.
+    joins: bool,
+}
+
+/// The same test `is_heading` makes of a transcript, made of the pauses
+/// alone: what is said there is not known yet, only that it is short and set
+/// apart.
+fn heading_candidates(length: f64, silences: &[(f64, f64)]) -> Vec<Candidate> {
+    let mut utterances: Vec<(f64, f64)> = Vec::new();
+    let mut sound = |start: f64, end: f64| {
+        if end - start < 0.02 {
+            return;
+        }
+        match utterances.last_mut() {
+            Some(last) if start - last.1 < UTTERANCE_GAP_SECONDS => last.1 = end,
+            _ => utterances.push((start, end)),
+        }
+    };
+    let mut cursor = 0.0_f64;
+    for &(start, end) in silences {
+        sound(cursor, start.min(length));
+        cursor = end.max(cursor);
+    }
+    sound(cursor, length);
+
+    let mut found: Vec<Candidate> = Vec::new();
+    let mut joins = false;
+    for (at, &(start, end)) in utterances.iter().enumerate() {
+        // A heading opens something, so the chapter's last sound is never one.
+        let after = utterances
+            .get(at + 1)
+            .map(|next| next.0 - end)
+            .filter(|_| end - start <= 4.0);
+        // The start of a chapter counts as quiet.
+        let before = at
+            .checked_sub(1)
+            .map_or(f64::INFINITY, |previous| start - utterances[previous].1);
+        let heading = after.is_some_and(|after| {
+            before.min(after) >= HEADING_PAUSE_SECONDS && before.max(after) >= 2.0
+        });
+        if heading {
+            found.push(Candidate {
+                start_seconds: start,
+                end_seconds: end,
+                from_seconds: at
+                    .checked_sub(1)
+                    .map_or(0.0, |previous| utterances[previous].1.max(start - 0.4)),
+                joins,
+            });
+        }
+        joins = heading;
+    }
+    found
+}
+
+/// What each stretch that was sent turned out to say: a heading's few words,
+/// or nothing where there were none or too many to be one. `sent` is the
+/// stretches in the order they were run together into the clip.
+fn headings_heard(words: &[elevenlabs::Word], sent: &[(f64, f64)]) -> Vec<Option<String>> {
+    let mut texts: Vec<Vec<&str>> = vec![Vec::new(); sent.len()];
+    for word in words {
+        let middle = (word.start + word.end) / 2.0;
+        let mut from = 0.0;
+        for (at, (start, end)) in sent.iter().enumerate() {
+            let to = from + (end - start);
+            if middle >= from && middle < to {
+                texts[at].push(word.text.as_str());
+                break;
+            }
+            from = to;
+        }
+    }
+    texts
+        .into_iter()
+        .map(|words| {
+            let name = heading_name(&words.join(" "));
+            (!name.is_empty() && words.len() <= 4).then_some(name)
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -978,7 +1108,7 @@ async fn narration_texts(
         }
     }
     for section in wanted {
-        if !texts.contains_key(&section.index) && project.analysis_of(section).is_some() {
+        if !texts.contains_key(&section.index) && project.transcript_of(section).is_some() {
             let text = load_lines(state, &audio.book.id, section.index)
                 .await
                 .iter()
@@ -1057,7 +1187,7 @@ async fn heard_lines(
         let wanted = slots
             .iter()
             .any(|slot| matches!(slot.source, SlotSource::Heard { .. }));
-        if wanted && project.analysis_of(section).is_some() {
+        if wanted && project.transcript_of(section).is_some() {
             heard.insert(
                 section.index,
                 load_lines(state, book_id, section.index).await,
@@ -1523,7 +1653,12 @@ impl Workshop<'_> {
 // Finding speakers
 // ---------------------------------------------------------------------------
 
-async fn analyse(state: AppState, run: RunHandle, indexes: Vec<usize>) -> Result<(), RunError> {
+async fn analyse(
+    state: AppState,
+    run: RunHandle,
+    indexes: Vec<usize>,
+    headings_only: bool,
+) -> Result<(), RunError> {
     let audio = book_audio(&state, &run.book_id).await?;
     let provider = provider(&state).await?;
     let tools = audio_tools(&state)
@@ -1539,11 +1674,73 @@ async fn analyse(state: AppState, run: RunHandle, indexes: Vec<usize>) -> Result
         .tempdir_in(&directory)?;
     for (position, section) in wanted.iter().enumerate() {
         run.check()?;
+        // A transcript holds everything the headings alone would; the
+        // headings alone do not stand in for a transcript.
         let already = load_project(&state, &run.book_id)
             .await
             .analysis_of(section)
-            .is_some();
-        if !already {
+            .is_some_and(|analysed| headings_only || !analysed.headings_only);
+        if !already && headings_only {
+            run.update(|status| {
+                status.step = format!("Listening for headings in {}", section.title);
+            })
+            .await;
+            let pieces = render::pieces(&audio.tracks, section.start_seconds, section.end_seconds);
+            let length = section.end_seconds - section.start_seconds;
+            let pauses = render::silences(&tools.ffmpeg, &pieces).await?;
+            let candidates = heading_candidates(length, &pauses);
+            let mut lines = Vec::new();
+            let mut headings = Vec::new();
+            if !candidates.is_empty() {
+                run.check()?;
+                // Only these few seconds are sent, each with a little quiet.
+                let sent: Vec<(f64, f64)> = candidates
+                    .iter()
+                    .map(|candidate| {
+                        (
+                            (candidate.start_seconds - HEADING_SENT_PAD_SECONDS).max(0.0),
+                            (candidate.end_seconds + HEADING_SENT_PAD_SECONDS).min(length),
+                        )
+                    })
+                    .collect();
+                let clip = work_dir
+                    .path()
+                    .join(format!("{}-headings.flac", section.index));
+                render::extract_stretches(&tools.ffmpeg, &pieces, &sent, &clip, 16_000).await?;
+                let words = provider.transcribe(&clip).await?;
+                let _ = fs::remove_file(&clip).await;
+                let mut joined = false;
+                for (candidate, name) in candidates.iter().zip(headings_heard(&words, &sent)) {
+                    let heading = name.is_some();
+                    if let Some(name) = name {
+                        lines.push(Line {
+                            speaker: String::new(),
+                            start_seconds: section.start_seconds + candidate.start_seconds,
+                            end_seconds: section.start_seconds + candidate.end_seconds,
+                            text: name.clone(),
+                        });
+                        headings.push(Heading {
+                            name,
+                            from_seconds: section.start_seconds + candidate.from_seconds,
+                            joins: candidate.joins && joined,
+                        });
+                    }
+                    joined = heading;
+                }
+            }
+            write_json_atomic(&lines_path(&state, &run.book_id, section.index), &lines).await?;
+            let analysed = AnalysedSection {
+                start_seconds: section.start_seconds,
+                end_seconds: section.end_seconds,
+                speakers: Vec::new(),
+                passages: Some(passages_from(section, headings)),
+                headings_only: true,
+            };
+            change_project(&state, &run.book_id, |project| {
+                project.analysed.insert(section.index, analysed);
+            })
+            .await?;
+        } else if !already {
             if section.end_seconds - section.start_seconds > MAX_SECTION_SECONDS {
                 return Err(RunError::Failed(format!(
                     "{} is longer than ten hours, which is more than one request can take.",
@@ -1573,6 +1770,7 @@ async fn analyse(state: AppState, run: RunHandle, indexes: Vec<usize>) -> Result
                 end_seconds: section.end_seconds,
                 speakers: speaker_summaries(&lines),
                 passages: Some(passages(section, &lines)),
+                headings_only: false,
             };
             change_project(&state, &run.book_id, |project| {
                 project.analysed.insert(section.index, analysed);
@@ -1958,6 +2156,10 @@ struct SectionView {
     speakers: Option<Vec<SpeakerSummary>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     passages: Option<Vec<Passage>>,
+    /// The passages were found from the chapter's headings alone, and the
+    /// chapter has not been transcribed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    headings_only: bool,
 }
 
 #[derive(Serialize)]
@@ -2001,7 +2203,10 @@ async fn project_view(state: &AppState, book_id: &str) -> Result<ProjectView, Ap
             None => None,
         };
         chapters.push(SectionView {
-            speakers: analysed.map(|analysed| analysed.speakers.clone()),
+            speakers: project
+                .transcript_of(&section)
+                .map(|analysed| analysed.speakers.clone()),
+            headings_only: analysed.is_some_and(|analysed| analysed.headings_only),
             passages: found,
             index: section.index,
             title: section.title,
@@ -2092,6 +2297,10 @@ pub(crate) async fn delete_voice_project(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AnalysisInput {
     chapters: Vec<usize>,
+    /// Find each chapter's passages from its pauses and send only what may
+    /// be a heading to be read, which costs a small fraction of a transcript.
+    #[serde(default)]
+    headings_only: bool,
 }
 
 pub(crate) async fn start_voice_analysis(
@@ -2121,8 +2330,9 @@ pub(crate) async fn start_voice_analysis(
         ));
     }
     let total = indexes.len();
+    let headings_only = input.headings_only;
     start_run(&state, &book_id, "analysis", total, move |state, run| {
-        analyse(state, run, indexes)
+        analyse(state, run, indexes, headings_only)
     })
     .await?;
     Ok(Json(project_view(&state, &book_id).await?))
@@ -2143,7 +2353,7 @@ pub(crate) async fn get_voice_lines(
     let project = load_project(&state, &book_id).await;
     let analysed = sections(&audio.book)
         .iter()
-        .any(|section| section.index == index && project.analysis_of(section).is_some());
+        .any(|section| section.index == index && project.transcript_of(section).is_some());
     if !analysed {
         return Err(ApiError::not_found(
             "This chapter's speakers have not been found yet.",
@@ -2879,7 +3089,7 @@ pub(crate) async fn audition_voice(
             let transcribed = sections(&audio.book).into_iter().find(|section| {
                 input.start_seconds >= section.start_seconds - 0.001
                     && input.end_seconds <= section.end_seconds + 0.001
-                    && project.analysis_of(section).is_some()
+                    && project.transcript_of(section).is_some()
             });
             let Some(section) = transcribed else {
                 return Err(ApiError::bad_request(
@@ -3278,6 +3488,87 @@ mod tests {
                 (120.0, 140.0, "lily", true),
                 (145.0, 160.0, "lily", true),
             ]
+        );
+    }
+
+    #[test]
+    fn headings_are_found_from_pauses_and_named_from_the_few_seconds_sent() {
+        // Sound at 3 to 3.5 and 5.5 to 6 (two headings, one after the other),
+        // then narration from 8.5 with only short pauses, a short line set
+        // apart at 60 to 61, more narration, and a short last sound.
+        let pauses = [
+            (0.0, 3.0),
+            (3.5, 5.5),
+            (6.0, 8.5),
+            (20.0, 20.4),
+            (57.0, 60.0),
+            (61.0, 63.0),
+            (90.0, 95.0),
+            (95.5, 100.0),
+        ];
+        let found = heading_candidates(100.0, &pauses);
+        let spans: Vec<(f64, f64, bool)> = found
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate.start_seconds,
+                    candidate.end_seconds,
+                    candidate.joins,
+                )
+            })
+            .collect();
+        // The pause at 20 is inside one utterance, and the sound at 95 is the
+        // chapter's last, which opens nothing.
+        assert_eq!(
+            spans,
+            [(3.0, 3.5, false), (5.5, 6.0, true), (60.0, 61.0, false)]
+        );
+        assert_eq!(found[0].from_seconds, 0.0);
+        assert_eq!(found[2].from_seconds, 59.6);
+        // Narration with no long pause holds no heading.
+        assert!(heading_candidates(100.0, &[(20.0, 20.4), (50.0, 51.0)]).is_empty());
+
+        // The three are sent run together, each 1.1 seconds with its quiet.
+        // What comes back is put with the stretch it was heard in, and a
+        // stretch that was a sentence after all is no heading.
+        let sent = [(2.7, 3.8), (5.2, 6.3), (59.7, 61.3)];
+        let words = [
+            word("Mara.", 0.3, 0.8, "a"),
+            word("Yesterday", 1.4, 1.9, "a"),
+            word("He", 2.3, 2.4, "a"),
+            word("did", 2.4, 2.6, "a"),
+            word("not", 2.6, 2.8, "a"),
+            word("say", 2.8, 3.0, "a"),
+            word("so.", 3.0, 3.3, "a"),
+        ];
+        let heard = headings_heard(&words, &sent);
+        assert_eq!(
+            heard,
+            [
+                Some("Mara".to_string()),
+                Some("Yesterday".to_string()),
+                None
+            ]
+        );
+        let headings = found
+            .iter()
+            .zip(heard)
+            .filter_map(|(candidate, name)| {
+                Some(Heading {
+                    name: name?,
+                    from_seconds: 100.0 + candidate.from_seconds,
+                    joins: candidate.joins,
+                })
+            })
+            .collect();
+        let parts = passages_from(&section(), headings);
+        assert_eq!(
+            parts,
+            [Passage {
+                headings: vec!["Mara".into(), "Yesterday".into()],
+                start_seconds: 100.0,
+                end_seconds: 200.0,
+            }]
         );
     }
 

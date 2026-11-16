@@ -397,6 +397,12 @@ function VoiceStudio({
     void act(() => findVoiceSpeakers(bookId, chapters), "Could not start finding narrators.");
   }
 
+  function findParts(chapters: number[]) {
+    const count = chapters.length === 1 ? "this chapter" : `${chapters.length} chapters`;
+    if (!window.confirm(`Find the parts of ${count} from spoken headings?\n\nThe server listens for short lines set apart by pauses and sends only those few seconds to ElevenLabs to be read, which costs a few credits a chapter. It finds where each part starts. It does not transcribe the chapter or tell narrators apart.`)) return;
+    void act(() => findVoiceSpeakers(bookId, chapters, true), "Could not start finding the parts.");
+  }
+
   function makeCopy() {
     if (!estimate) return;
     const left = creditsLeft === null ? "" : ` Your plan has about ${creditsLeft.toLocaleString()} left this period.`;
@@ -425,6 +431,7 @@ function VoiceStudio({
   }
 
   const unanalysed = project?.chapters.filter(chapter => !chapter.speakers).map(chapter => chapter.index) ?? [];
+  const unparted = project?.chapters.filter(chapter => !chapter.passages).map(chapter => chapter.index) ?? [];
   // What was said as a heading, most heard first, less what the cast already covers.
   // Not every heading is a name: a chapter's title or a date is one too.
   const namesFound = useMemo(() => {
@@ -533,8 +540,15 @@ function VoiceStudio({
               </div>
             ) : project.cast.length === 0 ? (
               <p className="admin-experiment-detail">
-                No names found yet. Find the narrators in a chapter, or open a chapter and add one of its parts to a voice.
+                No names found yet. Find the parts of the book below, or open a chapter and add one of its parts to a voice.
               </p>
+            ) : null}
+            {unparted.length > 0 ? (
+              <div className="admin-update-actions">
+                <button type="button" className="quiet-button" disabled={busy || running} onClick={() => findParts(unparted)}>
+                  Find the parts of {unparted.length === project.chapters.length ? "every chapter" : unparted.length === 1 ? "1 more chapter" : `${unparted.length} more chapters`}, for a few credits each
+                </button>
+              </div>
             ) : null}
             {project.cast.map((member, at) => (
               <CastMemberEditor
@@ -568,6 +582,7 @@ function VoiceStudio({
                   <small>
                     {formatDurationLabel(chapter.endSeconds - chapter.startSeconds)}
                     {chapter.speakers ? ` · ${chapter.speakers.length} ${chapter.speakers.length === 1 ? "narrator" : "narrators"}` : ""}
+                    {chapter.headingsOnly ? " · parts found" : ""}
                     {project.edits.some(edit => edit.chapter === chapter.index) || project.cast.some(member => member.stretches.some(stretch => overlaps(stretch, chapter))) ? " · in the plan" : ""}
                   </small>
                 </button>
@@ -581,6 +596,7 @@ function VoiceStudio({
                     playing={playing}
                     onPlay={play}
                     onFindSpeakers={() => findSpeakers([chapter.index])}
+                    onFindParts={() => findParts([chapter.index])}
                     onAdd={addEdit}
                     onAddToCast={addToCast}
                   />
@@ -685,6 +701,7 @@ function ChapterEditor({
   playing,
   onPlay,
   onFindSpeakers,
+  onFindParts,
   onAdd,
   onAddToCast
 }: {
@@ -696,6 +713,7 @@ function ChapterEditor({
   playing: string | null;
   onPlay: (key: string, load: () => Promise<Blob>) => Promise<void>;
   onFindSpeakers: () => void;
+  onFindParts: () => void;
   onAdd: (edit: VoiceEdit) => void;
   onAddToCast: (name: string, stretches: VoiceStretch[]) => void;
 }) {
@@ -761,6 +779,9 @@ function ChapterEditor({
       ) : (
         <div className="admin-update-actions">
           <button type="button" className="quiet-button" disabled={disabled} onClick={onFindSpeakers}>Find the narrators in this chapter</button>
+          {chapter.passages ? null : (
+            <button type="button" className="quiet-button" disabled={disabled} onClick={onFindParts}>Find only its parts, for a few credits</button>
+          )}
         </div>
       )}
 
