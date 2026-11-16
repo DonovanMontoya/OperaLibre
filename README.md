@@ -21,6 +21,16 @@ The backend is a Rust `axum` server that exposes a documented HTTP API; the incl
 - **Third-party client access.** A subset of the Audiobookshelf API supports BookPlayer browsing and download contracts; an OPDS catalog provides individual audio downloads. Compatibility and progress sync depend on the client; see [Client compatibility](docs/client-compatibility.md).
 - **Book identity across editions.** Different rips, editions, and ISBNs of the same book are linked as one work, so reading history follows the reader across copies.
 - **Try it instantly.** A self-contained on-device demo works without a server, account, or network connection.
+- **Automatic volume (needs ffmpeg on the server).** After a scan, the server measures each book's loudness and plays badly mastered books at a corrected volume. Audio files are never changed, and each listener can turn it off for a book or set their own level. Without ffmpeg, nothing is measured.
+- **Color vision options.** Red-green, blue-yellow, and monochrome palettes, plus a Stronger visual cues switch, under **Settings → Display** in the apps or **Account menu → Display** on the web. Choices stay on the device.
+
+### Experiments (owner-only)
+
+These are experimental and off by default. Only the server owner can turn them on, under **Administration → Experiments**, and turn them off again.
+
+- **Book gifts (experimental, owner-only setup).** Send one book from your server to someone's phone as a private link that can be claimed once. The book goes straight from the server to the phone, and a broker in the owner's own Cloudflare account introduces the two. Only the owner can send unless they let readers send too. See [Book gifts](docs/book-gifts.md).
+- **Chapter notes (experimental, owner-only setup).** A spoiler-free synopsis, a summary, and a list of people and terms for each chapter, written by a language model the owner picks: Anthropic, or any OpenAI-compatible endpoint, including one on your own network. Administrators start it per book, and summaries of chapters a listener hasn't finished stay hidden until they choose Show spoilers.
+- **OpenAI speech recognition (experimental, owner-only).** The follow-along experiment can send narration clips to OpenAI's `whisper-1` with the owner's own API key instead of recognizing speech on the server. Recognition on the server stays the default.
 
 ## Install
 
