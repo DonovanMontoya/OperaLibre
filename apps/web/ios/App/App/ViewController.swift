@@ -84,6 +84,12 @@ class ViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(CarPlayBridgePlugin())
         bridge?.registerPluginInstance(NativeTabsPlugin())
         bridge?.registerPluginInstance(DeviceFoldPlugin())
+        // Every screen scrolls inside its own panes; the page itself is
+        // exactly screen height. WKWebView ignores the root's CSS
+        // overscroll-behavior, so a drag that starts outside a scrolling
+        // pane (a toolbar, the empty side of Get books) would otherwise
+        // rubber-band the whole app. Panes keep their own bounce.
+        webView?.scrollView.bounces = false
         // The page runs behind the clock on its own background. UIKit's
         // scroll edge effect would lay a light haze over it there, which
         // reads as a glow at the top of the dark screens.
