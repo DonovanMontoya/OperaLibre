@@ -1405,7 +1405,7 @@ pub(crate) async fn run_sync_generation(
                     // As `align_scope` decides which scopes are windowed.
                     (end - start > 0.5 && !scope_transcript(&epub, scope).text.trim().is_empty())
                         .then(|| {
-                            let pieces = CloudPrefetch::new(
+                            let mut pieces = CloudPrefetch::new(
                                 state,
                                 cloud.clone(),
                                 recognition.language.clone(),
@@ -1416,6 +1416,7 @@ pub(crate) async fn run_sync_generation(
                                 start,
                                 end,
                             );
+                            pieces.pass = "planned";
                             (number, pieces)
                         })
                 })
@@ -1563,6 +1564,14 @@ pub(crate) async fn run_sync_generation(
         save_checkpoint(&checkpoint_path, &run).await?;
         update_job_progress(state, job_id, progress.at(1.0)).await;
         pause_at_checkpoint(state, job_id).await?;
+    }
+
+    // Repairs recognize a chapter again with pieces of their own. Nothing
+    // planned for the first pass may still be billing or touching files.
+    if let Some(book) = &prefetch {
+        for (_, scope) in &mut book.lock().await.scopes {
+            scope.finish();
+        }
     }
 
     // A runtime that failed every chapter from the start is not worth
@@ -2365,6 +2374,9 @@ struct CloudPrefetch {
     source: PathBuf,
     temp_dir: PathBuf,
     scope_number: usize,
+    /// Names this set's audio files, so that a repair pass over the same
+    /// scope never shares one with the run's own pieces.
+    pass: &'static str,
     /// Track seconds each piece supplies words for.
     cores: Vec<(f64, f64)>,
     scope_range: (f64, f64),
@@ -2422,6 +2434,7 @@ impl CloudPrefetch {
             source: source.to_path_buf(),
             temp_dir: temp_dir.to_path_buf(),
             scope_number,
+            pass: "prefetch",
             cores,
             scope_range: (scope_start, scope_end),
             pieces: Vec::new(),
@@ -2482,9 +2495,10 @@ impl CloudPrefetch {
         let language = self.language.clone();
         let ffmpeg = self.ffmpeg.clone();
         let source = self.source.clone();
-        let audio = self
-            .temp_dir
-            .join(format!("audio-{}-{index}-prefetch.wav", self.scope_number));
+        let audio = self.temp_dir.join(format!(
+            "audio-{}-{index}-{}.wav",
+            self.scope_number, self.pass
+        ));
         let last_piece = index + 1 == self.cores.len();
         PrefetchPiece::Pending(tokio::spawn(async move {
             extract_alignment_audio(&ffmpeg, &source, &audio, start, end).await?;
