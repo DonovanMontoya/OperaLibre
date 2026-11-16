@@ -78,8 +78,6 @@ import { GiftShareAction, GiftShareDialog, useBookGiftSending } from "./GiftShar
 // borders/gaps overflow a phone screen; fall back to one continuous bar.
 const MAX_CHAPTER_SEGMENTS = 32;
 
-const CLIP_HINT_STORAGE_KEY = "operalibre.clipHintSeen";
-const CLIP_HINT_MS = 8000;
 /** Height the notice above the cover needs: 44px pill, its gap, and the card's rounded corner. */
 const CLIP_CALLOUT_ROOM = 64;
 
@@ -337,8 +335,8 @@ export function PlayerPane({
     const positionRibbon = () => {
       const frame = artwork.getBoundingClientRect();
       const bounds = cover.getBoundingClientRect();
-      // The clip notice and hint sit above the cover so they never cover the
-      // art. A screen too short to leave room for them inside the card scales
+      // The clip notice sits above the cover so it never covers the
+      // art. A screen too short to leave room for it inside the card scales
       // the cover down from its bottom edge, which moves nothing else. The
       // cover's box is worked out unscaled so the result does not feed back.
       const card = artwork.closest(".native-now-playing")?.getBoundingClientRect() ?? frame;
@@ -362,26 +360,6 @@ export function PlayerPane({
     return () => { observer.disconnect(); window.removeEventListener("resize", positionRibbon); };
   }, [playbackBook?.id, nativePlayerView, isViewingPlayingBook, clips.visible]);
   const [contentsTab, setContentsTab] = useState<"chapters" | "clips">("chapters");
-  // The ribbon explains what it keeps until the first clip is saved on this device.
-  const [clipHintSeen, setClipHintSeen] = useState(() => {
-    try { return window.localStorage.getItem(CLIP_HINT_STORAGE_KEY) === "1"; } catch { return true; }
-  });
-  function retireClipHint() {
-    setClipHintSeen(true);
-    try { window.localStorage.setItem(CLIP_HINT_STORAGE_KEY, "1"); } catch { /* the hint shows again next time */ }
-  }
-  function saveClipMoment() {
-    if (!clipHintSeen) retireClipHint();
-    clips.saveMoment();
-  }
-  const clipHintShown = clips.visible && !clipHintSeen && !clips.error && !clips.lastSavedId
-    && isViewingPlayingBook && nativePlayerView === "now";
-  // Shown once, briefly: a listener who never clips should not keep a box over the cover.
-  useEffect(() => {
-    if (!clipHintShown) return;
-    const timer = window.setTimeout(retireClipHint, CLIP_HINT_MS);
-    return () => window.clearTimeout(timer);
-  }, [clipHintShown]);
   const contentsId = useId();
   /** Chapters and clips share the book's contents area as two tabs. */
   const contentsTabbed = Boolean(capabilities.clips && readerPreferences.clippingEnabled && selectedBook && selectedBook.source !== "device");
@@ -751,13 +729,10 @@ export function PlayerPane({
                 <div className={`native-now-artwork${clips.visible ? " has-clips" : ""}`} ref={nowArtworkRef}>
                   <CoverArt book={playbackBook} size="large" />
                   {clips.visible ? (
-                    <button type="button" className={`native-cover-clip${clips.lastSavedId && !clips.error ? " saved" : ""}`} aria-label="Save a clip of the last 30 seconds and the next 10" title="Save a clip: the last 30 seconds and the next 10" onClick={saveClipMoment}>
+                    <button type="button" className={`native-cover-clip${clips.lastSavedId && !clips.error ? " saved" : ""}`} aria-label="Save a clip of the last 30 seconds and the next 10" title="Save a clip: the last 30 seconds and the next 10" onClick={clips.saveMoment}>
                       {clips.lastSavedId && !clips.error ? <Check size={17} aria-hidden="true" /> : <Scissors size={17} aria-hidden="true" />}
                       <span aria-hidden="true">{clips.lastSavedId && !clips.error ? "Saved" : "Clip"}</span>
                     </button>
-                  ) : null}
-                  {clipHintShown ? (
-                    <span className="native-cover-clip-hint" aria-hidden="true">Saves 30s before + 10s after</span>
                   ) : null}
                   {clips.visible && (clips.error || clips.lastSavedId) ? (
                     <button type="button" className="native-cover-clip-notice" aria-label={clips.error ? `${clips.error} Open clips` : "Clip saved. Open clips"} onClick={() => openBookClips(playbackBook)}>

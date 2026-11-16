@@ -69,7 +69,6 @@ export function BookClips({ book, state, open, preview, stop, playingClipId, pre
           </div>
         </div>
       ) : null}
-      {passages.length > 0 ? <p className="book-clips-intro">Previews keep your listening place.</p> : null}
       <ul className="book-clips-list">
         {passages.map((clip) => {
           const name = clipName(clip, chapterAtBookPosition(segments, clip.startSeconds)?.title);

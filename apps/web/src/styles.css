@@ -15288,12 +15288,6 @@ html.native-app .recent-row {
   text-align: center;
 }
 
-.clip-editor-hint {
-  margin: 0;
-  color: rgba(241, 231, 208, 0.7);
-  font: italic 0.9rem "Fraunces", serif;
-}
-
 .clip-row-edit {
   flex: 0 0 auto;
   display: inline-flex;
@@ -15630,12 +15624,6 @@ html.native-app .recent-row {
   font-size: 0.95rem;
 }
 
-.book-clips .book-clips-intro {
-  margin: 0 0 4px;
-  font-size: 0.86rem;
-  font-style: italic;
-}
-
 .book-clips-list {
   padding: 0;
   margin: 0;
@@ -15860,38 +15848,10 @@ html.native-app .recent-row {
   cursor: pointer;
 }
 
-/* A caption, not a control: above the cover, with a caret down to the ribbon it explains. */
-.native-cover-clip-hint {
-  position: absolute;
-  left: calc(var(--cover-left, 0px) + var(--cover-width, 100%));
-  top: calc(var(--cover-top, 0px) - 14px);
-  z-index: 2;
-  width: max-content;
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: #241b14;
-  color: #f3ead8;
-  font: 0.72rem/1.35 "JetBrains Mono", monospace;
-  white-space: nowrap;
-  transform: translate(-100%, -100%);
-  pointer-events: none;
-}
-
 /* Room for the notice above the cover on screens too short to have it. */
 .native-now-artwork.has-clips .large-cover {
   transform: scale(var(--clip-cover-scale, 1));
   transform-origin: 50% 100%;
-}
-
-/* The ribbon's centre is 40px in from the cover's right edge. */
-.native-cover-clip-hint::before {
-  content: "";
-  position: absolute;
-  bottom: -6px;
-  right: 34px;
-  border: 6px solid transparent;
-  border-bottom: 0;
-  border-top-color: #241b14;
 }
 
 .native-cover-clip-notice-action {

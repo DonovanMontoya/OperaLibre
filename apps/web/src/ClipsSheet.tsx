@@ -300,7 +300,6 @@ function ClipRow({
 
       {open ? (
         <div id={editorId} className="clip-editor">
-          <p className="clip-editor-hint">Previews keep your listening place.</p>
           <ClipDial
             bookDuration={bookDuration}
             range={range}
@@ -470,7 +469,7 @@ export function ClipsSheet({
         </header>
         {!selectedClip && count > 0 ? (
           <p className="sleep-sheet-hint">
-            {count} {count === 1 ? "clip" : "clips"}. Previews keep your listening place.
+            {count} {count === 1 ? "clip" : "clips"}
           </p>
         ) : null}
         {clips.loading ? <p className="sleep-sheet-hint" role="status">Loading clips…</p> : null}
