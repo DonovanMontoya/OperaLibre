@@ -1,5 +1,5 @@
 import { CornerDownLeft, Pause, Play, RotateCcw, RotateCw, SkipBack, SkipForward } from "lucide-react";
-import { useEffect, useRef, type CSSProperties, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { CoverArt } from "./CoverArt";
 import { ScrubSlider } from "./PlaybackControls";
@@ -35,6 +35,7 @@ export function PopOutPlayer({
   playbackBook,
   popOut,
   position,
+  reconcileBeforeResume,
   restartOrPreviousChapter,
   scrubbedElapsed,
   seekBookPosition,
@@ -62,6 +63,8 @@ export function PopOutPlayer({
   playbackBook: Book;
   popOut: PopOutPlayerWindow;
   position: number;
+  /** Adopts a newer position saved on another device while this one was paused. */
+  reconcileBeforeResume: () => Promise<void>;
   restartOrPreviousChapter: () => void;
   scrubbedElapsed: number;
   seekBookPosition: (value: number, autoPlay?: boolean) => void;
@@ -83,8 +86,27 @@ export function PopOutPlayer({
     popOut.window.document.title = `${heading} · ${playbackBook.title}`;
   }, [heading, playbackBook.title, popOut.window]);
 
-  const actions = useRef({ togglePlayback, seekBy });
-  actions.current = { togglePlayback, seekBy };
+  // The tab checks for a newer position from another device when it comes
+  // back into view. Resuming here can happen while the tab stays hidden, so
+  // that check runs first, and Play waits for the render that applies it.
+  const [resumeRequest, setResumeRequest] = useState(0);
+  const resuming = useRef(false);
+  const playOrPause = () => {
+    if (isPlaying || playPending) {
+      togglePlayback();
+      return;
+    }
+    if (resuming.current) return;
+    resuming.current = true;
+    void reconcileBeforeResume().catch(() => {}).finally(() => setResumeRequest((count) => count + 1));
+  };
+  const actions = useRef({ playOrPause, togglePlayback, seekBy, playing: isPlaying || playPending });
+  actions.current = { playOrPause, togglePlayback, seekBy, playing: isPlaying || playPending };
+  useEffect(() => {
+    if (resumeRequest === 0) return;
+    resuming.current = false;
+    if (!actions.current.playing) actions.current.togglePlayback();
+  }, [resumeRequest]);
   useEffect(() => {
     const doc = popOut.window.document;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -92,7 +114,7 @@ export function PopOutPlayer({
       const action = popOutKeyAction(event.key, event.target as Element | null);
       if (!action) return;
       event.preventDefault();
-      if (action === "toggle") actions.current.togglePlayback();
+      if (action === "toggle") actions.current.playOrPause();
       else actions.current.seekBy(action === "back" ? -15 : 30);
     };
     doc.addEventListener("keydown", onKeyDown);
@@ -147,7 +169,7 @@ export function PopOutPlayer({
             className={`popout-play${playPending ? " play-pending" : ""}`}
             aria-label={playPending ? "Cancel play" : isPlaying ? "Pause" : "Play"}
             aria-busy={playPending}
-            onClick={togglePlayback}
+            onClick={playOrPause}
           >
             {isPlaying || playPending ? <Pause size={22} fill="currentColor" strokeWidth={0} /> : <Play size={22} fill="currentColor" strokeWidth={0} />}
             {playPending ? <span className="play-pending-ring" aria-hidden="true" /> : null}

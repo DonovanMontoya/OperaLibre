@@ -92,6 +92,16 @@ function preparePopOutDocument(target: Window): { container: HTMLElement; styled
 
 export type PopOutPlayerWindow = { window: Window; container: HTMLElement };
 
+// The open pop-out, for progress sync: a listener looking at it is looking at
+// the player even while the tab behind it is hidden.
+let openPopOut: Window | null = null;
+
+/** Whether the player is in front of the listener, in the tab or the pop-out. */
+export function playerOnScreen(): boolean {
+  return document.visibilityState === "visible"
+    || (openPopOut !== null && !openPopOut.closed && openPopOut.document.visibilityState === "visible");
+}
+
 /** What a player button needs to open or close the pop-out. */
 export type PopOutControl = { open: boolean; toggle: () => void };
 
@@ -100,6 +110,12 @@ export function usePopOutPlayer(native: boolean, hasBook: boolean) {
   const [current, setCurrent] = useState<PopOutPlayerWindow | null>(null);
   const currentRef = useRef(current);
   currentRef.current = current;
+  useEffect(() => {
+    openPopOut = current?.window ?? null;
+    return () => {
+      if (openPopOut === current?.window) openPopOut = null;
+    };
+  }, [current]);
 
   const attach = useCallback((target: Window) => {
     const { container, styled } = preparePopOutDocument(target);

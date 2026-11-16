@@ -52,6 +52,7 @@ export function useProgressSync({
   position,
   progressMutationVersion,
   progressSaveAbortController,
+  playerOnScreen = () => document.visibilityState === "visible",
   progressSaveDrainPromiseRef,
   queuedProgressSaves,
   restoredProgressBookId,
@@ -96,6 +97,9 @@ export function useProgressSync({
   position: number;
   progressMutationVersion: RefObject<number>;
   progressSaveAbortController: RefObject<AbortController | null>;
+  /** Whether the listener can see the player: the tab, or the web's pop-out
+      window while the tab is hidden. */
+  playerOnScreen?: () => boolean;
   progressSaveDrainPromiseRef: RefObject<Promise<void> | null>;
   queuedProgressSaves: RefObject<Map<string, QueuedProgressSave>>;
   restoredProgressBookId: RefObject<string | null>;
@@ -399,8 +403,9 @@ export function useProgressSync({
   }
 
   /**
-   * Returning to the foreground is the one moment another device's position
-   * can be newer without any local signal — the restore effect runs once per
+   * Returning to the foreground, or resuming from the pop-out player while
+   * the tab stays hidden, is the one moment another device's position can be
+   * newer without any local signal — the restore effect runs once per
    * book and deliberately never re-fires. Adopt the server's copy only while
    * this session is provably idle: restore finished, playback paused, and no
    * local save queued or in flight. A moving or unsynced session is always
@@ -417,7 +422,7 @@ export function useProgressSync({
       restoredProgressBookId.current !== book.id ||
       resumeReconciliationBookIdRef.current === book.id ||
       foregroundAdoptInFlightRef.current ||
-      document.visibilityState !== "visible" ||
+      !playerOnScreen() ||
       (nativeAudio && nativeForegroundSyncGateRef.current.shouldDeferServerAdoption())
     ) {
       return;
@@ -449,7 +454,7 @@ export function useProgressSync({
       const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
       if (
         !server ||
-        document.visibilityState !== "visible" ||
+        !playerOnScreen() ||
         nativeForegroundSyncGateRef.current.generation !== foregroundGeneration ||
         (nativeAudio && nativeForegroundSyncGateRef.current.shouldDeferServerAdoption()) ||
         restoredProgressBookId.current !== book.id ||

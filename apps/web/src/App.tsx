@@ -175,7 +175,7 @@ import { SettingsPage } from "./SettingsPage";
 import { AgentAccessDialog } from "./AgentAccess";
 import { MiniPlayer } from "./MiniPlayer";
 import { PopOutPlayer } from "./PopOutPlayer";
-import { usePopOutPlayer, type PopOutControl } from "./popOutPlayer";
+import { playerOnScreen, usePopOutPlayer, type PopOutControl } from "./popOutPlayer";
 import { DeskView, useDeskView } from "./DeskView";
 import { PlayerPane } from "./PlayerPane";
 import { LibraryPane } from "./LibraryPane";
@@ -1000,6 +1000,7 @@ function MainApp({
     position,
     progressMutationVersion,
     progressSaveAbortController,
+    playerOnScreen,
     progressSaveDrainPromiseRef,
     queuedProgressSaves,
     restoredProgressBookId,
@@ -2549,6 +2550,7 @@ function MainApp({
           playbackBook={playbackBook}
           popOut={popOut.current}
           position={position}
+          reconcileBeforeResume={() => foregroundProgressActionsRef.current.adoptNewerServerProgress()}
           restartOrPreviousChapter={restartOrPreviousChapter}
           scrubbedElapsed={scrubbedElapsed}
           seekBookPosition={seekBookPosition}
