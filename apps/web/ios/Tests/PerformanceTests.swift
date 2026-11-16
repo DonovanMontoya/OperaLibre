@@ -7,6 +7,33 @@ import UIKit
 /// Compiled alongside the actual plugin sources in an isolated simulator test bundle.
 /// These tests never install over the user's OperaLibre app or touch its sandbox.
 final class PerformanceTests: XCTestCase {
+    @MainActor
+    func testStoppingPlayerClearsOuterCoverArtwork() throws {
+        let engine = AudiobookPlayer()
+        let cover = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".png")
+        defer { try? FileManager.default.removeItem(at: cover) }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 16, height: 16)).image { context in
+            UIColor.blue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 16, height: 16))
+        }
+        try XCTUnwrap(image.pngData()).write(to: cover)
+        let loaded = expectation(forNotification: AudiobookPlayer.artworkDidChange, object: nil) { notification in
+            (notification.object as? AudiobookPlayer) === engine && engine.artworkImage != nil
+        }
+        engine.setNowPlaying(AudiobookNowPlayingRequest(
+            title: "Cover", artist: "Fixture", album: "Book", artworkSource: cover.absoluteString,
+            chapterStartSeconds: nil, chapterDurationSeconds: nil, chapters: []))
+        wait(for: [loaded], timeout: 5)
+        XCTAssertNotNil(engine.artworkImage)
+
+        let cleared = expectation(forNotification: AudiobookPlayer.artworkDidChange, object: nil) { notification in
+            (notification.object as? AudiobookPlayer) === engine && engine.artworkImage == nil
+        }
+        engine.stopOnMainThread(releaseSession: false)
+        XCTAssertNil(engine.artworkImage)
+        wait(for: [cleared], timeout: 1)
+    }
+
     func testCompactAudioSourceKeepsCredentialsAndOtherSources() throws {
         let source = try XCTUnwrap(URL(string: "https://server.test/prefix/api/books/book/tracks/track/stream?token=private%2Bvalue&compact=0"))
         let compact = compactAudioSource(source)

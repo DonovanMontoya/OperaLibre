@@ -11,6 +11,14 @@ Entries use **version (build)** and appear newest first. iOS versions are tracke
 independently of the server releases. From 1.3.2, the build number counts
 uploads of each app version from 1, and Android uses the same build number.
 
+## Unreleased
+
+- On an open iPhone Duo, **Cover on outer screen** in **Settings → Behavior**
+  shows the loaded book's cover on the outer screen. It is off by default,
+  and turning it on first explains what it needs. iOS allows the outer screen only alongside a camera preview, so the rear
+  camera runs at low quality behind a small viewfinder; nothing is recorded
+  or saved.
+
 ## 1.3.2 (6)
 
 Uploaded to App Store Connect on November 14, 2026, from
