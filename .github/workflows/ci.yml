@@ -191,6 +191,7 @@ jobs:
           node --test script/resolve_release.test.mjs
           node --test script/publish_release.test.mjs
           node --test script/version.test.mjs
+          node --test script/stage_android_release.test.mjs
           node script/version.mjs check
           python3 script/test_installer_libation.py
 
@@ -331,6 +332,12 @@ jobs:
 
       - name: Build unsigned release APK
         run: npm run build:android -- release
+
+      - name: Verify Android release package metadata
+        run: |
+          node script/stage_android_release.mjs \
+            apps/web/android/app/build/outputs/apk/release/app-release-unsigned.apk \
+            "$ANDROID_HOME/build-tools/37.0.0/aapt" "$RUNNER_TEMP/android-release"
 
       - name: Test staged gift extraction on the JVM
         run: |
