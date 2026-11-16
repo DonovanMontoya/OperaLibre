@@ -2467,14 +2467,14 @@ impl CloudPrefetch {
         let last = self.piece_at((end - 0.001).max(start));
         self.request(first, last + PREFETCH_AHEAD);
         let mut words = Vec::new();
-        for index in first..=last {
-            if let PrefetchPiece::Pending(task) = &mut self.pieces[index] {
+        for piece in &mut self.pieces[first..=last] {
+            if let PrefetchPiece::Pending(task) = piece {
                 let heard = task
                     .await
                     .map_err(|error| anyhow::anyhow!("OpenAI transcription stopped: {error}"))??;
-                self.pieces[index] = PrefetchPiece::Ready(heard);
+                *piece = PrefetchPiece::Ready(heard);
             }
-            let PrefetchPiece::Ready(heard) = &self.pieces[index] else {
+            let PrefetchPiece::Ready(heard) = piece else {
                 unreachable!("pieces from `first` on are requested and awaited above");
             };
             words.extend(
