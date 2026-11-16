@@ -3372,7 +3372,7 @@ pub(crate) fn extract_cover_art(tag: &Tag) -> Option<EmbeddedImage> {
     let picture = tag
         .get_picture_type(PictureType::CoverFront)
         .or_else(|| tag.pictures().first())?;
-    if picture.data().len() > MAX_COVER_UPLOAD_BYTES {
+    if picture.data().len() as u64 > TAG_BYTES {
         return None;
     }
     let data = normalize_cover(picture.data()).ok()?;
@@ -3492,7 +3492,8 @@ fn read_mp4_chapters(input: &mut MetadataInput) -> Vec<ParsedChapter> {
 }
 
 fn read_id3_chapters(input: &MetadataInput) -> Vec<ParsedChapter> {
-    let Ok(reader) = input.fork(8 * 1024 * 1024) else {
+    // The id3 crate reads the whole tag, artwork included.
+    let Ok(reader) = input.fork(TAG_BYTES) else {
         return Vec::new();
     };
     let Ok(tag) = id3::Tag::read_from2(reader) else {
