@@ -5,7 +5,7 @@ import { CoverArt } from "./CoverArt";
 import { ScrubSlider } from "./PlaybackControls";
 import { formatPlaybackSpeed } from "./playbackSpeed";
 import { formatTime } from "./formatting";
-import { nextPresetSpeed, popOutKeyAction, type PopOutPlayerWindow } from "./popOutPlayer";
+import { nextPresetSpeed, popOutKeyAction, type PopOutPlayerWindow } from "./usePopOutPlayer";
 import type { ChapterSegment } from "./chapters";
 import type { Book, Track } from "./types";
 import "./popOutPlayer.css";
