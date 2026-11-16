@@ -2862,7 +2862,7 @@ function MainApp({
         />
       ) : null}
 
-      {native && gamesEnabled && nativeTab === "games" ? <GamesPage onGameChange={setActiveGame} /> : null}
+      {native && gamesEnabled && nativeTab === "games" ? <GamesPage books={books} onGameChange={setActiveGame} /> : null}
 
       {native && nativeTab === "settings" ? (
         <SettingsPage

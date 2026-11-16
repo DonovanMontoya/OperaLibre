@@ -9258,7 +9258,7 @@ html.native-app .games-head p { margin: 0; color: rgba(var(--on-spine-rgb), 0.55
 html.native-app .games-switcher {
   flex: none;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   margin: 14px 0 10px;
   padding: 4px;
@@ -9293,10 +9293,10 @@ html.native-app .game-mark { display: grid; place-items: center; width: 39px; he
 html.native-app .game-stat, html.native-app .game-reset { color: rgba(var(--on-spine-rgb), 0.55); font: 600 0.72rem "JetBrains Mono", monospace; }
 html.native-app .game-reset { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: rgba(255,255,255,.06); }
 
-/* On short screens the parlour dressing gives its space to the boards: both
-   size themselves from their frame row's measured height, so every pixel of
+/* On short screens the parlour dressing gives its space to the board: it
+   sizes itself from its frame row's measured height, so every pixel of
    chrome shed here comes back as board. (--match-board-min, below, floors
-   only the iOS 15 fallback.) The tappable word keys hold 44px on their own. */
+   only the iOS 15 fallback.) */
 @media (max-height: 700px) {
   html.native-app .games-head h1 { margin: 0; font-size: 1.4rem; }
   html.native-app .games-head p { display: none; }
@@ -9308,7 +9308,7 @@ html.native-app .game-reset { display: grid; place-items: center; width: 38px; h
    mini-player are reserved. Keep the portrait heading on one line instead
    of waiting for the raw viewport to fall below the short-screen cutoff.
    Give that space to the measured board frames; a board minimum would bring
-   back the overlap with the message and keyboard. */
+   back the overlap with the message. */
 @media (orientation: portrait) and (max-width: 599px) {
   html.native-app .games-shell { padding-top: calc(var(--status-h) + 8px); }
   html.native-app .games-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -9318,34 +9318,6 @@ html.native-app .game-reset { display: grid; place-items: center; width: 38px; h
   html.native-app .game-card { padding: 10px; }
 }
 
-html.native-app .word-game { flex: 1 1 auto; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; }
-/* Same trick as the match board: the frame is the flexible row, and the board
-   derives its width from the measured height so it can never overflow. A 5×6
-   board of square tiles is 1.2× taller than wide, hence the 82cqh cap. */
-html.native-app .word-board-frame { min-height: 0; container-type: size; display: grid; place-items: center; }
-/* iOS 15 WebKit lacks container units, so first approximate the frame height
-   from the shell chrome (conservatively — clipping is worse than a small
-   board); modern engines take the exact cqh declarations in @supports. */
-html.native-app .word-board { display: grid; gap: 5px; width: min(100%, 260px, max(120px, calc((var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - 500px) * .82))); }
-html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 260px, max(120px, calc((var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - var(--mini-player-height) - 500px) * .82))); }
-@supports (width: 1cqh) {
-  html.native-app .word-board,
-  html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 260px, 82cqh); }
-}
-html.native-app .word-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; }
-html.native-app .word-row.rejected { animation: word-row-rejected .3s ease-in-out; }
-html.native-app .word-tile { display: grid; place-items: center; aspect-ratio: 1; min-height: 0; border: 1px solid rgba(var(--on-spine-rgb),.18); border-radius: 9px; color: var(--on-spine); font: 700 clamp(1rem, 5vw, 1.35rem) "JetBrains Mono", monospace; background: rgba(255,255,255,.035); }
-html.native-app .word-tile.correct { border-color: #72936a; background: #526f4c; }
-html.native-app .word-tile.present { border-color: #b78f46; background: #8b682c; }
-html.native-app .word-tile.absent { border-color: #48423d; background: #38332f; color: rgba(var(--on-spine-rgb),.62); }
-html.native-app .word-keys { display: grid; gap: 6px; margin-top: 10px; }
-html.native-app .word-keys-row { display: flex; justify-content: center; gap: 5px; }
-html.native-app .word-key { flex: 1 1 0; min-width: 0; max-width: 34px; min-height: 44px; border-radius: 8px; border: 1px solid rgba(var(--on-spine-rgb),.12); color: var(--on-spine); background: rgba(255,255,255,.07); font: 700 .82rem "JetBrains Mono", monospace; }
-html.native-app .word-key.wide { max-width: 56px; flex: 1.6 1 0; font-size: .68rem; }
-html.native-app .word-key:disabled { opacity: .4; }
-html.native-app .word-key.correct { border-color: #72936a; background: #526f4c; }
-html.native-app .word-key.present { border-color: #b78f46; background: #8b682c; }
-html.native-app .word-key.absent { border-color: #3d3833; background: #2c2723; color: rgba(var(--on-spine-rgb),.45); }
 html.native-app .game-message { min-height: 1.2em; margin: 10px 0 2px; text-align: center; color: rgba(var(--on-spine-rgb),.78); font-size: .8rem; }
 
 html.native-app .match-record { display: flex; align-items: baseline; justify-content: space-between; margin: 10px 2px 0; color: rgba(var(--on-spine-rgb),.4); font-size: .62rem; letter-spacing: .1em; text-transform: uppercase; }
@@ -9398,9 +9370,10 @@ html.native-app .match-play-area { display: contents; }
    worst the frame overflows its row by this much — bounded, unlike the old
    full-size board floor — and the board stays visible and swipeable. */
 html.native-app .match-board-frame { min-height: 140px; container-type: size; display: grid; place-items: start center; }
-/* Same iOS 15 fallback strategy as the word board above. Its approximation
-   runs deliberately small, so the floor keeps the board from collapsing when
-   the guessed chrome overshoots. */
+/* iOS 15 WebKit lacks container units, so the board first approximates its
+   frame's height from the shell chrome. That approximation runs small on
+   purpose, so the floor keeps the board from collapsing when the guessed
+   chrome overshoots. */
 html.native-app .match-board { position: relative; display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: minmax(0, 1fr); width: min(100%, max(var(--match-board-min), calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - 440px))); aspect-ratio: 1; gap: 3px; padding: 6px; border-radius: 15px; background: rgba(0,0,0,.22); transition: box-shadow .2s ease, background .2s ease; }
 html.native-app .native-shell.has-mini-player .match-board { width: min(100%, max(var(--match-board-min), calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - var(--mini-player-height) - 440px))); }
 @supports (width: 1cqh) {
@@ -9467,12 +9440,6 @@ html.native-app .match-message { display: inline-block; animation: match-message
   70% { opacity: 1; transform: translateY(5%) scale(1.03); }
   to { opacity: 1; transform: none; }
 }
-@keyframes word-row-rejected {
-  0%, 100% { transform: translateX(0); }
-  20% { transform: translateX(-6px); }
-  45% { transform: translateX(5px); }
-  70% { transform: translateX(-3px); }
-}
 @keyframes match-piece-invalid {
   0%, 100% { transform: translateX(0); }
   30% { transform: translateX(-4px) rotate(-4deg); }
@@ -9496,16 +9463,252 @@ html.native-app .match-message { display: inline-block; animation: match-message
   html.native-app .match-piece.clearing,
   html.native-app .match-piece.falling,
   html.native-app .match-piece.invalid,
-  html.native-app .word-row.rejected,
   html.native-app .match-piece.clearing::after,
   html.native-app .match-popup,
   html.native-app .match-score strong.score-bump,
   html.native-app .match-message { animation: none; transition-duration: 0s; }
 }
+/* Shelf Sort and Cover Grid wear Chapter Match's layout classes (match-game,
+   match-record, match-score, match-board-frame, match-board), so every
+   posture above and below places their boards exactly as it places the
+   match board. Only what sits inside the square board is their own. */
+html.native-app .game-reset:disabled { opacity: .35; }
+html.native-app .match-board.shelf-board {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-evenly;
+  gap: 6px;
+  padding: 12px 10px 10px;
+}
+/* Each row of stacks stands on one plank that runs the width of the board. */
+html.native-app .shelf-row {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--shelf-columns), minmax(0, 1fr));
+  gap: 6px;
+  padding: 0 4px 9px;
+}
+html.native-app .shelf-row::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 9px;
+  border-radius: 2px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 35%, rgba(0, 0, 0, 0.28)),
+    rgb(var(--spine-gold-rgb));
+  box-shadow: 0 7px 10px -6px rgba(0, 0, 0, 0.55);
+  opacity: .7;
+}
+html.native-app .shelf-stack {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px 2px 0;
+  border-radius: 8px 8px 0 0;
+  /* A faint recess marks each place on the plank, so an empty one still reads as room. */
+  background: linear-gradient(180deg, transparent, rgba(var(--on-spine-rgb), 0.06));
+  touch-action: manipulation;
+  transition: background .16s ease;
+}
+html.native-app .shelf-books { display: flex; flex-direction: column-reverse; gap: 2px; height: 100%; }
+html.native-app .shelf-stack.selected { background: linear-gradient(180deg, rgba(var(--spine-gold-rgb), 0.04), rgba(var(--spine-gold-rgb), 0.2)); }
+html.native-app .shelf-stack:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 1px; }
+html.native-app .shelf-stack.rejected .shelf-books { animation: match-piece-invalid .3s ease-in-out; }
+html.native-app :is(.shelf-slot, .shelf-book) { flex: 1 1 0; min-height: 0; border-radius: 3px; }
+/* The space arriving books would take, on every stack that can take them. */
+html.native-app .shelf-slot.opening { margin-inline: 8%; outline: 1.5px dashed rgba(var(--spine-gold-rgb), 0.55); outline-offset: -1.5px; }
+html.native-app .shelf-stack.hint-to .shelf-slot.opening { outline-style: solid; outline-color: var(--gold-soft); background: rgba(var(--spine-gold-rgb), 0.14); }
+/* A book lying flat shows its spine: cloth with a rounded light along the
+   top, gilt bands near either end, and the volume number between them. */
+html.native-app .shelf-book {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--book-w, 94%);
+  margin-inline: auto;
+  color: rgba(255, 244, 220, 0.94);
+  font: 700 clamp(.62rem, 3cqw, .92rem)/1 "Fraunces", Georgia, serif;
+  letter-spacing: .06em;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.04) 38%, rgba(0, 0, 0, 0.22)),
+    var(--book);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
+  transition: transform .18s cubic-bezier(.3, .7, .3, 1), box-shadow .18s ease;
+}
+html.native-app .shelf-book::before {
+  content: "";
+  position: absolute;
+  inset: 22% 11%;
+  border-inline: 1.5px solid rgba(240, 210, 140, 0.55);
+  pointer-events: none;
+}
+html.native-app .shelf-book.lifting { transform: translateY(-8px); box-shadow: 0 7px 10px -5px rgba(0, 0, 0, 0.55); }
+html.native-app .shelf-stack.hint-from .shelf-book.lifting { box-shadow: 0 0 0 2px var(--gold-soft), 0 7px 10px -5px rgba(0, 0, 0, 0.55); }
+html.native-app .shelf-book.landing { animation: shelf-book-land .26s cubic-bezier(.2, .8, .3, 1.15); }
+@keyframes shelf-book-land {
+  from { transform: translateY(-12px); opacity: .4; }
+  to { transform: none; opacity: 1; }
+}
+/* Each colour keeps its own width, like a series printed to one size. */
+html.native-app .shelf-book.color-0 { --book: #7d2f2a; --book-w: 96%; }
+html.native-app .shelf-book.color-1 { --book: #36593b; --book-w: 88%; }
+html.native-app .shelf-book.color-2 { --book: #2c4066; --book-w: 100%; }
+html.native-app .shelf-book.color-3 { --book: #a0722a; --book-w: 91%; }
+html.native-app .shelf-book.color-4 { --book: #64385d; --book-w: 97%; }
+html.native-app .shelf-book.color-5 { --book: #2b6b69; --book-w: 86%; }
+html.native-app .shelf-book.color-6 { --book: #5a6068; --book-w: 93%; }
+/* A finished stack gets a brass plate on the plank. */
+html.native-app .shelf-plate {
+  position: absolute;
+  left: 50%;
+  bottom: -10px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 11px;
+  border-radius: 2px;
+  color: #3a2810;
+  background: linear-gradient(180deg, #f0d79c, #c79a4a);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  transform: translateX(-50%);
+  z-index: 1;
+}
+html.native-app .shelf-done {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  border-radius: inherit;
+  background: radial-gradient(circle, rgba(16, 10, 6, 0.78) 30%, rgba(16, 10, 6, 0.3) 75%);
+  animation: match-message-in .3s ease both;
+  z-index: 2;
+}
+html.native-app .shelf-done strong { color: #f0dcae; font: 600 1.5rem "Fraunces", Georgia, serif; }
+html.native-app .shelf-done span { color: rgba(240, 220, 174, 0.7); font-size: .8rem; }
+html.native-app .shelf-done button { min-height: 44px; margin-top: 8px; padding: 0 22px; border-radius: 999px; color: #24150d; background: var(--gold-soft); font-weight: 700; }
+/* More controls than Chapter Match's one: outranks every posture's grid title
+   row, and drops the controls to their own line in a narrow side column. */
+html.native-app .game-card:is(.shelf-game, .cover-game) .game-title-row { display: flex; flex-wrap: wrap; gap: 6px; }
+html.native-app .game-card:is(.shelf-game, .cover-game) .game-title-row > div { flex: 1 1 6em; min-width: 0; }
+html.native-app .game-controls { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+html.native-app :is(.shelf-game, .cover-game) .game-title-row .section-label { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+/* Cover Grid: a cover cut into --slide-size squares. Each piece is placed by
+   transform alone, so a slide is one cheap transition, and shows its own
+   slice of the cover by background position. */
+html.native-app .match-board.slide-board {
+  display: block;
+  padding: 6px;
+  outline: none;
+}
+html.native-app .slide-board:focus-visible { box-shadow: 0 0 0 2px var(--gold-soft); }
+html.native-app .slide-tile {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: calc((100% - 12px) / var(--slide-size));
+  height: calc((100% - 12px) / var(--slide-size));
+  padding: 1.5px;
+  border: 0;
+  background: none;
+  transform: translate(calc(var(--col) * 100%), calc(var(--row) * 100%));
+  transition: transform .16s cubic-bezier(.3, .7, .3, 1), padding .5s ease .15s;
+  touch-action: manipulation;
+}
+html.native-app .slide-face {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 5px;
+  background-image: var(--slide-image);
+  background-size: calc(var(--slide-size) * 100%) calc(var(--slide-size) * 100%);
+  background-position:
+    calc(var(--home-col) / (var(--slide-size) - 1) * 100%)
+    calc(var(--home-row) / (var(--slide-size) - 1) * 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), inset 0 -2px 0 rgba(0, 0, 0, 0.22), 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: border-radius .5s ease .15s, box-shadow .5s ease .15s;
+}
+html.native-app .slide-face.bumped { animation: match-piece-invalid .3s ease-in-out; }
+html.native-app .slide-number {
+  position: absolute;
+  top: 5%;
+  left: 6%;
+  min-width: 1.6em;
+  padding: .15em .3em;
+  border-radius: 999px;
+  color: #f0dcae;
+  background: rgba(16, 10, 6, 0.7);
+  font: 700 clamp(.56rem, 2.6cqw, .8rem)/1 "JetBrains Mono", monospace;
+  text-align: center;
+}
+html.native-app .slide-board.loading .slide-tile { opacity: .35; }
+/* Solved: the seams close, the corners square off, and the last piece, held
+   back as the gap the whole game, settles into place. */
+html.native-app .slide-board.solved .slide-tile { padding: 0; }
+html.native-app .slide-board.solved .slide-face { border-radius: 0; box-shadow: none; }
+html.native-app .slide-tile.final .slide-face { animation: slide-final .6s cubic-bezier(.2, .8, .3, 1) both; }
+@keyframes slide-final {
+  from { opacity: 0; transform: scale(.85); }
+  to { opacity: 1; transform: none; }
+}
+html.native-app .slide-peek {
+  position: absolute;
+  inset: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  background: none;
+  z-index: 2;
+  animation: match-message-in .18s ease both;
+}
+html.native-app .slide-peek img { display: block; width: 100%; height: 100%; object-fit: cover; }
+/* Some layouts stack .match-score's label over its number; the tools stay a row. */
+html.native-app .games-shell .match-score.cover-tools { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 6px; }
+html.native-app .cover-tool-group { display: flex; gap: 2px; margin-right: auto; padding: 2px; border-radius: 999px; background: rgba(var(--on-spine-rgb), 0.06); }
+html.native-app .cover-tool-pair { display: flex; gap: 6px; }
+html.native-app .cover-tools button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  color: rgba(var(--on-spine-rgb), 0.66);
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+html.native-app .cover-tools button.active,
+html.native-app .cover-tools .cover-action.on { color: #24150d; background: var(--gold-soft); }
+html.native-app .cover-tools .cover-action { width: 36px; padding: 0; background: rgba(var(--on-spine-rgb), 0.06); }
+html.native-app .cover-tools button:disabled { opacity: .35; }
+/* A choice that would throw progress away asks twice. */
+html.native-app :is(.game-reset, .cover-tools button).armed { color: #24150d; background: var(--gold-soft); box-shadow: 0 0 0 2px rgba(var(--spine-gold-rgb), 0.45); }
+
+/* Three games share a narrow phone's switcher: the names keep the room. */
+@media (max-width: 430px) {
+  html.native-app .games-switcher button { gap: 0; padding-inline: 4px; letter-spacing: .02em; }
+  html.native-app .games-switcher button svg { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.native-app :is(.shelf-stack.rejected .shelf-books, .shelf-book.landing, .shelf-done, .slide-face, .slide-peek) { animation: none; }
+  html.native-app :is(.slide-tile, .slide-face) { transition: none; }
+  html.native-app :is(.shelf-book, .shelf-stack) { transition: none; }
+}
+
 html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(var(--on-spine-rgb),.36); text-align: center; font-size: .66rem; }
 
 /* Landscape iPads are held by their sides, so the play surface belongs under
-   a thumb: the board (or Word Grid's keyboard) runs full height against the
+   a thumb: the board runs full height against the
    right edge, and everything read rather than touched — the parlour heading,
    game picker, title, tallies and hint — shares one column on the left. The
    game card dissolves (display: contents) so its pieces join the shell's grid
@@ -9530,10 +9733,6 @@ html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(var(
   }
 
   html.native-app .games-shell > .game-card { display: contents; }
-  /* A keyboard is wider than it is tall, so it takes a broader column than
-     the square board needs. */
-  html.native-app .games-shell.games-words { grid-template-columns: minmax(0, 1fr) clamp(440px, 48vw, 620px); }
-
   html.native-app .games-head { grid-column: 1; grid-row: 1; }
   html.native-app .games-head h1 { font-size: clamp(2.1rem, 4vw, 3.1rem); }
 
@@ -9587,24 +9786,6 @@ html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(var(
     html.native-app .match-board,
     html.native-app .native-shell.has-mini-player .match-board { width: min(100%, 100cqh); }
   }
-
-  /* Word Grid: the guesses read on the left, the keyboard types on the
-     right at full-size keys. */
-  html.native-app .word-board-frame { grid-column: 1; grid-row: 4 / 7; margin-top: 16px; place-items: center start; }
-  html.native-app .word-board,
-  html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 360px); }
-  @supports (width: 1cqh) {
-    html.native-app .word-board,
-    html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 360px, 82cqh); }
-  }
-  html.native-app .word-tile { font-size: clamp(1.1rem, 2.2vw, 1.7rem); }
-  /* The guesses share the left column with the reading chrome; the tagline
-     gives its line back to them. */
-  html.native-app .games-shell.games-words .games-head p { display: none; }
-  html.native-app .word-keys { grid-column: 2; grid-row: 1 / -1; align-self: center; margin: 0; gap: 10px; }
-  html.native-app .word-keys-row { gap: 7px; }
-  html.native-app .word-key { max-width: 58px; min-height: 64px; border-radius: 10px; font-size: 1.05rem; }
-  html.native-app .word-key.wide { max-width: 96px; font-size: .8rem; }
 }
 
 /* --- Press feedback instead of sticky hover states --- */
@@ -16466,21 +16647,6 @@ html.native-app .recent-row {
   html.native-app .match-score { align-self: end; margin: 0; font-size: .56rem; }
   html.native-app .match-game .game-message { grid-column: 1 / -1; grid-row: 2; margin: 3px 0 0; font-size: .66rem; }
 
-  /* Word Grid follows the same split: board left, keyboard right. Keeping the
-     keys together gives every row room for a reliable tap target. */
-  html.native-app .word-game {
-    grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
-    grid-template-rows: auto minmax(0, 1fr) auto;
-    column-gap: 10px;
-  }
-  html.native-app .word-game .game-title-row { grid-column: 1 / -1; grid-row: 1; }
-  html.native-app .word-game .game-mark { width: 30px; height: 30px; border-radius: 9px; }
-  html.native-app .word-game .game-mark svg { width: 17px; height: 17px; }
-  html.native-app .word-game .game-title-row h2 { font-size: .95rem; }
-  html.native-app .word-game .game-title-row .section-label { display: none; }
-  html.native-app .word-game .game-reset { width: 30px; height: 30px; }
-  html.native-app .word-game .game-message { grid-column: 2; grid-row: 3; margin: 3px 0 0; font-size: .66rem; }
-
   html.native-app .native-shell:is(.tab-shelf, .tab-games) .mini-player {
     left: max(10px, env(safe-area-inset-left));
     right: max(10px, env(safe-area-inset-right));
@@ -17215,13 +17381,12 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
     min-height: var(--bar-band);
   }
 
-  /* Games: the reading column starts in the band; the board and keyboard,
-     which reach under the bar, keep clear of it. */
+  /* Games: the reading column starts in the band; the board, which reaches
+     under the bar, keeps clear of it. */
   html.native-app .native-shell.device-ipad .games-shell {
     padding-top: calc(var(--clock-h) + 10px);
   }
-  html.native-app .native-shell.device-ipad .match-board-frame,
-  html.native-app .native-shell.device-ipad .word-keys {
+  html.native-app .native-shell.device-ipad .match-board-frame {
     margin-top: var(--bar-band);
   }
 
@@ -17579,7 +17744,6 @@ html.native-app[data-shelf-transition="player-split"]::view-transition-new(shelf
        as wide as the square board's column needs to be. */
     --phone-play-h: calc(var(--native-viewport-height) - max(8px, var(--status-h)) - var(--tabs-h) - 10px);
     --phone-board-col: min(var(--phone-play-h), 50vw);
-    --phone-keys-col: clamp(300px, 46vw, 440px);
     --phone-games-gap: clamp(12px, 2.4vw, 22px);
   }
 
@@ -17592,9 +17756,6 @@ html.native-app[data-shelf-transition="player-split"]::view-transition-new(shelf
     padding: max(8px, var(--status-h)) max(12px, env(safe-area-inset-right))
       calc(var(--tabs-h) + 10px) max(12px, env(safe-area-inset-left));
   }
-  html.native-app .native-shell .games-shell.games-words {
-    grid-template-columns: minmax(0, 1fr) var(--phone-keys-col);
-  }
   html.native-app .games-shell > .game-card { display: contents; }
 
   /* The tab bar already names the parlour; its heading and footnote give
@@ -17605,7 +17766,7 @@ html.native-app[data-shelf-transition="player-split"]::view-transition-new(shelf
   html.native-app .games-switcher {
     grid-column: 1;
     grid-row: 2;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     margin: 0;
   }
 
@@ -17649,29 +17810,6 @@ html.native-app[data-shelf-transition="player-split"]::view-transition-new(shelf
   }
   html.native-app .native-shell.tab-games .mini-player {
     right: calc(max(12px, env(safe-area-inset-right)) + var(--phone-board-col) + var(--phone-games-gap));
-  }
-
-  /* Word Grid: guesses read on the left; the keyboard types against the
-     right edge, with the playing strip docked beneath it. */
-  html.native-app .word-board-frame { grid-column: 1; grid-row: 4 / 7; margin-top: 8px; place-items: center start; }
-  html.native-app .word-board,
-  html.native-app .native-shell.has-mini-player .word-board {
-    width: min(100%, max(96px, calc((var(--phone-play-h) - 150px) * .82)));
-  }
-  @supports (width: 1cqh) {
-    html.native-app .word-board,
-    html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 82cqh); }
-  }
-  html.native-app .word-keys { grid-column: 2; grid-row: 1 / -1; align-self: center; margin: 0; gap: 6px; }
-  html.native-app .word-keys-row { gap: 4px; }
-  html.native-app .word-key { max-width: 40px; min-height: 42px; border-radius: 8px; font-size: .8rem; }
-  html.native-app .word-key.wide { max-width: 60px; font-size: .62rem; }
-  html.native-app .native-shell.has-mini-player .word-keys {
-    margin-bottom: calc(var(--mini-player-height) + 10px);
-  }
-  html.native-app .native-shell.tab-games.games-words .mini-player {
-    left: calc(100vw - max(12px, env(safe-area-inset-right)) - var(--phone-keys-col));
-    right: max(12px, env(safe-area-inset-right));
   }
 
   /* --- Ledger ----------------------------------------------------- */
@@ -20387,15 +20525,11 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   align-items: stretch;
 }
 
-/* Games: what is read on the left page, the board or keyboard on the right,
+/* Games: what is read on the left page, the board on the right,
    where it can be played without reaching across the fold. */
 html.native-app[data-fold-active][data-fold-axis="vertical"] .games-shell {
   grid-template-columns: calc(var(--fold-x) - max(16px, env(safe-area-inset-left)) - 20px) minmax(0, 1fr);
   column-gap: calc(var(--fold-width) + 40px);
-}
-
-html.native-app[data-fold-active][data-fold-axis="vertical"] .games-shell.games-words {
-  grid-template-columns: calc(var(--fold-x) - max(16px, env(safe-area-inset-left)) - 20px) minmax(0, 1fr);
 }
 
 html.native-app[data-fold-active][data-fold-axis="vertical"] .match-board-frame {
@@ -21222,8 +21356,8 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper :is
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .calendar-footer { margin-top: 6px; }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .calendar-footer p { font-size: 10px; }
 
-/* Games keep their instructions/score (or word guesses) above the crease;
-   the interactive board/keyboard occupies the lower surface, fixed below
+/* Games keep their instructions and score above the crease;
+   the interactive board occupies the lower surface, fixed below
    this pane's own boundary. WebKit clips a fixed descendant to an ancestor
    that scrolls, spec or not, so this pane can't be the one to carry
    overflow: auto — only its own (short, non-scrolling) content needs it. */
@@ -21254,10 +21388,7 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .games-shell .gam
   background: rgba(255, 255, 255, 0.05);
   font-size: 0.85rem;
 }
-/* The word keyboard's tiles are cut for the parlour's dark ground — pale
-   text on barely-there glass — so the stage stays dark beneath the crease
-   rather than handing them to the page's cream. */
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .games-shell :is(.match-board-frame, .word-keys) {
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .games-shell .match-board-frame {
   position: fixed;
   top: var(--fold-bottom-start);
   bottom: calc(var(--tabs-h) + var(--mini-player-height) + 20px);
@@ -21280,8 +21411,6 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .ga
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .match-board {
   width: min(100%, calc(var(--fold-bottom-height) - var(--tabs-h) - var(--mini-player-height) - 52px));
 }
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .word-board { width: min(100%, 230px); }
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .word-keys-row { width: 100%; }
 
 /* Upright and half open, Games becomes a two-tier console. The upper display
    is split between the game's dashboard and a compact version of the real
@@ -21325,56 +21454,6 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab
   margin-top: 2px;
   padding: 8px 10px;
   font-size: 0.76rem;
-}
-
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-games.games-words .games-shell {
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-  align-content: stretch;
-}
-
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-games.games-words .word-board-frame {
-  min-height: 0;
-  overflow: hidden;
-}
-
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-games.games-words .word-board {
-  width: min(100%, 168px);
-  gap: 3px;
-}
-
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-games.games-words .word-row {
-  gap: 3px;
-}
-
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-games.games-words .word-tile {
-  border-radius: 7px;
-  font-size: 0.95rem;
-}
-
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-games.games-words .word-keys {
-  right: max(12px, env(safe-area-inset-right));
-  bottom: calc(var(--tabs-h) + 10px);
-  left: max(12px, env(safe-area-inset-left));
-  gap: 10px;
-  padding: 20px;
-  border-radius: 18px;
-}
-
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-games.games-words .word-keys-row {
-  gap: 8px;
-  max-width: 640px;
-}
-
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-games.games-words .word-key {
-  width: auto;
-  max-width: 54px;
-  min-height: 58px;
-  border-radius: 12px;
-  font-size: 0.95rem;
-}
-
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-games.games-words .word-key.wide {
-  max-width: 86px;
 }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-games > .mini-player {
@@ -21458,9 +21537,7 @@ html.native-app.platform-ios .native-shell.tab-games > .mini-player {
    ordinary DOM throughout, so the 7x7 board grows as one object and active
    piece animations are not replaced by 49 posture animations. */
 html.native-app.platform-ios:not([data-fold-posture="closed"])
-  .native-shell.tab-games:not(.games-words) .match-board-frame,
-html.native-app.platform-ios:not([data-fold-posture="closed"])
-  .native-shell.tab-games.games-words .word-keys {
+  .native-shell.tab-games .match-board-frame {
   view-transition-name: duo-games-stage;
 }
 
@@ -21583,7 +21660,7 @@ html.native-app[data-fold-transition="fallback"] .native-shell.tab-games :is(.ga
 }
 
 @media (prefers-reduced-motion: reduce) {
-  html.native-app.platform-ios .native-shell :is(.games-shell, .library-pane, .player-pane, .mini-player, .match-board-frame, .word-keys, .spine-tabs, .ledger-upper, .ledger-lower) {
+  html.native-app.platform-ios .native-shell :is(.games-shell, .library-pane, .player-pane, .mini-player, .match-board-frame, .spine-tabs, .ledger-upper, .ledger-lower) {
     view-transition-name: none;
     animation: none;
   }
@@ -23835,22 +23912,6 @@ html.native-app.platform-ios:not(.dark-mode) .match-piece.selected {
   box-shadow: 0 0 0 3px var(--paper), 0 0 0 5px var(--ink);
 }
 
-/* Word Grid's scored tiles and keys are dark fills; their letters were ink. */
-html.native-app.platform-ios:not(.dark-mode) :is(.word-tile, .word-key):is(.correct, .present) {
-  color: #fff;
-}
-
-html.native-app.platform-ios:not(.dark-mode) :is(.word-tile, .word-key).absent {
-  border-color: rgba(var(--ink-rgb), 0.12);
-  background: rgba(var(--ink-rgb), 0.14);
-  color: var(--ink-faded);
-}
-
-html.native-app.platform-ios:not(.dark-mode) :is(.word-tile, .word-key):not(.correct, .present, .absent) {
-  border-color: rgba(var(--ink-rgb), 0.22);
-  background: rgba(var(--lift-rgb), 0.7);
-}
-
 html.native-app.platform-ios:not(.dark-mode) .mini-player {
   background: rgba(var(--sheet-rgb), 0.92);
   -webkit-backdrop-filter: blur(20px) saturate(1.2);
@@ -25009,11 +25070,11 @@ html.native-app[data-text-large] .games-shell .game-card {
   flex: none;
 }
 
-html.native-app[data-text-large] .games-shell :is(.match-game, .word-game) {
+html.native-app[data-text-large] .games-shell .match-game {
   grid-template-rows: none;
 }
 
-html.native-app[data-text-large] .games-shell :is(.match-play-area, .match-board-frame, .word-board-frame) {
+html.native-app[data-text-large] .games-shell :is(.match-play-area, .match-board-frame) {
   container-type: normal;
   min-height: 0;
 }
@@ -25021,11 +25082,6 @@ html.native-app[data-text-large] .games-shell :is(.match-play-area, .match-board
 html.native-app[data-text-large] .match-board,
 html.native-app[data-text-large] .native-shell.has-mini-player .match-board {
   width: 100%;
-}
-
-html.native-app[data-text-large] .word-board,
-html.native-app[data-text-large] .native-shell.has-mini-player .word-board {
-  width: min(100%, 300px);
 }
 
 /* Audiobook art is square: the apps' listening and Up next rows draw it in a
