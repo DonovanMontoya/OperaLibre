@@ -6,7 +6,7 @@ test("a picture can be chosen only where the server stores one", () => {
   // A server with pictures sends the field on every account, null when unset.
   assert.equal(supportsAvatars({ avatar: null }), true);
   assert.equal(supportsAvatars({ avatar: "owl" }), true);
-  // Older servers, Jellyfin, and on-device libraries leave it out.
+  // Older servers and on-device libraries leave it out.
   assert.equal(supportsAvatars({}), false);
 });
 

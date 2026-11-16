@@ -86,7 +86,6 @@ async function open(page: Page, seed: Seed) {
   await page.addInitScript(([seed, home, away]) => {
     if (localStorage.getItem('fixture.seeded')) return;
     localStorage.setItem('fixture.seeded', 'true');
-    localStorage.setItem('operalibre.serverType', 'operalibre');
     localStorage.setItem('operalibre.serverUrl', seed.active);
     localStorage.setItem('operalibre.serverIdentityUrl', home);
     localStorage.setItem('operalibre.serverAliases', JSON.stringify([{ id: 'away', name: 'Away', url: away }]));

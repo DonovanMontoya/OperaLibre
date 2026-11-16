@@ -21,8 +21,8 @@ export const BOOK_GAIN_DEFAULT = 1;
 
 /**
  * Gains are scoped to the server and the listener, the same way playback
- * checkpoints are. On backends that never send `volumeGain` — Jellyfin, device
- * books, servers older than this feature — the local record is the only copy
+ * checkpoints are. Where the server never sends `volumeGain` — device books,
+ * servers older than this feature — the local record is the only copy
  * there is, so a shared browser would otherwise hand the next person to sign in
  * the previous listener's boosts.
  */
@@ -103,7 +103,7 @@ function parseGainMap(raw: string | null, keepDefault = false): Record<string, n
 }
 
 /**
- * The local mirror of the server's copy. It is what device-only books, Jellyfin
+ * The local mirror of the server's copy. It is what device-only books, older
  * servers, and an offline launch read, and what keeps the boost applied on the
  * very first frame instead of after the library round-trip.
  */

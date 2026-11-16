@@ -32,7 +32,6 @@ export function useReadalong({
   currentUser,
   demoMode,
   followSyncEnabled,
-  isOperaLibre,
   isViewingPlayingBook,
   loadBooks,
   localMode,
@@ -49,7 +48,6 @@ export function useReadalong({
   currentUser: AuthUser;
   demoMode: boolean;
   followSyncEnabled: boolean;
-  isOperaLibre: boolean;
   isViewingPlayingBook: boolean;
   loadBooks: () => Promise<void>;
   localMode: boolean;
@@ -114,7 +112,7 @@ export function useReadalong({
   // The companion URL carries the media token. Until the token is known the
   // URL would change a moment later and the reader would open the EPUB
   // twice, so the reader waits for it.
-  const companionUrlReady = demoMode || native || !isOperaLibre || !!getStoredMediaToken();
+  const companionUrlReady = demoMode || native || !!getStoredMediaToken();
   const companionFilesKey = JSON.stringify([...selectedCompanionList, ...selectedCompanionGroups.images].map((file) => [file.id, file.extension]));
   const companionScope = `${getServerStorageKey()}:${currentUser.id}:${selectedBook?.id ?? ""}:${companionFilesKey}`;
   const [localCompanions, setLocalCompanions] = useState<{ scope: string; urls: Record<string, string | null> } | null>(null);
@@ -274,7 +272,7 @@ export function useReadalong({
   }, [native, readalongAvailable, readerScope, selectedBookIdForReader]);
 
   useEffect(() => {
-    if (!isOperaLibre || localMode || demoMode) return;
+    if (localMode || demoMode) return;
     const refresh = () => {
       if (document.visibilityState === "hidden") return;
       void alignmentStatusUpdater.refresh(getAlignmentStatus);
@@ -289,7 +287,7 @@ export function useReadalong({
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [currentUser.id, isOperaLibre, localMode, demoMode, alignmentStatusUpdater]);
+  }, [currentUser.id, localMode, demoMode, alignmentStatusUpdater]);
 
   const syncMapBook = shouldLoadSyncMap && readalongOpen && selectedBook?.syncFile ? selectedBook : null;
   const syncMapBookId = syncMapBook ? giftLocalSyncCacheKey(syncMapBook) : null;

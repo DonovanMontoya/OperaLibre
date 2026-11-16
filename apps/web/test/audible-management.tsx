@@ -129,7 +129,7 @@ function Fixture() {
     shareProgress: true, announceFinishes: true, notifyFinishes: true
   };
   const purchases = usePurchases({
-    capabilities: serverCapabilities("operalibre", currentUser), currentUser, demoMode: false, isOperaLibre: true,
+    capabilities: serverCapabilities(currentUser), currentUser, demoMode: false,
     libationBooks: books, libationBooksLoaded: loaded, librarySource: "audible", loadBooks, localMode: false, native,
     onCurrentUserChanged: () => undefined, searchQuery: "", setLibationBooks: setBooks, setLibationBooksLoaded: setLoaded,
     sortMode: "title", sortReversed: false

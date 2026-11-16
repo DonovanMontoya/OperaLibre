@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "types": ["node"] },
-  "include": ["playwright.lifecycle.config.ts", "test/lifecycle/**/*.ts"]
+  "include": ["playwright.lifecycle.config.ts", "src/vite-env.d.ts", "test/lifecycle/**/*.ts", "test/gift-sender.tsx", "test/gift-local-reader.tsx"]
 }

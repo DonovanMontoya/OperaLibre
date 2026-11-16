@@ -20,7 +20,6 @@ export function useBookCompletion({
   pausePlayback,
   playbackBookId,
   playbackBookIdRef,
-  playbackReportRef,
   playbackTouchedRef,
   progressMutationVersion,
   progressSaveAbortController,
@@ -40,7 +39,6 @@ export function useBookCompletion({
   pausePlayback: (audio: HTMLAudioElement | null | undefined) => void;
   playbackBookId: string | null;
   playbackBookIdRef: RefObject<string | null>;
-  playbackReportRef: RefObject<{ stop: () => Promise<unknown>; } | null>;
   playbackTouchedRef: RefObject<boolean>;
   progressMutationVersion: RefObject<number>;
   progressSaveAbortController: RefObject<AbortController | null>;
@@ -84,10 +82,9 @@ export function useBookCompletion({
     const seekIntent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id);
     try {
       const closingActiveBook = playbackBookId === book.id && (finished || resetToUnplayed);
-      const reporting = closingActiveBook ? playbackReportRef.current : null;
       if (closingActiveBook || resetToUnplayed) {
-        // Freeze playback before any asynchronous reports. Otherwise a slow stop
-        // could let a new progress write land after the deliberate completion/reset.
+        // Freeze playback before any asynchronous writes. Otherwise a late
+        // progress write could land after the deliberate completion/reset.
         if (closingActiveBook) {
           playbackTouchedRef.current = false;
           nativePlaybackPlayingRef.current = false;
@@ -98,9 +95,6 @@ export function useBookCompletion({
         progressSaveAbortController.current?.abort();
         await progressSaveDrainPromiseRef.current;
         queuedProgressSaves.current.delete(book.id);
-        // Drain the stop before changing completion. Teardown then has nothing
-        // left to report and cannot restore an old media clock after a reset.
-        await reporting?.stop();
       }
       const completedProgress: Progress | null = finalProgress
         ? {

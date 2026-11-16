@@ -14,8 +14,7 @@ server. The host must:
   * fall back to index.html for unknown browser routes;
   * use HTTPS when connecting to a public HTTPS OperaLibre server.
 
-Open the deployed site, choose OperaLibre or Jellyfin, enter the server
-address, and sign in.
+Open the deployed site, enter the OperaLibre server address, and sign in.
 
 SERVER CORS SETTING
 -------------------

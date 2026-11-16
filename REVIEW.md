@@ -48,7 +48,7 @@ Everything else is Nit at most.
 
 - **Intent.** The change does what its description says and leaves alone what
   it says is unchanged. Shared frontend code reaches the native apps, the Duo
-  layout, the mini player, CarPlay, Jellyfin servers, and demo mode. On a
+  layout, the mini player, CarPlay, and demo mode. On a
   `fix:` pull request, check that it fixes the cause, not one symptom, and
   fold a missed cause into the finding it explains when there is one.
 - **Every instance.** Report a bug class once and list every place it occurs.

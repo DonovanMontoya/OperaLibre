@@ -31,9 +31,6 @@ struct BackgroundDownloadPolicyTests {
             "http://192.168.1.20:4000/api/books/book/cover?token=x",
             "https://books.example/api/books/book/companions/ebook?token=x",
             "https://books.example/api/books/book/sync?token=x",
-            "https://jellyfin.example/Audio/item/stream?api_key=x",
-            "https://jellyfin.example/Items/item/Download?api_key=x",
-            "https://jellyfin.example/Items/item/Images/Primary?api_key=x",
         ]
         for value in acceptedSources {
             precondition((try? validatedBackgroundMediaSource(URL(string: value)!)) != nil, value)
@@ -64,13 +61,12 @@ struct BackgroundDownloadPolicyTests {
 
         // A server reached through a reverse-proxy subpath keeps that prefix on
         // every media URL, so the allowlist has to skip it before matching.
-        let proxied = BackgroundDownloadAllowlist(serverAddress: URL(string: "https://host.example/jellyfin")!)!
-        precondition(proxied.basePath == "/jellyfin")
+        let proxied = BackgroundDownloadAllowlist(serverAddress: URL(string: "https://host.example/books")!)!
+        precondition(proxied.basePath == "/books")
         let proxiedSources = [
-            "https://host.example/jellyfin/Audio/item/stream?api_key=x",
-            "https://host.example/jellyfin/Items/item/Images/Primary",
-            "https://host.example/jellyfin/api/books/book/tracks/track/stream",
-            "https://host.example/jellyfin/api/books/book/companions/ebook?token=x",
+            "https://host.example/books/api/books/book/tracks/track/stream",
+            "https://host.example/books/api/books/book/cover?token=x",
+            "https://host.example/books/api/books/book/companions/ebook?token=x",
         ]
         for value in proxiedSources {
             precondition((try? validatedBackgroundMediaSource(
@@ -80,12 +76,12 @@ struct BackgroundDownloadPolicyTests {
         }
         let proxiedRejections = [
             // Outside the base path, and a base path that only shares a prefix.
-            "https://host.example/Audio/item/stream",
-            "https://host.example/jellyfinx/Audio/item/stream",
-            "https://host.example/jellyfin/System/Configuration",
-            "https://host.example/jellyfin/Audio/item/stream/extra",
+            "https://host.example/api/books/book/tracks/track/stream",
+            "https://host.example/booksx/api/books/book/tracks/track/stream",
+            "https://host.example/books/System/Configuration",
+            "https://host.example/books/api/books/book/tracks/track/stream/extra",
             "https://host.example/api/books/book/companions/ebook",
-            "https://host.example/jellyfinx/api/books/book/companions/ebook",
+            "https://host.example/booksx/api/books/book/companions/ebook",
         ]
         for value in proxiedRejections {
             precondition((try? validatedBackgroundMediaSource(
@@ -103,7 +99,10 @@ struct BackgroundDownloadPolicyTests {
             "https://books.example/api/books/book/companions",
             "https://books.example/api/books/book/companions/ebook/extra",
             "https://books.example/api/books/book/private/ebook",
-            "https://jellyfin.example/Items/item/Images/Primary/extra",
+            // Paths of other media servers are not OperaLibre media.
+            "https://media.example/Audio/item/stream?api_key=x",
+            "https://media.example/Items/item/Download?api_key=x",
+            "https://media.example/Items/item/Images/Primary?api_key=x",
         ]
         for value in rejectedSources {
             precondition((try? validatedBackgroundMediaSource(URL(string: value)!)) == nil, value)

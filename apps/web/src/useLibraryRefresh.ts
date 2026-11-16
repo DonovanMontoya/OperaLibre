@@ -18,7 +18,6 @@ export function useLibraryRefresh({
   canBrowseLibation,
   currentUser,
   flushProgressSaveQueue,
-  isOperaLibre,
   libationBooksLoaded,
   librarySource,
   libroAccounts,
@@ -49,7 +48,6 @@ export function useLibraryRefresh({
   canBrowseLibation: boolean;
   currentUser: AuthUser;
   flushProgressSaveQueue: () => Promise<void>;
-  isOperaLibre: boolean;
   libationBooksLoaded: boolean;
   librarySource: LibrarySource;
   libroAccounts: LibroAccountSummary[] | null;
@@ -83,7 +81,7 @@ export function useLibraryRefresh({
       return;
     }
     try {
-      const nextBooks = isOperaLibre && !currentUser.isAdmin
+      const nextBooks = !currentUser.isAdmin
         ? await getBooks()
         : await rescanLibrary();
       const visibleBooks = native

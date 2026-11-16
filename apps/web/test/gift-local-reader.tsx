@@ -97,7 +97,7 @@ async function fixture() {
 function Reader({ book, epubBytes }: { book: Book; epubBytes: Uint8Array }) {
   const [position, setPosition] = useState(0.2);
   window.giftReaderSeek = setPosition;
-  const reader = useReadalong({ capabilities: serverCapabilities("operalibre", DEVICE_USER, { local: true }), currentUser: DEVICE_USER, demoMode: false, followSyncEnabled: true, isOperaLibre: false, isViewingPlayingBook: true, loadBooks: async () => {}, localMode: true, native: true, readalongEnabled: true, selectedBook: book, selectedBookId: book.id, setNativePlayerView: () => {}, setNativeTab: () => {}, setSelectedBookId: () => {}, setSyncConfirmationBook: () => {} });
+  const reader = useReadalong({ capabilities: serverCapabilities(DEVICE_USER, { local: true }), currentUser: DEVICE_USER, demoMode: false, followSyncEnabled: true, isViewingPlayingBook: true, loadBooks: async () => {}, localMode: true, native: true, readalongEnabled: true, selectedBook: book, selectedBookId: book.id, setNativePlayerView: () => {}, setNativeTab: () => {}, setSelectedBookId: () => {}, setSyncConfirmationBook: () => {} });
   window.giftReaderClose = () => reader.setReadalongOpen(false);
   useEffect(() => { reader.setReadalongOpen(true); }, []);
   const fragments = reader.selectedSyncFragments;

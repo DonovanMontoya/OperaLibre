@@ -13,7 +13,7 @@ test("member URLs retain proxy prefix and media credentials, encoding archive na
   assert.throws(() => epubEntryUrl(source, "/../secret"));
   assert.equal(supportsStreamingEpub(source), true);
   assert.equal(supportsStreamingEpub("blob:https://books.example/file"), false);
-  assert.equal(supportsStreamingEpub("https://jellyfin.example/book.epub"), false);
+  assert.equal(supportsStreamingEpub("https://other.example/book.epub"), false);
 });
 
 test("archive prepares image URLs without downloading images or the whole EPUB", async (t) => {
