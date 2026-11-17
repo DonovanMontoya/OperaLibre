@@ -3,8 +3,10 @@ import test from "node:test";
 import {
   readBookPreviewsEnabled,
   readContinueReadingAutoplay,
+  readRemoveFinishedDownloads,
   writeBookPreviewsEnabled,
-  writeContinueReadingAutoplay
+  writeContinueReadingAutoplay,
+  writeRemoveFinishedDownloads
 } from "../src/playbackPreferences.ts";
 
 test("Continue Reading opens paused unless autoplay is explicitly enabled", () => {
@@ -56,4 +58,25 @@ test("audio previews can be turned off and back on", () => {
   assert.equal(readBookPreviewsEnabled(storage), false);
   writeBookPreviewsEnabled(true, storage);
   assert.equal(readBookPreviewsEnabled(storage), true);
+});
+
+test("finished downloads stay on the device unless removal is explicitly enabled", () => {
+  for (const value of [null, "false", "invalid", "true"]) {
+    assert.equal(readRemoveFinishedDownloads({ getItem: () => value, setItem: () => {} }), value === "true");
+  }
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); }
+  };
+  writeRemoveFinishedDownloads(true, storage);
+  assert.equal(readRemoveFinishedDownloads(storage), true);
+  writeRemoveFinishedDownloads(false, storage);
+  assert.equal(readRemoveFinishedDownloads(storage), false);
+  const blocked = {
+    getItem: () => { throw new Error("Storage unavailable"); },
+    setItem: () => { throw new Error("Storage unavailable"); }
+  };
+  assert.equal(readRemoveFinishedDownloads(blocked), false);
+  assert.doesNotThrow(() => writeRemoveFinishedDownloads(true, blocked));
 });

@@ -17,6 +17,7 @@ export function useBookCompletion({
   completionPendingBookId,
   currentUser,
   nativePlaybackPlayingRef,
+  onBookFinished,
   pausePlayback,
   playbackBookId,
   playbackBookIdRef,
@@ -36,6 +37,7 @@ export function useBookCompletion({
   completionPendingBookId: string | null;
   currentUser: AuthUser;
   nativePlaybackPlayingRef: RefObject<boolean>;
+  onBookFinished: (book: Book) => void;
   pausePlayback: (audio: HTMLAudioElement | null | undefined) => void;
   playbackBookId: string | null;
   playbackBookIdRef: RefObject<string | null>;
@@ -166,6 +168,7 @@ export function useBookCompletion({
       if (playbackBookIdRef.current === book.id && (finished || resetToUnplayed)) {
         clearPlaybackSession();
       }
+      if (finished) onBookFinished(book);
       return true;
     } catch (completionFailure) {
       setCompletionError({
