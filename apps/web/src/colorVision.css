@@ -127,43 +127,10 @@ html[data-color-vision] .audible-setup-result.failure {
   color: #ffffff;
 }
 
-html[data-color-vision] :is(.word-tile, .word-key).correct {
-  color: #1a1410 !important;
-  background: var(--cv-light) !important;
-  border-color: var(--cv-light) !important;
-}
-
-html[data-color-vision] :is(.word-tile, .word-key).present {
-  color: #1a1410 !important;
-  background: var(--cv-secondary) !important;
-  border: 2px dashed #1a1410 !important;
-}
-
 html[data-color-vision] .match-piece {
   background: var(--cv-accent) !important;
   color: #ffffff;
   text-shadow: none;
-}
-
-html.native-app :is(.word-tile, .word-key) {
-  position: relative;
-  padding-bottom: 12px;
-}
-
-.word-feedback {
-  position: absolute;
-  bottom: 2px;
-  left: 0;
-  right: 0;
-  text-align: center;
-  font: 700 11px/1 sans-serif;
-}
-
-.word-feedback-legend {
-  margin: 8px 0;
-  color: var(--on-spine);
-  font: 0.72rem/1.5 sans-serif;
-  text-align: center;
 }
 
 /* State cues are independent of the palette so they also help in default colors. */

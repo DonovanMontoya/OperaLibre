@@ -13,6 +13,49 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await server?.close(); });
 
+for (const reset of ['Undo move', 'Restart this shelf'] as const) {
+  test(`Shelf Sort hints remain legal after ${reset}`, async ({ page }) => {
+    await page.addInitScript(() => {
+      const stacks = [[1, 0, 1, 0], [1, 0, 1, 3], [0, 3, 3, 2], [2, 3, 2, 2], [], []];
+      localStorage.setItem('operalibre.games.enabled', 'true');
+      localStorage.setItem('operalibre.games.shelf-sort', JSON.stringify({
+        level: 1, start: stacks, stacks, history: []
+      }));
+    });
+    const user = { id: 'game-owner', username: 'Game owner', isAdmin: true, isOwner: true,
+      allowedBookIds: null, libationAccess: 'none', createdAt: '1700000000' };
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname;
+      let body: unknown = [];
+      if (path === '/api/auth/status') body = { setupRequired: false, user, mediaToken: 'fixture' };
+      else if (path === '/api/auth/me') body = user;
+      else if (path === '/api/libation/status') body = { accounts: [], configured: false, available: false };
+      else if (path === '/api/me/libro') body = { connected: false, accounts: [], books: [], jobs: [] };
+      await route.fulfill({ json: body });
+    });
+    await page.goto(`${url}test/duo-shell.html`);
+    await page.waitForFunction(() => !document.querySelector('.native-launch-cover'));
+    await page.getByRole('button', { name: 'Games', exact: true }).click();
+    await page.getByRole('tab', { name: 'Shelf Sort', exact: true }).click();
+    const game = page.getByRole('region', { name: 'Shelf Sort game' });
+    const stack = (number: number) => game.getByRole('button', { name: new RegExp(`^Stack ${number},`) });
+    await game.getByRole('button', { name: 'Show a hint' }).click();
+    await stack(4).click();
+    await stack(6).click();
+    await game.getByRole('button', { name: reset, exact: true }).click();
+    await stack(3).click();
+    await stack(6).click();
+    await expect(game.locator('.match-score strong')).toHaveText('1');
+
+    await game.getByRole('button', { name: 'Show a hint' }).click();
+    const hint = (await game.locator('.game-message').innerText()).match(/from stack (\d+) to stack (\d+)/);
+    if (!hint) throw new Error('Expected a hint naming source and destination stacks');
+    await stack(Number(hint[1])).click();
+    await stack(Number(hint[2])).click();
+    await expect(game.locator('.match-score strong')).toHaveText('2');
+  });
+}
+
 for (const width of [768, 1194]) {
   test(`iPad Shelf closes between the arriving index and reading page at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 834 });
@@ -958,15 +1001,15 @@ test('portrait fold bounds the shelf, settings and administration to independent
   expect(gameBoard.width).toBeGreaterThan(320);
   expect(await page.locator('.match-piece').first().evaluate(el => getComputedStyle(el).fontSize)).toBe('16px');
   await page.screenshot({ path: '../../output/duo-games-portrait.png' });
-  await page.getByRole('tab', { name: 'Word Grid', exact: true }).click();
-  await checkPanes('.games-shell', '.word-keys');
-  const wordBoard = (await page.locator('.word-board').boundingBox())!;
-  const wordShell = (await page.locator('.games-shell').boundingBox())!;
-  expect(wordBoard.y).toBeGreaterThanOrEqual(wordShell.y);
-  expect(wordBoard.y + wordBoard.height).toBeLessThanOrEqual(wordShell.y + wordShell.height + 1);
-  expect((await page.locator('.word-key').first().boundingBox())!.height).toBeGreaterThanOrEqual(50);
-  expect(parseFloat(await page.locator('.word-tile').first().evaluate(el => getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(15);
-  await page.screenshot({ path: '../../output/duo-word-grid-portrait.png' });
+  // The other games share Chapter Match's frame, so they play on the lower screen too.
+  for (const [game, piece] of [['Shelf Sort', '.shelf-stack'], ['Cover Grid', '.slide-tile']] as const) {
+    await page.getByRole('tab', { name: game, exact: true }).click();
+    await checkPanes('.games-shell', '.match-board-frame');
+    const board = (await page.locator('.match-board').boundingBox())!;
+    expect(board.y).toBeGreaterThanOrEqual(490.5);
+    expect(board.width).toBeGreaterThan(320);
+    expect((await page.locator(piece).first().boundingBox())!.width).toBeGreaterThanOrEqual(60);
+  }
   await page.getByRole('button', { name: 'Ledger', exact: true }).click();
   await expect(page.locator('.ledger-upper')).toBeVisible();
   await checkPanes('.ledger-upper', '.ledger-lower');
