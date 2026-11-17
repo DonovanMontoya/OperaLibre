@@ -1802,6 +1802,13 @@ fn valid_word_clock(word: &RecognizedWord) -> bool {
         && word.end_time - word.start_time <= 2.0
 }
 
+/// Recognizers often stretch the first word after an interruption back across
+/// part of it, while its speech stays at the end beside the next word. Such a
+/// word must not move the next slice's start into the interruption.
+fn boundary_word_clock(word: &RecognizedWord) -> bool {
+    valid_word_clock(word) && word.end_time - word.start_time <= 1.0
+}
+
 /// Whole sentences without speech support between nearby unique anchors must
 /// not be force-aligned across a long interruption. These are slice boundaries,
 /// not estimated word timings: each retained slice is aligned afresh.
@@ -1809,6 +1816,42 @@ pub fn interrupted_passages(
     transcript: &Transcript,
     recognized: &[RecognizedWord],
 ) -> Vec<RecoveryAnchor> {
+    find_interruptions(transcript, recognized).0
+}
+
+/// Audio spans, from the end of the speech before an apparent interruption to
+/// the first anchor after it, where the recognizer missed the opening of the
+/// passage that follows. Without that opening the interruption has no end, so
+/// recognizing the span alone (see `splice_recognition`) may complete it.
+pub fn unheard_interruption_endings(
+    transcript: &Transcript,
+    recognized: &[RecognizedWord],
+) -> Vec<(f64, f64)> {
+    find_interruptions(transcript, recognized).1
+}
+
+/// Replaces the words heard between `start` and `end` with `clip`, a
+/// recognition of that span alone whose clocks begin at zero.
+pub fn splice_recognition(
+    recognized: &[RecognizedWord],
+    start: f64,
+    end: f64,
+    clip: &[RecognizedWord],
+) -> Vec<RecognizedWord> {
+    let before = recognized.iter().filter(|w| w.end_time <= start).cloned();
+    let heard = clip.iter().cloned().map(|mut w| {
+        w.start_time += start;
+        w.end_time += start;
+        w
+    });
+    let after = recognized.iter().filter(|w| w.start_time >= end).cloned();
+    before.chain(heard).chain(after).collect()
+}
+
+fn find_interruptions(
+    transcript: &Transcript,
+    recognized: &[RecognizedWord],
+) -> (Vec<RecoveryAnchor>, Vec<(f64, f64)>) {
     let words = transcript_words(&transcript.text, 0, transcript.len_utf16());
     let matches = unique_spoken_words(recognized, &transcript.text, true);
     // A collapsed word clock is not evidence that the word was unspoken.
@@ -1828,6 +1871,7 @@ pub fn interrupted_passages(
         .map(|s| s.clone().any(|i| spoken.contains_key(&i)))
         .collect::<Vec<_>>();
     let mut result = Vec::new();
+    let mut unheard = Vec::new();
     let mut index = 1;
     while index + 1 < sentences.len() {
         if supported[index] {
@@ -1850,7 +1894,7 @@ pub fn interrupted_passages(
         let Some(ri) = right.clone().find(|i| matches.contains_key(i)) else {
             continue;
         };
-        if missing < 6 || left.end - li > 4 || ri - right.start > 3 {
+        if missing < 6 || left.end - li > 4 {
             continue;
         }
         let la = matches[&li];
@@ -1878,13 +1922,6 @@ pub fn interrupted_passages(
             }
             end = next.end_time;
         }
-        let mut begin = recognized[ra].start_time;
-        for previous in recognized[..ra].iter().rev().take(ri - right.start) {
-            if !valid_word_clock(previous) || begin - previous.end_time > 1.0 {
-                break;
-            }
-            begin = previous.start_time;
-        }
         let text_start = words[sentences[first].start].start_utf16;
         let text_end = words[right.start].start_utf16;
         let href = transcript
@@ -1892,8 +1929,37 @@ pub fn interrupted_passages(
             .filter(|href| !href.is_empty());
         if href.is_none()
             || href != transcript.href_for_offset(text_end.saturating_sub(1))
-            || begin - end < 3.0
+            || recognized[ra].start_time - end < 3.0
         {
+            continue;
+        }
+        let mut begin = recognized[ra].start_time;
+        if ri - right.start > 3 {
+            // The anchor is too far in to walk back to the opening, so only
+            // the opening phrase itself, heard between the anchors, ends the
+            // interruption. Otherwise the opening is still unheard.
+            let opening = &words[right.start..right.start + 3];
+            let heard = recognized[la + 1..ra].windows(3).rposition(|heard| {
+                heard.iter().all(boundary_word_clock)
+                    && opening
+                        .iter()
+                        .zip(heard)
+                        .all(|(text, audio)| text.text == audio.text)
+            });
+            let Some(at) = heard else {
+                unheard.push((end, recognized[ra].start_time));
+                continue;
+            };
+            begin = recognized[la + 1 + at].start_time;
+        } else {
+            for previous in recognized[..ra].iter().rev().take(ri - right.start) {
+                if !boundary_word_clock(previous) || begin - previous.end_time > 1.0 {
+                    break;
+                }
+                begin = previous.start_time;
+            }
+        }
+        if begin - end < 3.0 {
             continue;
         }
         result.push(RecoveryAnchor {
@@ -1903,7 +1969,7 @@ pub fn interrupted_passages(
             end_seconds: (begin - 0.5).max(end + 0.25),
         });
     }
-    result
+    (result, unheard)
 }
 
 /// Fix a late sentence opening only when a unique nearby spoken phrase backs
@@ -4570,6 +4636,148 @@ mod tests {
         let gaps = interrupted_passages(&transcript, &recognition);
         assert_eq!(gaps.len(), 1);
         assert!(gaps[0].end_seconds >= 18.0);
+    }
+
+    #[test]
+    fn interruption_ends_where_a_shorter_recognition_hears_the_next_opening() {
+        // Recognizer output from synthesized narration whose second and third
+        // sentences were replaced by noise. The long window lost the opening
+        // of the sentence after the noise, so the interruption had no end.
+        let missing = "Beyond the northern mountains an observatory recorded a different \
+            constellation every winter night. The gardener carried a basket of yellow \
+            flowers through the narrow passage behind the kitchen.";
+        let text = format!(
+            "A silver heron landed beside the wooden bridge and watched the river in silence. \
+            {missing} Under the old clock tower a musician practiced the melody that her \
+            grandmother remembered. Warm sunlight reached the workshop where a carpenter \
+            repaired the broken wheel of a wagon."
+        );
+        let transcript = build_transcript(&[SpineSection {
+            href: "one.xhtml".into(),
+            text,
+        }]);
+        let heard = |words: &[(&str, f64, f64)]| {
+            words
+                .iter()
+                .map(|&(text, start_time, end_time)| RecognizedWord {
+                    text: text.into(),
+                    start_time,
+                    end_time,
+                })
+                .collect::<Vec<_>>()
+        };
+        let window = heard(&[
+            ("a", 5.83, 5.87),
+            ("silver", 5.87, 6.21),
+            ("heron", 6.21, 6.69),
+            ("landed", 6.69, 6.85),
+            ("beside", 6.85, 7.41),
+            ("the", 7.41, 7.77),
+            ("wooden", 7.77, 7.95),
+            ("bridge", 7.95, 8.33),
+            ("and", 8.33, 8.79),
+            ("watched", 8.79, 9.17),
+            ("the", 9.17, 9.51),
+            ("river", 9.51, 9.75),
+            ("in", 9.75, 9.97),
+            ("silence", 9.97, 10.31),
+            ("s", 23.07, 23.07),
+            ("that", 26.39, 26.51),
+            ("her", 26.51, 26.65),
+            ("grandmother", 26.65, 27.03),
+            ("remembered", 27.03, 27.73),
+            ("warm", 28.4, 28.78),
+            ("sunlight", 28.78, 29.18),
+            ("reached", 29.18, 29.52),
+            ("the", 29.52, 29.9),
+            ("workshop", 29.9, 30.34),
+        ]);
+        assert!(interrupted_passages(&transcript, &window).is_empty());
+        let unheard = unheard_interruption_endings(&transcript, &window);
+        assert_eq!(unheard, [(10.31, 26.39)]);
+        let (start, end) = unheard[0];
+        // The span recognized alone, and the same audio with two words merged.
+        let clips = [
+            heard(&[
+                ("under", 12.44, 12.46),
+                ("the", 12.46, 12.82),
+                ("old", 12.82, 13.04),
+                ("clock", 13.04, 13.4),
+                ("tower", 13.4, 13.86),
+                ("a", 13.86, 14.1),
+                ("musician", 14.1, 14.44),
+                ("practiced", 14.44, 15.1),
+                ("the", 15.1, 15.5),
+                ("melody", 15.5, 15.76),
+                ("now", 15.76, 16.04),
+            ]),
+            heard(&[
+                ("under", 12.44, 12.46),
+                ("the", 12.46, 12.82),
+                ("old", 12.82, 13.04),
+                ("clock", 13.04, 13.4),
+                ("our", 13.4, 13.86),
+                ("musician", 13.86, 14.36),
+                ("practiced", 14.36, 15.08),
+                ("the", 15.08, 15.5),
+                ("melody", 15.5, 15.76),
+            ]),
+        ];
+        for clip in clips {
+            let gaps =
+                interrupted_passages(&transcript, &splice_recognition(&window, start, end, &clip));
+            assert_eq!(gaps.len(), 1);
+            assert_eq!(
+                transcript
+                    .window(gaps[0].text_start_utf16, gaps[0].text_end_utf16)
+                    .text
+                    .split_whitespace()
+                    .collect::<Vec<_>>(),
+                missing.split_whitespace().collect::<Vec<_>>()
+            );
+            // The next slice starts after the noise, just before "Under".
+            assert!(gaps[0].start_seconds < 11.0);
+            assert!((22.0..22.75).contains(&gaps[0].end_seconds));
+        }
+        // Hearing nothing new, or hearing the missing passage, splits nothing.
+        for clip in [
+            heard(&[("the", 0.0, 0.34)]),
+            spoken("Beyond the northern mountains an observatory recorded", 1.0),
+        ] {
+            let spliced = splice_recognition(&window, start, end, &clip);
+            assert!(interrupted_passages(&transcript, &spliced).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_word_stretched_over_noise_does_not_move_the_interruption_end() {
+        // Recognized synthesized narration after noise replaced two sentences.
+        // The first word after the noise was stretched across its last two
+        // seconds; the next slice must still start where narration resumes.
+        let transcript = build_transcript(&[SpineSection {
+            href: "one.xhtml".into(),
+            text: "The librarian found a folded letter between the final pages of an \
+                unfamiliar travel journal. Along the southern coast the fishing boats \
+                returned with bright flags fluttering above their sails. An engineer \
+                carefully measured the distance between the water channel and the \
+                foundations of the mill. The baker left a fresh loaf near the window \
+                while the market slowly filled with visitors."
+                .into(),
+        }]);
+        let mut recognition = spoken(
+            "The librarian found a folded letter between the final pages of an \
+            unfamiliar travel journal.",
+            40.48,
+        );
+        recognition.push(RecognizedWord {
+            text: "the".into(),
+            start_time: 56.66,
+            end_time: 58.58,
+        });
+        recognition.extend(spoken("maker left a fresh loaf near the window", 58.58));
+        let gaps = interrupted_passages(&transcript, &recognition);
+        assert_eq!(gaps.len(), 1);
+        assert!((58.0..58.58).contains(&gaps[0].end_seconds));
     }
 
     #[test]

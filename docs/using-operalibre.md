@@ -33,9 +33,27 @@ The setting is a boost, not a re-recording: past the point where a book’s loud
 
 Safari and other WebKit web players currently allow reductions only because routing audio through their boost engine can distort playback. This also applies to downloaded and imported books. Saved boosts remain available in supported players; Safari plays them at Original. To use boost, use the native iOS app or desktop Chrome or Firefox with a frontend served by OperaLibre.
 
+### Keep the player in its own window
+
+In a desktop browser, **Pop out** in the player (or the window button in the mini player) moves the controls for the book that is playing into a small window of their own, so you can pause, skip, scrub, and change speed while you work in other windows. Resize it to suit: tall shows the cover above the controls, wide puts them side by side, and short leaves a single strip. Space plays and pauses, and the left and right arrow keys skip back 15 and forward 30 seconds. In Chrome and Edge the window stays above your other windows; other browsers, and addresses that use plain `http://` instead of HTTPS or `localhost`, open an ordinary popup, which your browser may ask you to allow. Playback stays in the original tab, so closing that tab closes the window too. **Back to tab** or **Bring back** closes it.
+
 ### Set your own sleep timer
 
 **Nightfall**, on the book’s own page and behind the timer button in the phone player, offers the usual 5, 15, 30, 45, and 60 minute stops. **End of chapter** stops when the chapter you are listening to finishes, however long that takes; if you skip or pick another chapter, it waits for the end of the one you land in. It appears for books that have chapter markers. Choose **Custom** and type any length from 1 to 600 minutes when none of those matches the chapter you are in the middle of. Durations you type are kept on that device — the three most recent sit alongside the presets — so a length you use often is one tap away the next night. The countdown only runs while the book is playing.
+
+### Keep a passage as a clip
+
+Audio clips are a beta feature, off by default. Enable **Audio clips** under **Settings → Beta Features** in the app, or **Beta Features** in the browser’s account menu. The choice is remembered on this device.
+
+Tap the gold ribbon on the cover’s top-right corner in the player when you hear something worth keeping. It saves the last 30 seconds and the next 10, so the line you just heard is in it along with enough around it to make sense later. Nothing else happens: the book keeps playing and your place does not move.
+
+Open a book from your Library and choose the **Clips** tab on its details page to browse its passages. The **Chapters** tab returns to the chapter list. The player’s **Details** menu also has a **Saved clips** entry. Browsing, naming, or sharing a saved clip leaves your current playback alone until you choose to preview it. Use the play button beside a passage for a preview. Tap its name to trim it, name it, or share it. Drag the audio strip beneath the gold frame to choose the passage; letting go plays a preview. Choose **Length** to keep between one second and five minutes, and use the minus and plus buttons for one-second adjustments. You can also give it a name or add a note, then choose **Save changes**. Previewing a clip opens its book and returns to your listening place in that book, paused, when it ends or you stop it. **Continue from here** moves your place to the clip and keeps playing beyond it.
+
+**Share audio** sends the clip as a small audio file through the phone’s share sheet, or saves it as a download in a browser. The server cuts the file on request, which needs [ffmpeg](configuration.md#optional-mp4-faststart-conversion); without it the button is not shown.
+
+To hide clipping on this device, turn off **Audio clips** under **Beta Features**. Turn it back on to see your saved passages again.
+
+Clips are private to the reader who saved them and are kept on the server, so they appear on every device you sign in from. A clip saved with no connection waits on the device and is sent the next time the server is reachable. Clips need an OperaLibre server and are unavailable for books imported onto the device or the demo.
 
 ## Add books to the library
 

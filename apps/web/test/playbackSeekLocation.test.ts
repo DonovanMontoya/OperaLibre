@@ -29,6 +29,7 @@ function controlsFor(tracks: TrackFixture[]) {
     "./playbackGain": {}, "./bookVolume": {}, "./carPlay": {}, "./playbackPending": {},
     "./nativeAudio": {}, "./native": {}, "./nativeAudioStartup": {}, "./playbackSpeed": {}, "./appStorage": {}
   })({
+    clipPreviewBookIdRef: ref(null),
     selectedBook: book, playbackBook: null, currentTrack: null, audioRef: ref(null),
     currentUser: { id: "reader" }, playbackTouchedRef: ref(false),
     playbackActionVersionRef: ref(0), resumeAutoplayPendingRef: ref(false),
