@@ -398,7 +398,12 @@ const GAMES = [
   { id: "cover", title: "Cover Grid", icon: ImageIcon }
 ] as const;
 
-export function GamesPage({ books, onGameChange }: { books: Book[]; onGameChange?: (game: GameName) => void }) {
+export function GamesPage({ books, libraryKey, libraryReady, onGameChange }: {
+  books: Book[];
+  libraryKey: string;
+  libraryReady: boolean;
+  onGameChange?: (game: GameName) => void;
+}) {
   const [game, setGame] = useState<GameName>("match");
   // The shell places the now-playing strip by which game is open, and some
   // supported iOS versions cannot ask the page with :has().
@@ -410,7 +415,9 @@ export function GamesPage({ books, onGameChange }: { books: Book[]; onGameChange
         <button type="button" role="tab" aria-selected={game === id} className={game === id ? "active" : ""} onClick={() => setGame(id)} key={id}><Icon size={16} /> {title}</button>
       ))}
     </div>
-    {game === "match" ? <ChapterMatch /> : game === "shelf" ? <ShelfSort /> : <CoverGrid books={books} />}
+    {game === "match" ? <ChapterMatch /> : game === "shelf" ? <ShelfSort /> : libraryReady
+      ? <CoverGrid key={libraryKey} libraryKey={libraryKey} books={books} />
+      : <p className="game-message">Opening the library…</p>}
     <p className="games-privacy">Saved only on this device. No account or connection needed.</p>
   </section>;
 }

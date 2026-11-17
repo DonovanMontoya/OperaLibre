@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Eye, Hash, Image as ImageIcon, ImagePlus } from "lucide-react";
 import { bookHasCover, fallbackPicture, makeCoverPicture, type CoverPicture } from "./coverPicture";
 import { SLIDE_SIZES, shuffleSlide, shuffled, slideFromArrow, slideSolvable, slideSolved, slideTiles, type SlideSize } from "./games";
@@ -35,17 +35,23 @@ function validTiles(value: unknown, size: number): value is number[] {
     && slideSolvable(value, size);
 }
 
-function readCoverSave(): CoverSave {
+function permittedPicture(puzzle: CoverPicture, books: Book[]): boolean {
+  return puzzle.bookId === null || books.some((book) => book.id === puzzle.bookId);
+}
+
+function readCoverSave(storageKey: string, books: Book[]): CoverSave {
   const empty: CoverSave = { puzzle: null, size: 3, tiles: shuffleSlide(3), moves: 0, numbers: false, solved: 0, recent: [] };
   try {
-    const stored = JSON.parse(localStorage.getItem(COVER_SAVE_KEY) ?? "null") as Partial<CoverSave> | null;
+    // Legacy artwork has no reliable account or server provenance.
+    localStorage.removeItem(COVER_SAVE_KEY);
+    const stored = JSON.parse(localStorage.getItem(storageKey) ?? "null") as Partial<CoverSave> | null;
     if (!stored) return empty;
     const size = SLIDE_SIZES.includes(stored.size as SlideSize) ? stored.size as SlideSize : 3;
     const solved = Number.isInteger(stored.solved) && stored.solved! > 0 ? stored.solved! : 0;
     const recent = Array.isArray(stored.recent) ? stored.recent.filter((id): id is string => typeof id === "string").slice(-RECENT_LIMIT) : [];
     // A save from the picture-logic version of this game has no tiles: keep
     // its count and recent covers, and deal a fresh puzzle.
-    const playable = validPuzzle(stored.puzzle) && validTiles(stored.tiles, size);
+    const playable = validPuzzle(stored.puzzle) && permittedPicture(stored.puzzle, books) && validTiles(stored.tiles, size);
     return {
       puzzle: playable ? stored.puzzle! : null,
       size,
@@ -59,8 +65,9 @@ function readCoverSave(): CoverSave {
   return empty;
 }
 
-export function CoverGrid({ books }: { books: Book[] }) {
-  const [save, setSave] = useState(readCoverSave);
+export function CoverGrid({ books, libraryKey }: { books: Book[]; libraryKey: string }) {
+  const storageKey = `${COVER_SAVE_KEY}:${libraryKey}`;
+  const [save, setSave] = useState(() => readCoverSave(storageKey, books));
   const [loading, setLoading] = useState(false);
   const [peek, setPeek] = useState(false);
   // A choice that would throw progress away, waiting on a second tap.
@@ -71,15 +78,17 @@ export function CoverGrid({ books }: { books: Book[] }) {
   const generation = useRef<AbortController | null>(null);
   const booksRef = useRef(books);
   booksRef.current = books;
-  const { puzzle, size, tiles } = save;
+  const { size, tiles } = save;
+  // Hide revoked artwork during render, before persistence or generation effects.
+  const puzzle = useMemo(() => save.puzzle && permittedPicture(save.puzzle, books) ? save.puzzle : null, [save.puzzle, books]);
   const gap = size * size - 1;
   const solved = !!puzzle && !loading && slideSolved(tiles);
 
   useEffect(() => {
     try {
-      localStorage.setItem(COVER_SAVE_KEY, JSON.stringify(save));
+      localStorage.setItem(storageKey, JSON.stringify({ ...save, puzzle }));
     } catch { /* Keep playing without persistence when storage is unavailable. */ }
-  }, [save]);
+  }, [save, puzzle, storageKey]);
 
   useEffect(() => {
     if (armed === null) return;
@@ -95,20 +104,22 @@ export function CoverGrid({ books }: { books: Book[] }) {
     setArmed(null);
     setPeek(false);
     setMessage("Finding a cover…");
-    const current = readCoverSave();
+    const current = readCoverSave(storageKey, booksRef.current);
     const candidates = booksRef.current.filter(bookHasCover);
     // Covers not seen lately come first; with a small library, repeats follow.
     const fresh = shuffled(candidates.filter((book) => !current.recent.includes(book.id)));
     const repeats = shuffled(candidates.filter((book) => current.recent.includes(book.id) && book.id !== current.puzzle?.bookId));
+    const previousCover = candidates.filter((book) => book.id === current.puzzle?.bookId);
     let next: CoverPicture | null = null;
-    for (const book of [...fresh, ...repeats].slice(0, COVER_ATTEMPTS)) {
+    for (const book of [...fresh, ...repeats, ...previousCover].slice(0, COVER_ATTEMPTS)) {
       try {
         next = await makeCoverPicture(book, controller.signal);
       } catch {
         if (controller.signal.aborted) return;
       }
       if (controller.signal.aborted) return;
-      if (next) break;
+      if (next && permittedPicture(next, booksRef.current)) break;
+      next = null;
     }
     const puzzle = next ?? fallbackPicture();
     setSave((previous) => ({
@@ -123,13 +134,13 @@ export function CoverGrid({ books }: { books: Book[] }) {
     setMessage(puzzle.bookId
       ? "Which book is it? Slide the pieces back into place to find out."
       : "No cover could be read, so here is a plate of our own.");
-  }, []);
+  }, [storageKey]);
 
   useEffect(() => {
-    const stored = readCoverSave();
-    if (!stored.puzzle) void newPuzzle(stored.size);
-    return () => generation.current?.abort();
-  }, [newPuzzle]);
+    if (!puzzle) void newPuzzle(size);
+  }, [newPuzzle, puzzle, size]);
+
+  useEffect(() => () => generation.current?.abort(), []);
 
   const wasSolved = useRef(solved);
   useEffect(() => {
@@ -285,7 +296,7 @@ export function CoverGrid({ books }: { books: Book[] }) {
           </button>}
         </div>
       </div>
-      <p className="game-message" aria-live="polite">{message}</p>
+      <p className="game-message" aria-live="polite">{puzzle ? message : "Finding a cover…"}</p>
     </div>
   </section>;
 }

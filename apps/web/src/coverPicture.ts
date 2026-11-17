@@ -1,4 +1,5 @@
 import { mediaUrl } from "./api";
+import { fetchWithTimeout } from "./fetchWithTimeout";
 import { getOfflineCoverUrl, releaseOfflineMediaUrl } from "./offline";
 import type { Book } from "./types";
 
@@ -40,9 +41,11 @@ function loadImage(source: string): Promise<HTMLImageElement> {
  * give its pixels back, while a blob URL is always this page's own.
  */
 async function coverImage(source: string, signal: AbortSignal): Promise<HTMLImageElement> {
-  const response = await fetch(source, { signal });
-  if (!response.ok) throw new Error(`Cover request failed (${response.status})`);
-  const url = URL.createObjectURL(await response.blob());
+  const blob = await fetchWithTimeout(source, { signal }, async (response) => {
+    if (!response.ok) throw new Error(`Cover request failed (${response.status})`);
+    return response.blob();
+  }, 5000);
+  const url = URL.createObjectURL(blob);
   try {
     return await loadImage(url);
   } finally {
