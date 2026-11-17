@@ -4,6 +4,8 @@ on:
   push:
     branches: ["main"]
     paths:
+      - ".github/workflows/select-checks.yml"
+      - "script/ci/**"
       - ".github/workflows/security.yml"
       - "apps/server/Cargo.toml"
       - "apps/server/Cargo.lock"
@@ -14,6 +16,8 @@ on:
       - "apps/web/package.json"
   pull_request:
     paths:
+      - ".github/workflows/select-checks.yml"
+      - "script/ci/**"
       - ".github/workflows/security.yml"
       - "apps/server/Cargo.toml"
       - "apps/server/Cargo.lock"
@@ -35,7 +39,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    uses: ./.github/workflows/select-checks.yml
+
   rust:
+    needs: changes
+    if: needs.changes.outputs.metadata_only != 'true'
     name: RustSec (${{ matrix.component }})
     runs-on: ubuntu-latest
     strategy:
@@ -58,6 +67,8 @@ jobs:
         run: cargo audit --deny unsound
 
   web:
+    needs: changes
+    if: needs.changes.outputs.metadata_only != 'true'
     name: Production npm audit
     runs-on: ubuntu-latest
     steps:
@@ -74,8 +85,9 @@ jobs:
         run: npm audit --omit=dev --audit-level=low
 
   dependency-review:
+    needs: changes
     name: Dependency review
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.metadata_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
