@@ -169,6 +169,7 @@ export function ShelfSort() {
   function undo() {
     if (!save.history.length || sorted) return;
     haptic("light");
+    plan.current = null;
     setSave({ ...save, stacks: save.history[save.history.length - 1], history: save.history.slice(0, -1) });
     setSelected(null);
     setHint(null);
@@ -178,6 +179,7 @@ export function ShelfSort() {
 
   function restart() {
     haptic("light");
+    plan.current = null;
     setSave({ ...save, stacks: save.start, history: [] });
     setSelected(null);
     setHint(null);
