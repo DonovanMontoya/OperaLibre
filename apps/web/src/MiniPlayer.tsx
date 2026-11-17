@@ -1,7 +1,8 @@
 import { CoverArt } from "./CoverArt";
+import type { PopOutControl } from "./usePopOutPlayer";
 import { ScrubSlider } from "./PlaybackControls";
 import { formatTime } from "./formatting";
-import { ListMusic, Pause, Play, RotateCcw, RotateCw, SkipBack, SkipForward, Timer } from "lucide-react";
+import { ListMusic, Pause, PictureInPicture2, Play, RotateCcw, RotateCw, SkipBack, SkipForward, Timer } from "lucide-react";
 import type { ChapterSegment } from "./chapters";
 import type { Book, Track } from "./types";
 import type { Dispatch, RefObject, SetStateAction } from "react";
@@ -18,6 +19,7 @@ export function MiniPlayer({
   nextChapter,
   playPending,
   playbackBook,
+  popOut = null,
   position,
   readerTools = null,
   restartOrPreviousChapter,
@@ -41,6 +43,7 @@ export function MiniPlayer({
   nextChapter: () => void;
   playPending: boolean;
   playbackBook: Book;
+  popOut?: PopOutControl | null;
   position: number;
   /** Speed, sleep timer, and chapters, offered while the web reader is open
       over the player that normally holds them. */
@@ -131,6 +134,18 @@ export function MiniPlayer({
             disabled={!hasNextChapter}
           >
             <SkipForward size={17} />
+          </button>
+        ) : null}
+        {popOut ? (
+          <button
+            type="button"
+            className="mini-popout"
+            aria-label={popOut.open ? "Bring the player back" : "Pop out player"}
+            aria-pressed={popOut.open}
+            title={popOut.open ? "Bring the player back" : "Pop out player"}
+            onClick={popOut.toggle}
+          >
+            <PictureInPicture2 size={16} />
           </button>
         ) : null}
       </div>

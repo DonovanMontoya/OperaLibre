@@ -1,0 +1,74 @@
+name: Select affected checks
+
+on:
+  workflow_call:
+    outputs:
+      server:
+        description: Whether to run server checks
+        value: ${{ jobs.changes.outputs.server }}
+      server_windows:
+        description: Whether to run server_windows checks
+        value: ${{ jobs.changes.outputs.server_windows }}
+      launcher:
+        description: Whether to run launcher checks
+        value: ${{ jobs.changes.outputs.launcher }}
+      web:
+        description: Whether to run web checks
+        value: ${{ jobs.changes.outputs.web }}
+      playback:
+        description: Whether to run playback checks
+        value: ${{ jobs.changes.outputs.playback }}
+      android:
+        description: Whether to run android checks
+        value: ${{ jobs.changes.outputs.android }}
+      apple:
+        description: Whether to run apple checks
+        value: ${{ jobs.changes.outputs.apple }}
+      carplay:
+        description: Whether to run carplay checks
+        value: ${{ jobs.changes.outputs.carplay }}
+      bookplayer:
+        description: Whether to run bookplayer checks
+        value: ${{ jobs.changes.outputs.bookplayer }}
+      metadata_only:
+        description: Whether only documentation or package versions changed
+        value: ${{ jobs.changes.outputs.metadata_only }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Select affected checks
+    runs-on: ubuntu-latest
+    outputs:
+      server: ${{ steps.select.outputs.server }}
+      server_windows: ${{ steps.select.outputs.server_windows }}
+      launcher: ${{ steps.select.outputs.launcher }}
+      web: ${{ steps.select.outputs.web }}
+      playback: ${{ steps.select.outputs.playback }}
+      android: ${{ steps.select.outputs.android }}
+      apple: ${{ steps.select.outputs.apple }}
+      carplay: ${{ steps.select.outputs.carplay }}
+      bookplayer: ${{ steps.select.outputs.bookplayer }}
+      metadata_only: ${{ steps.select.outputs.metadata_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Test change selection
+        run: python3 -m unittest discover -s script/ci -p 'test_*.py'
+      - name: Select checks
+        id: select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 script/ci/select_checks.py
+      - name: Setup Node
+        if: steps.select.outputs.metadata_only == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+      - name: Check version consistency
+        if: steps.select.outputs.metadata_only == 'true'
+        run: node script/version.mjs check

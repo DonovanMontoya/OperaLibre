@@ -3,6 +3,8 @@ name: Follow-along regression
 on:
   pull_request:
     paths:
+      - '.github/workflows/select-checks.yml'
+      - 'script/ci/**'
       - 'apps/server/**'
       - 'apps/web/**'
       - 'script/follow-along/**'
@@ -22,7 +24,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    uses: ./.github/workflows/select-checks.yml
+
   portable:
+    needs: changes
+    if: needs.changes.outputs.metadata_only != 'true'
     name: Follow-along reader and corpus contracts
     runs-on: ubuntu-latest
     timeout-minutes: 20

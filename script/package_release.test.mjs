@@ -4,9 +4,36 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 const installer = await readFile(new URL("./install.sh", import.meta.url), "utf8");
 const releaseWorkflow = await readFile(new URL("../.github/workflows/build-release.yml", import.meta.url), "utf8");
+
+test("Historical Android rebuilds use current staging tools with release-source metadata", async () => {
+  const androidJob = releaseWorkflow.match(/^  android:\n[\s\S]*?^  native:/m)?.[0];
+  assert.ok(androidJob, "Missing Android release job");
+  assert.match(androidJob, /name: Checkout Android release tools[\s\S]*?ref: \$\{\{ github\.workflow_sha \}\}/);
+  assert.match(androidJob,
+    /node release-android-tools\/script\/stage_android_release\.mjs[\s\S]*?dist \\\n\s+apps\/web\/android\/app\/build\.gradle/);
+  const sparse = androidJob.match(/sparse-checkout: \|\n((?: {12}script\/[^\n]+\n)+)/)?.[1]
+    .trim().split(/\s+/);
+  assert.deepEqual(sparse, [
+    "script/stage_android_release.mjs",
+    "script/version.mjs",
+    "script/resolve_release.mjs",
+  ]);
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "operalibre-android-release-tools-"));
+  try {
+    for (const file of sparse) {
+      const destination = path.join(fixture, file);
+      await mkdir(path.dirname(destination), { recursive: true });
+      await writeFile(destination, await readFile(new URL(`../${file}`, import.meta.url)));
+    }
+    await import(pathToFileURL(path.join(fixture, "script/stage_android_release.mjs")));
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
 
 test("Release archive checks consume long listings and reject invalid packages", async (t) => {
   const fixture = await mkdtemp(path.join(os.tmpdir(), "operalibre-release-guard-"));
