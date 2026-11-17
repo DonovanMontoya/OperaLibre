@@ -83,8 +83,9 @@ on the book, participate in search, and can be selected as the library sort.
 most recent first, followed by the books you plan to listen to after them. To
 plan a book, open it and choose **Add to Up Next**; this does not start the
 book or change its listening position, and works for a finished book you want
-to hear again. Use the up arrow to move a planned book earlier, and remove one
-with the × button or from its own page. Select a planned title to open it
+to hear again. On a phone or tablet, touch and hold a planned book and drag it
+to a new place; anywhere, the up arrow moves it earlier. Remove one with the ×
+button or from its own page. Select a planned title to open it
 without playing, or use its play button to start listening.
 
 Your queue is saved on this device, separately for each server and account.
