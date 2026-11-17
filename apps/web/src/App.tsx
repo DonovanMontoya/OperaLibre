@@ -1,4 +1,4 @@
-import { readBookPreviewsEnabled, readContinueReadingAutoplay, writeBookPreviewsEnabled, writeContinueReadingAutoplay } from "./playbackPreferences";
+import { readBookPreviewsEnabled, readContinueReadingAutoplay, readRemoveFinishedDownloads, writeBookPreviewsEnabled, writeContinueReadingAutoplay, writeRemoveFinishedDownloads } from "./playbackPreferences";
 import { useDeviceFold } from "./deviceFold";
 import { progressSeekOptions, progressSeekStorage, readProgressSeekIntent } from "./progressSeekIntent";
 import { serverCapabilities } from "./serverCapabilities";
@@ -527,6 +527,17 @@ function MainApp({
     setContinueReadingAutoplay(enabled);
     writeContinueReadingAutoplay(enabled);
   }
+  const [removeFinishedDownloads, setRemoveFinishedDownloads] = useState(readRemoveFinishedDownloads);
+  function toggleRemoveFinishedDownloads() {
+    const enabled = !removeFinishedDownloads;
+    setRemoveFinishedDownloads(enabled);
+    writeRemoveFinishedDownloads(enabled);
+  }
+  // Completion runs from playback callbacks that can outlive a render, so
+  // the finished-book handler reads the current setting and remover.
+  const finishedDownloadRemovalRef = useRef<((book: Book) => Promise<void>) | null>(null);
+  const removeFinishedDownloadsRef = useRef(removeFinishedDownloads);
+  removeFinishedDownloadsRef.current = removeFinishedDownloads;
   const [bookPreviewsEnabled, setBookPreviewsEnabled] = useState(readBookPreviewsEnabled);
   function toggleBookPreviewsEnabled() {
     const enabled = !bookPreviewsEnabled;
@@ -1257,6 +1268,9 @@ function MainApp({
     completionPendingBookId,
     currentUser,
     nativePlaybackPlayingRef,
+    onBookFinished: (book) => {
+      if (native && removeFinishedDownloadsRef.current) void finishedDownloadRemovalRef.current?.(book).catch(() => undefined);
+    },
     pausePlayback: (audio) => later.pausePlayback(audio),
     playbackBookId,
     playbackBookIdRef,
@@ -1994,6 +2008,7 @@ function MainApp({
   const {
     downloadForOffline,
   } = offlineDownloads;
+  finishedDownloadRemovalRef.current = offlineDownloads.removeFinishedDownload;
   const {
     beginBookDetailsBackSwipe,
     closeNativePlayerSheet,
@@ -2873,6 +2888,8 @@ function MainApp({
         <SettingsPage
           continueReadingAutoplay={continueReadingAutoplay}
           toggleContinueReadingAutoplay={toggleContinueReadingAutoplay}
+          removeFinishedDownloads={removeFinishedDownloads}
+          toggleRemoveFinishedDownloads={toggleRemoveFinishedDownloads}
           bookPreviewsEnabled={bookPreviewsEnabled}
           toggleBookPreviewsEnabled={toggleBookPreviewsEnabled}
           applyAdminLibraryChange={applyAdminLibraryChange}

@@ -301,6 +301,9 @@ export function BehaviorSettings({
   toggleBookPreviewsEnabled,
   continueReadingAutoplay,
   toggleContinueReadingAutoplay,
+  finishedDownloadRemovalAvailable,
+  removeFinishedDownloads,
+  toggleRemoveFinishedDownloads,
   followAggressiveness,
   gamesEnabled,
   pageTurnAnimation,
@@ -314,6 +317,9 @@ export function BehaviorSettings({
   toggleBookPreviewsEnabled: () => void;
   continueReadingAutoplay: boolean;
   toggleContinueReadingAutoplay: () => void;
+  finishedDownloadRemovalAvailable: boolean;
+  removeFinishedDownloads: boolean;
+  toggleRemoveFinishedDownloads: () => void;
   followAggressiveness: FollowAggressiveness;
   gamesEnabled: boolean;
   pageTurnAnimation: boolean;
@@ -326,6 +332,24 @@ export function BehaviorSettings({
     <section className="settings-card">
       <BehaviorSection>
         <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
+        {finishedDownloadRemovalAvailable ? (
+          <div className="settings-toggle-row">
+            <span>
+              <strong>Remove downloads when finished</strong>
+              <small>Deletes a book's downloaded copy from this device when you finish it. The book stays in your library to stream or download again.</small>
+            </span>
+            <button
+              type="button"
+              className="settings-switch"
+              role="switch"
+              aria-checked={removeFinishedDownloads}
+              aria-label="Remove downloads when finished"
+              onClick={toggleRemoveFinishedDownloads}
+            >
+              <span aria-hidden="true" />
+            </button>
+          </div>
+        ) : null}
         {bookPreviewsAvailable ? <BookPreviewSetting enabled={bookPreviewsEnabled} onToggle={toggleBookPreviewsEnabled} /> : null}
         <GiftReceivingSetting />
         <div className="settings-toggle-row">

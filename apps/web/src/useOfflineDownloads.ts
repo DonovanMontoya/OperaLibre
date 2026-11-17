@@ -257,6 +257,11 @@ export function useOfflineDownloads({
       setDownloadStatus({ bookId: book.id, message: errorMessage(error, "Could not stop playback to remove the download") });
       return;
     }
+    await deleteDownloadedCopy(book);
+    setDownloadStatus({ bookId: book.id, message: "Download removed" });
+  }
+
+  async function deleteDownloadedCopy(book: Book) {
     await removeBookDownload(book);
     await refreshReadiness(book).catch(() => undefined);
     setDownloadedBookIds((existing) => {
@@ -264,7 +269,22 @@ export function useOfflineDownloads({
       next.delete(book.id);
       return next;
     });
-    setDownloadStatus({ bookId: book.id, message: "Download removed" });
+  }
+
+  // Runs after a book is marked finished, when that preference is on. The
+  // completion has already ended this book's playback session, so there is
+  // no position to checkpoint here. Device imports are the listener's only
+  // copy and are never removed this way.
+  async function removeFinishedDownload(book: Book) {
+    if (book.source === "device") return;
+    if (activeDownloadIdsRef.current.has(book.id) || !(await isBookDownloaded(book))) return;
+    try {
+      await stopCarPlaybackForRemoval(book.id);
+    } catch {
+      return;
+    }
+    await deleteDownloadedCopy(book);
+    setDownloadStatus({ bookId: book.id, message: `Removed the finished download of ${book.title}` });
   }
 
   return {
@@ -276,6 +296,7 @@ export function useOfflineDownloads({
     downloadForOffline,
     importFromDevice,
     retryMissingFiles: (book: Book) => downloadForOffline(book, true),
+    removeFinishedDownload,
     removeOfflineDownload
   };
 }

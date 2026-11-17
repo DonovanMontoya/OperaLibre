@@ -32,6 +32,8 @@ export function SettingsPage({
   audibleManagement,
   continueReadingAutoplay,
   toggleContinueReadingAutoplay,
+  removeFinishedDownloads,
+  toggleRemoveFinishedDownloads,
   bookPreviewsEnabled,
   toggleBookPreviewsEnabled,
   audioRef,
@@ -73,6 +75,8 @@ export function SettingsPage({
   audibleManagement: ReactNode;
   continueReadingAutoplay: boolean;
   toggleContinueReadingAutoplay: () => void;
+  removeFinishedDownloads: boolean;
+  toggleRemoveFinishedDownloads: () => void;
   bookPreviewsEnabled: boolean;
   toggleBookPreviewsEnabled: () => void;
   audioRef: RefObject<HTMLAudioElement | null>;
@@ -253,6 +257,9 @@ export function SettingsPage({
           toggleBookPreviewsEnabled={toggleBookPreviewsEnabled}
           continueReadingAutoplay={continueReadingAutoplay}
           toggleContinueReadingAutoplay={toggleContinueReadingAutoplay}
+          finishedDownloadRemovalAvailable={!localMode && capabilities.downloads}
+          removeFinishedDownloads={removeFinishedDownloads}
+          toggleRemoveFinishedDownloads={toggleRemoveFinishedDownloads}
           followAggressiveness={followAggressiveness}
           gamesEnabled={gamesEnabled}
           pageTurnAnimation={pageTurnAnimationEnabled}
