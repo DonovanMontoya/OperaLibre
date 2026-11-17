@@ -1106,6 +1106,11 @@ function MainApp({
     () => books.filter((book) => book.source !== "device"),
     [books]
   );
+  const gameBooks = useMemo(() => {
+    if (currentUser.isAdmin || currentUser.allowedBookIds === null) return books;
+    const allowed = new Set(currentUser.allowedBookIds);
+    return books.filter((book) => book.source === "device" || allowed.has(book.id));
+  }, [books, currentUser.isAdmin, currentUser.allowedBookIds]);
   const playbackBookDownloaded = !!playbackBook && downloadedBookIds.has(playbackBook.id);
   const mediaCredentialReady = !!getStoredMediaToken();
   const requiredNativeAudioQueueKey = nativeQueueIdentityAfterRestore(
@@ -2862,7 +2867,7 @@ function MainApp({
         />
       ) : null}
 
-      {native && gamesEnabled && nativeTab === "games" ? <GamesPage books={books} libraryKey={JSON.stringify([demoMode ? "demo" : getServerStorageKey(), currentUser.id])} libraryReady={!isLoading} onGameChange={setActiveGame} /> : null}
+      {native && gamesEnabled && nativeTab === "games" ? <GamesPage books={gameBooks} libraryKey={JSON.stringify([demoMode ? "demo" : getServerStorageKey(), currentUser.id])} libraryReady={!isLoading} onGameChange={setActiveGame} /> : null}
 
       {native && nativeTab === "settings" ? (
         <SettingsPage

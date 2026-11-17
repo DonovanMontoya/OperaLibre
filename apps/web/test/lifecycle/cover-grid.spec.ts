@@ -14,12 +14,15 @@ test.afterAll(async () => { await server?.close(); });
 async function coverLibrary(page: Page) {
   const books = library(1);
   books[0].coverArtUrl = '/cover.svg';
-  const state = { userId: 'cover-owner', books, color: '#822', stallCover: false };
+  const state: { userId: string; books: typeof books; color: string; stallCover: boolean;
+    isAdmin: boolean; allowedBookIds: string[] | null } = {
+    userId: 'cover-owner', books, color: '#822', stallCover: false, isAdmin: true, allowedBookIds: null
+  };
   await page.addInitScript(() => localStorage.setItem('operalibre.games.enabled', 'true'));
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
-    const user = { id: state.userId, username: state.userId, isAdmin: true, isOwner: true,
-      allowedBookIds: null, libationAccess: 'none', createdAt: '1700000000' };
+    const user = { id: state.userId, username: state.userId, isAdmin: state.isAdmin, isOwner: state.isAdmin,
+      allowedBookIds: state.allowedBookIds, libationAccess: 'none', createdAt: '1700000000' };
     let body: unknown = [];
     if (path.endsWith('/api/auth/status')) body = { setupRequired: false, user, mediaToken: 'fixture' };
     else if (path.endsWith('/api/auth/me')) body = user;
@@ -173,3 +176,47 @@ test('Cover Grid hides a displayed cover when its book leaves the permitted libr
   await fixture.evaluate(({ root }) => root.unmount());
   await fixture.dispose();
 });
+
+test('Cover Grid removes revoked artwork after refreshing reader permissions', async ({ page }) => {
+  const state = await coverLibrary(page);
+  state.isAdmin = false;
+  await page.goto(`${url}test/duo-shell.html`);
+  const game = await openCoverGrid(page);
+  await game.getByRole('button', { name: 'Peek at the cover', exact: true }).click();
+  const picture = await game.locator('.slide-peek img').getAttribute('src');
+  state.allowedBookIds = [];
+  const refreshed = page.waitForResponse(response => response.url().endsWith('/api/auth/me'));
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await refreshed;
+  await expect(game.locator('.slide-peek img')).toHaveCount(0);
+  await expect(game.getByRole('button', { name: 'Peek at the cover', exact: true })).toBeEnabled();
+  await game.getByRole('button', { name: 'Peek at the cover', exact: true }).click();
+  await expect(game.locator('.slide-peek img')).not.toHaveAttribute('src', picture ?? '');
+  const stored = await page.evaluate(() => Object.keys(localStorage)
+    .filter(key => key.startsWith('operalibre.games.cover-grid'))
+    .map(key => localStorage.getItem(key)));
+  expect(stored.join('')).not.toContain(picture);
+});
+
+for (const mode of ['administrator', 'device book'] as const) {
+  test(`Cover Grid keeps ${mode} artwork independent of reader restrictions`, async ({ page }) => {
+    const state = await coverLibrary(page);
+    if (mode === 'device book') {
+      state.isAdmin = false;
+      const deviceBook = { ...state.books[0], id: 'device:cover-fixture' };
+      await page.addInitScript(book => {
+        localStorage.setItem('operalibre.deviceLibrary.v1', JSON.stringify([book]));
+      }, deviceBook);
+      state.books = [];
+    }
+    await page.goto(`${url}test/duo-shell.html`);
+    const game = await openCoverGrid(page);
+    await game.getByRole('button', { name: 'Peek at the cover', exact: true }).click();
+    const picture = await game.locator('.slide-peek img').getAttribute('src');
+    state.allowedBookIds = [];
+    const refreshed = page.waitForResponse(response => response.url().endsWith('/api/auth/me'));
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await refreshed;
+    await expect(game.locator('.slide-peek img')).toHaveAttribute('src', picture ?? '');
+  });
+}
