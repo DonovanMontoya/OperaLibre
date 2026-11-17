@@ -1,17 +1,27 @@
+import { Capacitor } from "@capacitor/core";
 import { ArrowRight, Pause, Play, RotateCcw } from "lucide-react";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { mediaUrl } from "./api";
 import { formatTime } from "./formatting";
+import { getOfflineTrackUrl, releaseOfflineMediaUrl } from "./offline";
 import type { Book } from "./types";
 
 const PREVIEW_SECONDS = 5 * 60;
 
+/** Ask for the smaller MP4 index the iPhone player uses: a sample only needs
+ * the opening minutes, but an ordinary M4B makes the browser read the whole
+ * book's index (and embedded cover art) first. Other formats are unchanged. */
+function previewStreamPath(streamPath: string) {
+  return `${streamPath}${streamPath.includes("?") ? "&" : "?"}compact=1`;
+}
+
 export type PreviewPosition = { trackId: string; positionSeconds: number; bookPositionSeconds: number };
 
 /** Separate audio keeps samples out of playback restoration, reporting, and progress sync. */
-export function BookPreviewBar({ book, active, onStart, onStop, onContinue }: {
+export function BookPreviewBar({ book, active, downloaded, onStart, onStop, onContinue }: {
   book: Book;
   active: boolean;
+  downloaded: boolean;
   onStart: () => void;
   onStop: () => void;
   onContinue: (position?: PreviewPosition) => Promise<boolean>;
@@ -88,15 +98,38 @@ export function BookPreviewBar({ book, active, onStart, onStop, onContinue }: {
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio || !streamPath || !trackId || !active) return;
-    audio.src = mediaUrl(streamPath);
-    void play();
+    if (!audio || !streamPath || !track || !active) return;
+    const stream = mediaUrl(previewStreamPath(streamPath));
+    let current = true;
+    let localUrl: string | null = null;
+    if (downloaded && Capacitor.isNativePlatform()) {
+      // A book on this device previews from its files, like the player does.
+      const generation = ++playGeneration.current;
+      setPending(true);
+      void getOfflineTrackUrl(book, track).catch(() => null).then(url => {
+        if (!current) {
+          releaseOfflineMediaUrl(url);
+          return;
+        }
+        localUrl = url;
+        audio.src = url ?? stream;
+        if (generation === playGeneration.current) void play();
+      });
+    } else {
+      audio.src = stream;
+      void play();
+    }
     return () => {
+      current = false;
       playGeneration.current += 1;
       audio.pause();
       audio.removeAttribute("src");
       audio.load();
+      releaseOfflineMediaUrl(localUrl);
     };
+    // Keyed on ids so a refreshed book object, or a download finishing
+    // mid-sample, does not restart it; the next track picks up the file.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamPath, trackId, active]);
 
   // timeupdate can be infrequent; only run a clock while the sample is playing.
@@ -157,7 +190,14 @@ export function BookPreviewBar({ book, active, onStart, onStop, onContinue }: {
   return (
     <section className="book-sample" aria-label={`Audio preview of ${book.title}`}>
       {active ? <audio ref={audioRef} preload="none" onPlay={() => { if (document.hidden) stop(); else setPlaying(true); }} onPause={() => setPlaying(false)}
-        onTimeUpdate={updateTime} onEnded={nextTrack} onError={() => {
+        onTimeUpdate={updateTime} onEnded={nextTrack} onError={event => {
+          const audio = event.currentTarget;
+          // A player that cannot read the compact index gets the original file.
+          if (streamPath && new URL(audio.src, location.href).searchParams.get("compact") === "1") {
+            audio.src = mediaUrl(streamPath);
+            void play();
+            return;
+          }
           stop();
           setError("Preview unavailable. Check your connection and try again.");
         }} /> : null}

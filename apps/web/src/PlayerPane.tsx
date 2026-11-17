@@ -985,6 +985,7 @@ export function PlayerPane({
               <CoverArt book={selectedBook} size="large" />
               {openBookPreview && selectedBook.source !== "device" && selectedBook.tracks.length > 0 ? (
                 <BookPreviewBar key={selectedBook.id} book={selectedBook} active={previewBookId === selectedBook.id}
+                  downloaded={downloadedBookIds.has(selectedBook.id)}
                   onStart={() => openBookPreview(selectedBook)} onStop={stopBookPreview}
                   onContinue={position => continueBookPreview(selectedBook, position)} />
               ) : null}
