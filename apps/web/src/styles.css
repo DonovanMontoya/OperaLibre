@@ -23455,6 +23455,60 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading
   background: rgba(var(--spine-gold-rgb), 0.16);
 }
 
+/* Holding a planned book lifts it off the shelf to be dragged into a new
+   place. It rises over its neighbours with a gilt spine on its leading edge;
+   the rest step back and slide aside to show where it will land. */
+.queue-row .continue-reading-book {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.queue-row img {
+  -webkit-user-drag: none;
+}
+
+.continue-reading.is-reordering .continue-reading-row {
+  will-change: transform;
+}
+
+.continue-reading.is-reordering .continue-reading-row:not(.is-lifted) {
+  opacity: 0.62;
+  transition: opacity 160ms ease;
+}
+
+.continue-reading-row.is-lifted,
+.continue-reading-row.is-settling {
+  z-index: 6;
+}
+
+.continue-reading-row.is-lifted .continue-reading-book {
+  border-color: var(--gold-soft);
+  background-color: var(--spine-top);
+  background-image: linear-gradient(rgba(var(--spine-gold-rgb), 0.14), rgba(var(--spine-gold-rgb), 0.14));
+  box-shadow:
+    inset 3px 0 0 var(--gold-soft),
+    0 14px 28px -10px rgba(0, 0, 0, 0.55),
+    0 3px 8px rgba(0, 0, 0, 0.28);
+  transform: scale(1.035);
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+.continue-reading-row.is-settling .continue-reading-book {
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.continue-reading-row.is-lifted :is(.continue-reading-play, .queue-actions) {
+  visibility: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .continue-reading-row.is-lifted .continue-reading-book {
+    transform: none;
+    transition: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .queue-actions button {
     transition: none;

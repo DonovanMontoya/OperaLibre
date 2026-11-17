@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { moveQueuedBookEarlier, parseReadingQueue, queuedBooks, readingQueueKey } from "../src/readingQueue.ts";
+import { moveQueuedBook, moveQueuedBookEarlier, parseReadingQueue, queuedBooks, readingQueueKey } from "../src/readingQueue.ts";
 import type { Book } from "../src/types.ts";
 
 const book = (id: string, status?: string) => ({ id, title: id, progress: status ? { status, positionSeconds: 123 } : null }) as Book;
@@ -30,4 +30,19 @@ test("move earlier is bounded, stable and does not mutate persisted input", () =
 
 test("offline ordering moves past unavailable entries without losing them", () => {
   assert.deepEqual(moveQueuedBookEarlier(["hidden", "a", "offline", "b"], "b", ["a", "b"]), ["hidden", "b", "offline", "a"]);
+});
+
+test("dragging a book places it among the visible books and leaves hidden ones in place", () => {
+  const ids = ["a", "b", "c", "d"];
+  assert.deepEqual(moveQueuedBook(ids, "a", 3), ["b", "c", "d", "a"]);
+  assert.deepEqual(moveQueuedBook(ids, "d", 0), ["d", "a", "b", "c"]);
+  assert.deepEqual(moveQueuedBook(ids, "b", 2), ["a", "c", "b", "d"]);
+  assert.deepEqual(moveQueuedBook(ids, "c", 2), ids);
+  assert.deepEqual(moveQueuedBook(ids, "missing", 0), ids);
+  assert.deepEqual(ids, ["a", "b", "c", "d"]);
+  // "reading" is in progress and "offline" is unavailable; neither is shown.
+  const stored = ["reading", "a", "offline", "b", "c"];
+  assert.deepEqual(moveQueuedBook(stored, "c", 0, ["a", "b", "c"]), ["reading", "c", "a", "offline", "b"]);
+  assert.deepEqual(moveQueuedBook(stored, "a", 2, ["a", "b", "c"]), ["reading", "offline", "b", "c", "a"]);
+  assert.deepEqual(moveQueuedBook(stored, "b", 1, ["a", "b", "c"]), stored);
 });

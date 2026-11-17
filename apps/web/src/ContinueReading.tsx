@@ -4,7 +4,8 @@ import { CoverArt } from "./CoverArt";
 import { bookProgressLabel } from "./formatting";
 import { readStoredValue, writeStoredValue } from "./appStorage";
 import { progressTimestamp } from "./reliability";
-import { moveQueuedBookEarlier, queuedBooks } from "./readingQueue";
+import { moveQueuedBook, moveQueuedBookEarlier, queuedBooks } from "./readingQueue";
+import { useQueueReorder } from "./useQueueReorder";
 import { useReadingQueue } from "./useReadingQueue";
 import type { Book } from "./types";
 
@@ -50,6 +51,10 @@ export const ContinueReading = memo(function ContinueReading({
   function save(next: string[], message: string) {
     setNotice(saveIds(next) ? message : "Your queue could not be saved. Check available device storage and try again.");
   }
+  const plannedIds = planned.map(book => book.id);
+  const [section, setSection] = useState<HTMLElement | null>(null);
+  // A dragged book lands where it is seen, so only a failed save needs saying.
+  useQueueReorder(section, plannedIds, (id, index) => save(moveQueuedBook(ids, id, index, plannedIds), ""));
 
   const noticeLine = <p className="queue-notice" role="status">{notice}</p>;
 
@@ -92,7 +97,7 @@ export const ContinueReading = memo(function ContinueReading({
       );
     }),
     ...planned.map((book, index) => (
-      <li key={book.id} className="continue-reading-row queue-row">
+      <li key={book.id} className="continue-reading-row queue-row" data-queue-id={book.id}>
         <button
           type="button"
           className="continue-reading-book"
@@ -107,7 +112,7 @@ export const ContinueReading = memo(function ContinueReading({
           </span>
         </button>
         <span className="queue-actions">
-          <button type="button" className="queue-move" disabled={index === 0} aria-label={`Move ${book.title} earlier`} title="Move earlier" onClick={() => save(moveQueuedBookEarlier(ids, book.id, planned.map(entry => entry.id)), `${book.title} moved earlier.`)}><ArrowUp size={16} aria-hidden="true" /></button>
+          <button type="button" className="queue-move" disabled={index === 0} aria-label={`Move ${book.title} earlier`} title="Move earlier" onClick={() => save(moveQueuedBookEarlier(ids, book.id, plannedIds), `${book.title} moved earlier.`)}><ArrowUp size={16} aria-hidden="true" /></button>
           <button type="button" className="queue-remove" aria-label={`Remove ${book.title} from Up Next`} title="Remove from Up Next" onClick={() => save(ids.filter(id => id !== book.id), `${book.title} removed from Up Next.`)}><X size={16} aria-hidden="true" /></button>
         </span>
         <button
@@ -133,7 +138,7 @@ export const ContinueReading = memo(function ContinueReading({
 
   return (
     <>
-      {rows.length + unavailable > 0 ? <section className={`continue-reading${collapsed ? " is-collapsed" : ""}`} aria-label="Listening and queue">
+      {rows.length + unavailable > 0 ? <section ref={setSection} className={`continue-reading${collapsed ? " is-collapsed" : ""}`} aria-label="Listening and queue">
         <header className="continue-reading-heading">
           <h2>{queueOnly ? upNextToggle(rows.length) : "Now listening"}</h2>
         </header>
