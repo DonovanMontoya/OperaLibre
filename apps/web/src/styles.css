@@ -10592,6 +10592,10 @@ html.native-app .native-now-utility button {
 html.native-app .native-shell > .player-pane.has-native-player.native-player-view-now {
   display: flex;
   flex-direction: column;
+  /* The card fills the pane exactly, but rounding can leave a sub-pixel
+     overflow. With overflow-y: auto, WKWebView then shows a scroll indicator
+     on a drag even though nothing moves. */
+  overflow-y: hidden;
 }
 
 html.native-app .has-native-player.native-player-view-now .native-now-playing {
