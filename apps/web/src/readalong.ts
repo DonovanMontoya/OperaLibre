@@ -383,6 +383,28 @@ export function hasExtras(book: Pick<Book, "companions" | "readingFile">) {
   return groups.supplements.length > 0 || groups.images.length > 0;
 }
 
+/**
+ * The URL to offer as an "Open" link for a companion, or undefined when there
+ * is none to offer. In the native apps a downloaded companion is served from
+ * the app's own origin (Capacitor's `_capacitor_file_` path), with none of the
+ * server's sandboxing, so opening it as a page would run it as the app. Those
+ * stay inside the sandboxed inline preview; server URLs are still offered.
+ */
+export function companionOpenUrl(url: string | undefined, native: boolean, appUrl: string) {
+  if (!url || !native) return url;
+  try {
+    const app = new URL(appUrl);
+    let target = new URL(url, app);
+    // A blob URL belongs to the origin that created it.
+    if (target.protocol === "blob:") target = new URL(target.pathname);
+    const local = (target.protocol === app.protocol && target.host === app.host)
+      || target.pathname.startsWith("/_capacitor_file_");
+    return local ? undefined : url;
+  } catch {
+    return undefined;
+  }
+}
+
 function formatCount(value: number) {
   return new Intl.NumberFormat("en-US").format(value);
 }

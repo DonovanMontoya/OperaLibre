@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   anchorOnPage,
   anchorAfterRelocation,
+  companionOpenUrl,
   describeCompanion,
   findActiveFragmentIndex,
   groupCompanions,
@@ -302,4 +303,26 @@ it("disabled sentence experiment caps existing and cached EPUB maps at chapter s
   assert.equal(readAlongMode(book, null, false), "unsynced");
   assert.equal(readAlongMode(book, { version: 1, precision: "sentence", fragments: [] }, false), "unsynced");
   assert.equal(readAlongMode(book, null, true), "sentence");
+});
+
+describe("companion Open links", () => {
+  const server = "https://books.example.net/api/books/b1/companions/c1?token=t";
+
+  it("never offers a downloaded file served from the native app's own origin", () => {
+    assert.equal(companionOpenUrl("https://localhost/_capacitor_file_/data/user/0/app/files/book/companion-c1.html", true, "https://localhost/"), undefined);
+    assert.equal(companionOpenUrl("capacitor://localhost/_capacitor_file_/var/mobile/book/companion-c1.html", true, "capacitor://localhost/"), undefined);
+    assert.equal(companionOpenUrl("blob:https://localhost/0b6c2f3e", true, "https://localhost/"), undefined);
+    assert.equal(companionOpenUrl("/demo/alice/alice.epub", true, "https://localhost/"), undefined);
+  });
+
+  it("still offers server files in the apps, including a server on loopback", () => {
+    assert.equal(companionOpenUrl(server, true, "https://localhost/"), server);
+    assert.equal(companionOpenUrl("http://localhost:4920/api/books/b1/companions/c1", true, "https://localhost/"),
+      "http://localhost:4920/api/books/b1/companions/c1");
+  });
+
+  it("leaves the browser's links alone, where the server sandboxes the file", () => {
+    assert.equal(companionOpenUrl("/api/books/b1/companions/c1", false, "https://books.example.net/"), "/api/books/b1/companions/c1");
+    assert.equal(companionOpenUrl(undefined, true, "https://localhost/"), undefined);
+  });
 });
