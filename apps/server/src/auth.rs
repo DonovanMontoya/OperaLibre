@@ -48,10 +48,11 @@ pub(crate) const MAX_SESSIONS_PER_USER: usize = 20;
 
 pub(crate) const MAX_SESSIONS_TOTAL: usize = 1_000;
 
-/// Each entry is one shell's page origin, trusted on every install because the
-/// server cannot know which apps its readers use. Anything else served at one
-/// of these origins on a reader's device gets the same trust, so the list holds
-/// only origins a shipped app loads from.
+/// Each entry is one shell's page origin, allowed CORS on every install because
+/// the server cannot know which apps its readers use. The apps authenticate
+/// with bearer tokens, so these origins get no cookie trust: anything else
+/// served at one of them (any local program can bind the macOS port while the
+/// app is closed) would otherwise ride a browser tab's same-site cookie.
 pub(crate) const OFFICIAL_APP_ORIGINS: &[&str] = &[
     // Capacitor's iOS WebView origin.
     "capacitor://localhost",
@@ -712,6 +713,10 @@ pub(crate) async fn auth_middleware(
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
+    if cookie_from_untrusted_app_origin(&state.csrf_allowed_origins, req.headers()) {
+        // Handlers behind this layer read the session from the headers too.
+        req.headers_mut().remove(COOKIE);
+    }
     enforce_cookie_csrf(&state, &req)?;
     let Some(credential) = extract_request_credential(&req) else {
         return Err(ApiError::unauthorized("Missing authentication token."));
@@ -747,12 +752,25 @@ pub(crate) fn request_authority(value: &str) -> Option<String> {
 }
 
 pub(crate) fn build_csrf_allowed_origins(configured_origins: &[String]) -> HashSet<String> {
-    OFFICIAL_APP_ORIGINS
+    configured_origins
         .iter()
-        .copied()
-        .chain(configured_origins.iter().map(String::as_str))
         .map(|origin| origin.trim_end_matches('/').to_ascii_lowercase())
         .collect()
+}
+
+/// A session cookie sent from an official app origin is not a session: the
+/// apps never sign in with one (see `OFFICIAL_APP_ORIGINS`). The server's own
+/// address and owner-configured origins keep their cookie access.
+fn cookie_from_untrusted_app_origin(
+    allowed_origins: &HashSet<String>,
+    headers: &HeaderMap,
+) -> bool {
+    let Some(origin) = headers.get(ORIGIN).and_then(|value| value.to_str().ok()) else {
+        return false;
+    };
+    let origin = origin.trim_end_matches('/').to_ascii_lowercase();
+    OFFICIAL_APP_ORIGINS.contains(&origin.as_str())
+        && !cookie_request_origin_allowed(allowed_origins, headers)
 }
 
 pub(crate) fn cookie_request_origin_allowed(
@@ -805,7 +823,12 @@ pub(crate) async fn auth_status(
 ) -> impl IntoResponse {
     let setup_required = state.users.read().await.users.is_empty();
     let remote_client = !request_client_ip(peer_address, &headers).is_loopback();
-    let (user, media_token) = if let Some(token) = token_from_headers(&headers) {
+    let token = if cookie_from_untrusted_app_origin(&state.csrf_allowed_origins, &headers) {
+        token_from_authorization(&headers)
+    } else {
+        token_from_headers(&headers)
+    };
+    let (user, media_token) = if let Some(token) = token {
         match resolve_session(&state, &token).await {
             Some(auth) => (
                 Some(UserPublic::from(auth)),
