@@ -437,6 +437,7 @@ pub(crate) async fn export_clip_audio(
             .arg(format!("{:.3}", segment.offset_seconds))
             .arg("-t")
             .arg(format!("{:.3}", segment.duration_seconds))
+            .args(FFMPEG_TRACK_INPUT_OPTIONS)
             .arg("-i")
             .arg(path);
     }

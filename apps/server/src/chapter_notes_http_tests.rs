@@ -186,6 +186,61 @@ async fn only_the_owner_sets_up_chapter_notes_and_the_key_never_comes_back() {
 }
 
 #[tokio::test]
+async fn a_saved_key_is_not_carried_to_a_different_endpoint() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    enable(&server, &owner).await;
+    let save = |base_url: &'static str, api_key: Option<&'static str>| {
+        let mut body = serde_json::json!({ "kind": "openAiCompatible", "model": "llama", "baseUrl": base_url });
+        if let Some(key) = api_key {
+            body["apiKey"] = key.into();
+        }
+        server.send_json("PUT", PROVIDER, &owner, body)
+    };
+
+    let saved = save("http://127.0.0.1:11434/v1", Some("sk-local")).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    // The same server under another path keeps its key.
+    let moved = save("http://127.0.0.1:11434/api/v1", None).await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.text());
+    assert_eq!(moved.json()["provider"]["hasApiKey"], true);
+
+    for elsewhere in [
+        "http://192.168.1.20:11434/api/v1",
+        "http://127.0.0.1:8080/api/v1",
+        "https://127.0.0.1:11434/api/v1",
+    ] {
+        let refused = save(elsewhere, None).await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{elsewhere}");
+        assert!(
+            refused.text().contains("Enter the API key again"),
+            "{}",
+            refused.text()
+        );
+    }
+    let status = server.get(STATUS, &owner).await.json();
+    assert_eq!(
+        status["provider"]["baseUrl"],
+        "http://127.0.0.1:11434/api/v1"
+    );
+    assert_eq!(status["provider"]["hasApiKey"], true);
+
+    let rekeyed = save("http://192.168.1.20:11434/v1", Some("sk-lan")).await;
+    assert_eq!(rekeyed.status, StatusCode::OK, "{}", rekeyed.text());
+    assert_eq!(rekeyed.json()["provider"]["hasApiKey"], true);
+    // Without a saved key there is nothing to protect.
+    let keyless = save("http://192.168.1.20:11434/v1", Some("")).await;
+    assert_eq!(keyless.json()["provider"]["hasApiKey"], false);
+    let keyless_moved = save("http://192.168.1.30:11434/v1", None).await;
+    assert_eq!(
+        keyless_moved.status,
+        StatusCode::OK,
+        "{}",
+        keyless_moved.text()
+    );
+}
+
+#[tokio::test]
 async fn agents_get_notes_only_as_far_as_the_listener_has_heard() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;
