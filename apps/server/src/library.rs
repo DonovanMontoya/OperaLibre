@@ -60,6 +60,18 @@ pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
     "aac", "aiff", "flac", "m4a", "m4b", "mp3", "mp4", "ogg", "opus", "wav",
 ];
 
+/// Input options placed before every `-i` (and ffprobe's input) that reads a
+/// library track. A track is listed by its extension alone, and ffmpeg picks a
+/// demuxer from the bytes, so a `.mp3` that is really a DASH manifest or
+/// playlist would otherwise be followed to other files or network URLs. These
+/// keep ffmpeg to the demuxers of `AUDIO_EXTENSIONS` and to local files.
+pub(crate) const FFMPEG_TRACK_INPUT_OPTIONS: [&str; 4] = [
+    "-protocol_whitelist",
+    "file",
+    "-format_whitelist",
+    "aac,aiff,flac,mov,mp3,ogg,wav",
+];
+
 pub(crate) const SYNC_SIDECAR_SUFFIX: &str = ".sync.json";
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
