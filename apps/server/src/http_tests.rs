@@ -1210,6 +1210,107 @@ async fn ebook_upload_cancellation_removes_staged_bytes() {
     );
 }
 
+fn audiobook_upload_request(token: &str, body: Body) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/library/upload")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(
+            header::CONTENT_TYPE,
+            "multipart/form-data; boundary=operalibre-audiobook-test-boundary",
+        )
+        .body(body)
+        .unwrap()
+}
+
+/// The book name part and the start of one audio part, left open.
+fn audiobook_upload_head(book_name: &str) -> Vec<u8> {
+    let boundary = "operalibre-audiobook-test-boundary";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"bookName\"\r\n\r\n{book_name}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"01 Track.wav\"\r\nContent-Type: audio/wav\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(&fixture_wav());
+    body
+}
+
+fn upload_staging_dirs(library_root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(library_root)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(UPLOAD_STAGING_PREFIX)
+        })
+        .map(|entry| entry.path())
+        .collect()
+}
+
+#[tokio::test]
+async fn audiobook_upload_publishes_the_book_without_leaving_staging() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let mut body = audiobook_upload_head("Uploaded Book");
+    body.extend_from_slice(b"\r\n--operalibre-audiobook-test-boundary--\r\n");
+    let response = server
+        .send(audiobook_upload_request(&owner, Body::from(body)))
+        .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    assert_eq!(
+        std::fs::read(server.library_root.join("Uploaded Book/01 Track.wav")).unwrap(),
+        fixture_wav()
+    );
+    assert!(upload_staging_dirs(&server.library_root).is_empty());
+}
+
+#[tokio::test]
+async fn audiobook_upload_cancellation_removes_the_staging_folder() {
+    let server = Arc::new(TestServer::start(0).await);
+    let owner = server.setup_owner().await;
+    // The client keeps the body open, as a browser does mid-transfer, and the
+    // request is then abandoned the way axum drops a disconnected client's
+    // handler.
+    let (mut client, body) = tokio::io::duplex(1024 * 1024);
+    client
+        .write_all(&audiobook_upload_head("Abandoned Book"))
+        .await
+        .unwrap();
+    let task_server = server.clone();
+    let task = tokio::spawn(async move {
+        task_server
+            .send(audiobook_upload_request(
+                &owner,
+                Body::from_stream(ReaderStream::new(body)),
+            ))
+            .await
+    });
+    // A liveness ceiling for slow CI hosts, not a scheduling assertion.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let received = upload_staging_dirs(&server.library_root)
+                .iter()
+                .filter_map(|dir| std::fs::metadata(dir.join("01 Track.wav")).ok())
+                .any(|file| file.len() > 0);
+            if received {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    task.abort();
+    assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+    assert_eq!(
+        upload_staging_dirs(&server.library_root),
+        Vec::<std::path::PathBuf>::new()
+    );
+    assert!(!server.library_root.join("Abandoned Book").exists());
+    drop(client);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn ebook_upload_does_not_follow_a_dangling_destination_symlink() {
