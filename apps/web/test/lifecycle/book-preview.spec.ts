@@ -39,6 +39,8 @@ test('a sample crosses tracks, stops at five minutes, and never starts a reading
   const preview = await openPreview(page);
   const audio = preview.locator('audio');
   await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThan(0);
+  // Samples take the compact index so a long M4B starts without its full table.
+  expect(new URL(await audio.evaluate((a: HTMLAudioElement) => a.currentSrc)).searchParams.get('compact')).toBe('1');
   await page.screenshot({ path: testInfo.outputPath('preview-desktop.png') });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(preview).toBeVisible();
@@ -152,6 +154,16 @@ test('leaving the app pauses the preview without resuming the book', async ({ pa
   await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.paused)).toBe(true);
   expect(await page.locator('audio').first().evaluate((a: HTMLAudioElement) => a.paused)).toBe(true);
   expect(await server.progress(books.find(b => b.title === 'Second Book')!.id)).toBeNull();
+});
+
+test('a sample the compact stream cannot serve falls back to the original file', async ({ page, server }) => {
+  await setup(page, server);
+  await page.route(/\/stream\?(.*&)?compact=1/, route => route.fulfill({ status: 200, contentType: 'audio/mp4', body: 'not audio' }));
+  const preview = await openPreview(page);
+  const audio = preview.locator('audio');
+  await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThan(0);
+  expect(new URL(await audio.evaluate((a: HTMLAudioElement) => a.currentSrc)).searchParams.get('compact')).toBeNull();
+  await expect(preview.getByRole('alert')).toHaveCount(0);
 });
 
 test('a failed inline sample can retry and resetting it releases the stream', async ({ page, server }) => {
