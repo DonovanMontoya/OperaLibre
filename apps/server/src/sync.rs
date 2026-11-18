@@ -4175,6 +4175,7 @@ async fn extract_alignment_audio_with_timeout(
         .arg("-y")
         .arg("-ss")
         .arg(format!("{start_seconds:.3}"))
+        .args(FFMPEG_TRACK_INPUT_OPTIONS)
         .arg("-i")
         .arg(source_path)
         .arg("-t")

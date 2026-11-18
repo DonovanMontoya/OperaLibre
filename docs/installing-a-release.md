@@ -21,7 +21,7 @@ The installer walks you through the whole setup:
 2. It asks where to install OperaLibre. The default is a new `OperaLibre` folder in your home folder.
 3. It asks which folder holds your audiobooks. Press Return to use the folder inside the installation, or type the path of a library you already have.
 4. It asks whether OperaLibre should be reachable only from this computer (`local`) or from phones and other devices on your trusted home network (`lan`).
-5. It downloads the package, checks it against the published `SHA256SUMS.txt` digest, and stops without installing anything if the digest does not match.
+5. It downloads the package and checks it against the release's signed update manifest and its `SHA256SUMS.txt` digest, and stops without installing anything if either does not match. Checking the signature needs OpenSSL 1.1.1 or later. The `openssl` built into macOS cannot, so on a Mac without Homebrew's `openssl@3` the installer says the signature was not checked and relies on the digest alone, which catches a damaged download but not a replaced one. Releases before 0.4.6 have no signed manifest, so where the signature can be checked they cannot be installed this way.
 6. It offers to set up the optional Audible import. Answer `n` to skip it and set it up later.
 7. It writes your answers into `server.config`, clears the macOS download quarantine, and starts the server in the background.
 
