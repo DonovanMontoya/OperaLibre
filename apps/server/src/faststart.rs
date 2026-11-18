@@ -204,6 +204,7 @@ pub fn probe(tools: &Tools, path: &Path) -> Option<MediaSummary> {
         .arg("-show_format")
         .arg("-show_streams")
         .arg("-show_chapters")
+        .args(crate::library::FFMPEG_TRACK_INPUT_OPTIONS)
         .arg(path)
         .output()
         .ok()?;
@@ -361,6 +362,7 @@ fn remux_and_swap(
         .arg("-loglevel")
         .arg("error")
         .arg("-y")
+        .args(crate::library::FFMPEG_TRACK_INPUT_OPTIONS)
         .arg("-i")
         .arg(path)
         // Audio and cover art are copied verbatim. Data tracks are left out on
