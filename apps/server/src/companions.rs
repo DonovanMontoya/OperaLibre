@@ -49,6 +49,12 @@ const MIN_BOOK_TEXT_RATIO: f64 = 0.3;
 /// by the page ratio afterwards.
 const PDF_SAMPLE_PAGES: usize = 24;
 const PDF_TEXT_DECOMPRESSION_LIMIT: usize = 8 * 1024 * 1024;
+/// What one object or cross-reference stream may inflate to while a PDF
+/// loads. Those streams are decoded eagerly and hold only small objects
+/// (page and font dictionaries, offsets): writers pack about a hundred per
+/// stream, and a million-object xref is under 10 MiB. Four times the page
+/// limit leaves wide margin while capping a crafted stream on every worker.
+const PDF_LOAD_DECOMPRESSION_LIMIT: usize = 4 * PDF_TEXT_DECOMPRESSION_LIMIT;
 const MAX_ANALYZED_DOCUMENT_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -332,8 +338,17 @@ fn epub_analysis(parsed: anyhow::Result<alignment::EpubDocument>) -> DocumentAna
     }
 }
 
+/// Loads a PDF from the library. A stream over the limit is skipped like any
+/// other malformed object, so the rest of the document is still analyzed.
+fn load_pdf(bytes: &[u8]) -> lopdf::Result<lopdf::Document> {
+    lopdf::Document::load_mem_with_options(
+        bytes,
+        lopdf::LoadOptions::with_max_decompressed_size(PDF_LOAD_DECOMPRESSION_LIMIT),
+    )
+}
+
 pub(crate) fn analyze_pdf(bytes: &[u8]) -> DocumentAnalysis {
-    let Ok(document) = lopdf::Document::load_mem(bytes) else {
+    let Ok(document) = load_pdf(bytes) else {
         return DocumentAnalysis {
             unreadable: true,
             ..Default::default()
@@ -871,6 +886,90 @@ mod tests {
         assert_eq!(analysis.page_count, Some(3));
         assert_eq!(analysis.image_count, 0);
         assert!(analysis.text_characters > 60, "{analysis:?}");
+    }
+
+    /// A one-page text PDF that also carries an object stream inflating to
+    /// `inflated_bytes`. Object streams are decoded while the file loads,
+    /// whether or not anything refers to them. Written by hand because
+    /// lopdf's writer drops object streams it did not build itself.
+    fn pdf_with_object_stream(inflated_bytes: usize) -> (Vec<u8>, lopdf::ObjectId) {
+        use flate2::{Compression, write::ZlibEncoder};
+        use std::io::Write;
+        let inner_id = (7, 0);
+        let header = format!("{} 0 ", inner_id.0);
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(header.as_bytes()).unwrap();
+        encoder.write_all(b"(").unwrap();
+        let chunk = [b'a'; 64 * 1024];
+        let mut remaining = inflated_bytes;
+        while remaining > 0 {
+            let take = remaining.min(chunk.len());
+            encoder.write_all(&chunk[..take]).unwrap();
+            remaining -= take;
+        }
+        encoder.write_all(b")").unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let stream = |dictionary: String, data: &[u8]| {
+            let mut body =
+                format!("<<{dictionary} /Length {}>>\nstream\n", data.len()).into_bytes();
+            body.extend_from_slice(data);
+            body.extend_from_slice(b"\nendstream");
+            body
+        };
+        let objects = [
+            b"<</Type /Catalog /Pages 2 0 R>>".to_vec(),
+            b"<</Type /Pages /Kids [3 0 R] /Count 1>>".to_vec(),
+            b"<</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+              /Resources <</Font <</F1 4 0 R>>>> /Contents 5 0 R>>"
+                .to_vec(),
+            b"<</Type /Font /Subtype /Type1 /BaseFont /Helvetica>>".to_vec(),
+            stream(
+                String::new(),
+                b"BT /F1 12 Tf 72 700 Td (The meadow was quiet in the early morning light) Tj ET",
+            ),
+            stream(
+                format!(
+                    "/Type /ObjStm /N 1 /First {} /Filter /FlateDecode",
+                    header.len()
+                ),
+                &compressed,
+            ),
+        ];
+        let mut bytes = b"%PDF-1.5\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(bytes.len());
+            bytes.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+            bytes.extend_from_slice(body);
+            bytes.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = bytes.len();
+        let size = objects.len() + 1;
+        bytes.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
+        for offset in offsets {
+            bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        bytes.extend_from_slice(
+            format!("trailer\n<</Size {size} /Root 1 0 R>>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+        );
+        (bytes, inner_id)
+    }
+
+    #[test]
+    fn an_object_stream_that_inflates_past_the_load_limit_is_dropped() {
+        let (ordinary, inner_id) = pdf_with_object_stream(64 * 1024);
+        assert!(load_pdf(&ordinary).unwrap().get_object(inner_id).is_ok());
+
+        let (bomb, inner_id) = pdf_with_object_stream(PDF_LOAD_DECOMPRESSION_LIMIT + 1);
+        assert!(bomb.len() < 1024 * 1024, "{} bytes", bomb.len());
+        let document = load_pdf(&bomb).unwrap();
+        assert!(document.get_object(inner_id).is_err());
+        // The rest of the file is still analyzed.
+        let analysis = analyze_pdf(&bomb);
+        assert!(!analysis.unreadable);
+        assert_eq!(analysis.page_count, Some(1));
+        assert!(analysis.text_characters > 20, "{analysis:?}");
     }
 
     /// A folder of large companions must not be held in memory all at once.
