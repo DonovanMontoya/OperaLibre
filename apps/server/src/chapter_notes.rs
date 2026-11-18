@@ -249,7 +249,26 @@ pub(crate) async fn set_chapter_notes_provider(
             }
             Some(key.to_string())
         }
-        None => previous.and_then(|provider| provider.api_key),
+        None => {
+            // A saved key goes only to the server it was entered for. A new
+            // path on the same origin keeps it; a new scheme, host or port
+            // needs the key entered again.
+            let origin = |url: Option<&str>| {
+                url.and_then(|url| reqwest::Url::parse(url).ok())
+                    .map(|url| url.origin())
+            };
+            match previous {
+                Some(provider)
+                    if provider.api_key.is_some()
+                        && origin(provider.base_url.as_deref()) != origin(base_url.as_deref()) =>
+                {
+                    return Err(ApiError::bad_request(
+                        "Enter the API key again when changing the endpoint's address. The previous endpoint's key is not sent to a new address.",
+                    ));
+                }
+                previous => previous.and_then(|provider| provider.api_key),
+            }
+        }
     };
     if input.kind == ProviderKind::Anthropic && api_key.is_none() {
         return Err(ApiError::bad_request("Paste an Anthropic API key."));
