@@ -13,7 +13,7 @@ https://github.com/DonovanMontoya/OperaLibre/releases/latest/download/operalibre
 
 GitHub redirects that address to the newest release's copy, and it does not count against the GitHub API rate limit. Nothing else about a release is built into the updaters: the manifest says which packages exist, where they are, how large they are, and their SHA-256. So file names, how many files a release has, and where they are hosted can all change without an updater change.
 
-The signer is `script/release_signing.mjs` and the manifest builder is `script/release_manifest.mjs`. The verifiers are `apps/server/src/update_manifest.rs` and `apps/macos/Sources/OperaLibre/ReleaseSignature.swift`. All of them are tested against `script/fixtures/update-manifest.json`, so a format change that reaches only one side fails CI.
+The signer is `script/release_signing.mjs` and the manifest builder is `script/release_manifest.mjs`. The verifiers are `apps/server/src/update_manifest.rs` and `apps/macos/Sources/OperaLibre/ReleaseSignature.swift`. All of them are tested against `script/fixtures/update-manifest.json`, so a format change that reaches only one side fails CI. The one-line installer, `script/install.sh`, also checks the package it installs against the release's manifest when OpenSSL 1.1.1 or later is available.
 
 ## The signed file
 
@@ -96,6 +96,7 @@ To rotate keys later:
 2. Sign it with a current key and with every new key, into one envelope:
    `OPERALIBRE_RELEASE_SIGNING_KEY=<key> node script/release_signing.mjs sign-envelope root root.json root.envelope.json`, once per key.
 3. Append the envelope to `rotations` in `release/update-trust.json`. Every later manifest carries the list, so clients of any age walk from their built-in root to the current one.
+   The one-line installer keeps no state, so it trusts the current root directly: set `MANIFEST_KEYS` and `MANIFEST_THRESHOLD` in `script/install.sh` to the new root's keys and threshold. A test fails until they match.
 4. Update the `OPERALIBRE_RELEASE_SIGNING_KEY` secret to a key in the new root.
 5. If the rotation retires a key, sign every manifest a client can still be sent to again with a current key, with the rotation in its `roots`, and replace the published file: the current stable manifest, the nightly feed, and each manifest a bridge points to. A client that has accepted the rotation from one of them refuses any other signed only by the retired key, so a nightly server would lose its sync add-on check until the next stable release.
 
