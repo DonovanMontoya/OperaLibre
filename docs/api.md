@@ -176,9 +176,9 @@ MP4-family files (`.m4a`, `.m4b`, `.mp4`) written without `-movflags +faststart`
 
 Conversion is deliberately conservative and never edits a file in place:
 
-- Only files whose top-level boxes parse cleanly and put `mdat` ahead of `moov` are candidates. Anything unreadable, truncated, or already faststart is left alone.
+- Only files whose top-level boxes parse cleanly and put `mdat` ahead of `moov` are candidates. Anything unreadable, truncated, or already faststart is left alone, as is a file that is no longer a regular file inside the library (for example, one replaced by a link) when the job reaches it.
 - Each file is remuxed with `-c copy` to a temporary file beside the original. Audio and cover art are copied verbatim and tags and chapters are carried across. The QuickTime `bin_data` chapter *text track* that Audible-derived M4Bs carry is deliberately not copied — the mp4/ipod muxer cannot write it back — and is regenerated from the chapter list instead.
-- The result must parse as faststart, keep at least half the original's size, and — when ffprobe is available — match the original's duration and audio stream count and keep at least as many chapters and cover-art streams. A failed check discards the copy and leaves the original in place.
+- The result must parse as faststart, keep at least half the original's size, and — when ffprobe is available — match the original's duration and audio stream count and keep at least as many chapters and cover-art streams. A failed check, or a remux that runs far longer than a file of its size should, discards the copy and leaves the original in place.
 - The verified copy replaces the original with a single atomic rename, with a hard link held until the rename lands so an interrupted conversion cannot lose a book. Book and track identity is keyed on library paths, so listening progress survives.
 - Books whose saved position moved within the last 15 minutes are skipped, since somebody is likely listening; `includeActive: true` converts them anyway.
 - Only one conversion job runs at a time, and free space is checked before each file. The library is rescanned when the job finishes.
