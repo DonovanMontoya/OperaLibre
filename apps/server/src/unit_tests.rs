@@ -1563,13 +1563,12 @@ fn cookie_csrf_requires_the_target_or_an_explicit_origin() {
 }
 
 #[test]
-fn csrf_origins_always_include_official_apps() {
+fn csrf_origins_hold_only_configured_origins() {
     let origins = super::build_csrf_allowed_origins(&["HTTPS://Reader.Example.NET/".to_string()]);
-    assert!(origins.contains("capacitor://localhost"));
-    assert!(!origins.contains("http://localhost"));
-    assert!(origins.contains("https://localhost"));
-    assert!(origins.contains("http://127.0.0.1:49201"));
-    assert!(origins.contains("https://reader.example.net"));
+    assert_eq!(
+        origins,
+        std::collections::HashSet::from(["https://reader.example.net".to_string()])
+    );
 }
 
 #[test]
