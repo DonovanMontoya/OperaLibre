@@ -1563,13 +1563,12 @@ fn cookie_csrf_requires_the_target_or_an_explicit_origin() {
 }
 
 #[test]
-fn csrf_origins_always_include_official_apps() {
+fn csrf_origins_hold_only_configured_origins() {
     let origins = super::build_csrf_allowed_origins(&["HTTPS://Reader.Example.NET/".to_string()]);
-    assert!(origins.contains("capacitor://localhost"));
-    assert!(!origins.contains("http://localhost"));
-    assert!(origins.contains("https://localhost"));
-    assert!(origins.contains("http://127.0.0.1:49201"));
-    assert!(origins.contains("https://reader.example.net"));
+    assert_eq!(
+        origins,
+        std::collections::HashSet::from(["https://reader.example.net".to_string()])
+    );
 }
 
 #[test]
@@ -4076,6 +4075,46 @@ async fn faststart_conversion_leaves_a_book_somebody_is_listening_to() {
         super::faststart::inspect(&track).unwrap(),
         super::faststart::Layout::Faststart
     );
+}
+
+/// Somebody with write access to the library folder swaps a scanned track for
+/// a link to an MP4 elsewhere. Neither the job nor a conversion started after
+/// its survey may read that file or copy it into the library.
+#[cfg(unix)]
+#[tokio::test]
+async fn faststart_conversion_refuses_a_track_swapped_for_a_link_after_the_scan() {
+    let root = tempfile::tempdir().unwrap();
+    let Some((state, track, _, _)) = faststart_library(root.path()).await else {
+        eprintln!("skipping: ffmpeg is not installed");
+        return;
+    };
+    let outside_dir = tempfile::tempdir().unwrap();
+    let outside = outside_dir.path().join("elsewhere.m4b");
+    std::fs::rename(&track, &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &track).unwrap();
+    let outside_bytes = std::fs::read(&outside).unwrap();
+
+    let job_id = super::create_job(&state, super::FASTSTART_JOB_KIND).await;
+    let report = super::run_faststart_job(&state, &job_id, &super::FaststartRequest::default())
+        .await
+        .unwrap();
+    assert_eq!(report.converted, 0);
+
+    // The same guard holds when the swap lands between survey and conversion.
+    let tools = state.faststart_tools.clone().unwrap();
+    let error = super::convert_contained_candidate(&tools, &track, &state.library_root, 0)
+        .expect_err("a link must not be converted");
+    assert!(matches!(error, super::faststart::ConversionError::Io(_)));
+
+    assert!(std::fs::symlink_metadata(&track).unwrap().is_symlink());
+    assert_eq!(std::fs::read(&outside).unwrap(), outside_bytes);
+    let work_files = std::fs::read_dir(track.parent().unwrap())
+        .unwrap()
+        .chain(std::fs::read_dir(outside_dir.path()).unwrap())
+        .filter_map(Result::ok)
+        .filter(|entry| super::faststart::is_work_file(&entry.path()))
+        .count();
+    assert_eq!(work_files, 0);
 }
 
 // ---------------------------------------------------------------------------

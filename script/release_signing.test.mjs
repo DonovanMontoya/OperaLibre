@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -366,4 +366,125 @@ test("nightly manifests sign the stable return contract and refuse missing compa
   assert.equal(verified.stableVersion, "1.2.3");
   await assert.rejects(verifyManifestEnvelope({ ...envelope,
     payload: payload.replace('"storageVersion":1', '"storageVersion":2') }, [TEST_PUBLIC_KEY]));
+});
+
+const INSTALLER = await readFile(fileURLToPath(new URL("./install.sh", import.meta.url)), "utf8");
+const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+
+function installerFunction(name) {
+  const definition = INSTALLER.match(new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}`, "m"));
+  assert.ok(definition, `Missing installer function ${name}`);
+  return definition[0];
+}
+
+test("the installer trusts the current update root", async () => {
+  // install.sh keeps no state between runs, so it pins the newest root rather
+  // than walking rotations from root version 1.
+  const trust = await readTrust();
+  const root = trust.rotations.length === 0
+    ? { keys: trust.rootKeys, threshold: 1 }
+    : (({ keys, threshold }) => ({ keys: keys.map((key) => key.publicKey), threshold }))(
+      JSON.parse(trust.rotations.at(-1).payload));
+  const declared = INSTALLER.match(/^MANIFEST_KEYS="([^"]*)"\nMANIFEST_THRESHOLD=(\d+)$/m);
+  assert.ok(declared, "install.sh declares its manifest keys");
+  const keys = declared[1].split(/\s+/).map((spki) => {
+    const der = Buffer.from(spki, "base64");
+    assert.deepEqual(der.subarray(0, SPKI_PREFIX.length), SPKI_PREFIX);
+    return der.subarray(SPKI_PREFIX.length).toString("base64");
+  });
+  assert.deepEqual({ keys, threshold: Number(declared[2]) }, root);
+});
+
+const ed25519OpenSsl = spawnSync("openssl", ["genpkey", "-algorithm", "ed25519"]).status === 0;
+
+test("the installer accepts only an archive its signed manifest lists", { skip: !ed25519OpenSsl && "openssl cannot verify Ed25519" }, async () => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "operalibre-installer-manifest-"));
+  try {
+    const release = path.join(fixture, "release");
+    const work = path.join(fixture, "work");
+    const bin = path.join(fixture, "bin");
+    await mkdir(bin);
+    const archive = "operalibre-1.2.3-combined-linux-x64.tar.gz";
+    const contents = Buffer.from("the release package");
+    const baseUrl = "https://github.com/DonovanMontoya/OperaLibre/releases/download/1.2.3";
+    const entry = (name, data) => ({
+      component: "server", platform: "linux-x64", version: "1.2.3", url: `${baseUrl}/${name}`,
+      sha256: createHash("sha256").update(data).digest("hex"), size: data.length,
+      format: "tar.gz", root: name.replace(/\.tar\.gz$/, "")
+    });
+    // The notes exercise every escape JSON.stringify writes, and raw UTF-8.
+    const notes = "## What's new\n\n- \"Quoted\" C:\\path\ttab\u0001 caf\u00e9 \u2014 \ud83c\udfa7\n";
+    // Written the way `release_signing.mjs sign-envelope manifest` writes it.
+    const signed = (version, packages, seed = TEST_SEED) => {
+      const payload = `${JSON.stringify(manifestPayload({
+        version, tag: version, repository: "DonovanMontoya/OperaLibre", notes, packages,
+        policy: { bridges: [] }, published: "2026-01-01T00:00:00.000Z"
+      }), null, 2)}\n`;
+      const envelope = addSignature({ payload, signatures: [] },
+        signEnvelope(privateKeyFromSeed(seed), "manifest", payload));
+      return `${JSON.stringify({ ...envelope, roots: [] }, null, 2)}\n`;
+    };
+    const testKey = Buffer.concat([SPKI_PREFIX, Buffer.from(TEST_PUBLIC_KEY, "base64")]).toString("base64");
+    const script = [
+      "set -eu",
+      "fail() { printf 'Error: %s\\n' \"$*\" >&2; exit 1; }",
+      `MANIFEST_KEYS="${testKey}"`,
+      "MANIFEST_THRESHOLD=1",
+      "if command -v sha256sum >/dev/null 2>&1; then SHA_TOOL=sha256sum; else SHA_TOOL=shasum; fi",
+      // Serve the release from a folder; a missing asset fails like a 404.
+      'fetch() { cp "$RELEASE/${1##*/}" "$2"; }',
+      ...["need", "digest_of", "ed25519_verify", "find_ed25519_openssl", "manifest_message",
+        "manifest_package", "verify_manifest"].map(installerFunction),
+      'if verify_manifest; then echo VERIFIED; else echo "UNVERIFIED $?"; fi'
+    ].join("\n");
+    const run = async ({ manifest, download = contents, searchPath = process.env.PATH }) => {
+      await rm(release, { recursive: true, force: true });
+      await rm(work, { recursive: true, force: true });
+      await mkdir(release);
+      await mkdir(work);
+      if (manifest !== undefined) await writeFile(path.join(release, "operalibre-manifest-v1.json"), manifest);
+      await writeFile(path.join(work, archive), download);
+      return spawnSync("sh", ["-c", script], {
+        encoding: "utf8",
+        env: { ...process.env, PATH: searchPath, RELEASE: release, WORK_DIR: work,
+          BASE_URL: baseUrl, VERSION: "1.2.3", ARCHIVE: archive }
+      });
+    };
+    const good = signed("1.2.3", [entry("operalibre-1.2.3-combined-linux-arm64.tar.gz", Buffer.from("other")),
+      entry(archive, contents)]);
+
+    const accepted = await run({ manifest: good });
+    assert.equal(accepted.stdout, "VERIFIED\n", accepted.stderr);
+
+    for (const [label, options, message] of [
+      ["replaced archive", { manifest: good, download: Buffer.from("the release packagE") },
+        "does not match the signed release manifest"],
+      ["missing manifest", {}, "Could not download the signed manifest"],
+      ["unknown signing key", { manifest: signed("1.2.3", [entry(archive, contents)], OTHER_SEED) },
+        "not signed by an OperaLibre release key"],
+      ["edited payload", { manifest: good.replace("C:\\\\\\\\path", "C:\\\\\\\\pat") },
+        "not signed by an OperaLibre release key"],
+      ["an older release's manifest", { manifest: signed("1.2.2", [entry(archive, contents)]) },
+        "for a different release"],
+      ["archive not listed", { manifest: signed("1.2.3", [entry("operalibre-1.2.3-combined-macos-arm64.tar.gz", contents)]) },
+        "is not listed in the signed manifest"]
+    ]) {
+      const result = await run(options);
+      assert.notEqual(result.status, 0, label);
+      assert.doesNotMatch(result.stdout, /VERIFIED/, label);
+      assert.match(result.stderr, new RegExp(message), label);
+    }
+
+    // Without an Ed25519-capable openssl the caller warns instead of failing.
+    // Homebrew's OpenSSL on a developer's Mac would still verify.
+    const homebrew = await Promise.any(["/opt/homebrew/opt/openssl@3/bin/openssl", "/usr/local/opt/openssl@3/bin/openssl"]
+      .map((file) => access(file))).then(() => true, () => false);
+    if (!homebrew) {
+      await writeFile(path.join(bin, "openssl"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+      const unverified = await run({ manifest: good, searchPath: `${bin}${path.delimiter}${process.env.PATH}` });
+      assert.equal(unverified.stdout, "UNVERIFIED 2\n", unverified.stderr);
+    }
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });

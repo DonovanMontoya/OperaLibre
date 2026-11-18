@@ -12,7 +12,7 @@ OperaLibre can also run as a headless audiobook server. The included React/Vite 
 
 ## Install in one command
 
-On macOS and Linux, this downloads the newest release for your computer, verifies its published SHA-256 digest, asks a few setup questions, and starts the server:
+On macOS and Linux, this downloads the newest release for your computer, verifies its release signature and SHA-256 digest, asks a few setup questions, and starts the server:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/script/install.sh | sh

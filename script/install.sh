@@ -8,8 +8,9 @@
 #   curl -fsSL .../install.sh | sh -s -- --dir ~/OperaLibre --library ~/Audiobooks --yes
 #
 # The script downloads the newest combined release package for this computer,
-# verifies its SHA-256 digest against the published SHA256SUMS.txt, installs it,
-# and starts OperaLibre in the background.
+# verifies it against the release's signed update manifest (when OpenSSL 1.1.1
+# or later is available) and its published SHA256SUMS.txt, installs it, and
+# starts OperaLibre in the background.
 
 set -eu
 
@@ -251,6 +252,117 @@ digest_of() {
   fi
 }
 
+# --- Signed update manifest -------------------------------------------------
+#
+# Each release publishes operalibre-manifest-v1.json, signed with the update
+# root keys (docs/update-manifest.md). SHA256SUMS.txt sits beside the packages,
+# so whoever can replace a package can replace it too; the signature cannot be
+# replaced that way. The installer keeps no state between runs, so it trusts
+# the current root directly instead of walking the envelope's `roots`: these
+# are the current root's keys from release/update-trust.json, as base64
+# SubjectPublicKeyInfo so openssl reads them without binary handling here. A
+# test keeps them in step with that file.
+MANIFEST_KEYS="MCowBQYDK2VwAyEAFhUko6re8/stEbHmAlnNv3+SwIzMSXNMUpPVl8BVifk=
+MCowBQYDK2VwAyEAZRqn6x4T1s5YydV/orpMeF1Ec4VgpLXq7EUgAFIn0Ns="
+MANIFEST_THRESHOLD=1
+
+ed25519_verify() {
+  # ed25519_verify OPENSSL KEY SIGNATURE MESSAGE-FILE — KEY and SIGNATURE in base64.
+  printf '%s\n' '-----BEGIN PUBLIC KEY-----' "$2" '-----END PUBLIC KEY-----' >"${WORK_DIR}/key.pem" &&
+    printf '%s' "$3" | "$1" base64 -d -A >"${WORK_DIR}/signature.bin" 2>/dev/null &&
+    "$1" pkeyutl -verify -pubin -inkey "${WORK_DIR}/key.pem" -rawin \
+      -in "$4" -sigfile "${WORK_DIR}/signature.bin" >/dev/null 2>&1
+}
+
+find_ed25519_openssl() {
+  # The first openssl that verifies RFC 8032's second Ed25519 test vector.
+  # LibreSSL (the macOS openssl) and OpenSSL before 1.1.1 cannot.
+  printf 'r' >"${WORK_DIR}/ed25519-test"
+  for candidate in openssl /opt/homebrew/opt/openssl@3/bin/openssl /usr/local/opt/openssl@3/bin/openssl; do
+    need "$candidate" || continue
+    if ed25519_verify "$candidate" "MCowBQYDK2VwAyEAPUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw=" \
+      "kqAJqfDUyrhyDoILX2QlQKKye1QWUD+Ps3YiI+vbadoIWsHkPhWZbkWPNhPQ8R2MOHsurrQwKu6wDSkWErsMAA==" \
+      "${WORK_DIR}/ed25519-test"; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+manifest_message() {
+  # manifest_message ENVELOPE — the bytes a manifest signature covers: the
+  # domain, the type, and the payload string decoded exactly. The payload is
+  # pretty-printed JSON text, so as release_signing.mjs writes the envelope its
+  # string holds no escapes but newlines, quotes and backslashes; any other
+  # escape is refused rather than guessed at.
+  LC_ALL=C awk '
+    !done && /^  "payload": "/ {
+      s = substr($0, 15); out = ""; n = length(s); closed = 0
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c == "\"") { closed = i; break }
+        if (c != "\\") { out = out c; continue }
+        c = substr(s, ++i, 1)
+        if (c == "n") out = out "\n"
+        else if (c == "\"" || c == "\\") out = out c
+        else exit 1
+      }
+      if (!closed || substr(s, closed + 1) != ",") exit 1
+      done = 1
+    }
+    END {
+      if (!done) exit 1
+      printf "operalibre-signed-v1\nmanifest\n%s", out
+    }
+  ' "$1"
+}
+
+manifest_package() {
+  # manifest_package PAYLOAD-FILE ARCHIVE — "SHA256 SIZE" of ARCHIVE's entry.
+  LC_ALL=C awk -v archive="$2" '
+    /[{]$/ { url = ""; sha = ""; size = "" }
+    /^ *"url": "/ { url = $0; sub(/^ *"url": "/, "", url); sub(/",?$/, "", url) }
+    /^ *"sha256": "/ { sha = $0; sub(/^ *"sha256": "/, "", sha); sub(/",?$/, "", sha) }
+    /^ *"size": / { size = $0; sub(/^ *"size": /, "", size); sub(/,$/, "", size) }
+    /^ *[}],?$/ {
+      if (substr(url, length(url) - length(archive)) == "/" archive) { print sha, size; exit }
+    }
+  ' "$1"
+}
+
+verify_manifest() {
+  # Fails unless a pinned key signed the release manifest and the manifest
+  # lists this exact archive. Returns 2 when no Ed25519 verifier is available.
+  verifier=$(find_ed25519_openssl) || return 2
+  fetch "${BASE_URL}/operalibre-manifest-v1.json" "${WORK_DIR}/manifest.json" ||
+    fail "Could not download the signed manifest for release ${VERSION} (releases before 0.4.6 have none). Nothing was installed."
+  manifest_message "${WORK_DIR}/manifest.json" >"${WORK_DIR}/manifest.message" ||
+    fail "The signed manifest for release ${VERSION} could not be read. Nothing was installed."
+  sed -n 's/^[[:space:]]*"sig":[[:space:]]*"\([A-Za-z0-9+/=]*\)".*/\1/p' "${WORK_DIR}/manifest.json" |
+    head -n 16 >"${WORK_DIR}/manifest.signatures"
+  verified_keys=0
+  for key in $MANIFEST_KEYS; do
+    while IFS= read -r signature; do
+      if ed25519_verify "$verifier" "$key" "$signature" "${WORK_DIR}/manifest.message"; then
+        verified_keys=$((verified_keys + 1))
+        break
+      fi
+    done <"${WORK_DIR}/manifest.signatures"
+  done
+  [ "$verified_keys" -ge "$MANIFEST_THRESHOLD" ] ||
+    fail "The release manifest is not signed by an OperaLibre release key. Nothing was installed."
+  # The payload follows the two header lines of the signed message.
+  tail -n +3 "${WORK_DIR}/manifest.message" >"${WORK_DIR}/manifest.payload"
+  grep -Fqx "  \"version\": \"${VERSION}\"," "${WORK_DIR}/manifest.payload" ||
+    fail "The signed manifest is for a different release than ${VERSION}. Nothing was installed."
+  signed_entry=$(manifest_package "${WORK_DIR}/manifest.payload" "$ARCHIVE")
+  [ -n "$signed_entry" ] || fail "${ARCHIVE} is not listed in the signed manifest. Nothing was installed."
+  signed_size=$(wc -c <"${WORK_DIR}/${ARCHIVE}" | tr -d '[:space:]')
+  [ "$signed_entry" = "$(digest_of "${WORK_DIR}/${ARCHIVE}") ${signed_size}" ] ||
+    fail "The download does not match the signed release manifest. Nothing was installed."
+}
+
 say ""
 say "OperaLibre installer"
 say "===================="
@@ -402,7 +514,17 @@ actual=$(digest_of "${WORK_DIR}/${ARCHIVE}")
 [ "$expected" = "$actual" ] ||
   fail "The download does not match its published SHA-256 digest. Nothing was installed."
 
-say "Digest verified."
+if verify_manifest; then
+  say "Release signature and digest verified."
+else
+  [ "$?" -eq 2 ] || fail "The release signature could not be verified. Nothing was installed."
+  say "Digest verified."
+  say "Warning: the release signature was not checked, because this computer has no" >&2
+  say "OpenSSL 1.1.1 or later to check it with (the openssl built into macOS cannot)." >&2
+  say "SHA256SUMS.txt comes from the same release page as the download, so it catches" >&2
+  say "a damaged download but not a replaced one. To check the signature as well," >&2
+  say "install OpenSSL (on macOS: brew install openssl@3) and run the installer again." >&2
+fi
 
 mkdir -p "${WORK_DIR}/extract"
 tar -xzf "${WORK_DIR}/${ARCHIVE}" -C "${WORK_DIR}/extract" ||

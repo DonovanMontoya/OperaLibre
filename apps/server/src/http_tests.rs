@@ -3605,9 +3605,9 @@ async fn untrusted_origins_cannot_use_cors_or_make_cookie_authenticated_changes(
         );
     }
 
-    let response = cookie_logout_with(&server, &cookie, &[("origin", "https://localhost")]).await;
+    let token = cookie.split_once('=').unwrap().1;
     assert_eq!(
-        response.status,
+        server.get("/api/auth/me", token).await.status,
         StatusCode::OK,
         "denied writes must not revoke the session"
     );
@@ -3700,26 +3700,87 @@ async fn a_null_origin_is_refused() {
     assert_eq!(response.status, StatusCode::FORBIDDEN);
 }
 
+/// The apps sign in with bearer tokens, so a session cookie arriving from one
+/// of their origins belongs to a browser tab on this server and was replayed by
+/// whatever page now holds that origin. On a local install any program can
+/// bind the macOS app's loopback port while the app is not running, and that
+/// page is same-site with the server, so the browser sends the cookie.
 #[tokio::test]
-async fn a_cookie_change_from_an_official_app_origin_is_allowed() {
+async fn a_cookie_session_is_not_honored_from_an_official_app_origin() {
     let server = TestServer::start(1).await;
     server.setup_owner().await;
+    let cookie = server.setup_owner_cookie().await;
+    let token = cookie.split_once('=').unwrap().1.to_string();
 
     for origin in [
         "capacitor://localhost",
         "https://localhost",
         "http://127.0.0.1:49201",
     ] {
-        let cookie = server.setup_owner_cookie().await;
-        let response = cookie_logout_with(&server, &cookie, &[("origin", origin)]).await;
+        let request = |method: &str, uri: &str| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::HOST, "127.0.0.1:4920")
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        let me = server.send(request("GET", "/abs/api/me")).await;
+        assert_eq!(me.status, StatusCode::UNAUTHORIZED, "{origin}");
+        assert!(!me.text().contains(&token), "{origin}");
+
+        let status = server.send(request("GET", "/api/auth/status")).await;
+        assert_eq!(status.status, StatusCode::OK, "{origin}");
+        // CORS stays open for the apps' bearer requests.
+        assert_eq!(status.header(header::ACCESS_CONTROL_ALLOW_ORIGIN), origin);
+        assert!(status.json()["user"].is_null(), "{origin}");
+        assert!(status.json()["mediaToken"].is_null(), "{origin}");
+
+        let logout = server.send(request("POST", "/api/auth/logout")).await;
+        assert!(!logout.status.is_success(), "{origin}: {}", logout.text());
         assert_eq!(
-            response.status,
+            server.get("/api/auth/me", &token).await.status,
             StatusCode::OK,
-            "{origin}: {}",
-            response.text()
+            "{origin}: the refused write must not revoke the session"
         );
-        assert_eq!(response.header(header::ACCESS_CONTROL_ALLOW_ORIGIN), origin);
     }
+}
+
+/// A server reached at an address that happens to equal an app origin, such as
+/// a reverse proxy on https://localhost, still serves its own web app's cookie.
+#[tokio::test]
+async fn a_cookie_session_from_the_server_own_origin_is_honored_even_at_an_app_origin() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let cookie = server.setup_owner_cookie().await;
+
+    let response = cookie_logout_with(
+        &server,
+        &cookie,
+        &[("origin", "https://localhost"), ("host", "localhost")],
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+}
+
+/// An owner who lists an app origin in `allowed_origins` trusts it for cookies.
+#[tokio::test]
+async fn a_configured_origin_keeps_cookie_access_even_when_it_is_an_app_origin() {
+    let mut server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let origin = "http://127.0.0.1:49201";
+    let mut state = server.state.clone();
+    state.csrf_allowed_origins = Arc::new(build_csrf_allowed_origins(&[origin.to_string()]));
+    server.router = build_router(state, None, &[origin.to_string()]).unwrap();
+    let cookie = server.setup_owner_cookie().await;
+
+    let response = cookie_logout_with(&server, &cookie, &[("origin", origin)]).await;
+
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
 }
 
 /// A same-origin browser request may carry an Origin that names this very
