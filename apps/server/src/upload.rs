@@ -52,11 +52,9 @@ pub(crate) async fn upload_audiobook(
     let staging_name = format!("{UPLOAD_STAGING_PREFIX}{}", generate_session_token());
     let staging_path = state.library_root.join(staging_name);
     fs::create_dir(&staging_path).await?;
+    let staging = UploadStaging(Some(staging_path));
 
-    if let Err(error) = stage_and_publish_upload(&state, &staging_path, &mut multipart).await {
-        let _ = fs::remove_dir_all(&staging_path).await;
-        return Err(error);
-    }
+    stage_and_publish_upload(&state, staging, &mut multipart).await?;
 
     rescan_library(&state).await?;
     Ok(Json(books_with_progress(&state, &auth).await?))
@@ -324,27 +322,80 @@ fn validate_uploaded_epub(path: &FsPath) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Owns an upload's staging folder and removes it when dropped, so an upload
+/// abandoned for any reason (an error, a client that disconnects and has its
+/// request future dropped, or a panic) does not leave its bytes in the library
+/// until the next startup sweep.
+struct UploadStaging(Option<PathBuf>);
+
+impl UploadStaging {
+    fn path(&self) -> &FsPath {
+        self.0
+            .as_deref()
+            .expect("the staging folder is held until it is published")
+    }
+
+    /// Remove the folder on the blocking pool rather than on the async worker:
+    /// a failed upload can be gigabytes of files.
+    async fn discard(self) {
+        let _ = tokio::task::spawn_blocking(move || drop(self)).await;
+    }
+}
+
+impl Drop for UploadStaging {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take()
+            && let Err(error) = std::fs::remove_dir_all(&path)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                path = %path.display(),
+                "failed to remove upload staging folder: {error}"
+            );
+        }
+    }
+}
+
 /// Receive the upload into the staging directory and move it into place under
-/// its book name. The caller owns removing the staging directory on failure.
+/// its book name. The staging directory is removed unless it was published.
 async fn stage_and_publish_upload(
     state: &AppState,
-    staging_path: &FsPath,
+    staging: UploadStaging,
     multipart: &mut Multipart,
 ) -> Result<(), ApiError> {
-    let book_name = receive_audiobook_upload(
-        staging_path,
+    let received = receive_audiobook_upload(
+        staging.path(),
         multipart,
         state.max_upload_bytes,
         &state.library_root,
     )
-    .await?;
+    .await;
+    let book_name = match received {
+        Ok(book_name) => book_name,
+        Err(error) => {
+            staging.discard().await;
+            return Err(error);
+        }
+    };
     // Checked again now that the whole upload is in: the early check while
     // receiving only saves the client the transfer.
     let destination = state.library_root.join(&book_name);
     if fs::try_exists(&destination).await? {
+        staging.discard().await;
         return Err(book_name_taken(&book_name));
     }
-    fs::rename(staging_path, &destination).await?;
+    // The rename and the decision to keep the folder run together on the
+    // blocking pool, where a dropped request cannot split them. Removing the
+    // staging path while a rename is in flight could otherwise delete files
+    // from the book that rename just published.
+    tokio::task::spawn_blocking(move || {
+        let mut staging = staging;
+        std::fs::rename(staging.path(), &destination)?;
+        staging.0 = None;
+        Ok::<_, io::Error>(())
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Could not publish the upload: {error}")))??;
     Ok(())
 }
 
