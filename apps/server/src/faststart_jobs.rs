@@ -172,6 +172,7 @@ pub(crate) async fn survey_faststart(
         (files, titles)
     };
 
+    let roots = vec![state.library_root.clone()];
     tokio::task::spawn_blocking(move || {
         let mut survey = FaststartSurvey {
             titles,
@@ -179,16 +180,25 @@ pub(crate) async fn survey_faststart(
         };
         for (book_id, path) in files {
             survey.mp4_files += 1;
-            let bytes = std::fs::metadata(&path).map(|entry| entry.len()).ok();
-            match (faststart::inspect(&path), bytes) {
-                (Ok(faststart::Layout::Trailing), Some(bytes)) => {
+            // A track replaced by a link since the scan counts as unreadable
+            // rather than having the file it points at inspected.
+            let layout = open_contained_file(&path, &roots)
+                .ok()
+                .map(|(mut file, metadata)| {
+                    (
+                        faststart::inspect_boxes(&mut file, metadata.len()),
+                        metadata.len(),
+                    )
+                });
+            match layout {
+                Some((Ok(faststart::Layout::Trailing), bytes)) => {
                     survey.pending.push(FaststartCandidate {
                         book_id,
                         path,
                         bytes,
                     });
                 }
-                (Ok(faststart::Layout::Faststart), _) => survey.optimized_files += 1,
+                Some((Ok(faststart::Layout::Faststart), _)) => survey.optimized_files += 1,
                 _ => survey.unreadable_files += 1,
             }
         }
@@ -200,6 +210,26 @@ pub(crate) async fn survey_faststart(
         status: StatusCode::INTERNAL_SERVER_ERROR,
         message: error.to_string(),
     })
+}
+
+pub(crate) fn convert_contained_candidate(
+    tools: &faststart::Tools,
+    path: &FsPath,
+    library_root: &FsPath,
+    reserve_bytes: u64,
+) -> Result<Option<faststart::Converted>, faststart::ConversionError> {
+    // The survey may be minutes old by now. Only convert what is still a
+    // regular file inside the library and still trailing, and hand ffmpeg the
+    // resolved path that was checked, as clip export does.
+    let (mut file, metadata) = open_contained_file(path, &[library_root.to_path_buf()])
+        .map_err(|error| faststart::ConversionError::Io(std::io::Error::other(error)))?;
+    match faststart::inspect_boxes(&mut file, metadata.len()) {
+        Ok(faststart::Layout::Trailing) => {}
+        Ok(_) => return Ok(None),
+        Err(error) => return Err(faststart::ConversionError::Io(error)),
+    }
+    let resolved = std::fs::canonicalize(path)?;
+    faststart::convert_in_place(tools, &resolved, reserve_bytes).map(Some)
 }
 
 /// Books whose saved position moved inside the active-listener window.
@@ -337,15 +367,9 @@ pub(crate) async fn run_faststart_job(
 
         let path = candidate.path.clone();
         let tools = tools.clone();
+        let library_root = state.library_root.clone();
         let outcome = tokio::task::spawn_blocking(move || {
-            // The survey may be minutes old by now; only convert what is
-            // still both present and trailing.
-            match faststart::inspect(&path) {
-                Ok(faststart::Layout::Trailing) => {}
-                Ok(_) => return Ok(None),
-                Err(error) => return Err(faststart::ConversionError::Io(error)),
-            }
-            faststart::convert_in_place(&tools, &path, reserve_bytes).map(Some)
+            convert_contained_candidate(&tools, &path, &library_root, reserve_bytes)
         })
         .await;
 

@@ -13,7 +13,8 @@
 
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::util::{find_on_path, random_hex_id};
 
@@ -34,6 +35,22 @@ const MAX_BOXES: usize = 4_096;
 
 /// A verified remux must stay within this fraction of the source duration.
 const DURATION_TOLERANCE_SECONDS: f64 = 1.0;
+
+/// ffprobe reads only headers and the index. Two minutes is the bound the
+/// loudness scan gives one decode window, far beyond a healthy probe even over
+/// a slow network share.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// A `-c copy` remux is disk-bound rather than CPU-bound: ffmpeg reads the
+/// book once and `+faststart` rewrites the output again to move the index
+/// forward, so the bound has to grow with the file. It starts from the ten
+/// minutes alignment allows one chapter extraction and adds a second per MiB,
+/// a rate below an SD card or a NAS share over Wi-Fi, so a multi-gigabyte book
+/// on a Raspberry Pi still finishes while a hung ffmpeg is stopped.
+const REMUX_BASE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const REMUX_MIN_BYTES_PER_SECOND: u64 = 1024 * 1024;
+
+const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 pub fn is_mp4_file(path: &Path) -> bool {
     path.extension()
@@ -206,7 +223,7 @@ pub fn probe(tools: &Tools, path: &Path) -> Option<MediaSummary> {
         .arg("-show_chapters")
         .args(crate::library::FFMPEG_TRACK_INPUT_OPTIONS)
         .arg(path)
-        .output()
+        .output_within(PROBE_TIMEOUT)
         .ok()?;
     if !output.status.success() {
         return None;
@@ -307,8 +324,21 @@ pub fn convert_in_place(
     path: &Path,
     min_free_bytes: u64,
 ) -> Result<Converted, ConversionError> {
-    let metadata = std::fs::metadata(path)?;
-    let before_bytes = metadata.len();
+    convert_in_place_within(tools, path, min_free_bytes, remux_timeout)
+}
+
+fn remux_timeout(bytes: u64) -> Duration {
+    REMUX_BASE_TIMEOUT + Duration::from_secs(bytes / REMUX_MIN_BYTES_PER_SECOND)
+}
+
+fn convert_in_place_within(
+    tools: &Tools,
+    path: &Path,
+    min_free_bytes: u64,
+    remux_timeout: fn(u64) -> Duration,
+) -> Result<Converted, ConversionError> {
+    let original = Original::of(path)?;
+    let before_bytes = original.bytes;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
 
     let available_bytes = fs2::available_space(parent)?;
@@ -334,10 +364,11 @@ pub fn convert_in_place(
     let result = remux_and_swap(
         tools,
         path,
+        &original,
         &temp_path,
         &backup_path,
-        before_bytes,
         before.as_ref(),
+        remux_timeout(before_bytes),
     );
     if result.is_err() {
         let _ = std::fs::remove_file(&temp_path);
@@ -348,14 +379,48 @@ pub fn convert_in_place(
     result
 }
 
+/// The file a conversion started from. Checked again just before the swap, so
+/// a link or a different file put at the same name while ffmpeg ran is never
+/// replaced by, or turned into, the remux.
+struct Original {
+    resolved: PathBuf,
+    handle: same_file::Handle,
+    bytes: u64,
+}
+
+impl Original {
+    fn of(path: &Path) -> io::Result<Self> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ));
+        }
+        Ok(Self {
+            resolved: std::fs::canonicalize(path)?,
+            handle: same_file::Handle::from_path(path)?,
+            bytes: metadata.len(),
+        })
+    }
+
+    fn still_at(&self, path: &Path) -> io::Result<bool> {
+        Ok(std::fs::symlink_metadata(path)?.is_file()
+            && std::fs::canonicalize(path)? == self.resolved
+            && same_file::Handle::from_path(path)? == self.handle)
+    }
+}
+
 fn remux_and_swap(
     tools: &Tools,
     path: &Path,
+    original: &Original,
     temp_path: &Path,
     backup_path: &Path,
-    before_bytes: u64,
     before: Option<&MediaSummary>,
+    remux_timeout: Duration,
 ) -> Result<Converted, ConversionError> {
+    let before_bytes = original.bytes;
     let output = Command::new(&tools.ffmpeg)
         .arg("-nostdin")
         .arg("-hide_banner")
@@ -383,7 +448,7 @@ fn remux_and_swap(
         .arg("-movflags")
         .arg("+faststart")
         .arg(temp_path)
-        .output()?;
+        .output_within(remux_timeout)?;
     if !output.status.success() {
         return Err(ConversionError::Remux {
             message: command_message(&output),
@@ -401,6 +466,11 @@ fn remux_and_swap(
     }
     let after = probe(tools, temp_path);
     verify(before_bytes, after_bytes, before, after.as_ref())?;
+    if !original.still_at(path)? {
+        return Err(ConversionError::Verification {
+            message: "the file was replaced while it was being converted".to_string(),
+        });
+    }
 
     // Preserve the original's permissions: the swapped-in file has to stay
     // readable by whoever could read the book before.
@@ -498,6 +568,66 @@ fn command_message(output: &std::process::Output) -> String {
     } else {
         text.lines().last().unwrap_or(text).to_string()
     }
+}
+
+/// `Command::output` with a deadline. A child still running when it passes is
+/// killed and reaped before this returns, so nothing keeps writing to a file
+/// the caller is about to remove.
+trait OutputWithin {
+    fn output_within(&mut self, timeout: Duration) -> io::Result<Output>;
+}
+
+impl OutputWithin for Command {
+    fn output_within(&mut self, timeout: Duration) -> io::Result<Output> {
+        let mut child = self
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let stdout = drain(child.stdout.take());
+        let stderr = drain(child.stderr.take());
+
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(CHILD_POLL_INTERVAL),
+                waited => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    // The drain threads end once the pipes close. They are not
+                    // joined, in case something the child started holds them.
+                    waited?;
+                    let program = Path::new(self.get_program());
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "{} did not finish within {} minutes",
+                            program.file_name().unwrap_or_default().to_string_lossy(),
+                            timeout.as_secs().div_ceil(60)
+                        ),
+                    ));
+                }
+            }
+        };
+        Ok(Output {
+            status,
+            stdout: stdout.join().unwrap_or_default(),
+            stderr: stderr.join().unwrap_or_default(),
+        })
+    }
+}
+
+/// Reads a child's pipe on its own thread, so a chatty child never stalls on a
+/// full pipe while its caller waits for it to exit.
+fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        bytes
+    })
 }
 
 /// Removes temporary and backup files a previous run left behind after a
@@ -807,6 +937,106 @@ mod tests {
             .filter(|entry| is_work_file(&entry.path()))
             .count();
         assert_eq!(leftovers, 0);
+    }
+
+    /// Installs a stand-in ffmpeg. Copied into place with `cp` so no write
+    /// descriptor stays open in this process, which parallel tests forking
+    /// children would otherwise inherit ("Text file busy").
+    #[cfg(unix)]
+    fn stand_in_ffmpeg(directory: &Path, script: &str) -> Tools {
+        use std::os::unix::fs::PermissionsExt;
+        let source = directory.join("ffmpeg.source");
+        let path = directory.join("ffmpeg");
+        std::fs::write(&source, script).unwrap();
+        let copied = Command::new("cp").arg(&source).arg(&path).status().unwrap();
+        assert!(copied.success());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Tools {
+            ffmpeg: path,
+            ffprobe: None,
+        }
+    }
+
+    fn work_files_in(directory: &Path) -> usize {
+        std::fs::read_dir(directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| is_work_file(&entry.path()))
+            .count()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_remux_is_stopped_and_leaves_the_book_untouched() {
+        let tools_dir = tempfile::tempdir().unwrap();
+        // Starts writing its output, then never finishes.
+        let tools = stand_in_ffmpeg(
+            tools_dir.path(),
+            "#!/bin/sh\nfor last; do :; done\nprintf partial > \"$last\"\nexec sleep 600\n",
+        );
+        let root = tempfile::tempdir().unwrap();
+        let book = root.path().join("book.m4b");
+        std::fs::write(&book, b"pretend audiobook").unwrap();
+
+        let started = Instant::now();
+        let error = convert_in_place_within(&tools, &book, 0, |_| Duration::from_millis(200))
+            .expect_err("a hung ffmpeg should fail the conversion");
+        assert!(
+            matches!(&error, ConversionError::Io(error) if error.kind() == io::ErrorKind::TimedOut),
+            "unexpected error: {error}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(60));
+        assert_eq!(std::fs::read(&book).unwrap(), b"pretend audiobook");
+        assert_eq!(work_files_in(root.path()), 0);
+    }
+
+    #[test]
+    fn the_remux_deadline_grows_with_the_book() {
+        let four_gib = 4 * 1024 * 1024 * 1024;
+        assert!(remux_timeout(four_gib) > Duration::from_secs(60 * 60));
+        assert!(remux_timeout(0) >= REMUX_BASE_TIMEOUT);
+    }
+
+    /// The name is swapped for a link while ffmpeg runs. The conversion is
+    /// refused at the swap, so the link is not replaced with a copy of what it
+    /// points at, and that file is not rewritten.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_replaced_during_the_remux_is_not_swapped() {
+        let Some(real) = discover_tools(None, None) else {
+            eprintln!("skipping: ffmpeg is not installed");
+            return;
+        };
+        let root = tempfile::tempdir().unwrap();
+        let book = root.path().join("book.m4b");
+        let created = Command::new(&real.ffmpeg)
+            .args(["-nostdin", "-loglevel", "error", "-y", "-f", "lavfi"])
+            .args(["-i", "sine=frequency=440:duration=3", "-c:a", "aac"])
+            .arg(&book)
+            .status()
+            .unwrap();
+        assert!(created.success());
+
+        let tools_dir = tempfile::tempdir().unwrap();
+        let tools = stand_in_ffmpeg(
+            tools_dir.path(),
+            &format!(
+                "#!/bin/sh\nprev=\nfor arg; do [ \"$prev\" = -i ] && input=$arg; prev=$arg; done\n\
+                 mv \"$input\" \"$input.elsewhere\" && ln -s \"$input.elsewhere\" \"$input\"\n\
+                 exec '{}' \"$@\"\n",
+                real.ffmpeg.display()
+            ),
+        );
+        let elsewhere = root.path().join("book.m4b.elsewhere");
+
+        let error = convert_in_place(&tools, &book, 0).expect_err("the swap should be refused");
+        assert!(
+            matches!(error, ConversionError::Verification { .. }),
+            "unexpected error: {error}"
+        );
+        assert!(std::fs::symlink_metadata(&book).unwrap().is_symlink());
+        assert_eq!(inspect(&elsewhere).unwrap(), Layout::Trailing);
+        assert_eq!(work_files_in(root.path()), 0);
     }
 
     #[test]
