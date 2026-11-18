@@ -839,6 +839,7 @@ async fn measure_window(
         .arg(format!("{:.3}", window.start_seconds))
         .arg("-t")
         .arg(format!("{:.3}", window.length_seconds))
+        .args(FFMPEG_TRACK_INPUT_OPTIONS)
         .arg("-i")
         .arg(path)
         .arg("-map")
@@ -1233,6 +1234,52 @@ Input #0, wav, from 'x.wav':
         std::fs::write(&path, b"not audio at all").unwrap();
         let (measurements, sampled) = analyze_book(&tools, &[(path, Some(100.0))]).await.unwrap();
         assert!(measurements.is_none());
+        assert_eq!(sampled, 0.0);
+    }
+
+    /// A track is listed by its extension, but ffmpeg picks a demuxer from the
+    /// bytes. A `.mp3` that is really a DASH manifest must not be followed to
+    /// the file it names outside the library.
+    #[tokio::test]
+    async fn a_manifest_named_as_audio_is_not_followed_outside_the_library() {
+        let Some(tools) = faststart::discover_tools(None, None) else {
+            eprintln!("skipping: ffmpeg is not installed");
+            return;
+        };
+        let outside = tempfile::tempdir().unwrap();
+        let referenced = outside.path().join("elsewhere.m4a");
+        let status = std::process::Command::new(&tools.ffmpeg)
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y"])
+            .args(["-f", "lavfi", "-i", "anoisesrc=d=5:c=pink:r=44100:a=0.5"])
+            .args(["-c:a", "aac"])
+            .arg(&referenced)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let library = tempfile::tempdir().unwrap();
+        let decoy = library.path().join("track.mp3");
+        std::fs::write(
+            &decoy,
+            format!(
+                "<?xml version=\"1.0\"?>\n\
+                 <MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"static\" \
+                 profiles=\"urn:mpeg:dash:profile:isoff-on-demand:2011\" \
+                 mediaPresentationDuration=\"PT5S\" minBufferTime=\"PT1S\">\
+                 <Period><AdaptationSet mimeType=\"audio/mp4\">\
+                 <Representation id=\"a\" bandwidth=\"64000\">\
+                 <BaseURL>{}</BaseURL></Representation></AdaptationSet></Period></MPD>\n",
+                referenced.display()
+            ),
+        )
+        .unwrap();
+
+        let (direct, _) = analyze_book(&tools, &[(referenced, Some(5.0))])
+            .await
+            .unwrap();
+        assert!(direct.is_some(), "the referenced file is itself measurable");
+        let (through_manifest, sampled) =
+            analyze_book(&tools, &[(decoy, Some(5.0))]).await.unwrap();
+        assert!(through_manifest.is_none(), "{through_manifest:?}");
         assert_eq!(sampled, 0.0);
     }
 
