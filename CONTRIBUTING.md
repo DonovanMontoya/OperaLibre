@@ -147,7 +147,10 @@ AI assistance must be disclosed:
   session links.
 - **Attribution:** reserve `Co-Authored-By:` trailers for real human
   collaborators. AI agents, tools, models, and providers must not be listed as
-  commit authors, committers, coauthors, or repository contributors.
+  commit authors, committers, coauthors, or repository contributors. Commits
+  carry your own name, email, and signature, even when an agent made them, and
+  commits, PRs, and comments carry no tool footers such as "Generated with
+  Claude Code" or agent session links. The "AI assistance" section covers it.
 
 ## License
 
