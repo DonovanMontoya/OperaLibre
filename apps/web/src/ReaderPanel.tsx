@@ -3,7 +3,7 @@ import type { useReadalong } from "./useReadalong";
 import type { useReaderPreferences } from "./useReaderPreferences";
 import type { useSleepTimer } from "./useSleepTimer";
 import { ArrowLeft, BookOpen, ExternalLink, FileText, Images, LoaderCircle, Pause, ScrollText, Sparkles, X } from "lucide-react";
-import { companionKindLabel, describeCompanion, READ_ALONG_MODE_LABELS } from "./readalong";
+import { companionKindLabel, companionOpenUrl, describeCompanion, READ_ALONG_MODE_LABELS } from "./readalong";
 import { GALLERY_COMPANION_ID } from "./useReadalong";
 import { EpubReadalong } from "./EpubReadalong";
 import { chapterAtBookPosition, type ChapterSegment } from "./chapters";
@@ -11,7 +11,7 @@ import { getCachedEpubBytes, loadCompanionBytes, loadEpubSource } from "./offlin
 import { FOLLOW_AGGRESSIVENESS_LEAD_SECONDS } from "./readalongPreferences";
 import { formatTime } from "./formatting";
 import { currentAppPrefersDark, readReaderThemeChoice, resolveReaderTheme } from "./readerTheme";
-import type { Book, JobStatus } from "./types";
+import type { Book, CompanionFile, JobStatus } from "./types";
 import { jobProblem } from "./syncQuality";
 import { SyncProblem } from "./SyncProblem";
 import type { NativePlayerSheet } from "./PlayerSheets";
@@ -370,11 +370,14 @@ export function renderReadalongPanel({
     nativeTabsReady,
     nativeTabsShown
   } = nativeChrome;
+  const openUrl = (file: CompanionFile) =>
+    companionOpenUrl(companionPreviewUrl(file), native, window.location.href);
+  const activeOpenUrl = activeCompanion && activeCompanionUrl && !showGallery ? openUrl(activeCompanion) : undefined;
 
   const companionContent = showGallery ? (
     <div className="readalong-gallery">
       {selectedCompanionGroups.images.map((image) => (
-        <a key={image.id} href={companionPreviewUrl(image)} target="_blank" rel="noreferrer">
+        <a key={image.id} href={openUrl(image)} target="_blank" rel="noreferrer">
           <img src={companionPreviewUrl(image)} alt={image.fileName} loading="lazy" />
           <span>{image.fileName}</span>
         </a>
@@ -479,8 +482,8 @@ export function renderReadalongPanel({
           </div>
           <div className="readalong-actions">
             {narrationFollowActive ? readerSyncActions : null}
-            {activeCompanionUrl && !showGallery ? (
-              <a className="download-btn" href={activeCompanion ? companionPreviewUrl(activeCompanion) : undefined} target="_blank" rel="noreferrer">
+            {activeOpenUrl ? (
+              <a className="download-btn" href={activeOpenUrl} target="_blank" rel="noreferrer">
                 <ExternalLink size={13} />
                 <span>Open</span>
               </a>
