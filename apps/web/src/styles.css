@@ -9255,24 +9255,36 @@ html.native-app .games-head { flex: none; }
 html.native-app .games-head h1 { margin: 3px 0 1px; font-size: clamp(1.9rem, 8vw, 2.65rem); }
 html.native-app .games-head p { margin: 0; color: rgba(var(--on-spine-rgb), 0.55); }
 
+/* A row of tabs on a shared rule. Auto columns give each name its full width
+   when there is room and shrink no further than its longest word, so larger
+   system text wraps a name onto two centred lines instead of spilling out. */
 html.native-app .games-switcher {
   flex: none;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 4px;
+  grid-template-columns: repeat(3, auto);
+  gap: 6px;
   margin: 14px 0 10px;
-  padding: 4px;
-  border: 1px solid rgba(var(--spine-gold-rgb), 0.14);
-  border-radius: 15px;
-  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(var(--spine-gold-rgb), 0.16);
 }
 
 html.native-app .games-switcher button {
-  display: flex; align-items: center; justify-content: center; gap: 7px;
-  min-height: 38px; border-radius: 11px; color: rgba(var(--on-spine-rgb), 0.55);
-  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em;
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 44px; padding: 6px 4px 9px;
+  color: rgba(var(--on-spine-rgb), 0.6);
+  font-size: 0.82rem; font-weight: 600; line-height: 1.15;
+  text-align: center; text-wrap: balance;
 }
-html.native-app .games-switcher button.active { color: #24150d; background: var(--gold-soft); box-shadow: 0 8px 22px -14px #000; }
+html.native-app .games-switcher button.active { color: var(--spine-gold); }
+html.native-app .games-switcher button.active::after {
+  content: "";
+  position: absolute;
+  inset: auto 12% -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+}
+html.native-app .games-switcher button:focus-visible { outline: 2px solid var(--spine-gold); outline-offset: -2px; border-radius: 6px; }
 
 html.native-app .game-card {
   flex: 0 1 auto;
@@ -9693,12 +9705,6 @@ html.native-app .cover-tools button:disabled { opacity: .35; }
 /* A choice that would throw progress away asks twice. */
 html.native-app :is(.game-reset, .cover-tools button).armed { color: #24150d; background: var(--gold-soft); box-shadow: 0 0 0 2px rgba(var(--spine-gold-rgb), 0.45); }
 
-/* Three games share a narrow phone's switcher: the names keep the room. */
-@media (max-width: 430px) {
-  html.native-app .games-switcher button { gap: 0; padding-inline: 4px; letter-spacing: .02em; }
-  html.native-app .games-switcher button svg { display: none; }
-}
-
 @media (prefers-reduced-motion: reduce) {
   html.native-app :is(.shelf-stack.rejected .shelf-books, .shelf-book.landing, .shelf-done, .slide-face, .slide-peek) { animation: none; }
   html.native-app :is(.slide-tile, .slide-face) { transition: none; }
@@ -9741,14 +9747,9 @@ html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(var(
     grid-row: 2;
     align-self: start;
     margin: 16px 0 0;
-    padding: 5px;
   }
 
-  html.native-app .games-switcher button {
-    justify-content: flex-start;
-    min-height: 46px;
-    padding-inline: 13px;
-  }
+  html.native-app .games-switcher button { min-height: 48px; }
 
   html.native-app .game-card .game-title-row {
     grid-column: 1;
@@ -16598,18 +16599,13 @@ html.native-app .recent-row {
   html.native-app .games-switcher {
     grid-column: 1;
     grid-row: 2;
-    grid-template-columns: 1fr;
     align-self: start;
     margin: 8px 0 0;
-    padding: 3px;
-    border-radius: 12px;
   }
 
   html.native-app .games-switcher button {
-    justify-content: flex-start;
     min-height: 36px;
-    padding-inline: 8px;
-    font-size: .6rem;
+    font-size: .7rem;
   }
 
   html.native-app .game-card {
@@ -17770,7 +17766,6 @@ html.native-app[data-shelf-transition="player-split"]::view-transition-new(shelf
   html.native-app .games-switcher {
     grid-column: 1;
     grid-row: 2;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
     margin: 0;
   }
 
