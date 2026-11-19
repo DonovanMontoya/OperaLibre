@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { Grid3X3, Image as ImageIcon, Library, RotateCcw, Sparkles } from "lucide-react";
+import { Grid3X3, RotateCcw, Sparkles } from "lucide-react";
 import { CoverGrid } from "./CoverGrid";
 import { haptic } from "./native";
 import { ShelfSort } from "./ShelfSortGame";
@@ -393,9 +393,9 @@ function ChapterMatch() {
 }
 
 const GAMES = [
-  { id: "match", title: "Chapter Match", icon: Grid3X3 },
-  { id: "shelf", title: "Shelf Sort", icon: Library },
-  { id: "cover", title: "Cover Grid", icon: ImageIcon }
+  { id: "match", title: "Chapter Match" },
+  { id: "shelf", title: "Shelf Sort" },
+  { id: "cover", title: "Cover Grid" }
 ] as const;
 
 export function GamesPage({ books, libraryKey, libraryReady, onGameChange }: {
@@ -411,8 +411,8 @@ export function GamesPage({ books, libraryKey, libraryReady, onGameChange }: {
   return <section className={`games-shell games-${game}`} aria-label="Games">
     <header className="games-head"><span className="eyebrow"><Sparkles size={13} /> The Parlour</span><h1>Games</h1><p>Small diversions for long listens.</p></header>
     <div className="games-switcher" role="tablist" aria-label="Choose a game">
-      {GAMES.map(({ id, title, icon: Icon }) => (
-        <button type="button" role="tab" aria-selected={game === id} className={game === id ? "active" : ""} onClick={() => setGame(id)} key={id}><Icon size={16} /> {title}</button>
+      {GAMES.map(({ id, title }) => (
+        <button type="button" role="tab" aria-selected={game === id} className={game === id ? "active" : ""} onClick={() => setGame(id)} key={id}>{title}</button>
       ))}
     </div>
     {game === "match" ? <ChapterMatch /> : game === "shelf" ? <ShelfSort /> : libraryReady
