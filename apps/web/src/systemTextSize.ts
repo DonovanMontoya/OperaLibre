@@ -18,7 +18,9 @@ export function followSystemTextSize(root: HTMLElement): void {
   const probe = document.createElement("span");
   probe.setAttribute("aria-hidden", "true");
   // An engine without the system font keyword keeps font-size 0, which reads as "no scaling".
-  probe.style.cssText = "position:absolute;visibility:hidden;pointer-events:none;font-size:0;font:-apple-system-body";
+  // Pinned to the top corner: left at its static position after <body>, its
+  // line of text made every iOS screen scroll by that much.
+  probe.style.cssText = "position:absolute;top:0;left:0;visibility:hidden;pointer-events:none;font-size:0;font:-apple-system-body";
   probe.textContent = "A";
   root.appendChild(probe);
 
