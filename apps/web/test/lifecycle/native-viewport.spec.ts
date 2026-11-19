@@ -87,3 +87,14 @@ test('returning to the foreground refreshes a viewport resized while hidden', as
   await expect(page.locator('html')).toHaveCSS('--native-viewport-height', '951px');
   await expect(page.locator('html')).not.toHaveClass(/native-keyboard-open/);
 });
+
+test('the system text size probe never makes a full-height screen scroll', async ({ page }) => {
+  // Chromium has no -apple-system-body font, so give the probe the line of
+  // text WebKit gives it on iOS (larger with larger system text).
+  await page.evaluate(() => {
+    const probe = Array.from(document.documentElement.children)
+      .find(child => child instanceof HTMLSpanElement && child.getAttribute('aria-hidden') === 'true') as HTMLElement;
+    probe.style.font = '40px/1.3 serif';
+  });
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(951);
+});
