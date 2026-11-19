@@ -43,19 +43,13 @@ async fn cancelled_revocation_waiter_still_persists_revocation_and_cancels_live_
     entered.notified().await;
     let state = server.fixture.state.clone();
     let revoke_token = token.clone();
-    let waiter = tokio::spawn(async move {
+    let admitted = Arc::new(tokio::sync::Notify::new());
+    let waiter = tokio::spawn(REVOCATION_ADMITTED.scope(admitted.clone(), async move {
         revoke_share(State(state), Extension(auth), Path(revoke_token)).await
-    });
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if INVITATION_GATE.try_lock().is_err() {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
+    }));
+    tokio::time::timeout(Duration::from_secs(5), admitted.notified())
+        .await
+        .unwrap();
     waiter.abort();
     let _ = waiter.await;
     release.send(()).unwrap();
