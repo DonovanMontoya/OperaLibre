@@ -1,3 +1,4 @@
+import { readingStreakSnapshot } from "./profileCache";
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 
 /**
@@ -14,6 +15,8 @@ import {
   type CarPlaybackSession
 } from "./carLibrary.ts";
 
+import type { ProfileStats } from "./types";
+
 type CarPlayState = {
   connected: boolean;
   /** Set while a book the car itself started is loaded in the native player. */
@@ -28,6 +31,8 @@ interface CarPlayBridgePlugin {
    * honest than hand-walking dictionaries through the bridge.
    */
   setLibrary(options: { snapshot: string }): Promise<void>;
+  hasStreakWidget(): Promise<{ installed: boolean }>;
+  setReadingStreak(options: { current: number; longest: number; activity: boolean[] }): Promise<void>;
   clearLibrary(): Promise<void>;
   stopPlayback(options: { bookId: string }): Promise<{ connected: boolean; carOwnedBookId?: string; sessions: string }>;
   getState(): Promise<{ connected: boolean; carOwnedBookId?: string; sessions: string }>;
@@ -89,6 +94,15 @@ export async function clearCarLibrary() {
   libraryAccess.end();
   releaseCarPlaybackOwnership();
   if (supportsCarPlay()) await CarPlayBridge.clearLibrary();
+}
+
+export async function hasStreakWidget() {
+  return supportsCarPlay() && (await CarPlayBridge.hasStreakWidget()).installed;
+}
+
+export async function syncReadingStreak(scope: string, stats: ProfileStats) {
+  if (!supportsCarPlay() || !libraryAccess.allows(scope)) return;
+  await CarPlayBridge.setReadingStreak(readingStreakSnapshot(stats));
 }
 
 export async function syncCarLibrary(snapshot: CarLibrarySnapshot) {

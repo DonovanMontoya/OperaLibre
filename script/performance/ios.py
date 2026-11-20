@@ -20,7 +20,7 @@ def add(kind, fields):
 def quote(value): return json.dumps(str(value))
 files = [ROOT / 'apps/web/ios/App/App' / name for name in
          ['NativeAudio.swift', 'AudiobookPlayer.swift', 'PacketAudioAsset.swift', 'CarLibrary.swift', 'CarLibraryStore.swift',
-          'CarPlayCoordinator.swift', 'BackgroundDownloads.swift', 'BackgroundDownloadPolicy.swift',
+          'CarPlayCoordinator.swift', 'ResumeWidgetBook.swift', 'BackgroundDownloads.swift', 'BackgroundDownloadPolicy.swift',
           'StoredRecords.swift']]
 files += [ROOT / 'apps/web/ios/Tests/PerformanceTests.swift']
 refs = [add('PBXFileReference', f'lastKnownFileType = sourcecode.swift; path = {quote(p)}; sourceTree = "<absolute>";') for p in files]

@@ -180,6 +180,12 @@ On a wide iPad window, **Shelf** shows the collection across the available width
 
 To reach the same server from more than one network, save its other addresses under **Settings → Connection → Address aliases**. Each address keeps its own sign-in: the first time you use one, tap **Sign in** beside it and enter your password. After that the app moves between your signed-in addresses by itself whenever one stops answering. Signing out signs you out of all of them.
 
+#### Home Screen widget
+
+On iPhone or iPad, add OperaLibre’s **Continue listening** widget from the Home Screen widget gallery. Choose small for the cover and Resume, medium for the author and time left, or large for a progress bar as well. Tap the widget to open OperaLibre and resume the displayed book. If the widget is empty, play an audiobook in the app first.
+
+Choose **Reading streak** in the same gallery to see consecutive reading days. Medium and large also show your longest streak and recent listening days. The date tells you when the app last synced your Reading Ledger. Open the app while connected to refresh it. Device-only libraries do not measure streaks.
+
 #### Siri and Shortcuts
 
 On iOS 16 or later, say **“Siri, resume OperaLibre,”** **“Siri, resume my

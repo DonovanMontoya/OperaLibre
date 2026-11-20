@@ -1,5 +1,6 @@
 import Capacitor
 import Foundation
+import WidgetKit
 
 /// The web layer's side of CarPlay.
 ///
@@ -16,6 +17,8 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "CarPlayBridgePlugin"
     public let jsName = "CarPlayBridge"
     public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "hasStreakWidget", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setReadingStreak", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setLibrary", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clearLibrary", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stopPlayback", returnType: CAPPluginReturnPromise),
@@ -47,9 +50,46 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    @objc public func hasStreakWidget(_ call: CAPPluginCall) {
+        WidgetCenter.shared.getCurrentConfigurations { result in
+            let installed = (try? result.get())?.contains { $0.kind == ReadingStreak.kind } ?? false
+            call.resolve(["installed": installed])
+        }
+    }
+
+    @objc public func setReadingStreak(_ call: CAPPluginCall) {
+        guard let current = call.getInt("current"), current >= 0,
+              let longest = call.getInt("longest"), longest >= current,
+              let activity = call.getArray("activity", Bool.self), activity.count <= 28,
+              let file = ReadingStreak.file else {
+            call.reject("Invalid reading streak.")
+            return
+        }
+        DispatchQueue.main.async {
+            let streak = ReadingStreak(current: current, longest: longest, activity: activity,
+                                       asOf: Calendar.current.startOfDay(for: Date()))
+            do {
+                if ReadingStreak.read() != streak {
+                    try JSONEncoder().encode(streak).write(to: file, options: .atomic)
+                    WidgetCenter.shared.reloadTimelines(ofKind: ReadingStreak.kind)
+                }
+                call.resolve()
+            } catch {
+                call.reject("Could not save reading streak.")
+            }
+        }
+    }
+
     @objc public func clearLibrary(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             self.coordinator.clearLibrary()
+            if let file = ReadingStreak.file, FileManager.default.fileExists(atPath: file.path) {
+                do { try FileManager.default.removeItem(at: file) } catch {
+                    call.reject("Could not clear reading streak.")
+                    return
+                }
+            }
+            WidgetCenter.shared.reloadTimelines(ofKind: ReadingStreak.kind)
             call.resolve()
         }
     }

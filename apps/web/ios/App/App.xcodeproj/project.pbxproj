@@ -7,12 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		C91700012E32000100B6D001 /* GiftArchiveExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C91700022E32000100B6D001 /* GiftArchiveExtractor.swift */; };
-		B17000012E32000100B6D001 /* LibroDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = B17000022E32000100B6D001 /* LibroDevice.swift */; };
-		D0F01D012F10000100A1B2C3 /* DeviceFold.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F01D022F10000100A1B2C3 /* DeviceFold.swift */; };
-		B17100012E32000100B6D001 /* LibroDeviceResponse.swift in Sources */ = {isa = PBXBuildFile; fileRef = B17100022E32000100B6D001 /* LibroDeviceResponse.swift */; };
-		B17000032E32000100B6D001 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = B17000042E32000100B6D001 /* ZIPFoundation */; };
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
+		3FA542C36D88B1F483C0573F /* ReadingStreakWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F64E48D5AA0F9F092254FB /* ReadingStreakWidget.swift */; };
+		3FF28A60A632607C0084ABE0 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6EDC2A7C224B1F24E32225AC /* Foundation.framework */; };
+		40E8727385A4560545640727 /* ResumeWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 16E1F9189FFF399D4CF0BDC7 /* ResumeWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 4D22ABE82AF431CB00220026 /* CapApp-SPM */; };
 		50379B232058CBB4000EE86E /* capacitor.config.json in Resources */ = {isa = PBXBuildFile; fileRef = 50379B222058CBB4000EE86E /* capacitor.config.json */; };
 		504EC3081FED79650016851F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 504EC3071FED79650016851F /* AppDelegate.swift */; };
@@ -25,24 +23,54 @@
 		A17B00152E32000100B6D001 /* NativeAudio.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00142E32000100B6D001 /* NativeAudio.swift */; };
 		A17B00172E32000100B6D001 /* BackgroundDownloadPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00162E32000100B6D001 /* BackgroundDownloadPolicy.swift */; };
 		A17B00212E32000100B6D001 /* AudiobookPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00202E32000100B6D001 /* AudiobookPlayer.swift */; };
-		DF4AA47D9F114099AB356078 /* PacketAudioAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBDDC1F5C59A4D29B6C175BF /* PacketAudioAsset.swift */; };
 		A17B00232E32000100B6D001 /* CarLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00222E32000100B6D001 /* CarLibrary.swift */; };
-		A17B00512E32000100B6D001 /* StoredRecords.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00502E32000100B6D001 /* StoredRecords.swift */; };
-		A17B002E2E32000100B6D001 /* CarLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B002D2E32000100B6D001 /* CarLibraryStore.swift */; };
 		A17B00252E32000100B6D001 /* CarPlayCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00242E32000100B6D001 /* CarPlayCoordinator.swift */; };
 		A17B00272E32000100B6D001 /* CarPlayScene.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00262E32000100B6D001 /* CarPlayScene.swift */; };
 		A17B00292E32000100B6D001 /* CarPlayBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00282E32000100B6D001 /* CarPlayBridge.swift */; };
 		A17B002B2E32000100B6D001 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B002A2E32000100B6D001 /* SceneDelegate.swift */; };
+		A17B002E2E32000100B6D001 /* CarLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B002D2E32000100B6D001 /* CarLibraryStore.swift */; };
 		A17B00312E32000100B6D001 /* AudiobookShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00302E32000100B6D001 /* AudiobookShortcuts.swift */; };
 		A17B00332E32000100B6D001 /* NativeTabs.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00322E32000100B6D001 /* NativeTabs.swift */; };
 		A17B00412E32000100B6D001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A17B00402E32000100B6D001 /* PrivacyInfo.xcprivacy */; };
+		A17B00512E32000100B6D001 /* StoredRecords.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00502E32000100B6D001 /* StoredRecords.swift */; };
+		B17000012E32000100B6D001 /* LibroDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = B17000022E32000100B6D001 /* LibroDevice.swift */; };
+		B17000032E32000100B6D001 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = B17000042E32000100B6D001 /* ZIPFoundation */; };
+		B17100012E32000100B6D001 /* LibroDeviceResponse.swift in Sources */ = {isa = PBXBuildFile; fileRef = B17100022E32000100B6D001 /* LibroDeviceResponse.swift */; };
+		BB869B554C3A1A06FDA992BF /* ResumeWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = F734D8DE704C26B94F9A8552 /* ResumeWidget.swift */; };
+		BFEFBEA9D9F8AADF59D5E458 /* ResumeWidgetBook.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEBEE84942E9E3A30E8758E6 /* ResumeWidgetBook.swift */; };
+		C91700012E32000100B6D001 /* GiftArchiveExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C91700022E32000100B6D001 /* GiftArchiveExtractor.swift */; };
+		CBE579FC7E9D981C5C46012E /* Alice.png in Resources */ = {isa = PBXBuildFile; fileRef = ACF3338BFFEE44D8E2F20539 /* Alice.png */; };
+		D0F01D012F10000100A1B2C3 /* DeviceFold.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F01D022F10000100A1B2C3 /* DeviceFold.swift */; };
+		DF4AA47D9F114099AB356078 /* PacketAudioAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBDDC1F5C59A4D29B6C175BF /* PacketAudioAsset.swift */; };
+		F727D0D355020DA51E85EAB4 /* ResumeWidgetBook.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEBEE84942E9E3A30E8758E6 /* ResumeWidgetBook.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		446305B8C9313F1E146CB8F1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 504EC2FC1FED79650016851F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F3419AA6D7DDC7EC0CB897F1;
+			remoteInfo = ResumeWidget;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		E43676C32A594D1FF52E289A /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				40E8727385A4560545640727 /* ResumeWidget.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
-		C91700022E32000100B6D001 /* GiftArchiveExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GiftArchiveExtractor.swift; sourceTree = "<group>"; };
-		B17000022E32000100B6D001 /* LibroDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibroDevice.swift; sourceTree = "<group>"; };
-		D0F01D022F10000100A1B2C3 /* DeviceFold.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceFold.swift; sourceTree = "<group>"; };
-		B17100022E32000100B6D001 /* LibroDeviceResponse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibroDeviceResponse.swift; sourceTree = "<group>"; };
+		16E1F9189FFF399D4CF0BDC7 /* ResumeWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ResumeWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
 		50379B222058CBB4000EE86E /* capacitor.config.json */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.json; path = capacitor.config.json; sourceTree = "<group>"; };
 		504EC3041FED79650016851F /* OperaLibre.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OperaLibre.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -52,24 +80,35 @@
 		504EC3111FED79650016851F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		504EC3131FED79650016851F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		50B271D01FEDC1A000F3C39B /* public */ = {isa = PBXFileReference; lastKnownFileType = folder; path = public; sourceTree = "<group>"; };
+		6EDC2A7C224B1F24E32225AC /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
+		74B244A015F30DC77D522BF9 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 		A17B00102E32000100B6D001 /* BackgroundDownloads.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundDownloads.swift; sourceTree = "<group>"; };
 		A17B00122E32000100B6D001 /* ViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewController.swift; sourceTree = "<group>"; };
 		A17B00142E32000100B6D001 /* NativeAudio.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAudio.swift; sourceTree = "<group>"; };
 		A17B00162E32000100B6D001 /* BackgroundDownloadPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundDownloadPolicy.swift; sourceTree = "<group>"; };
 		A17B00202E32000100B6D001 /* AudiobookPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudiobookPlayer.swift; sourceTree = "<group>"; };
-		FBDDC1F5C59A4D29B6C175BF /* PacketAudioAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketAudioAsset.swift; sourceTree = "<group>"; };
 		A17B00222E32000100B6D001 /* CarLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarLibrary.swift; sourceTree = "<group>"; };
-		A17B00502E32000100B6D001 /* StoredRecords.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoredRecords.swift; sourceTree = "<group>"; };
-		A17B002D2E32000100B6D001 /* CarLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarLibraryStore.swift; sourceTree = "<group>"; };
 		A17B00242E32000100B6D001 /* CarPlayCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayCoordinator.swift; sourceTree = "<group>"; };
 		A17B00262E32000100B6D001 /* CarPlayScene.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayScene.swift; sourceTree = "<group>"; };
 		A17B00282E32000100B6D001 /* CarPlayBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayBridge.swift; sourceTree = "<group>"; };
 		A17B002A2E32000100B6D001 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
-		A17B00302E32000100B6D001 /* AudiobookShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudiobookShortcuts.swift; sourceTree = "<group>"; };
 		A17B002C2E32000100B6D001 /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
+		A17B002D2E32000100B6D001 /* CarLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarLibraryStore.swift; sourceTree = "<group>"; };
+		A17B00302E32000100B6D001 /* AudiobookShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudiobookShortcuts.swift; sourceTree = "<group>"; };
 		A17B00322E32000100B6D001 /* NativeTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTabs.swift; sourceTree = "<group>"; };
 		A17B00402E32000100B6D001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		A17B00502E32000100B6D001 /* StoredRecords.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoredRecords.swift; sourceTree = "<group>"; };
+		ACF3338BFFEE44D8E2F20539 /* Alice.png */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = image.png; path = Alice.png; sourceTree = "<group>"; };
+		B17000022E32000100B6D001 /* LibroDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibroDevice.swift; sourceTree = "<group>"; };
+		B17100022E32000100B6D001 /* LibroDeviceResponse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibroDeviceResponse.swift; sourceTree = "<group>"; };
+		BD1D09445AF0394C7BD39301 /* ResumeWidget.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = ResumeWidget.entitlements; sourceTree = "<group>"; };
+		C7F64E48D5AA0F9F092254FB /* ReadingStreakWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ReadingStreakWidget.swift; sourceTree = "<group>"; };
+		C91700022E32000100B6D001 /* GiftArchiveExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GiftArchiveExtractor.swift; sourceTree = "<group>"; };
+		D0F01D022F10000100A1B2C3 /* DeviceFold.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceFold.swift; sourceTree = "<group>"; };
+		F734D8DE704C26B94F9A8552 /* ResumeWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ResumeWidget.swift; sourceTree = "<group>"; };
+		FBDDC1F5C59A4D29B6C175BF /* PacketAudioAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketAudioAsset.swift; sourceTree = "<group>"; };
+		FEBEE84942E9E3A30E8758E6 /* ResumeWidgetBook.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ResumeWidgetBook.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -82,6 +121,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA583EEEEDC4F55ECC8FF410 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3FF28A60A632607C0084ABE0 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -91,6 +138,8 @@
 				958DCC722DB07C7200EA8C5F /* debug.xcconfig */,
 				504EC3061FED79650016851F /* App */,
 				504EC3051FED79650016851F /* Products */,
+				63316607037C7068E9851002 /* Frameworks */,
+				958F9A72BEA3967A22B3E568 /* ResumeWidget */,
 			);
 			sourceTree = "<group>";
 		};
@@ -98,6 +147,7 @@
 			isa = PBXGroup;
 			children = (
 				504EC3041FED79650016851F /* OperaLibre.app */,
+				16E1F9189FFF399D4CF0BDC7 /* ResumeWidget.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -134,8 +184,38 @@
 				A17B002C2E32000100B6D001 /* App.entitlements */,
 				2FAD9762203C412B000D30F8 /* config.xml */,
 				50B271D01FEDC1A000F3C39B /* public */,
+				FEBEE84942E9E3A30E8758E6 /* ResumeWidgetBook.swift */,
 			);
 			path = App;
+			sourceTree = "<group>";
+		};
+		63316607037C7068E9851002 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				8C7F5329915B3886103386E2 /* iOS */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		8C7F5329915B3886103386E2 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				6EDC2A7C224B1F24E32225AC /* Foundation.framework */,
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
+		958F9A72BEA3967A22B3E568 /* ResumeWidget */ = {
+			isa = PBXGroup;
+			children = (
+				F734D8DE704C26B94F9A8552 /* ResumeWidget.swift */,
+				74B244A015F30DC77D522BF9 /* Info.plist */,
+				BD1D09445AF0394C7BD39301 /* ResumeWidget.entitlements */,
+				ACF3338BFFEE44D8E2F20539 /* Alice.png */,
+				C7F64E48D5AA0F9F092254FB /* ReadingStreakWidget.swift */,
+			);
+			name = ResumeWidget;
+			path = ResumeWidget;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -148,11 +228,13 @@
 				504EC3001FED79650016851F /* Sources */,
 				504EC3011FED79650016851F /* Frameworks */,
 				504EC3021FED79650016851F /* Resources */,
+				E43676C32A594D1FF52E289A /* Embed App Extensions */,
 				E17C00012E32000100B6D001 /* Check export compliance */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				683923845334F4663425A5F9 /* PBXTargetDependency */,
 			);
 			name = App;
 			packageProductDependencies = (
@@ -162,6 +244,23 @@
 			productName = App;
 			productReference = 504EC3041FED79650016851F /* OperaLibre.app */;
 			productType = "com.apple.product-type.application";
+		};
+		F3419AA6D7DDC7EC0CB897F1 /* ResumeWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 184B573419A7997DB4FE44A0 /* Build configuration list for PBXNativeTarget "ResumeWidget" */;
+			buildPhases = (
+				A475699186E26E067171432F /* Sources */,
+				AA583EEEEDC4F55ECC8FF410 /* Frameworks */,
+				BBB51E8E63CB2C505F7D5EA7 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ResumeWidget;
+			productName = ResumeWidget;
+			productReference = 16E1F9189FFF399D4CF0BDC7 /* ResumeWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -189,7 +288,7 @@
 			);
 			mainGroup = 504EC2FB1FED79650016851F;
 			packageReferences = (
-				B17000052E32000100B6D001 /* ZIPFoundation */,
+				B17000052E32000100B6D001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 				D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */,
 			);
 			productRefGroup = 504EC3051FED79650016851F /* Products */;
@@ -197,6 +296,7 @@
 			projectRoot = "";
 			targets = (
 				504EC3031FED79650016851F /* App */,
+				F3419AA6D7DDC7EC0CB897F1 /* ResumeWidget */,
 			);
 		};
 /* End PBXProject section */
@@ -213,6 +313,14 @@
 				504EC30D1FED79650016851F /* Main.storyboard in Resources */,
 				2FAD9763203C412B000D30F8 /* config.xml in Resources */,
 				A17B00412E32000100B6D001 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BBB51E8E63CB2C505F7D5EA7 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CBE579FC7E9D981C5C46012E /* Alice.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -263,10 +371,30 @@
 				A17B00292E32000100B6D001 /* CarPlayBridge.swift in Sources */,
 				A17B002B2E32000100B6D001 /* SceneDelegate.swift in Sources */,
 				A17B00312E32000100B6D001 /* AudiobookShortcuts.swift in Sources */,
+				BFEFBEA9D9F8AADF59D5E458 /* ResumeWidgetBook.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A475699186E26E067171432F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB869B554C3A1A06FDA992BF /* ResumeWidget.swift in Sources */,
+				F727D0D355020DA51E85EAB4 /* ResumeWidgetBook.swift in Sources */,
+				3FA542C36D88B1F483C0573F /* ReadingStreakWidget.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		683923845334F4663425A5F9 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ResumeWidget;
+			target = F3419AA6D7DDC7EC0CB897F1 /* ResumeWidget */;
+			targetProxy = 446305B8C9313F1E146CB8F1 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXVariantGroup section */
 		504EC30B1FED79650016851F /* Main.storyboard */ = {
@@ -445,9 +573,61 @@
 			};
 			name = Release;
 		};
+		B16703C4141D9E12C593456F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = ResumeWidget/ResumeWidget.entitlements;
+				CURRENT_PROJECT_VERSION = 6;
+				DEVELOPMENT_TEAM = WS7DWR8G56;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ResumeWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 1.3.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.donovanmontoya.operalibre.ResumeWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		DADE8EC66493BAC6EA9686CF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = ResumeWidget/ResumeWidget.entitlements;
+				CURRENT_PROJECT_VERSION = 6;
+				DEVELOPMENT_TEAM = WS7DWR8G56;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ResumeWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 1.3.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.donovanmontoya.operalibre.ResumeWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		184B573419A7997DB4FE44A0 /* Build configuration list for PBXNativeTarget "ResumeWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DADE8EC66493BAC6EA9686CF /* Release */,
+				B16703C4141D9E12C593456F /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		504EC2FF1FED79650016851F /* Build configuration list for PBXProject "App" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -475,15 +655,29 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		B17000052E32000100B6D001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.9.20;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
-		B17000042E32000100B6D001 /* ZIPFoundation */ = {isa = XCSwiftPackageProductDependency; package = B17000052E32000100B6D001; productName = ZIPFoundation; };
 		4D22ABE82AF431CB00220026 /* CapApp-SPM */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */;
 			productName = "CapApp-SPM";
 		};
+		B17000042E32000100B6D001 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B17000052E32000100B6D001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
 /* End XCSwiftPackageProductDependency section */
-		B17000052E32000100B6D001 /* ZIPFoundation */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/weichsel/ZIPFoundation.git"; requirement = {kind = exactVersion; version = 0.9.20; }; };
 	};
 	rootObject = 504EC2FC1FED79650016851F /* Project object */;
 }
