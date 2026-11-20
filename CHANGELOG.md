@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- iPhone and iPad have two Home Screen widgets. Continue listening comes in small, medium, and large sizes, and tapping it resumes the book it shows. The reading streak widget shows your current and longest streaks and recent activity. ([#535](https://github.com/DonovanMontoya/OperaLibre/pull/535))
+- On a phone or tablet, hold a planned book in Up Next and drag it to a new place. ([#520](https://github.com/DonovanMontoya/OperaLibre/pull/520))
+- Settings → Behavior in the iPhone and Android apps has Remove downloads when finished, which deletes a book's downloaded audio from the phone when you finish it. It is off by default, and books imported from the phone are never removed. ([#519](https://github.com/DonovanMontoya/OperaLibre/pull/519))
+- Games has two new games in place of Word Grid: Shelf Sort, where you move books between stacks until each stack holds one color, and Cover Grid, a sliding puzzle made from one of your own covers. ([#515](https://github.com/DonovanMontoya/OperaLibre/pull/515))
+- The web player can pop out into its own small window from Pop out in the player or the window button on the mini player. Chrome and Edge keep the window on top of other windows. ([#513](https://github.com/DonovanMontoya/OperaLibre/pull/513))
+- Listeners can save private audio clips. The Clip ribbon on the cover in Now Playing saves the last 30 seconds and the next 10, and a clip can be named, trimmed, shared as an audio file, or used to continue listening from that point. Clips are off by default. Turn on Audio clips under Beta Features in Settings or the account menu. Only the listener who saved a clip can see it. ([#305](https://github.com/DonovanMontoya/OperaLibre/pull/305))
+
+### Changed
+
+- The game picker in the apps is a row of tabs, and game names stay inside their tabs at large text sizes. ([#531](https://github.com/DonovanMontoya/OperaLibre/pull/531))
+- Book previews start sooner, and in the apps a downloaded book previews from the copy on the device. ([#530](https://github.com/DonovanMontoya/OperaLibre/pull/530))
+- The one-line installer checks the release's signature before installing when a recent OpenSSL is available, and warns when it can only check the download's checksum. On machines that can check the signature, it no longer installs releases older than 0.4.6. ([#522](https://github.com/DonovanMontoya/OperaLibre/pull/522))
+
+### Fixed
+
+- Full-screen tabs in the iOS app, such as Listening and Games, no longer show a scrollbar or shift when dragged. ([#534](https://github.com/DonovanMontoya/OperaLibre/pull/534), [#518](https://github.com/DonovanMontoya/OperaLibre/pull/518))
+- A PDF companion built to expand to a huge size can no longer use up the server's memory during a library scan. ([#528](https://github.com/DonovanMontoya/OperaLibre/pull/528))
+- Loudness analysis, clip export, follow-along, and faststart conversion only read library tracks as local audio files, so a file disguised as audio cannot make the server fetch something else. A track whose contents are in another format still streams but can no longer be analyzed, clipped, or synced. ([#527](https://github.com/DonovanMontoya/OperaLibre/pull/527))
+- Changing the chapter notes endpoint to a different address asks for the API key again instead of sending the saved key to the new address. ([#526](https://github.com/DonovanMontoya/OperaLibre/pull/526))
+- Faststart conversion checks that each file is still inside the library before converting it, and stops ffmpeg if it hangs instead of blocking later conversions. ([#525](https://github.com/DonovanMontoya/OperaLibre/pull/525))
+- A cancelled or dropped audiobook upload no longer leaves partial files in the library folder until the server restarts. ([#524](https://github.com/DonovanMontoya/OperaLibre/pull/524))
+- Another program on the same computer can no longer use a signed-in browser session by posing as one of the OperaLibre apps. The apps themselves are not affected. ([#523](https://github.com/DonovanMontoya/OperaLibre/pull/523))
+- The apps no longer offer an Open link for companion files downloaded to the device, which on Android could let an HTML companion run as part of the app. ([#521](https://github.com/DonovanMontoya/OperaLibre/pull/521))
+- Books with a large, full-resolution embedded cover keep their cover, title, author, and chapters. ([#510](https://github.com/DonovanMontoya/OperaLibre/pull/510))
+- New follow-along maps keep their timing where narration resumes after a stretch of noise. ([#502](https://github.com/DonovanMontoya/OperaLibre/pull/502))
+
 ## [0.5.5] - 2026-11-15
 
 ### Added
