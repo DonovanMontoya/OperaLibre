@@ -3,7 +3,7 @@ import Foundation
 /// Checks the arithmetic the car screen resumes a book with.
 ///
 /// Run it the same way as the other checks here:
-/// `swiftc apps/web/ios/Tests/CarLibraryTests.swift apps/web/ios/App/App/CarLibrary.swift apps/web/ios/App/App/StoredRecords.swift -o /tmp/carlibrary && /tmp/carlibrary`
+/// `swiftc apps/web/ios/Tests/CarLibraryTests.swift apps/web/ios/App/App/CarLibrary.swift apps/web/ios/App/App/StoredRecords.swift apps/web/ios/App/App/ResumeWidgetBook.swift -o /tmp/carlibrary && /tmp/carlibrary`
 @main
 struct CarLibraryTests {
     static func book(
@@ -31,6 +31,15 @@ struct CarLibraryTests {
     }
 
     static func main() {
+        let scope = "server:reader:book"
+        let widget = ResumeWidgetBook(identity: ResumeWidgetBook.identity(for: scope), title: "A Book",
+                                      author: nil, remaining: nil, percent: nil, artwork: nil)
+        let link = widget.resumeURL!
+        precondition(ResumeWidgetBook.matches(link, scopeKey: scope))
+        precondition(!ResumeWidgetBook.matches(link, scopeKey: "server:reader:next"))
+        precondition(!ResumeWidgetBook.matches(link, scopeKey: "server:another-reader:book"))
+        precondition(!ResumeWidgetBook.matches(link, scopeKey: "another-server:reader:book"))
+
         // A whole-book position resolves to the track holding it, at its own
         // offset — the same split the web player makes.
         let target = book(positionSeconds: 1_500).target(atBookPosition: 1_500)

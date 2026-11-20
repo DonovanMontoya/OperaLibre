@@ -47,6 +47,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     private func openURL(_ context: UIOpenURLContext) {
+        if context.url.scheme == "operalibre", context.url.host == "widget-resume" {
+            CarPlayCoordinator.shared.resumeFromWidget(context.url)
+            return
+        }
         var options: [UIApplication.OpenURLOptionsKey: Any] = [:]
         if let sourceApplication = context.options.sourceApplication {
             options[.sourceApplication] = sourceApplication

@@ -1,3 +1,4 @@
+import { readingStreakSnapshot } from "./profileCache";
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 
 /**
@@ -14,11 +15,20 @@ import {
   type CarPlaybackSession
 } from "./carLibrary.ts";
 
+import type { ProfileStats } from "./types";
+
 type CarPlayState = {
   connected: boolean;
   /** Set while a book the car itself started is loaded in the native player. */
   carOwnedBookId: string | null;
   sessions: CarPlaybackSession[];
+};
+
+type CarEvents = {
+  widgetResumeRequested: Record<string, never>;
+  carPlaybackStarted: { bookId: string; trackId: string; bookPositionSeconds: number };
+  carPlaybackEnded: { bookId: string };
+  carDisconnected: Record<string, never>;
 };
 
 interface CarPlayBridgePlugin {
@@ -28,24 +38,16 @@ interface CarPlayBridgePlugin {
    * honest than hand-walking dictionaries through the bridge.
    */
   setLibrary(options: { snapshot: string }): Promise<void>;
+  takeWidgetResume(options: { scope: string }): Promise<{ bookId?: string } | undefined>;
+  hasStreakWidget(): Promise<{ installed: boolean }>;
+  setReadingStreak(options: { current: number; longest: number; activity: boolean[] }): Promise<void>;
   clearLibrary(): Promise<void>;
   stopPlayback(options: { bookId: string }): Promise<{ connected: boolean; carOwnedBookId?: string; sessions: string }>;
   getState(): Promise<{ connected: boolean; carOwnedBookId?: string; sessions: string }>;
   acknowledgeSessions(options: {
     sessions: Array<{ bookId: string; updatedAt: number }>;
   }): Promise<void>;
-  addListener(
-    eventName: "carPlaybackStarted",
-    listener: (event: { bookId: string; trackId: string; bookPositionSeconds: number }) => void
-  ): Promise<PluginListenerHandle>;
-  addListener(
-    eventName: "carPlaybackEnded",
-    listener: (event: { bookId: string }) => void
-  ): Promise<PluginListenerHandle>;
-  addListener(
-    eventName: "carDisconnected",
-    listener: () => void
-  ): Promise<PluginListenerHandle>;
+  addListener<E extends keyof CarEvents>(event: E, listener: (event: CarEvents[E]) => void): Promise<PluginListenerHandle>;
 }
 const CarPlayBridge = registerPlugin<CarPlayBridgePlugin>("CarPlayBridge");
 
@@ -91,6 +93,32 @@ export async function clearCarLibrary() {
   if (supportsCarPlay()) await CarPlayBridge.clearLibrary();
 }
 
+export function watchWidgetResume(scope: string, resume: (id: string) => void) {
+  let active = true;
+  let listener: PluginListenerHandle | undefined;
+  const receive = async () => {
+    if (!active || !libraryAccess.allows(scope)) return;
+    const result = await CarPlayBridge.takeWidgetResume({ scope });
+    if (active && result?.bookId && libraryAccess.allows(scope)) resume(result.bookId);
+  };
+  void CarPlayBridge.addListener("widgetResumeRequested", () => { void receive().catch(console.error); })
+    .then(async handle => {
+      if (!active) { await handle.remove(); return; }
+      listener = handle;
+      await receive();
+    }).catch(console.error);
+  return () => { active = false; void listener?.remove(); };
+}
+
+export async function hasStreakWidget() {
+  return supportsCarPlay() && (await CarPlayBridge.hasStreakWidget()).installed;
+}
+
+export async function syncReadingStreak(scope: string, stats: ProfileStats) {
+  if (!supportsCarPlay() || !libraryAccess.allows(scope)) return;
+  await CarPlayBridge.setReadingStreak(readingStreakSnapshot(stats));
+}
+
 export async function syncCarLibrary(snapshot: CarLibrarySnapshot) {
   if (!supportsCarPlay() || !libraryAccess.allows(snapshot.scopePrefix)) return;
   await CarPlayBridge.setLibrary({ snapshot: JSON.stringify(snapshot) });
@@ -125,27 +153,9 @@ export async function acknowledgeCarSessions(sessions: CarPlaybackSession[]) {
   });
 }
 
-export function addCarPlayListener(
-  event: "carPlaybackStarted",
-  listener: (event: { bookId: string; trackId: string; bookPositionSeconds: number }) => void
-): Promise<PluginListenerHandle | null>;
-export function addCarPlayListener(
-  event: "carPlaybackEnded",
-  listener: (event: { bookId: string }) => void
-): Promise<PluginListenerHandle | null>;
-export function addCarPlayListener(
-  event: "carDisconnected",
-  listener: () => void
-): Promise<PluginListenerHandle | null>;
-export function addCarPlayListener(
-  event: "carPlaybackStarted" | "carPlaybackEnded" | "carDisconnected",
-  // The overloads above are what callers see; this signature only has to accept
-  // all of them.
-  listener: (event: never) => void
+export function addCarPlayListener<E extends keyof CarEvents>(
+  event: E, listener: (event: CarEvents[E]) => void
 ): Promise<PluginListenerHandle | null> {
   if (!supportsCarPlay()) return Promise.resolve(null);
-  return (CarPlayBridge.addListener as (
-    name: typeof event,
-    handler: (event: never) => void
-  ) => Promise<PluginListenerHandle>)(event, listener).catch(() => null);
+  return CarPlayBridge.addListener(event, listener).catch(() => null);
 }

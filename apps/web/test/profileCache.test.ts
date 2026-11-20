@@ -4,6 +4,7 @@ import {
   deriveDeviceProfileStats,
   profileStatsStorageKey,
   readCachedProfileStats,
+  readingStreakSnapshot,
   writeCachedProfileStats
 } from "../src/profileCache.ts";
 import type { Book, ProfileStats } from "../src/types.ts";
@@ -106,3 +107,14 @@ test("a device-only ledger derives positions without inventing server activity",
   assert.deepEqual(derived.recentBooks.map((book) => book.id), ["reading", "finished"]);
 });
 
+
+test("widget uses measured streaks and omits future calendar days", () => {
+  const sample = { ...stats, streakCalendar: [
+    { date: "2026-09-07", minutes: 0 },
+    { date: "2026-09-08", minutes: 2 },
+    { date: "2026-09-09", minutes: 0 }
+  ] };
+  assert.deepEqual(readingStreakSnapshot(sample, new Date(2026, 8, 8, 23, 59)), {
+    current: 2, longest: 6, activity: [false, true]
+  });
+});

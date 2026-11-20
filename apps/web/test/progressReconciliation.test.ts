@@ -1827,3 +1827,15 @@ test("automatic native seeks preserve preview suppression and the return seek re
   assert.deepEqual(nativeSeeks, [{ position: 500, preview: true }, { position: 1000, preview: false }]);
   assert.equal(f.options.clipPreviewBookIdRef.current, "book", "frontend saves stay blocked until the return is observed");
 });
+
+test("a cold Resume reconciles a newer listening position from another device", async () => {
+  const f = fixture();
+  f.options.resumeAutoplayBookIdRef.current = f.book.id;
+  f.dependencies["./api"].getProgress = async () => ({
+    ...f.server, updatedAt: "1790770600000", positionSeconds: 2100, bookPositionSeconds: 2100
+  });
+  await f.restore();
+  assert.equal(f.seeks.at(-1)?.positionSeconds, 2100);
+  assert.equal(f.options.resumeAutoplayPendingRef.current, true);
+  assert.equal(f.writes.length, 0);
+});

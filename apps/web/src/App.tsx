@@ -86,6 +86,7 @@ import {
 import { NativeForegroundSyncGate } from "./nativeAudioState";
 import { createForegroundProgressSync } from "./foregroundProgressSync";
 import {
+  watchWidgetResume,
   clearCarLibrary,
   setCarPlaybackOwner
 } from "./carPlay";
@@ -160,6 +161,7 @@ import { useMetadataEditor } from "./useMetadataEditor";
 import { useChapterEndSleep, useSleepTimer } from "./useSleepTimer";
 import { useShelf } from "./useShelf";
 import { usePurchases } from "./usePurchases";
+import { useReadingStreakWidget } from "./useReadingStreakWidget";
 import { useCarPlay } from "./useCarPlay";
 import type { LibraryProgressReplay, PendingSeek, QueuedProgressSave } from "./playbackTypes";
 import { useReadalong } from "./useReadalong";
@@ -1070,6 +1072,7 @@ function MainApp({
     speed,
     updateBookProgress
   });
+  useReadingStreakWidget(ios && !localMode, `${getServerStorageKey()}:${currentUser.id}`);
   const {
     adoptCarPlaybackState,
     carEventHandlersRef,
@@ -1396,6 +1399,17 @@ function MainApp({
     volume,
     wantsAutoplayRef
   });
+  const resumeWidgetBookRef = useRef(resumeSelectedBook);
+  resumeWidgetBookRef.current = resumeSelectedBook;
+  const widgetScope = `${getServerStorageKey()}:${currentUser.id}`;
+  useEffect(() => {
+    if (!ios || isLoading) return;
+    return watchWidgetResume(widgetScope, id => {
+      const book = booksRef.current.find(candidate => candidate.id === id);
+      if (book && book.progress?.status !== "finished") resumeWidgetBookRef.current(book);
+    });
+  }, [ios, isLoading, widgetScope]);
+
   const clipSheetBook = nativePlayerSheet === "clips"
     ? books.find((book) => book.id === clipSheetBookId) ?? playbackBook
     : playbackBook;

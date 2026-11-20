@@ -89,9 +89,10 @@ export function useCarPlay({
     ? books.find((book) => book.id === carPlaybackBookId) ?? null
     : null;
 
+  const scope = `${getServerStorageKey()}:${currentUser.id}`;
   useEffect(() => {
-    beginCarLibrarySession(`${getServerStorageKey()}:${currentUser.id}`);
-  }, [currentUser.id]);
+    beginCarLibrarySession(scope);
+  }, [scope]);
 
   useEffect(() => {
     if (!supportsCarPlay() || carLibrarySignature === "") return;

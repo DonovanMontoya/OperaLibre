@@ -1,4 +1,6 @@
 import Foundation
+import UIKit
+import WidgetKit
 
 /// Bookkeeping shared by the CarPlay scene, the audio engine and the web layer.
 ///
@@ -56,12 +58,17 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     /// handoff record does not need that resolution.
     private static let sessionWriteIntervalSeconds = 15.0
 
+    private var lastWidgetBook: ResumeWidgetBook?
+    private var widgetArtwork: UIImage?
+    private var widgetRefreshTime = Date.distantPast
+
     private init() {
-        store.onArtworkChange = { [weak self] in self?.onLibraryChange?() }
+        store.onArtworkChange = { [weak self] in self?.libraryDidChange() }
     }
 
     func start() {
         engine.monitor = self
+        refreshWidget()
     }
 
     // MARK: - Scene lifecycle
@@ -203,19 +210,27 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     /// no car or WebView is connected. All access runs on the main actor.
     @MainActor
     func resumeAudiobook() -> Bool {
-        let snapshot = store.snapshot()
-        if !engine.isClipPreview, engine.status.isLoaded, let book = currentBook() {
-            if let duration = book.durationSeconds, engine.status.bookPositionSeconds >= duration - 1 {
-                return false
-            }
+        guard let book = resumeCandidate() else { return false }
+        if !engine.isClipPreview, engine.status.isLoaded, currentBook()?.id == book.id {
             engine.play()
             return true
+        }
+        return play(book: book, atBookPosition: nil, restorePendingSession: false)
+    }
+
+    private func resumeCandidate() -> CarLibraryBook? {
+        let snapshot = store.snapshot()
+        if !engine.isClipPreview, engine.status.isLoaded, var book = currentBook() {
+            book.positionSeconds = engine.status.bookPositionSeconds
+            if let duration = book.durationSeconds, book.positionSeconds >= duration - 1 { return nil }
+            return book
         }
         // The engine checkpoint is account/server scoped. Pending car records
         // contain only book IDs, so they cannot identify Siri's last session.
         var sessions: [CarPlaybackSession] = []
-        for book in snapshot.books {
-            guard let checkpoint = engine.recoveryState(forScope: snapshot.recoveryScopeKey(forBookId: book.id)) else { continue }
+        if let checkpoint = engine.loadCheckpoint(),
+           checkpoint.scopeKey.hasPrefix(snapshot.scopePrefix + ":"),
+           let book = snapshot.book(withId: String(checkpoint.scopeKey.dropFirst(snapshot.scopePrefix.count + 1))) {
             sessions.append(CarPlaybackSession(
                 bookId: book.id, trackId: checkpoint.trackId,
                 positionSeconds: checkpoint.positionSeconds,
@@ -225,13 +240,60 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
                 intentionalRegression: false
             ))
         }
-        guard let book = snapshot.audiobookToResume(sessions: sessions) else { return false }
-        // This book already includes the freshest checkpoint. Passing nil keeps
-        // the handoff classified as a resume, rather than a deliberate rewind.
-        return play(book: book, atBookPosition: nil, restorePendingSession: false)
+        return snapshot.audiobookToResume(sessions: sessions)
+    }
+
+    private var pendingWidgetResume: (scope: String, bookId: String)?
+
+    @MainActor
+    func resumeFromWidget(_ url: URL) {
+        guard let book = resumeCandidate(),
+              ResumeWidgetBook.matches(url, scopeKey: snapshot.recoveryScopeKey(forBookId: book.id)) else {
+            refreshWidget()
+            return
+        }
+        pendingWidgetResume = (snapshot.scopePrefix, book.id)
+        notifyWeb("widgetResumeRequested", data: [:])
+    }
+
+    func takeWidgetResume(scope: String) -> String? {
+        defer { pendingWidgetResume = nil }
+        guard let pendingWidgetResume, pendingWidgetResume.scope == scope,
+              resumeCandidate()?.id == pendingWidgetResume.bookId else { return nil }
+        return pendingWidgetResume.bookId
+    }
+
+    private func refreshWidget() {
+        widgetRefreshTime = Date()
+        guard let file = ResumeWidgetBook.file else { return }
+        guard let book = resumeCandidate() else {
+            if FileManager.default.fileExists(atPath: file.path) {
+                do { try FileManager.default.removeItem(at: file) } catch { return }
+                WidgetCenter.shared.reloadTimelines(ofKind: ResumeWidgetBook.kind)
+            }
+            lastWidgetBook = nil
+            widgetArtwork = nil
+            return
+        }
+        let image = store.artwork(for: book)
+        let display = ResumeWidgetBook(
+            identity: ResumeWidgetBook.identity(for: snapshot.recoveryScopeKey(forBookId: book.id)),
+            title: book.title, author: book.author,
+            remaining: book.durationSeconds.flatMap { $0 > 0 ? carDurationLabel(seconds: $0 - book.positionSeconds) : nil },
+            percent: book.percentComplete.map { Int($0 * 100) },
+            artwork: image === widgetArtwork ? lastWidgetBook?.artwork : image.jpegData(compressionQuality: 0.85)
+        )
+        guard display != lastWidgetBook else { return }
+        do {
+            try JSONEncoder().encode(display).write(to: file, options: .atomic)
+            lastWidgetBook = display
+            widgetArtwork = image
+            WidgetCenter.shared.reloadTimelines(ofKind: ResumeWidgetBook.kind)
+        } catch { }
     }
 
     func libraryDidChange() {
+        refreshWidget()
         onLibraryChange?()
     }
 
@@ -239,7 +301,9 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         // Drop ownership before stopping, so the stop checkpoint cannot create
         // a new pending session belonging to the account we just left.
         carOwnedBookId = nil
+        pendingWidgetResume = nil
         store.clear()
+        refreshWidget()
         engine.stop(releaseSession: true)
         notifyWeb("carPlaybackEnded", data: [:])
         onLibraryChange?()
@@ -382,12 +446,14 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
 
     func audiobookPlayer(_ player: AudiobookPlayer, didPersist checkpoint: NativeAudioCheckpoint) {
         recordSession(force: false)
+        if Date().timeIntervalSince(widgetRefreshTime) >= 300 { refreshWidget() }
     }
 
     func audiobookPlayerDidChangePlaybackState(_ player: AudiobookPlayer) {
         // A transport change is where a session is most worth banking: it is
         // the moment a listener stops, and the point they will resume from.
         recordSession(force: true)
+        refreshWidget()
         guard let onPlaybackChange else { return }
         let playback = ListedPlayback(bookId: currentBook()?.id, isPlaying: engine.status.isPlaying)
         guard playback != listedPlayback else { return }

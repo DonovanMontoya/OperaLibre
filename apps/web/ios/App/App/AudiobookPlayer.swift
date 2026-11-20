@@ -1630,7 +1630,7 @@ public final class AudiobookPlayer {
         monitor?.audiobookPlayer(self, didPersist: checkpoint)
     }
 
-    private func loadCheckpoint() -> NativeAudioCheckpoint? {
+    func loadCheckpoint() -> NativeAudioCheckpoint? {
         guard let data = UserDefaults.standard.data(forKey: checkpointKey) else { return nil }
         return try? JSONDecoder().decode(NativeAudioCheckpoint.self, from: data)
     }
