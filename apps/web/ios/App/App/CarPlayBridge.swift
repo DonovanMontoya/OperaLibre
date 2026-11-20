@@ -19,6 +19,7 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "hasStreakWidget", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setReadingStreak", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "takeWidgetResume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setLibrary", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clearLibrary", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stopPlayback", returnType: CAPPluginReturnPromise),
@@ -47,6 +48,17 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
             CarLibraryStore.shared.save(snapshot)
             self.coordinator.libraryDidChange()
             call.resolve()
+        }
+    }
+
+    @objc public func takeWidgetResume(_ call: CAPPluginCall) {
+        guard let scope = call.getString("scope") else { call.reject("Missing library scope."); return }
+        DispatchQueue.main.async {
+            if let id = self.coordinator.takeWidgetResume(scope: scope) {
+                call.resolve(["bookId": id])
+            } else {
+                call.resolve()
+            }
         }
     }
 

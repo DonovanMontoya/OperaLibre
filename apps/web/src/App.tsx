@@ -86,6 +86,7 @@ import {
 import { NativeForegroundSyncGate } from "./nativeAudioState";
 import { createForegroundProgressSync } from "./foregroundProgressSync";
 import {
+  watchWidgetResume,
   clearCarLibrary,
   setCarPlaybackOwner
 } from "./carPlay";
@@ -1398,6 +1399,17 @@ function MainApp({
     volume,
     wantsAutoplayRef
   });
+  const resumeWidgetBookRef = useRef(resumeSelectedBook);
+  resumeWidgetBookRef.current = resumeSelectedBook;
+  const widgetScope = `${getServerStorageKey()}:${currentUser.id}`;
+  useEffect(() => {
+    if (!ios || isLoading) return;
+    return watchWidgetResume(widgetScope, id => {
+      const book = booksRef.current.find(candidate => candidate.id === id);
+      if (book && book.progress?.status !== "finished") resumeWidgetBookRef.current(book);
+    });
+  }, [ios, isLoading, widgetScope]);
+
   const clipSheetBook = nativePlayerSheet === "clips"
     ? books.find((book) => book.id === clipSheetBookId) ?? playbackBook
     : playbackBook;

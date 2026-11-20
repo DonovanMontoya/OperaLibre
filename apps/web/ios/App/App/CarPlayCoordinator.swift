@@ -243,6 +243,8 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         return snapshot.audiobookToResume(sessions: sessions)
     }
 
+    private var pendingWidgetResume: (scope: String, bookId: String)?
+
     @MainActor
     func resumeFromWidget(_ url: URL) {
         guard let book = resumeCandidate(),
@@ -250,7 +252,15 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
             refreshWidget()
             return
         }
-        _ = resumeAudiobook()
+        pendingWidgetResume = (snapshot.scopePrefix, book.id)
+        notifyWeb("widgetResumeRequested", data: [:])
+    }
+
+    func takeWidgetResume(scope: String) -> String? {
+        defer { pendingWidgetResume = nil }
+        guard let pendingWidgetResume, pendingWidgetResume.scope == scope,
+              resumeCandidate()?.id == pendingWidgetResume.bookId else { return nil }
+        return pendingWidgetResume.bookId
     }
 
     private func refreshWidget() {
@@ -291,6 +301,7 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         // Drop ownership before stopping, so the stop checkpoint cannot create
         // a new pending session belonging to the account we just left.
         carOwnedBookId = nil
+        pendingWidgetResume = nil
         store.clear()
         refreshWidget()
         engine.stop(releaseSession: true)
