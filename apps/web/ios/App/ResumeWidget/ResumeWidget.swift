@@ -120,12 +120,17 @@ struct ResumeWidgetView: View {
     @ViewBuilder private var action: some View {
         let label = Label("Resume", systemImage: "play.fill").font(.caption.bold())
             .padding(.horizontal, 12).padding(.vertical, 6)
+        let solid = label.foregroundStyle(.white).background(ink, in: Capsule())
+        #if compiler(>=6.2)
         if #available(iOS 26, *), !reduceTransparency {
             label.foregroundStyle(ink)
                 .glassEffect(.regular.tint(.white.opacity(0.25)), in: Capsule())
         } else {
-            label.foregroundStyle(.white).background(ink, in: Capsule())
+            solid
         }
+        #else
+        solid
+        #endif
     }
 
     private var content: some View {
