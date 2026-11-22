@@ -22,7 +22,6 @@ export function playbackEventOwnsPendingPlay(
   return !pending || pendingBookId === playbackBookId;
 }
 
-/** Whether queued playback intent belongs to a particular mounted book. */
 export function playbackIntentBelongsToBook(
   pending: boolean,
   pendingBookId: string | null,

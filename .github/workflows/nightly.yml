@@ -1,10 +1,5 @@
 name: Nightly trigger
 
-# GitHub can start scheduled runs hours late and drops some under load, so a
-# single 8:17 p.m. cron is unreliable. This checks hourly and starts the
-# nightly release from the first run after 8:17 p.m. Eastern. It stays out of
-# the release concurrency group so these checks never replace a pending
-# manual release.
 on:
   schedule:
     - cron: "17 * * * *"
@@ -21,7 +16,7 @@ jobs:
     name: Start tonight's nightly
     runs-on: ubuntu-24.04
     permissions:
-      contents: write # repository_dispatch
+      contents: write
     steps:
       - name: Dispatch once per night
         env:

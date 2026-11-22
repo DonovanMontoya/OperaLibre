@@ -1,5 +1,3 @@
-//! Unit tests extracted from main.rs.
-
 use super::{
     AuthUser, HeaderMap, HeaderValue, LoginThrottle, Session, StatusCode, bytes_etag,
     can_access_book, clamped_track_position, clean_imported_title, composer_narrator,
@@ -7939,10 +7937,6 @@ async fn recording_activity_updates_one_row_and_the_cache() {
     assert_eq!(stored.by_user["reader"].len(), 1);
     assert_eq!(stored.by_user["other"]["2026-01-01"], 42.0);
 }
-
-// ---------------------------------------------------------------------------
-// Review sweep: ranges, covers, throttles, origins, and startup sweeps
-// ---------------------------------------------------------------------------
 
 #[test]
 fn byte_ranges_distinguish_ignorable_headers_from_unsatisfiable_ones() {

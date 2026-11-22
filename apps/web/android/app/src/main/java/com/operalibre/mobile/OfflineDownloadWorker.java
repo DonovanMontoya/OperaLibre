@@ -30,13 +30,6 @@ import java.net.URI;
 import java.net.URL;
 import java.util.Locale;
 
-/**
- * Drains the offline download queue one book at a time.
- *
- * A single worker owns the whole queue rather than one worker per book chained
- * behind the last: in a chain, cancelling or permanently failing one book also
- * cancels every book queued after it.
- */
 public class OfflineDownloadWorker extends Worker {
     private static final String CHANNEL_ID = "offline-downloads";
     private static final int NOTIFICATION_ID = 0x0F71;
@@ -44,7 +37,6 @@ public class OfflineDownloadWorker extends Worker {
     private static final int MAX_REDIRECTS = 5;
     private final NotificationManager notificationManager;
 
-    /** Raised when a book is cancelled while the worker is transferring it. */
     private static final class DownloadCancelledException extends Exception {}
 
     public OfflineDownloadWorker(@NonNull Context context, @NonNull WorkerParameters parameters) {
@@ -61,9 +53,6 @@ public class OfflineDownloadWorker extends Worker {
             BackgroundDownloadStore.PendingJob pending =
                 BackgroundDownloadStore.nextPending(getApplicationContext());
             if (pending == null) {
-                // A book queued while this worker is finishing finds the unique
-                // work still running and is skipped by KEEP, so look once more
-                // before ending. The store is written before the work request.
                 if (settled) return Result.success();
                 settled = true;
                 try {
@@ -80,7 +69,6 @@ public class OfflineDownloadWorker extends Worker {
         }
     }
 
-    /** @return null to move on to the next book, or a result that ends the worker. */
     @Nullable
     private Result runJob(String jobId, JSONObject job) {
         File partial = null;
@@ -97,9 +85,6 @@ public class OfflineDownloadWorker extends Worker {
                 foregroundInfo(job.optString("title", "Audiobook"), job.optDouble("fraction", 0.0))
             ).get();
 
-            // A count alone does not prove that files survived cancellation,
-            // storage cleanup, or a process interruption. Resume at the first
-            // missing required file and recompute the required-file count.
             int completedFiles = Math.min(Math.max(0, job.optInt("completedFiles", 0)), files.length());
             int completedRequired = 0;
             for (int index = 0; index < completedFiles; index++) {
@@ -128,9 +113,6 @@ public class OfflineDownloadWorker extends Worker {
                 }
                 partial = DownloadAttemptPolicy.partialFile(destination, job.optString("attemptId", ""));
                 try {
-                    // Only reuse a file after this job removed anything left by
-                    // an earlier enqueue. A stopped worker can then recognize a
-                    // file it renamed before its progress update was saved.
                     boolean prepared = job.optInt("preparedFileIndex", -1) == index;
                     if (!prepared || !DownloadAttemptPolicy.usableFile(destination, item.optLong("downloadedBytes", -1))) {
                         if (!prepared) {
@@ -160,9 +142,6 @@ public class OfflineDownloadWorker extends Worker {
                 } catch (DownloadCancelledException cancelled) {
                     throw cancelled;
                 } catch (Exception error) {
-                    // A stop is not a failed optional file: skipping it here
-                    // would count it done, and the resumed job would never
-                    // fetch it.
                     if (required || isStopped() || error instanceof BookDownloadBudget.Exceeded) throw error;
                     if (partial.exists()) partial.delete();
                     partial = null;
@@ -195,9 +174,6 @@ public class OfflineDownloadWorker extends Worker {
             }
             return null;
         } catch (DownloadCancelledException cancelled) {
-            // Final files were removed by cancelBook under the store lock.
-            // Only this attempt's partial is ours now; a replacement may have
-            // already started writing to the same final destinations.
             if (partial != null && partial.exists()) partial.delete();
             return null;
         } catch (Exception error) {
@@ -207,7 +183,7 @@ public class OfflineDownloadWorker extends Worker {
                     if (BackgroundDownloadStore.isCurrent(getApplicationContext(), jobId, job) && files != null) {
                         for (int i = 0; i < files.length(); i++) {
                             try { validatedDestination(files.getJSONObject(i).getString("path")).delete(); }
-                            catch (Exception ignored) { /* Only validated job-owned files are removed. */ }
+                            catch (Exception ignored) {  }
                         }
                     }
                 }
@@ -216,23 +192,18 @@ public class OfflineDownloadWorker extends Worker {
         }
     }
 
-    /** Hands an unfinished book back to the queue when the worker is stopped. */
     @Nullable
     private Result requeueForLater(String jobId, JSONObject job) {
         try {
             job.put("state", "queued");
             BackgroundDownloadStore.saveIfPresent(getApplicationContext(), jobId, job);
         } catch (Exception ignored) {
-            // The stored state already says running, which is also resumable.
         }
         return Result.retry();
     }
 
     @Nullable
     private Result recordFailure(String jobId, JSONObject job, Exception error) {
-        // A transfer cut short because WorkManager stopped the worker is not a
-        // failed download: hand the book back to the queue without using up
-        // an attempt, exactly as the file loop does between files.
         if (isStopped()) return requeueForLater(jobId, job);
         try {
             int attempts = job.optInt("attempts", 0) + 1;
@@ -243,12 +214,8 @@ public class OfflineDownloadWorker extends Worker {
             if (!BackgroundDownloadStore.saveIfPresent(getApplicationContext(), jobId, job)) {
                 return null;
             }
-            // Retrying re-runs this worker after WorkManager's backoff. A book
-            // that is out of attempts is left failed and the queue moves on.
             if (retry) return Result.retry();
         } catch (Exception unwritable) {
-            // The failure could not be recorded, so drop the job outright: a
-            // book left in a pending state would be retried forever.
             BackgroundDownloadStore.removeIfCurrent(getApplicationContext(), jobId, job);
         }
         return null;
@@ -300,8 +267,6 @@ public class OfflineDownloadWorker extends Worker {
                         double current = expected > 0 ? Math.min(1.0, (double) received / expected) : 0.0;
                         double fraction = Math.min(0.999, (completedRequired + current) / requiredTotal);
                         job.put("fraction", fraction);
-                        // A missing entry means the book was cancelled while this
-                        // transfer ran; stop instead of writing the job back.
                         if (!BackgroundDownloadStore.saveIfPresent(getApplicationContext(), jobId, job)) {
                             throw new DownloadCancelledException();
                         }
@@ -310,9 +275,6 @@ public class OfflineDownloadWorker extends Worker {
                     }
                 }
             }
-            // Requests ask for identity encoding, so a declared length is the
-            // body's length. A connection that closes early ends the stream
-            // without an error, and the partial file must not be kept.
             if (expected >= 0 && expected != received) {
                 throw new IllegalStateException("The download was incomplete. Retry it.");
             }
@@ -324,10 +286,6 @@ public class OfflineDownloadWorker extends Worker {
         }
     }
 
-    /**
-     * Jobs queued before the server address was saved with them keep the
-     * same-origin rule they were queued under.
-     */
     private static DownloadSourcePolicy serverPolicy(JSONObject job, URL source) {
         String address = job.optString("serverOrigin", "");
         DownloadSourcePolicy policy = address.isEmpty()
@@ -337,15 +295,6 @@ public class OfflineDownloadWorker extends Worker {
         return policy;
     }
 
-    /**
-     * Opens {@code source} and returns a connection that answered 2xx.
-     *
-     * Redirects are followed by hand: the media URL carries the access token
-     * in its query string, and HttpURLConnection would otherwise forward it
-     * to whatever host a redirect names. The source and every hop must stay on
-     * the connected server ({@code server}), or on Libro.fm's download hosts
-     * when {@code server} is null.
-     */
     static HttpURLConnection openWithAllowedRedirects(URL source, @Nullable DownloadSourcePolicy server) throws Exception {
         URL url = source;
         for (int hop = 0; ; hop++) {

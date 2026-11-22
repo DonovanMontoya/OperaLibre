@@ -21,7 +21,6 @@ import java.util.function.Function;
 import static org.junit.Assert.*;
 
 public class DownloadRedirectTest {
-    /** Answers each request with the location to redirect to, or null for 200. */
     private static final class Server implements AutoCloseable {
         final ServerSocket socket;
         final List<String> requested = new CopyOnWriteArrayList<>();
@@ -35,7 +34,7 @@ public class DownloadRedirectTest {
                             new InputStreamReader(client.getInputStream(), StandardCharsets.ISO_8859_1)
                         );
                         String path = URI.create(reader.readLine().split(" ")[1]).getPath();
-                        while (!reader.readLine().isEmpty()) { /* Skip the headers. */ }
+                        while (!reader.readLine().isEmpty()) {  }
                         requested.add(path);
                         String location = redirects.apply(path);
                         String response = location == null
@@ -45,7 +44,6 @@ public class DownloadRedirectTest {
                         output.write(response.getBytes(StandardCharsets.ISO_8859_1));
                         output.flush();
                     } catch (Exception closed) {
-                        // The socket closes when the test ends.
                     }
                 }
             });

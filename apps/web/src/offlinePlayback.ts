@@ -1,8 +1,3 @@
-/**
- * Resolve every queued track independently. A complete download stays wholly
- * local even before the separate availability scan finishes; a missing or
- * unreadable local file falls back only for that track.
- */
 type LocalFirstSource = { url: string; local: boolean };
 
 export function resolveLocalFirstSources<T>(
@@ -40,12 +35,6 @@ export function nativeQueueIdentity(
     : null;
 }
 
-/**
- * A native cold start learns the playback book before IndexedDB and AVPlayer
- * recovery have reconciled its saved track. Do not let that temporary state
- * build a queue from the book's first track: a fast local download can load
- * and publish that placeholder before progress restoration reaches React.
- */
 export function nativeQueueIdentityAfterRestore(
   native: boolean,
   bookId: string | null,
@@ -58,7 +47,6 @@ export function nativeQueueIdentityAfterRestore(
   return nativeQueueIdentity(bookId, trackId, downloaded, mediaCredentialReady);
 }
 
-/** A deliberate listener action owns playback and therefore completes recovery. */
 export function playbackRestoreBookAfterAction(
   restoredBookId: string | null,
   actionBookId: string | null,
@@ -75,7 +63,6 @@ export function nativeQueueIsReady(
   return !native || (!!requiredIdentity && requiredIdentity === resolvedIdentity);
 }
 
-/** A replacement queue for the active player must carry its play intent forward. */
 export function nativeQueueRefreshShouldResume(
   native: boolean,
   playing: boolean,
@@ -86,7 +73,6 @@ export function nativeQueueRefreshShouldResume(
     && requiredIdentity !== resolvedIdentity;
 }
 
-/** The resolved queue owns the active source once it is ready. */
 export function nativeQueueEntryUrl(
   queue: readonly { url: string }[],
   fallbackUrl: string

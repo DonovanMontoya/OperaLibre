@@ -8,10 +8,6 @@ import { trackOffsetSeconds } from "./formatting";
 import { mediaUrl } from "./api";
 import type { ChapterSegment } from "./chapters";
 
-/**
- * Resolves where the current track plays from (a downloaded file, the native
- * player queue or the stream) and starts a waiting autoplay once it lands.
- */
 export function useAudioSource({
   activeTrackIndex,
   audioRef,
@@ -125,17 +121,11 @@ export function useAudioSource({
       nativeAudioQueueRef.current = queue;
       setNativeAudioQueueReadyKey(queueKey);
     };
-    // Resolve each item from disk regardless of whether the separate complete
-    // download scan has finished. Otherwise chapter one can be local while
-    // later AVQueuePlayer items still point at a dead server on a cold launch.
     void resolveLocalFirstSources(
       tracks,
       (track) => getOfflineTrackUrl(playbackBook, track),
       (track) => mediaUrl(track.streamUrl)
     ).then((sources) => {
-      // A fully local queue is usable before background authentication. Any
-      // remote fallback must wait for its media credential, or AVPlayer can
-      // fail permanently on the tokenless URL before the refreshed queue lands.
       if (!canPublishNativeQueue(sources, mediaCredentialReady)) return;
       publish(tracks.map((track, index) => entry(track, index, sources[index].url)));
     });
@@ -154,8 +144,6 @@ export function useAudioSource({
     requiredNativeAudioQueueKey
   ]);
 
-  // Autoplay requested while the audio source was still resolving (native disk
-  // lookup): start playback as soon as the source lands.
   useEffect(() => {
     if (!streamUrl || !nativeAudioQueueReady || !wantsAutoplayRef.current) {
       return;

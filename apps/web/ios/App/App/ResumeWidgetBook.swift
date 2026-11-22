@@ -1,7 +1,6 @@
 import CryptoKit
 import Foundation
 
-/// The widget receives display data only. Playback URLs and recovery records stay in the app.
 struct ResumeWidgetBook: Codable, Equatable {
     static let kind = "OperaLibreResume"
     static var file: URL? {

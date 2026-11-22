@@ -21,28 +21,17 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 
-/** Bearer state stays beside private staging (app backup is disabled in the
- * manifest). Never log contents or propagate exception details to the bridge.
- * Staging leases use a separate persistent lock; cleanup takes both locks. */
 final class GiftRecoveryStore {
     private static final int MAX_STATE = 16 * 1024;
     private static final long MAX_ARCHIVE = 25L * 1024 * 1024 * 1024;
     private static final long MAX_INTEGER = 9007199254740991L;
     private interface Operation<T> { T run(File parent) throws Exception; }
 
-    // Linux UAPI O_CLOEXEC (02000000), supported by Android's kernel on all
-    // supported ABIs. The Java OsConstants field was only exposed in API 27.
-    // Android 7/API 24 ARM, arm64, x86 and MIPS headers inherit this definition:
-    // https://github.com/aosp-mirror/platform_bionic/blob/android-7.0.0_r1/libc/kernel/uapi/asm-generic/fcntl.h
-    // Java API history: https://developer.android.com/reference/android/system/OsConstants#O_CLOEXEC
     private static final int CLOSE_ON_EXEC = 0x80000;
     static FileDescriptor open(String path, int flags, int mode) throws Exception {
-        // Nonblocking opens fail closed on a substituted FIFO before fstat.
         return Os.open(path, flags | OsConstants.O_NOFOLLOW | OsConstants.O_NONBLOCK | CLOSE_ON_EXEC, mode);
     }
 
-    // The monitor spans plugin instances; the persistent file lock spans
-    // processes. Both load and CAS participate, including first-time seeding.
     private static synchronized <T> T locked(File data, String id, Operation<T> operation) throws Exception {
         if (id == null || !id.matches("[A-Za-z0-9_-]{16,128}")) throw new IOException();
         File parent = new File(data.getCanonicalFile(), "gift-incoming");
@@ -77,8 +66,6 @@ final class GiftRecoveryStore {
         });
     }
 
-    /** Caller must hold the exclusive native staging guard. Keep lock files:
-     * unlinking one would allow two processes to lock different inodes. */
     static void cleanup(File data, String id) throws Exception {
         locked(data, id, parent -> {
             List<File> files = new java.util.ArrayList<>();
@@ -96,7 +83,6 @@ final class GiftRecoveryStore {
         });
     }
 
-    /** null is an absent previous record, never an unconditional overwrite. */
     static boolean compareAndSwap(File data, String id, String previous, String next) throws Exception {
         return locked(data, id, parent -> {
             JSONObject after = validate(id, next);
@@ -139,8 +125,6 @@ final class GiftRecoveryStore {
     private static void write(File parent, String id, byte[] bytes) throws Exception {
         File temporary = new File(parent, ".recovery-" + id + ".tmp");
         File destination = new File(parent, ".recovery-" + id + ".json");
-        // A crash may leave the fixed temporary file. Validate before truncating
-        // it; never follow a symlink or truncate a hard-linked file.
         FileDescriptor fd = open(temporary.getPath(), OsConstants.O_WRONLY | OsConstants.O_CREAT | OsConstants.O_NOFOLLOW, 0600);
         try (FileOutputStream output = new FileOutputStream(fd)) {
             regular(fd, MAX_STATE); Os.fchmod(fd, 0600); Os.ftruncate(fd, 0);
@@ -148,12 +132,8 @@ final class GiftRecoveryStore {
         }
         Os.rename(temporary.getPath(), destination.getPath());
         syncDirectory(parent);
-        // An error after rename has an uncertain outcome. Reject; the next
-        // attempt must load and reconcile, never assume the write failed.
     }
 
-    /** O_DIRECTORY is not in Android's public OsConstants API. Check the
-     * no-follow descriptor's directory type and identity before syncing it. */
     static void syncDirectory(File directory) throws Exception {
         StructStat expected = Os.lstat(directory.getPath());
         if (!OsConstants.S_ISDIR(expected.st_mode)) throw new IOException();

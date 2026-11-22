@@ -1,23 +1,3 @@
-//! Owner-managed export and restore of durable server state.
-//!
-//! The audiobook library, server configuration, and Libation's external
-//! sign-in profile files are intentionally outside this format. All database
-//! state is included: OperaLibre account credentials and permissions, sessions,
-//! progress and its rollback rows, per-book settings, clips, activity, reading
-//! history, metadata, works, Libation records, and the identity index that
-//! keeps those rows attached to books.
-//!
-//! Sessions are exported for format compatibility but never restored: a
-//! backup file has been outside the server's control since it was written,
-//! and reviving the sessions in it would sign every device that held one back
-//! in. A restore signs everyone out except the owner performing it. Since
-//! schema 3 the exported sessions are keyed by digest, so a backup file holds
-//! no token that could be presented to any server; older backups do.
-//!
-//! Agent tokens are treated the same way: a restore removes every one, and
-//! listeners connect their agents again. Whether assistants are turned on is
-//! restored like any other setting.
-
 use crate::*;
 use rusqlite::OptionalExtension;
 
@@ -25,7 +5,6 @@ pub(crate) const MAX_BACKUP_BODY_BYTES: usize = 256 * 1024 * 1024;
 const BACKUP_KIND: &str = "operalibre-server-backup";
 const BACKUP_FORMAT_VERSION: u32 = 1;
 
-/// An update must exclude backups before the updater's exit deadline starts.
 #[derive(Default)]
 pub(crate) struct BackupLifecycle {
     pub(crate) update_started: bool,
@@ -61,9 +40,6 @@ struct BackupData {
     progress: Vec<BackupProgress>,
     progress_backups: Vec<BackupProgressBackup>,
     book_settings: Vec<BackupBookSettings>,
-    /// Absent from backups written before clips existed. Left out when empty
-    /// too: older servers reject unknown fields, so a backup without clips
-    /// stays restorable on them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     clips: Vec<BackupClip>,
     activity: ActivityStore,
@@ -93,8 +69,6 @@ struct BackupBookSettings {
     user_id: String,
     book_id: String,
     volume_gain: f64,
-    /// Absent in backups from before schema 5, where every row was a level
-    /// the listener set.
     #[serde(default = "default_true")]
     manual: bool,
     #[serde(default = "default_true")]
@@ -154,9 +128,6 @@ pub(crate) async fn import_server_backup(
     Json(backup): Json<ServerBackup>,
 ) -> Result<Json<RestoreResult>, ApiError> {
     validate_backup_header(&backup)?;
-    // Once accepted, restore owns the database, identity file and caches as
-    // one operation. Dropping an HTTP request (disconnect or timeout) must
-    // not abandon it between the database commit and cache adoption.
     tokio::spawn(async move {
         let result = restore_server_backup(state, current_session.id, backup).await;
         if let Err(error) = &result {
@@ -175,17 +146,9 @@ async fn restore_server_backup(
 ) -> Result<Json<RestoreResult>, ApiError> {
     let _backup_guard = state.backup_lock.lock().await;
     _backup_guard.ensure_available()?;
-    // The identity index is rewritten below, and a scan running at the same
-    // time would read the old index and write it back over the restored one.
-    // Taken before the state gate: a scan holds the rescan lock while it
-    // commits its works through the gate, so the other order could deadlock
-    // a restore against a scan.
     let rescan_guard = state.rescan_lock.lock().await;
     let state_guard = state.database.quiesce_state().await;
 
-    // A restore should include the useful tail of a sitting that is still in
-    // memory, and its safety copy should as well. The live sitting itself is
-    // cleared only after the replacement commits.
     let before = build_backup(&state).await?;
     let mut safety_suffix = [0u8; 8];
     rand::rng().fill(&mut safety_suffix);
@@ -206,9 +169,6 @@ async fn restore_server_backup(
     )
     .await?;
 
-    // The sessions in the file are not revived (see the module notes). The
-    // owner's own live session — taken from the running server, never from
-    // the backup — is carried across so the page they are on keeps working.
     let retained_session = state
         .sessions
         .read()
@@ -248,7 +208,6 @@ async fn restore_server_backup(
     {
         let database_path = state.database_path.clone();
         let rollback_data = before.data.clone();
-        // Rolling back puts the sessions that were live a moment ago back.
         let rollback = tokio::task::spawn_blocking(move || {
             let sessions = rollback_data.sessions.clone();
             restore_database(
@@ -274,15 +233,8 @@ async fn restore_server_backup(
     *state.open_sessions.lock().await = OpenSessions::default();
     state.libation_login_sessions.lock().await.clear();
     drop(state_guard);
-    // `rescan_library` takes the rescan lock itself. Another scan may slip in
-    // between here and there, but it reads the restored index and so can do
-    // no harm; the lock only had to cover the write.
     drop(rescan_guard);
 
-    // The data restore is already complete at this point. A temporarily
-    // unavailable library must not turn that success into a misleading 500;
-    // retain the previous in-memory catalogue and report that a later rescan
-    // is still needed.
     let warning = match rescan_library(&state).await {
         Ok(()) => None,
         Err(error) => {
@@ -318,8 +270,6 @@ async fn build_backup(state: &AppState) -> Result<ServerBackup, ApiError> {
         .map_err(|error| ApiError::internal(format!("Backup snapshot task failed: {error}")))?
         .map_err(ApiError::from)?;
 
-    // Overlay open reading rows onto the committed history without closing the
-    // listener's current sitting or changing production state.
     let mut history = state.reading_history.read().await.clone();
     let open_rows = state.open_sessions.lock().await.backup_rows();
     if !open_rows.is_empty() {
@@ -492,8 +442,6 @@ enum RestoreMode {
     AutomaticRollback,
 }
 
-/// Replace the database's contents with `data`, keeping only `sessions` —
-/// which the caller chooses, so the ones in a backup file stay in the file.
 fn restore_database(
     path: &FsPath,
     data: &BackupData,
@@ -520,9 +468,6 @@ fn restore_database(
         if row.progress.book_id != row.book_id {
             anyhow::bail!("a progress record has mismatched book IDs");
         }
-        // A deliberate restore ends the live recording lineage. Its archived
-        // receipt must not authorize an old client's continuation afterward.
-        // Automatic rollback must put the original receipt back unchanged.
         let recording = match mode {
             RestoreMode::DeliberateRestore => None,
             RestoreMode::AutomaticRollback => row
@@ -599,7 +544,6 @@ fn restore_database(
     }
     for (name, value) in &data.documents {
         if name == AGENT_TOKENS_DOCUMENT && matches!(mode, RestoreMode::DeliberateRestore) {
-            // Whether the owner allows assistants comes back; tokens never do.
             let mut store: AgentTokenStore =
                 serde_json::from_value(value.clone()).unwrap_or_default();
             store.tokens.clear();
@@ -609,14 +553,10 @@ fn restore_database(
         db::write_document(&transaction, name, &serde_json::to_string(value)?)?;
     }
 
-    // Known document shapes and relational constraints are validated before
-    // the transaction commits, so malformed backups cannot partially replace
-    // a live server.
     let snapshot = read_cached_snapshot(&transaction)?;
     if !snapshot.users.users.iter().any(|user| user.is_owner) {
         anyhow::bail!("the restored data has no owner account");
     }
-    // Account ids name folders under the Libation accounts directory.
     if snapshot
         .libation_accounts
         .accounts

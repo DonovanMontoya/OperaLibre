@@ -1,12 +1,6 @@
 import Foundation
 
-// Saved collections are decoded one entry at a time. Decoding the whole
-// collection at once turns a single entry this build cannot read, such as one
-// written by another app version, into an empty collection, and the next save
-// then erases every entry. Here an unreadable entry is set aside and written
-// back unchanged, so a save only ever changes the entries it could read.
 
-/// A saved JSON array of records.
 struct StoredRecordList<Record: Codable> {
     var records: [Record] = []
     private var unreadable: [Data] = []
@@ -33,8 +27,6 @@ struct StoredRecordList<Record: Codable> {
     }
 }
 
-/// A saved JSON object of records by key. A record saved under the key of an
-/// unreadable entry replaces it.
 struct StoredRecordMap<Record: Codable> {
     var records: [String: Record] = [:]
     private var unreadable: [String: Data] = [:]

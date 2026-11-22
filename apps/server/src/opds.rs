@@ -1,20 +1,8 @@
-//! An OPDS 1.2 catalogue.
-//!
-//! OPDS is the closest thing to a lingua franca for "here is a shelf of
-//! things you can fetch", and serving one costs almost nothing on top of the
-//! library the server already has. Entries carry an acquisition link per
-//! track, because an audiobook is a set of files rather than one document.
-//!
-//! Authentication is the server's own: an `Authorization: Bearer` header, or
-//! the read-only `?token=` media credential. Readers that only speak HTTP
-//! Basic are not supported — see the note on the module's routes.
-
 use crate::*;
 
 const OPDS_FEED_TYPE: &str = "application/atom+xml;profile=opds-catalog;kind=acquisition";
 const OPDS_NAVIGATION_TYPE: &str = "application/atom+xml;profile=opds-catalog;kind=navigation";
 
-/// Escape text for an XML text node or attribute.
 pub(crate) fn xml_escape(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
@@ -23,8 +11,6 @@ pub(crate) fn xml_escape(value: &str) -> String {
     escaped
 }
 
-/// XML 1.0 permits exactly these scalar ranges. Rust strings cannot contain
-/// surrogates, but can contain the forbidden U+FFFE/U+FFFF.
 fn push_xml_escaped(out: &mut String, character: char) {
     if !matches!(
         character,
@@ -45,8 +31,6 @@ fn push_xml_escaped(out: &mut String, character: char) {
     }
 }
 
-/// How much escaped text to hand the spool at once. Each piece is checked
-/// against the catalogue budgets before it is stored.
 const XML_CHUNK: usize = 4096;
 
 fn write_xml_escaped(spool: &mut CatalogueSpool, value: &str) -> Result<(), ApiError> {
@@ -64,9 +48,6 @@ fn write_xml_escaped(spool: &mut CatalogueSpool, value: &str) -> Result<(), ApiE
     Ok(())
 }
 
-/// `xml_escape` of the concatenation, after `trim`. Leading and trailing
-/// whitespace are skipped while scanning, so a long description is not copied
-/// or escaped in full before the spool can refuse it.
 fn write_xml_escaped_trimmed(spool: &mut CatalogueSpool, parts: &[&str]) -> Result<(), ApiError> {
     let mut total = 0usize;
     let mut lead = 0usize;
@@ -191,9 +172,6 @@ fn write_opds_entry(
         write_xml_escaped(spool, &tag.name)?;
         spool.bytes(b"\" label=\"Tag\"/>\n")?;
     }
-    // Narrator and length are what a listener actually chooses on, and OPDS
-    // has nowhere structured to put either. Trim and escape the summary
-    // without copying the description into one string.
     spool.bytes(b"    <summary type=\"text\">")?;
     write_book_summary(
         spool,
@@ -233,7 +211,6 @@ fn feed_response(body: String, content_type: &str) -> Result<Response, ApiError>
         .body(Body::from(body))?)
 }
 
-/// The catalogue root: one entry per shelf a reader can open.
 pub(crate) async fn opds_root(
     Extension(auth): Extension<AuthUser>,
     Extension(session): Extension<CurrentSession>,
@@ -263,7 +240,6 @@ pub(crate) async fn opds_root(
     feed_response(body, OPDS_NAVIGATION_TYPE)
 }
 
-/// One acquisition entry per book, with a link per track.
 pub(crate) async fn opds_books(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,

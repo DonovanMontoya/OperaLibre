@@ -96,9 +96,6 @@ if [ -z "$KIND" ] && [ "${OPERALIBRE_SERVER_ONLY:-}" = 1 ]; then
 fi
 KIND_REQUESTED=$KIND
 
-# --no-libation wins over a path that came from the environment or an earlier
-# option: skipping the Audible import must never fail the run over a Libation
-# that has since moved or been removed.
 if [ "$LIBATION_CHOICE" = no ]; then
   LIBATION_PATH=""
 elif [ -n "$LIBATION_PATH" ]; then
@@ -110,11 +107,6 @@ elif [ -n "$LIBATION_PATH" ]; then
     fail "${LIBATION_PATH} is not an executable Libation command-line program."
 fi
 
-# The script is normally piped into sh, so stdin is the script itself. Prompts
-# and answers use the terminal directly when one is available. `-r`/`-w` on
-# /dev/tty can pass in a session with no controlling terminal (CI, or a
-# non-interactive ssh command), where the first prompt would then die opening
-# it — so probe by actually opening the device.
 INTERACTIVE=0
 if [ "$ASSUME_YES" -eq 0 ] && ( : </dev/tty ) 2>/dev/null && ( : >/dev/tty ) 2>/dev/null; then
   INTERACTIVE=1
@@ -179,7 +171,6 @@ absolute_path() {
     /*) absolute_candidate=$1 ;;
     *) absolute_candidate="${PWD}/$1" ;;
   esac
-  # Tidy up "./" segments and a trailing slash so printed paths stay readable.
   printf '%s' "$absolute_candidate" | sed -e 's|//*|/|g' -e 's|/\./|/|g' -e 's|/\.$||' -e 's|\(.\)/$|\1|'
 }
 
@@ -187,7 +178,6 @@ need() {
   command -v "$1" >/dev/null 2>&1
 }
 
-# --- Detect the platform ----------------------------------------------------
 
 kernel=$(uname -s)
 machine=$(uname -m)
@@ -228,7 +218,6 @@ else
 fi
 
 fetch() {
-  # fetch URL DESTINATION
   if [ "$DOWNLOADER" = curl ]; then
     curl -fsSL --retry 3 -o "$2" "$1"
   else
@@ -252,22 +241,11 @@ digest_of() {
   fi
 }
 
-# --- Signed update manifest -------------------------------------------------
-#
-# Each release publishes operalibre-manifest-v1.json, signed with the update
-# root keys (docs/update-manifest.md). SHA256SUMS.txt sits beside the packages,
-# so whoever can replace a package can replace it too; the signature cannot be
-# replaced that way. The installer keeps no state between runs, so it trusts
-# the current root directly instead of walking the envelope's `roots`: these
-# are the current root's keys from release/update-trust.json, as base64
-# SubjectPublicKeyInfo so openssl reads them without binary handling here. A
-# test keeps them in step with that file.
 MANIFEST_KEYS="MCowBQYDK2VwAyEAFhUko6re8/stEbHmAlnNv3+SwIzMSXNMUpPVl8BVifk=
 MCowBQYDK2VwAyEAZRqn6x4T1s5YydV/orpMeF1Ec4VgpLXq7EUgAFIn0Ns="
 MANIFEST_THRESHOLD=1
 
 ed25519_verify() {
-  # ed25519_verify OPENSSL KEY SIGNATURE MESSAGE-FILE — KEY and SIGNATURE in base64.
   printf '%s\n' '-----BEGIN PUBLIC KEY-----' "$2" '-----END PUBLIC KEY-----' >"${WORK_DIR}/key.pem" &&
     printf '%s' "$3" | "$1" base64 -d -A >"${WORK_DIR}/signature.bin" 2>/dev/null &&
     "$1" pkeyutl -verify -pubin -inkey "${WORK_DIR}/key.pem" -rawin \
@@ -275,8 +253,6 @@ ed25519_verify() {
 }
 
 find_ed25519_openssl() {
-  # The first openssl that verifies RFC 8032's second Ed25519 test vector.
-  # LibreSSL (the macOS openssl) and OpenSSL before 1.1.1 cannot.
   printf 'r' >"${WORK_DIR}/ed25519-test"
   for candidate in openssl /opt/homebrew/opt/openssl@3/bin/openssl /usr/local/opt/openssl@3/bin/openssl; do
     need "$candidate" || continue
@@ -291,11 +267,6 @@ find_ed25519_openssl() {
 }
 
 manifest_message() {
-  # manifest_message ENVELOPE — the bytes a manifest signature covers: the
-  # domain, the type, and the payload string decoded exactly. The payload is
-  # pretty-printed JSON text, so as release_signing.mjs writes the envelope its
-  # string holds no escapes but newlines, quotes and backslashes; any other
-  # escape is refused rather than guessed at.
   LC_ALL=C awk '
     !done && /^  "payload": "/ {
       s = substr($0, 15); out = ""; n = length(s); closed = 0
@@ -319,7 +290,6 @@ manifest_message() {
 }
 
 manifest_package() {
-  # manifest_package PAYLOAD-FILE ARCHIVE — "SHA256 SIZE" of ARCHIVE's entry.
   LC_ALL=C awk -v archive="$2" '
     /[{]$/ { url = ""; sha = ""; size = "" }
     /^ *"url": "/ { url = $0; sub(/^ *"url": "/, "", url); sub(/",?$/, "", url) }
@@ -332,8 +302,6 @@ manifest_package() {
 }
 
 verify_manifest() {
-  # Fails unless a pinned key signed the release manifest and the manifest
-  # lists this exact archive. Returns 2 when no Ed25519 verifier is available.
   verifier=$(find_ed25519_openssl) || return 2
   fetch "${BASE_URL}/operalibre-manifest-v1.json" "${WORK_DIR}/manifest.json" ||
     fail "Could not download the signed manifest for release ${VERSION} (releases before 0.4.6 have none). Nothing was installed."
@@ -352,7 +320,6 @@ verify_manifest() {
   done
   [ "$verified_keys" -ge "$MANIFEST_THRESHOLD" ] ||
     fail "The release manifest is not signed by an OperaLibre release key. Nothing was installed."
-  # The payload follows the two header lines of the signed message.
   tail -n +3 "${WORK_DIR}/manifest.message" >"${WORK_DIR}/manifest.payload"
   grep -Fqx "  \"version\": \"${VERSION}\"," "${WORK_DIR}/manifest.payload" ||
     fail "The signed manifest is for a different release than ${VERSION}. Nothing was installed."
@@ -368,7 +335,6 @@ say "OperaLibre installer"
 say "===================="
 say "Computer: ${PLATFORM}"
 
-# --- Resolve the release ----------------------------------------------------
 
 if [ -z "$VERSION" ]; then
   say "Looking up the newest release..."
@@ -379,8 +345,6 @@ if [ -z "$VERSION" ]; then
   [ -n "$VERSION" ] || fail "Could not read the newest release version from GitHub."
 fi
 
-# Download URLs live under the tag exactly as GitHub reports it (which may
-# carry a v prefix); the stripped form is only for display and package names.
 RELEASE_TAG=$VERSION
 VERSION=${VERSION#v}
 BASE_URL="https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}"
@@ -388,7 +352,6 @@ BASE_URL="https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}"
 say "Release: ${VERSION}"
 say ""
 
-# --- Choose where it goes ---------------------------------------------------
 
 default_dir="${HOME}/OperaLibre"
 if [ -z "$INSTALL_DIR" ]; then
@@ -415,18 +378,11 @@ if [ -f "${INSTALL_DIR}/operalibre-server" ]; then
   else
     say "Found an existing OperaLibre installation in ${INSTALL_DIR}."
   fi
-  # Keep the kind that is already installed unless it was named explicitly, so
-  # a plain re-run never swaps a headless server for the bundled web app. The
-  # launcher and the start helper come from the package itself, so they are the
-  # reliable signals; a `web` folder can also be one a server-only operator
-  # points web_dist_dir at, so it only decides when nothing else does.
   if [ "$os" = macos ]; then
     installed_launcher="${INSTALL_DIR}/Open OperaLibre.app"
   else
     installed_launcher="${INSTALL_DIR}/open-operalibre"
   fi
-  # An empty web_dist_dir is what makes an installation server-only, and it
-  # outlasts in-app updates, which may add launchers to either kind.
   configured_web=$(sed -n 's/^[[:space:]]*[Ww][Ee][Bb][-_][Dd][Ii][Ss][Tt][-_][Dd][Ii][Rr][[:space:]]*=[[:space:]]*//p' \
     "${INSTALL_DIR}/server.config" 2>/dev/null | tail -n 1 | tr -d '[:space:]"'"'"'')
   web_configured=$(grep -ci '^[[:space:]]*web[-_]dist[-_]dir[[:space:]]*=' "${INSTALL_DIR}/server.config" 2>/dev/null || true)
@@ -452,7 +408,6 @@ elif [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)"
 fi
 
 [ -n "$KIND" ] || KIND=combined
-# One package serves both kinds; a server-only install leaves out its web app.
 PACKAGE="operalibre-${VERSION}-combined-${PLATFORM}"
 ARCHIVE="${PACKAGE}.tar.gz"
 
@@ -482,7 +437,6 @@ if [ "$UPGRADE" -eq 0 ]; then
   esac
 fi
 
-# --- Download and verify ----------------------------------------------------
 
 WORK_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t operalibre)
 STAGE_DIR=""
@@ -490,13 +444,9 @@ BACKUP_DIR=""
 cleanup() {
   rm -rf "$WORK_DIR"
   [ -z "$STAGE_DIR" ] || rm -rf "$STAGE_DIR"
-  # Only ever empty by now: a swap that parked files in it either finished
-  # and removed it, or put them back before failing. Never delete contents.
   [ -z "$BACKUP_DIR" ] || rmdir "$BACKUP_DIR" 2>/dev/null || true
 }
 trap cleanup EXIT
-# A signal ends the run through the EXIT trap. Running cleanup from the
-# signal trap alone would resume the script with its work folders gone.
 trap 'exit 130' INT TERM
 
 say ""
@@ -532,8 +482,6 @@ tar -xzf "${WORK_DIR}/${ARCHIVE}" -C "${WORK_DIR}/extract" ||
 STAGED="${WORK_DIR}/extract/${PACKAGE}"
 [ -d "$STAGED" ] || fail "The downloaded package has an unexpected layout."
 if [ "$KIND" = server ]; then
-  # Server-only: no web app or desktop launchers, and nothing configured to
-  # serve. An upgrade keeps the installed server.config, which already says so.
   rm -rf "${STAGED}/web" "${STAGED}/Open OperaLibre.app" "${STAGED}/Stop OperaLibre.app" \
     "${STAGED}/open-operalibre" "${STAGED}/stop-operalibre"
   sed 's/^web_dist_dir = web$/web_dist_dir =/' "${STAGED}/server.config" >"${STAGED}/server.config.new" &&
@@ -541,17 +489,8 @@ if [ "$KIND" = server ]; then
     fail "Could not prepare the server-only configuration."
 fi
 
-# --- Install ----------------------------------------------------------------
 
 config_value() {
-  # config_value KEY — the value of KEY in the installed server.config, if any.
-  #
-  # The server lowercases keys, reads `-` as `_`, trims whitespace, and strips
-  # one pair of matching quotes, so `Data-Dir = "state"` names the same folder
-  # as `data_dir = state`. Match the same spellings here, or a custom port or
-  # data folder would be missed and the running-server check would look in
-  # the wrong place. Self-check: `data_dir = "state"`, `Data-Dir = state`,
-  # `port = '4123'` and `Port=4123` must all resolve to their bare values.
   config="${INSTALL_DIR}/server.config"
   [ -f "$config" ] || return 0
   CONFIG_KEY=$1 awk '
@@ -580,8 +519,6 @@ configured_port() {
 }
 
 configured_data_dir() {
-  # The server resolves a relative data_dir against the folder holding
-  # server.config, which is the installation folder.
   data_value=$(config_value data_dir)
   case "$data_value" in
     "") printf '%s' "${INSTALL_DIR}/data" ;;
@@ -591,8 +528,6 @@ configured_data_dir() {
 }
 
 server_answers() {
-  # Ask the API, not "/": a server-only install has no web app to serve
-  # there, so a 404 would look like a server that never started.
   if [ "$DOWNLOADER" = curl ]; then
     curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null
   else
@@ -601,8 +536,6 @@ server_answers() {
 }
 
 server_process_is_running() {
-  # A PID left behind by a crash can be recycled by the OS, so only a process
-  # that is actually this installation's server counts.
   server_pid_file="$(configured_data_dir)/operalibre-server.pid"
   [ -f "$server_pid_file" ] || return 1
   server_pid=$(cat "$server_pid_file" 2>/dev/null || true)
@@ -614,9 +547,6 @@ server_process_is_running() {
 }
 
 wait_for_server_exit() {
-  # The stop launcher asks the server to shut down and returns once it has
-  # gone, but guard against an older launcher, or a server started by hand,
-  # before replacing the files under a process that may still be running.
   waited=0
   while [ "$waited" -lt 30 ]; do
     if ! server_process_is_running && ! server_answers; then
@@ -629,10 +559,7 @@ wait_for_server_exit() {
 }
 
 launcher_path() {
-  # launcher_path DIR open|stop
   if [ "$KIND" = server ]; then
-    # The server-only package has no background launcher, so the installer
-    # writes the two helper scripts below.
     if [ "$2" = stop ]; then
       printf '%s' "$1/stop-operalibre.sh"
     else
@@ -668,8 +595,6 @@ if [ "$UPGRADE" -eq 1 ]; then
       fail "The server is still running. Stop it, then run the installer again. Nothing was changed."
   fi
 
-  # Copy the new files beside the installation first, so a copy that fails
-  # part-way leaves the old version intact, then swap them in with renames.
   say "Installing OperaLibre ${VERSION}..."
   STAGE_DIR="${INSTALL_DIR}/.staged-$$"
   BACKUP_DIR="${INSTALL_DIR}/.previous-$$"
@@ -685,13 +610,9 @@ if [ "$UPGRADE" -eq 1 ]; then
       fail "Could not copy ${name} into ${INSTALL_DIR}. The existing installation was left unchanged."
   done
 
-  # Existing entries are parked in BACKUP_DIR rather than deleted before their
-  # replacements move in, so a rename that fails part-way can put the previous
-  # version back and leave the new files where they can be inspected.
   MOVED_IN_LIST="${WORK_DIR}/moved-in"
   : >"$MOVED_IN_LIST"
   restore_previous() {
-    # restore_previous NAME — undo the swap after NAME could not be moved.
     while IFS= read -r moved; do
       [ -n "$moved" ] || continue
       mv "${INSTALL_DIR}/${moved}" "${STAGE_DIR}/${moved}" 2>/dev/null || true
@@ -705,21 +626,15 @@ if [ "$UPGRADE" -eq 1 ]; then
         restored="Some previous files could not be put back and remain in ${BACKUP_DIR}"
     done
     rmdir "$BACKUP_DIR" 2>/dev/null || true
-    # Blank STAGE_DIR so the EXIT trap leaves the staged files in place.
     staged_files=$STAGE_DIR
     STAGE_DIR=""
     fail "Could not move ${1} into place. ${restored}; the new files remain in ${staged_files}."
   }
   move_aside() {
-    # move_aside NAME — park the installed NAME in BACKUP_DIR, if present.
     [ -e "${INSTALL_DIR}/${1}" ] || return 0
     mv "${INSTALL_DIR}/${1}" "${BACKUP_DIR}/${1}" || restore_previous "$1"
   }
-  # The renames take moments. A signal in the middle would end the run with
-  # the old files parked beside half of the new ones, so it waits for them.
   trap '' INT TERM
-  # The new package may not ship these, so they cannot wait for a staged
-  # entry of the same name to replace them.
   move_aside web
   move_aside "Open OperaLibre.app"
   move_aside "Stop OperaLibre.app"
@@ -747,8 +662,6 @@ fi
 chmod 700 "${INSTALL_DIR}/data" 2>/dev/null || true
 
 if [ "$KIND" = server ]; then
-  # The combined package ships Open/Stop launchers; the server-only package
-  # ships a foreground start.sh. Give headless installs the same two actions.
   cat >"${INSTALL_DIR}/start-operalibre.sh" <<'START_HELPER'
 #!/usr/bin/env sh
 # Written by the OperaLibre installer. Starts the server in the background.
@@ -819,12 +732,6 @@ STOP_HELPER
 fi
 
 set_config() {
-  # set_config KEY VALUE
-  #
-  # The server lowercases config keys and reads `-` as `_`, so `library-root`
-  # and `LIBRARY_ROOT` name the same setting as `library_root`. Match every
-  # spelling and keep a single line for the key, otherwise a rewritten file
-  # would carry two entries that disagree.
   config="${INSTALL_DIR}/server.config"
   [ -f "$config" ] || return 0
   CONFIG_KEY=$1 CONFIG_VALUE=$2 awk '
@@ -867,7 +774,6 @@ else
 fi
 
 if [ "$os" = macos ]; then
-  # The release files are not notarized yet, so clear the download quarantine.
   xattr -dr com.apple.quarantine "$INSTALL_DIR" >/dev/null 2>&1 || true
 fi
 
@@ -891,10 +797,6 @@ configured_libation_files_dir() {
 }
 
 ensure_libation_files_dir() {
-  # Libation's own Settings.json/AccountsSettings.json are normally written
-  # by its desktop first-run wizard; the CLI refuses to run at all without
-  # them. Seed empty ones so the server can check Libation and list accounts
-  # right after install instead of failing with "Cannot find settings files".
   existing_files_dir=$(configured_libation_files_dir)
   if [ -n "$existing_files_dir" ] && [ -f "${existing_files_dir}/Settings.json" ] &&
     [ -f "${existing_files_dir}/AccountsSettings.json" ]; then
@@ -937,9 +839,6 @@ find_libation() {
 libation_icu_available() {
   [ "$os" = linux ] || return 0
 
-  # Libation uses .NET's culture and region APIs while preparing downloads.
-  # The runtime loads ICU dynamically, so an extracted .deb still needs the
-  # host's ICU libraries even though the rest of Libation is self-contained.
   if need ldconfig && ldconfig -p 2>/dev/null | grep -q 'libicuuc\.so'; then
     return 0
   fi
@@ -991,8 +890,6 @@ install_libation_icu() {
       apt_icu_package=$(apt-cache depends libicu-dev 2>/dev/null |
         sed -n 's/^[[:space:]]*Depends: \(libicu[0-9][0-9]*\)$/\1/p' | head -n 1)
     fi
-    # Debian and Ubuntu version the runtime package. Resolve that dependency
-    # when possible so a minimal server does not receive development headers.
     [ -n "$apt_icu_package" ] || apt_icu_package=libicu-dev
     run_libation_dependency_command env DEBIAN_FRONTEND=noninteractive \
       apt-get install -y --no-install-recommends "$apt_icu_package"
@@ -1016,9 +913,6 @@ ensure_libation_icu() {
   libation_icu_available && return 0
 
   say "Libation needs the ICU runtime on Linux, but no ICU library was found."
-  # An unattended ordinary upgrade must not gain system packages as a side
-  # effect. --yes may install ICU only when the user explicitly requested
-  # Libation with --libation or --libation-path.
   if [ "$INTERACTIVE" -ne 1 ] &&
      { [ "$ASSUME_YES" -ne 1 ] || [ "$LIBATION_CHOICE" != yes ]; }; then
     report_missing_libation_icu
@@ -1043,7 +937,6 @@ ensure_libation_icu() {
 }
 
 libation_asset() {
-  # libation_asset TAG — the download for this computer, or nothing.
   libation_version=${1#v}
   case "$os" in
     macos) printf 'Libation.%s-macOS-chardonnay-%s.dmg' "$libation_version" "$arch" ;;
@@ -1057,8 +950,6 @@ libation_asset() {
 }
 
 install_libation() {
-  # Installs Libation itself inside the OperaLibre folder. On Linux, its ICU
-  # runtime remains a system dependency handled separately above.
   say "Looking up the newest Libation release..."
   libation_json=$(fetch_stdout "https://api.github.com/repos/${LIBATION_REPOSITORY}/releases/latest") || {
     say "Could not reach GitHub to look up Libation."
@@ -1099,8 +990,6 @@ install_libation() {
     [ "$libation_copied" -eq 0 ] || { say "Could not copy Libation out of the disk image."; return 1; }
     xattr -dr com.apple.quarantine "${libation_root}/Libation.app" >/dev/null 2>&1 || true
   else
-    # The .deb payload is a self-contained folder, so unpack it in place
-    # instead of asking for a root password to install a system package.
     if need dpkg-deb; then
       dpkg-deb -x "${WORK_DIR}/${libation_file}" "$libation_root" || {
         say "Could not unpack the Libation package."
@@ -1138,7 +1027,6 @@ install_libation() {
 if [ "$LIBATION_CHOICE" != no ]; then
   existing_libation_config=$(configured_libation_path)
   if [ -n "$existing_libation_config" ] && [ -z "$LIBATION_PATH" ]; then
-    # An upgrade that already has the import configured keeps its CLI path.
     if ensure_libation_icu; then
       LIBATION_READY=1
     fi
@@ -1198,7 +1086,6 @@ if [ "$LIBATION_CHOICE" != no ]; then
   fi
 fi
 
-# Upgrades from an install that predates the settings folder get it here too.
 if [ "$LIBATION_READY" -eq 1 ] && ! ensure_libation_files_dir; then
   LIBATION_READY=0
   say "Could not set up Libation's settings folder. You can finish Audible setup later:"
@@ -1207,7 +1094,6 @@ fi
 
 PORT=$(configured_port)
 
-# --- Start ------------------------------------------------------------------
 
 open_launcher=$(launcher_path "$INSTALL_DIR" open)
 stop_launcher=$(launcher_path "$INSTALL_DIR" stop)
@@ -1215,8 +1101,6 @@ stop_launcher=$(launcher_path "$INSTALL_DIR" stop)
 started=0
 if [ "$START_AFTER_INSTALL" -eq 1 ]; then
   say "Starting OperaLibre..."
-  # The launcher also tries to open a browser, which fails on headless
-  # machines; the server itself still starts, so the port check decides.
   "$open_launcher" >/dev/null 2>&1 || true
   waited=0
   while [ "$waited" -lt 30 ]; do

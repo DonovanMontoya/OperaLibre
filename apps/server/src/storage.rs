@@ -1,7 +1,3 @@
-//! Durable state: private-file primitives, the SQLite-backed stores (progress,
-//! sessions, activity, and the write-through document caches), and the
-//! startup snapshot that loads them back into memory.
-
 use crate::*;
 
 pub(crate) fn record_server_pid(data_dir: &std::path::Path) -> std::io::Result<()> {
@@ -51,12 +47,6 @@ pub(crate) async fn secure_existing_state_files(config: &ServerConfig) -> io::Re
     Ok(())
 }
 
-/// The identity this installation reports on the health route, created on
-/// first start. Apps pin it when they connect and refuse a saved address
-/// that reports a different one, so two servers are never treated as one
-/// library. It is not a credential and proves nothing about who is
-/// answering. It is a file rather than a database row so that restoring a
-/// backup does not change which server this is.
 pub(crate) async fn load_or_create_server_id(data_dir: &FsPath) -> anyhow::Result<String> {
     let path = data_dir.join("server-id");
     match fs::read_to_string(&path).await {
@@ -83,8 +73,6 @@ pub(crate) async fn load_or_create_server_id(data_dir: &FsPath) -> anyhow::Resul
     Ok(server_id)
 }
 
-/// Serialize to a temporary file in the destination directory and rename it
-/// into place, so a crash mid-write never leaves a truncated store behind.
 pub(crate) async fn write_json_atomic<T: Serialize>(
     path: &FsPath,
     value: &T,
@@ -92,8 +80,6 @@ pub(crate) async fn write_json_atomic<T: Serialize>(
     write_bytes_atomic(path, &serde_json::to_vec_pretty(value)?).await
 }
 
-/// Write bytes to a temporary sibling and rename them into place with the
-/// same durability and permission guarantees as the JSON state writer.
 pub(crate) async fn write_bytes_atomic(path: &FsPath, contents: &[u8]) -> Result<(), ApiError> {
     let created_directories = ensure_parent_directory(path).await?;
     let mut suffix = [0u8; 8];
@@ -107,22 +93,14 @@ pub(crate) async fn write_bytes_atomic(path: &FsPath, contents: &[u8]) -> Result
         u64::from_le_bytes(suffix)
     ));
     if let Err(error) = write_and_publish(&temp_path, path, contents).await {
-        // Whichever step failed, the temporary sibling must not stay behind:
-        // a full disk that leaves a `.tmp` file beside the store on every
-        // attempt only fills the disk faster.
         let _ = fs::remove_file(&temp_path).await;
         return Err(error.into());
     }
     secure_file_permissions(path).await?;
-    // The rename is atomic, but the directory entry it created is itself only
-    // durable once the directory is synced. Skipping this can lose the whole
-    // store after a crash even though the data was safely on disk.
     sync_parent_directories(path, &created_directories).await?;
     Ok(())
 }
 
-/// Fill the temporary file and rename it over the destination. The caller
-/// removes the temporary file if any step here fails.
 async fn write_and_publish(temp_path: &FsPath, path: &FsPath, contents: &[u8]) -> io::Result<()> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -130,20 +108,12 @@ async fn write_and_publish(temp_path: &FsPath, path: &FsPath, contents: &[u8]) -
     options.mode(0o600);
     let mut temp_file = options.open(temp_path).await?;
     temp_file.write_all(contents).await?;
-    // `flush` only drains tokio's userspace buffer. Without `sync_all` the
-    // bytes can still be sitting in the page cache when power is lost, and the
-    // rename below would then publish a truncated or empty store.
     temp_file.sync_all().await?;
     drop(temp_file);
     secure_file_permissions(temp_path).await?;
     replace_file(temp_path, path).await
 }
 
-/// Create the destination directory and remember every directory created.
-///
-/// After the file is published, their parents must also be synced: syncing the
-/// immediate parent persists the file entry, while syncing each ancestor
-/// persists the newly-created directory entries themselves.
 async fn ensure_parent_directory(path: &FsPath) -> io::Result<Vec<PathBuf>> {
     let Some(parent) = path.parent() else {
         return Ok(Vec::new());
@@ -176,9 +146,6 @@ async fn replace_file(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
         .map_err(io::Error::other)?
 }
 
-/// Replace a file from a synchronous path such as JSON export. Windows cannot
-/// use `rename` when the destination already exists, so every synchronous
-/// writer shares the same replacement semantics as `write_json_atomic`.
 #[cfg(unix)]
 pub(crate) fn replace_file_blocking(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
     std::fs::rename(temp_path, path)
@@ -215,7 +182,6 @@ pub(crate) fn replace_file_blocking(temp_path: &FsPath, path: &FsPath) -> io::Re
     }
 }
 
-/// Fsync the directory holding the file and any newly-created ancestor links.
 #[cfg(unix)]
 async fn sync_parent_directories(path: &FsPath, created_directories: &[PathBuf]) -> io::Result<()> {
     let mut directories = Vec::with_capacity(created_directories.len() + 1);
@@ -259,19 +225,8 @@ pub(crate) async fn secure_file_permissions(_path: &FsPath) -> io::Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// The stores
-// ---------------------------------------------------------------------------
-//
-// Every method here keeps the signature it had when these were JSON files, so
-// the handlers did not change when the backend did. What changed is what each
-// call costs: reading one listener's position is now an indexed lookup rather
-// than parsing every listener's positions for every book.
-
 use rusqlite::{OptionalExtension, params};
 
-/// Rebuild a `Progress` from its row. The book id comes from the key column,
-/// not a stored copy, so the two can never disagree.
 pub(crate) fn progress_from_row(
     row: &rusqlite::Row<'_>,
     book_id: String,
@@ -340,7 +295,6 @@ fn upsert_progress(
     Ok(())
 }
 
-/// Every listener's saved position.
 #[derive(Debug)]
 pub(crate) struct ProgressStore {
     db: Database,
@@ -351,7 +305,6 @@ impl ProgressStore {
         Self { db }
     }
 
-    /// One listener's position in one book.
     pub(crate) async fn get(
         &self,
         user_id: &str,
@@ -371,7 +324,6 @@ impl ProgressStore {
             .await
     }
 
-    /// Everything one listener has saved, keyed by book id.
     pub(crate) async fn list_for_user(
         &self,
         user_id: &str,
@@ -390,8 +342,6 @@ impl ProgressStore {
             .await
     }
 
-    /// Positions belonging to any of `user_ids`, keyed the way
-    /// `collect_shared_progress` looks them up.
     pub(crate) async fn list_for_users(
         &self,
         user_ids: &HashSet<String>,
@@ -420,7 +370,6 @@ impl ProgressStore {
             .await
     }
 
-    /// Book ids whose stored position moved within the last `window_ms`.
     pub(crate) async fn book_ids_active_within(
         &self,
         window_ms: u64,
@@ -429,7 +378,6 @@ impl ProgressStore {
             .await
     }
 
-    /// Listener ids whose stored position moved within the last `window_ms`.
     pub(crate) async fn listener_ids_active_within(
         &self,
         window_ms: u64,
@@ -438,9 +386,6 @@ impl ProgressStore {
             .await
     }
 
-    /// Distinct values of a query's first column, over progress rows updated
-    /// within the last `window_ms`. The query stays a static string so the
-    /// SQL remains greppable; only the row scan is shared.
     async fn active_ids_within(
         &self,
         query: &'static str,
@@ -465,11 +410,6 @@ impl ProgressStore {
             .await
     }
 
-    /// Apply a decision to one listener's position.
-    ///
-    /// The read, the decision, and the write happen in one transaction, so a
-    /// concurrent checkpoint cannot slip between the position this decision
-    /// was based on and the position it stores.
     pub(crate) async fn update_book<F>(
         &self,
         user_id: &str,
@@ -491,8 +431,6 @@ impl ProgressStore {
                     .optional()?;
                 match decide(previous.as_ref()) {
                     ProgressDecision::Keep => {
-                        // Every rule that keeps a position first requires one
-                        // to be stored, so this branch always has a previous.
                         let kept = previous.clone().ok_or_else(|| {
                             rusqlite::Error::InvalidParameterName(
                                 "progress was kept without a stored position".to_string(),
@@ -535,8 +473,6 @@ impl ProgressStore {
             .await
     }
 
-    /// Store one listener's position outright, ignoring the rules that guard
-    /// automatic checkpoints. Tests use this to set up a known position.
     #[cfg(test)]
     pub(crate) async fn set(
         &self,
@@ -550,7 +486,6 @@ impl ProgressStore {
             .await
     }
 
-    /// Forget everything belonging to one listener.
     pub(crate) async fn remove_user(&self, user_id: &str) -> Result<(), ApiError> {
         let user_id = user_id.to_string();
         self.db
@@ -566,12 +501,8 @@ impl ProgressStore {
     }
 }
 
-/// Reads `volume_gain, manual, auto_volume` from the first three columns.
 fn volume_setting_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BookVolumeSetting> {
     Ok(BookVolumeSetting {
-        // Clamped on the way out as well as the way in: a value stored by an
-        // older release, or edited by hand, must not reach a client as an
-        // eardrum-splitting multiplier.
         manual_gain: (row.get::<_, i64>(1)? != 0)
             .then(|| row.get(0).map(clamp_book_volume_gain))
             .transpose()?,
@@ -579,8 +510,6 @@ fn volume_setting_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BookVolu
     })
 }
 
-/// Per-listener, per-book playback settings: the listener's own volume, and
-/// whether the suggested gain may apply when they have none.
 #[derive(Debug)]
 pub(crate) struct BookSettingsStore {
     db: Database,
@@ -591,7 +520,6 @@ impl BookSettingsStore {
         Self { db }
     }
 
-    /// One listener's settings for one book.
     pub(crate) async fn get(
         &self,
         user_id: &str,
@@ -614,7 +542,6 @@ impl BookSettingsStore {
             .unwrap_or_default())
     }
 
-    /// Every book one listener has a setting for, keyed by book id.
     pub(crate) async fn list_for_user(
         &self,
         user_id: &str,
@@ -634,8 +561,6 @@ impl BookSettingsStore {
             .await
     }
 
-    /// Set one book's gain for one listener. Unity is stored like any other
-    /// level: "Original" chosen by hand overrides a suggested gain.
     pub(crate) async fn set_gain(
         &self,
         user_id: &str,
@@ -658,9 +583,6 @@ impl BookSettingsStore {
             .await
     }
 
-    /// Turn the suggested gain on or off for one listener's book. Turning it
-    /// on also clears their own level, since that would otherwise keep
-    /// winning; turning it off keeps any level they set.
     pub(crate) async fn set_auto_volume(
         &self,
         user_id: &str,
@@ -671,8 +593,6 @@ impl BookSettingsStore {
         self.db
             .call(move |connection| {
                 if enabled {
-                    // Automatic with no level of their own is the default,
-                    // which is the absence of a row.
                     connection.execute(
                         "DELETE FROM book_settings WHERE user_id = ?1 AND book_id = ?2",
                         params![user_id, book_id],
@@ -704,21 +624,6 @@ impl BookSettingsStore {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Stores that stay cached in memory
-// ---------------------------------------------------------------------------
-//
-// These are small and bounded, and the auth path reads accounts and sessions
-// on every request, so they keep their in-memory copy. What moved is where the
-// copy is persisted: one transactional database instead of a file each.
-
-/// A store held in memory and persisted to the database.
-///
-/// Reads come from the cache. Writes go through [`mutate`], which applies the
-/// change to a draft and adopts it only once the change succeeds and the write
-/// commits, so a rejected change touches neither the cache nor the database.
-///
-/// [`mutate`]: CachedStore::mutate
 #[derive(Debug)]
 pub(crate) struct CachedStore<T> {
     db: Database,
@@ -726,16 +631,11 @@ pub(crate) struct CachedStore<T> {
     value: RwLock<T>,
 }
 
-/// How a cached store writes itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StoreShape {
-    /// Rewritten as rows in the named table's dedicated schema.
     Users,
     Sessions,
     Activity,
-    /// Kept as a JSON document under this name. These structures are still
-    /// moving and are never queried by anything but their own handlers, so
-    /// columns would cost a schema migration per field and buy nothing.
     Document(&'static str),
 }
 
@@ -752,9 +652,6 @@ impl<T: Serialize + Clone + Send + Sync + 'static> CachedStore<T> {
         self.value.read().await
     }
 
-    /// Adopt a value already committed by the administrative restore path.
-    /// Restore writes all stores in one database transaction, so persisting
-    /// each cache again here would split that atomic replacement back apart.
     pub(crate) async fn adopt_restored(&self, restored: T) {
         *self.value.write().await = restored;
     }
@@ -802,25 +699,15 @@ impl<T: Serialize + Clone + Send + Sync + 'static> CachedStore<T> {
     }
 }
 
-/// Names for the stores that keep their JSON shape.
 pub(crate) const METADATA_OVERRIDES_DOCUMENT: &str = "metadata-overrides";
 pub(crate) const LIBATION_REQUESTS_DOCUMENT: &str = "libation-requests";
 pub(crate) const LIBATION_REFRESHES_DOCUMENT: &str = "libation-refreshes";
 pub(crate) const LIBATION_ACCOUNTS_DOCUMENT: &str = "libation-accounts";
 pub(crate) const READING_HISTORY_DOCUMENT: &str = "reading-history";
 pub(crate) const WORKS_DOCUMENT: &str = "works";
-/// The account permission migration's watermark. It belongs with the accounts
-/// but is not a property of any one of them, so it rides alongside the rows.
 pub(crate) const USERS_PERMISSIONS_VERSION_DOCUMENT: &str = "users-permissions-version";
-/// Each account's chosen picture, by user id. Kept beside the rows instead of
-/// in a column so the schema, and with it the data compatibility a release
-/// declares, stays as it was: an older build rewriting the accounts leaves
-/// this alone, and the pictures are still there when the newer one returns.
 pub(crate) const USERS_AVATARS_DOCUMENT: &str = "users-avatars";
 
-/// Accounts are rewritten wholesale. There are tens of them, they change only
-/// when an administrator acts, and doing it in one transaction keeps the
-/// account list and its book grants consistent with each other.
 pub(crate) fn write_users_rows(
     transaction: &rusqlite::Transaction<'_>,
     payload: &str,
@@ -886,10 +773,6 @@ pub(crate) fn write_sessions_rows(
         .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;
     transaction.execute("DELETE FROM sessions", [])?;
     for (session_id, session) in &sessions {
-        // A session carried without its media key (from a file older than
-        // hashed storage) still needs a unique value in the indexed column.
-        // Its own id serves: it is a digest in another domain, so no media
-        // token can ever hash to it.
         let media_key = if session.media_token_hash.is_empty() {
             session_id
         } else {
@@ -924,24 +807,11 @@ pub(crate) fn write_activity_rows(
     Ok(written)
 }
 
-/// Every account.
 pub(crate) type UserStore = CachedStore<UsersStore>;
-/// Live sessions, keyed by [`session_id_for_token`] of their tokens.
-///
-/// Wraps the cached map with a reverse index from media token digest to
-/// session id. The media route is the hottest in the server — every range
-/// request during playback carries one — and it used to hash every live
-/// session on every request to find its owner.
 #[derive(Debug)]
 pub(crate) struct SessionStore {
     inner: CachedStore<HashMap<String, Session>>,
     by_media_token: RwLock<HashMap<String, String>>,
-    /// Serializes mutation and index publication. The index is rebuilt from a
-    /// fresh read of the map after each commit, so two overlapping mutations
-    /// must not be free to publish out of order — without the gate, the first
-    /// could overwrite the second's newer index with its own older snapshot,
-    /// leaving a just-signed-in session's media token unresolvable until the
-    /// next session change.
     mutate_gate: tokio::sync::Mutex<()>,
 }
 
@@ -975,27 +845,14 @@ impl SessionStore {
     where
         F: FnOnce(&mut HashMap<String, Session>) -> Result<R, ApiError>,
     {
-        // Always take the global gate before the session-specific gate. The
-        // restore path holds the global gate while adopting the rebuilt index,
-        // so the reverse order could deadlock a sign-in against a restore.
         let _state_guard = self.inner.db.state_read_guard().await;
         let _gate = self.mutate_gate.lock().await;
         let outcome = self.inner.mutate_while_guarded(change).await?;
-        // Rebuilt rather than patched: sessions change on sign-in and sign-out
-        // only, the map is capped, and a rebuild cannot drift from the truth.
-        // The gate keeps the read-and-publish step from interleaving with
-        // another mutation's commit, so the index never lags the map it
-        // mirrors.
         let rebuilt = media_token_index(&*self.inner.read().await);
         *self.by_media_token.write().await = rebuilt;
         Ok(outcome)
     }
 
-    /// The id of the session a media token belongs to, if it belongs to one.
-    ///
-    /// The index holds digests, so the lookup compares a digest of the
-    /// presented token; what a timing difference could reveal is a prefix of
-    /// a hash, not of a usable token.
     pub(crate) async fn session_for_media_token(&self, media_token: &str) -> Option<String> {
         let index = self.by_media_token.read().await;
         index.get(&media_token_lookup_key(media_token)).cloned()
@@ -1008,18 +865,9 @@ impl SessionStore {
         *self.by_media_token.write().await = rebuilt;
     }
 }
-/// Per-listener daily listening totals.
 pub(crate) type ActivityLog = CachedStore<ActivityStore>;
 
 impl ActivityLog {
-    /// Adds listening seconds to one day's total, persisting just that row.
-    ///
-    /// Every playback checkpoint lands here, and going through `mutate` meant
-    /// rewriting every listener's every day for each one. The cache is
-    /// updated in place under the same write lock `mutate` holds across its
-    /// commit, so the two cannot interleave, and the cache is only touched
-    /// once the row is on disk. `write_activity_rows` stays the whole-store
-    /// path that restore and import use.
     pub(crate) async fn add_seconds(
         &self,
         user_id: &str,
@@ -1039,8 +887,6 @@ impl ActivityLog {
         let written = self
             .db
             .transaction_while_guarded(move |transaction| {
-                // An admitted request can reach bookkeeping after its user
-                // has been deleted. Check existence in the same transaction.
                 transaction.execute(
                     "INSERT INTO activity (user_id, day, seconds)
                      SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM users WHERE id = ?1)
@@ -1060,22 +906,13 @@ impl ActivityLog {
         Ok(total)
     }
 }
-/// Administrator edits layered over scanned metadata.
 pub(crate) type MetadataOverrides = CachedStore<MetadataOverrideStore>;
-/// Pending and decided Libation download requests.
 pub(crate) type LibationRequests = CachedStore<LibationRequestStore>;
-/// Per-listener Libation refresh rate limiting.
 pub(crate) type LibationRefreshes = CachedStore<LibationRefreshStore>;
-/// Managed Libation accounts.
 pub(crate) type LibationAccounts = CachedStore<ManagedLibationAccountStore>;
 pub(crate) type ReadingHistoryStore = CachedStore<ReadingHistory>;
 pub(crate) type WorksStore = CachedStore<WorkStore>;
 
-// ---------------------------------------------------------------------------
-// Loading the caches at startup
-// ---------------------------------------------------------------------------
-
-/// Read one JSON-shaped store back out of the database.
 pub(crate) fn read_document_store<T: serde::de::DeserializeOwned + Default>(
     connection: &rusqlite::Connection,
     name: &str,
@@ -1099,8 +936,6 @@ pub(crate) fn read_users_rows(connection: &rusqlite::Connection) -> anyhow::Resu
         }
     }
 
-    // A picture is never worth refusing to load the accounts over, so one
-    // that cannot be read is treated as not chosen.
     let mut avatars: HashMap<String, String> =
         db::read_document(connection, USERS_AVATARS_DOCUMENT)?
             .and_then(|payload| serde_json::from_str(&payload).ok())
@@ -1132,12 +967,7 @@ pub(crate) fn read_users_rows(connection: &rusqlite::Connection) -> anyhow::Resu
     for row in rows {
         users.push(row?);
     }
-    // Accounts are presented oldest first, the order the file preserved.
     users.sort_by(|left, right| left.created_at.cmp(&right.created_at));
-    // Only an install from before the permissions migration lacks the version.
-    // One that cannot be read is refused rather than taken as 0: rerunning the
-    // migration would give every administrator back the Libation access and
-    // approval rights the owner may have taken away.
     let permissions_version =
         match db::read_document(connection, USERS_PERMISSIONS_VERSION_DOCUMENT)? {
             None => 0,
@@ -1164,8 +994,6 @@ pub(crate) fn read_sessions_rows(
             Session {
                 user_id: row.get(1)?,
                 created_at: row.get(2)?,
-                // The id standing in for a missing media key (see
-                // write_sessions_rows) reads back as no media key.
                 media_token_hash: if media_key == session_id {
                     String::new()
                 } else {
@@ -1205,7 +1033,6 @@ pub(crate) fn read_activity_rows(
     Ok(store)
 }
 
-/// Everything the server keeps cached in memory, read back at startup.
 pub(crate) struct CachedSnapshot {
     pub(crate) users: UsersStore,
     pub(crate) sessions: HashMap<String, Session>,

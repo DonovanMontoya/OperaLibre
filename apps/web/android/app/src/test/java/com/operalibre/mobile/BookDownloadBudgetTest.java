@@ -18,7 +18,6 @@ public class BookDownloadBudgetTest {
             BookDownloadBudget.check(retained, 5, 12);
             try { BookDownloadBudget.check(retained, 7, 12); fail("Each part got a new budget"); }
             catch (BookDownloadBudget.Exceeded expected) {}
-            // Restart after publication, even before the progress counter was saved.
             try (RandomAccessFile f = new RandomAccessFile(b, "rw")) { f.setLength(6); }
             try { BookDownloadBudget.retained(Arrays.asList(a, b), 12); fail("Restored files escaped accounting"); }
             catch (BookDownloadBudget.Exceeded expected) {}

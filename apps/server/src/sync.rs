@@ -1,12 +1,6 @@
-//! Sync maps: serving and generating the text-to-audio alignment a readalong
-//! client follows.
-
 use crate::updates::SyncAddonRuntime;
 use crate::*;
 
-/// Queue rank is separate from creation time so moving a book never changes
-/// its elapsed time or history. A job is only ranked once it is moved,
-/// resumed, or re-queued; until then it keeps its creation order.
 fn sync_queue_order(job: &JobStatus) -> u64 {
     job.queue_position
         .unwrap_or_else(|| job_started_timestamp(job))
@@ -82,7 +76,6 @@ pub(crate) async fn remove_sync_job(
         return Err(error);
     }
     state.update_manager.sync_queue_changed.notify_waiters();
-    // A running worker cannot be using this job's checkpoint.
     let _ = fs::remove_file(sync_checkpoint_path(&state, &previous.id)).await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -173,7 +166,6 @@ struct SyncCheckpoint {
     completed_scopes: usize,
     fragments: Vec<alignment::SyncFragment>,
     recovery_gaps: Vec<alignment::RecoveryGap>,
-    /// Indexed by scope; a scope with no text keeps the default.
     #[serde(default)]
     outcomes: Vec<sync_report::ScopeOutcome>,
 }
@@ -185,8 +177,6 @@ fn sync_checkpoint_path(state: &AppState, id: &str) -> PathBuf {
         .join(format!("{id}.json"))
 }
 
-/// Reject cached timing when the input files, alignment settings or chapter
-/// scopes change. File metadata avoids rereading gigabytes of audio on a NAS.
 async fn checkpoint_fingerprint(
     epub: &FsPath,
     tracks: &[SyncTrackInput],
@@ -195,8 +185,6 @@ async fn checkpoint_fingerprint(
     recognition: &RecognitionSettings,
 ) -> anyhow::Result<String> {
     let mut hash = Sha256::new();
-    // Server alignment code and its settings can change without recommending
-    // regeneration of finished maps. Be conservative when mixing saved sections.
     hash.update(include_str!("sync.rs"));
     hash.update(include_str!("alignment.rs"));
     hash.update(format!(
@@ -276,12 +264,9 @@ async fn pause_at_checkpoint(state: &AppState, id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Owns update exclusion while workers stop and their queue is saved. A failed
-/// or cancelled update releases the stop signal so recovery can restart work.
 pub(crate) struct SyncUpdatePause {
     signal: tokio::sync::watch::Sender<u64>,
     state: AppState,
-    // A late rollback must not release a newer update’s stop signal.
     token: u64,
     _lifecycle: Option<tokio::sync::OwnedRwLockWriteGuard<()>>,
     keep: bool,
@@ -313,8 +298,6 @@ impl Drop for SyncUpdatePause {
             return;
         };
         handle.spawn(async move {
-            // Cancellation can happen while waiting for workers to stop. Keep
-            // the signal set until they have all released update exclusion.
             let lifecycle = match held {
                 Some(guard) => guard,
                 None => {
@@ -355,8 +338,6 @@ pub(crate) async fn pause_for_update(state: &AppState) -> anyhow::Result<SyncUpd
         keep: false,
     };
     pause.signal.send_replace(pause.token);
-    // Both running and queued workers listen to the signal and release their
-    // lifecycle guards. Holding the write guard prevents new workers racing in.
     pause._lifecycle = Some(
         state
             .update_manager
@@ -405,8 +386,6 @@ fn finished_sync_result(job: &JobStatus) -> bool {
         && matches!(job.status.as_str(), "completed" | "failed" | "cancelled")
 }
 
-/// A book keeps its latest result until it finishes another sync. Active
-/// jobs and other kinds of work never replace or lose their entries here.
 pub(crate) fn prune_sync_results(jobs: &mut HashMap<String, JobStatus>) {
     let mut latest: HashMap<String, (u64, String)> = HashMap::new();
     for job in jobs.values().filter(|job| finished_sync_result(job)) {
@@ -429,8 +408,6 @@ pub(crate) fn prune_sync_results(jobs: &mut HashMap<String, JobStatus>) {
     });
 }
 
-/// Queue snapshots are serialized while holding the job table's write lock,
-/// so a completion cannot be overwritten by an older enqueue snapshot.
 pub(crate) async fn save_queue(
     state: &AppState,
     jobs: &HashMap<String, JobStatus>,
@@ -454,11 +431,6 @@ pub(crate) async fn restore_queue(state: &AppState) -> Result<(), ApiError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    // The server starts without a queue it cannot read, such as one written by
-    // a newer version before a downgrade, so read-along work never keeps
-    // listening and progress sync offline. The file is kept beside the empty
-    // queue that replaces it, for the owner to recover. A file kept by an
-    // earlier start is never replaced.
     let entries: Vec<JobStatus> = match serde_json::from_slice(&bytes) {
         Ok(entries) => entries,
         Err(error) => {
@@ -525,8 +497,6 @@ pub(crate) async fn resume_queue(state: &AppState) {
         .filter(|job| job.resume_pending)
         .cloned()
         .collect();
-    // The schedule calls this every tick; read the runtime from disk only when
-    // there is something to resume.
     if pending.is_empty()
         || state
             .update_manager
@@ -565,9 +535,6 @@ pub(crate) async fn resume_pending_jobs(state: &AppState, mut pending: Vec<JobSt
     }
 }
 
-/// The longest one aligner run may take before the job is failed and the
-/// process killed. Alignment is slow on a long chapter, so this is a ceiling
-/// against a hung CLI, not a budget.
 pub(crate) const ALIGNMENT_COMMAND_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 
 pub(crate) async fn get_sync_map(
@@ -598,10 +565,6 @@ pub(crate) async fn get_sync_map(
     .await
 }
 
-/// The id a book's files under the sync directory are named after: the
-/// library's own copy, never the request path as written, and only ever a
-/// plain token (the scan mints hex ids), so it cannot name anything but the
-/// book's files inside that directory.
 pub(crate) fn sync_file_book_id(id: &str) -> Result<String, ApiError> {
     if !is_plain_file_token(id) {
         return Err(ApiError::internal("The book id cannot name a sync file."));
@@ -625,7 +588,6 @@ pub(crate) async fn alignment_status(
 
 #[derive(Deserialize)]
 pub(crate) struct GenerateSyncRequest {
-    /// Report indices of the chapters to re-run; absent for the whole book.
     chapters: Option<Vec<usize>>,
 }
 
@@ -651,8 +613,6 @@ pub(crate) async fn enqueue_sync_map(
     enqueue_sync_map_inner(state, book_id, None, None, false).await
 }
 
-/// Chapter re-runs splice into a current map OperaLibre generated; any other
-/// map is replaced by re-syncing the whole book.
 async fn rerun_map_path(state: &AppState, book_id: &str) -> Result<PathBuf, ApiError> {
     let library = state.library.read().await;
     match &library.book(book_id)?.sync_file {
@@ -675,8 +635,6 @@ async fn rerun_map_path(state: &AppState, book_id: &str) -> Result<PathBuf, ApiE
         .ok_or_else(|| ApiError::conflict(sync_report::BOOK_CHANGED))
 }
 
-/// Refuses a re-run the book can no longer take before it joins the queue,
-/// and names its chapters for the job.
 async fn rerun_request_chapters(
     state: &AppState,
     book_id: &str,
@@ -714,9 +672,6 @@ async fn rerun_request_chapters(
     .map_err(ApiError::conflict)
 }
 
-/// Accept a sweep as one durable queue update. Start the workers only after
-/// the snapshot is published; a restart between publication and dispatch will
-/// recover every accepted book from that snapshot.
 pub(crate) async fn enqueue_sync_batch(
     state: AppState,
     book_ids: Vec<String>,
@@ -815,8 +770,6 @@ pub(crate) async fn enqueue_sync_batch(
                     .await
             {
                 if error.status == StatusCode::CONFLICT {
-                    // An update can pause dispatch after the batch was accepted.
-                    // Keep these jobs recoverable until the handoff saves the queue.
                     if let Some(job) = state.jobs.write().await.get_mut(&job_id) {
                         job.resume_pending = job.status == "queued";
                     }
@@ -829,10 +782,6 @@ pub(crate) async fn enqueue_sync_batch(
     Ok((count, requested - count))
 }
 
-/// Queues a sync of the whole book, or with `chapters`, a re-run of just those.
-/// A recovered job passes its saved chapters with its `resume_id`; it is
-/// checked again when it runs rather than refused here, where a refusal would
-/// only be retried.
 async fn enqueue_sync_map_inner(
     state: AppState,
     book_id: String,
@@ -859,8 +808,6 @@ async fn enqueue_sync_map_inner(
         .await
     else {
         let message = "Follow-along sync generation is not enabled. An owner can install and enable it under Administration → Experimental features.";
-        // The runtime can be disabled after recovery's availability check.
-        // Keep accepted jobs pending until it is available again.
         return Err(if resume_id.is_some() {
             ApiError::conflict(message)
         } else {
@@ -909,8 +856,6 @@ async fn enqueue_sync_map_inner(
     };
     {
         let mut jobs = state.jobs.write().await;
-        // A queued whole-book sync covers any chapters; a queued re-run
-        // covers only its own, and must finish before anything wider.
         let covered = |job: &JobStatus| {
             job.chapters.is_empty()
                 || chapters.as_ref().is_some_and(|wanted| {
@@ -982,7 +927,6 @@ async fn enqueue_sync_map_inner(
         .await;
 
         let run = async {
-            // The book may have changed since a re-run was queued.
             if chapters.is_some() {
                 rerun_map_path(&state_for_job, &book_id)
                     .await
@@ -1030,8 +974,6 @@ async fn enqueue_sync_map_inner(
                 let rescanned = tokio::select! {
                     biased;
                     _ = wait_for_update(&mut update_pause) => {
-                        // The complete map is already published; startup's scan
-                        // will discover it without repeating alignment.
                         update_job_finished(&state_for_job, &job_id_for_task, "completed", Some(0), None).await;
                         guard.disarm();
                         return;
@@ -1084,7 +1026,6 @@ async fn enqueue_sync_map_inner(
     Ok(Json(JobCreated { job_id }))
 }
 
-/// The EPUB and audio tracks a sync of one book reads.
 pub(crate) fn sync_inputs(
     library: &LibraryState,
     book_id: &str,
@@ -1154,15 +1095,9 @@ pub(crate) struct SyncAlignmentScope {
     pub(crate) label: String,
 }
 
-/// The share of the progress bar given to alignment itself. Reading the EPUB
-/// and matching chapters come before it, writing the map and rescanning the
-/// library after; both are quick next to the aligner, but a bar that sat at
-/// 0 % or 100 % through them would look stuck.
 const ALIGN_PROGRESS_START: f64 = 0.03;
 const ALIGN_PROGRESS_END: f64 = 0.95;
 
-/// Where one scope sits in the whole run, so each window it finishes can move
-/// the bar rather than leaving it parked until the chapter ends.
 struct ScopeProgress {
     base: f64,
     span: f64,
@@ -1178,18 +1113,11 @@ impl ScopeProgress {
             .steps(self.completed, self.total)
     }
 
-    /// A single aligner run says nothing until it returns. Where the book is
-    /// one scope there is no other movement to fall back on, so report the
-    /// step without a fraction and let the reader show work in hand rather
-    /// than a number parked at the start for the whole run.
     fn indeterminate(&self) -> JobProgress {
         JobProgress::new(self.step.clone()).steps(self.completed, self.total)
     }
 }
 
-/// How long a scope's audio runs: it weights the progress bar, so a
-/// half-hour chapter moves it further than a two-minute one, and bounds the
-/// chapter a report grades.
 pub(crate) fn scope_audio_seconds(
     scope: &SyncAlignmentScope,
     tracks: &[SyncTrackInput],
@@ -1202,8 +1130,6 @@ pub(crate) fn scope_audio_seconds(
     }
 }
 
-/// Do not mix real seconds with a made-up fallback: if any scope is missing a
-/// duration, equal weights keep that scope from receiving a one-second sliver.
 fn scope_progress_weights(scopes: &[SyncAlignmentScope], tracks: &[SyncTrackInput]) -> Vec<f64> {
     scopes
         .iter()
@@ -1212,20 +1138,14 @@ fn scope_progress_weights(scopes: &[SyncAlignmentScope], tracks: &[SyncTrackInpu
         .unwrap_or_else(|| vec![1.0; scopes.len()])
 }
 
-/// What a finished run wrote: the map's sentence count and the chapters it
-/// could not align.
 #[derive(Debug)]
 pub(crate) struct SyncGenerated {
     pub(crate) fragment_count: usize,
     pub(crate) failed: Vec<JobChapter>,
 }
 
-/// When this many chapters fail before any aligns, the runtime itself is
-/// probably broken; the job stops rather than fail every chapter in turn.
 const FAIL_FAST_CHAPTERS: usize = 3;
 
-/// The map readers follow now, or for a book the library has not listed, the
-/// one its sync would replace.
 async fn served_map_path(state: &AppState, book_id: &str) -> PathBuf {
     state
         .library
@@ -1243,7 +1163,6 @@ fn generated_map_path(state: &AppState, book_id: &str) -> PathBuf {
         .join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"))
 }
 
-/// A whole map, with the identity its report is matched by.
 async fn read_sync_map(
     path: &FsPath,
 ) -> anyhow::Result<(alignment::SyncMap, sync_report::MapIdentity)> {
@@ -1253,11 +1172,6 @@ async fn read_sync_map(
     Ok((map, identity))
 }
 
-/// Aligns the whole book, or with `chapters`, only those scopes, spliced into
-/// the served map. A chapter that fails is recorded and the run goes on: a
-/// whole-book run keeps that chapter's sentences from the previous map, and a
-/// re-run leaves them as they were. Only when nothing aligns does the job
-/// fail, leaving the served map untouched.
 pub(crate) async fn run_sync_generation(
     state: &AppState,
     job_id: &str,
@@ -1402,7 +1316,6 @@ pub(crate) async fn run_sync_generation(
                         Some(range) => range,
                         None => (0.0, track.duration_seconds?),
                     };
-                    // As `align_scope` decides which scopes are windowed.
                     (end - start > 0.5 && !scope_transcript(&epub, scope).text.trim().is_empty())
                         .then(|| {
                             let mut pieces = CloudPrefetch::new(
@@ -1440,7 +1353,6 @@ pub(crate) async fn run_sync_generation(
             .count()
     };
     let mut gave_up = false;
-    // Read only if a chapter fails: a long book's map runs to megabytes.
     let previous_map = tokio::sync::OnceCell::new();
     pause_at_checkpoint(state, job_id).await?;
     for (position, &scope_number) in selected.iter().enumerate().skip(run.completed_scopes) {
@@ -1517,9 +1429,6 @@ pub(crate) async fn run_sync_generation(
             Err(error) => {
                 let detail = format!("{error:#}");
                 update_job_output(state, job_id, &format!("  Could not align: {detail}\n")).await;
-                // A re-run leaves the chapter as the map has it. A whole-book
-                // run keeps the previous map's sentences, or holds the
-                // reader's place through the chapter when there are none.
                 if rerun.is_none() {
                     let range = spans[scope_number].range();
                     let previous = previous_map
@@ -1566,16 +1475,12 @@ pub(crate) async fn run_sync_generation(
         pause_at_checkpoint(state, job_id).await?;
     }
 
-    // Repairs recognize a chapter again with pieces of their own. Nothing
-    // planned for the first pass may still be billing or touching files.
     if let Some(book) = &prefetch {
         for (_, scope) in &mut book.lock().await.scopes {
             scope.finish();
         }
     }
 
-    // A runtime that failed every chapter from the start is not worth
-    // retrying chapter by chapter.
     if !gave_up {
         let fixes = AutomaticFixes {
             aligner: &aligner,
@@ -1618,7 +1523,6 @@ pub(crate) async fn run_sync_generation(
             })
         })
         .collect::<Vec<_>>();
-    // A content failure can still explain why nothing aligned.
     let all_failed = !failed.is_empty() && failed.len() == attempted;
     let failure = || {
         let detail = failed
@@ -1679,8 +1583,6 @@ pub(crate) async fn run_sync_generation(
         Some(base) => {
             let (mut sync_map, mut identity) = read_sync_map(&map_path).await?;
             anyhow::ensure!(identity == base.map, sync_report::BOOK_CHANGED);
-            // With every chapter failed the map is left as it is, and only
-            // the report records the failures.
             if !all_failed {
                 for &index in &selected {
                     if outcomes.get(index).is_some_and(|o| o.error.is_none()) {
@@ -1713,7 +1615,6 @@ pub(crate) async fn run_sync_generation(
     sync_report::diagnose_chapters(&mut graded, &outcomes, &labels, language);
     let report = match rerun {
         None => sync_report::SyncReport::new(identity, sync_report::Graded::Run, graded),
-        // The other chapters' timing is unchanged, and so are their grades.
         Some(base) => {
             let mut chapters = base.report.chapters;
             for (chapter, regraded) in chapters.iter_mut().zip(graded) {
@@ -1726,7 +1627,6 @@ pub(crate) async fn run_sync_generation(
             sync_report::SyncReport::new(identity, base.report.graded, chapters)
         }
     };
-    // The map is already published; without a report it is graded later.
     if let Err(error) = sync_report::publish_report(state, book_id, &report).await {
         update_job_output(
             state,
@@ -1746,10 +1646,6 @@ pub(crate) async fn run_sync_generation(
     })
 }
 
-/// Interrupts expensive work, but never a checkpoint write: completed
-/// sections stay durable and resuming repeats only the unfinished one.
-/// Dropping alignment also stops its kill-on-drop child process. `None`
-/// when the job was paused.
 async fn align_unless_paused(
     aligner: &Aligner<'_>,
     scope: &SyncAlignmentScope,
@@ -1765,9 +1661,6 @@ async fn align_unless_paused(
     }
 }
 
-/// A checkpoint only saves time, so one that cannot be parsed (a torn write
-/// from an older version, or a newer format after a downgrade) is treated
-/// like a changed input: the book starts over instead of the job failing.
 async fn read_checkpoint(path: &FsPath) -> anyhow::Result<Option<SyncCheckpoint>> {
     let bytes = match fs::read(path).await {
         Ok(bytes) => bytes,
@@ -1794,26 +1687,13 @@ async fn save_checkpoint(path: &FsPath, checkpoint: &SyncCheckpoint) -> anyhow::
         .map_err(|error| anyhow::anyhow!(error.message))
 }
 
-/// A swapped chapter's opening must find at least this share of its
-/// five-word phrases, in order, in the other chapter's text: clear evidence
-/// the narrator is reading that chapter.
 const REPAIR_MIN_MATCH: f64 = 0.4;
-/// And beat its own text by this much, so a chapter that merely repeats
-/// another's wording is never moved.
 const REPAIR_MARGIN: f64 = 0.25;
-/// Only speech this unlike its text is checked against other chapters and
-/// for its language; a chapter that is merely hard to hear matches far more.
 const UNMATCHED_WORDS_IN_TEXT: f64 = 0.35;
-/// A 30-second sample is plenty for the recognizer to name a language, taken
-/// a minute in where a chapter allows, past its spoken title and music.
 const LANGUAGE_SAMPLE_SECONDS: f64 = 30.0;
 const LANGUAGE_SAMPLE_OFFSET: f64 = 60.0;
-/// Below this confidence a detected language is not trusted.
 const LANGUAGE_CONFIDENCE: f64 = 0.6;
 
-/// After a run's first pass, tries the automatic fix a weak chapter's
-/// diagnosis names, once per chapter and cause, keeping a result only when
-/// it grades better.
 struct AutomaticFixes<'a> {
     aligner: &'a Aligner<'a>,
     epub: &'a alignment::EpubDocument,
@@ -1824,10 +1704,8 @@ struct AutomaticFixes<'a> {
     checkpoint_path: &'a FsPath,
 }
 
-/// What a run learns, at most once, to tell why chapters went badly.
 #[derive(Default)]
 struct Clues {
-    /// The language the narration was detected in; one book is read in one.
     heard: Option<String>,
     detection_tried: bool,
     transcripts: Option<Vec<String>>,
@@ -1902,8 +1780,6 @@ impl AutomaticFixes<'_> {
         pause_at_checkpoint(self.aligner.state, self.aligner.job_id).await
     }
 
-    /// For speech that is not this chapter's text: whether it is another
-    /// chapter's, and, failing that, which language it is in.
     async fn look_closer(
         &self,
         index: usize,
@@ -1917,7 +1793,6 @@ impl AutomaticFixes<'_> {
                 .map(|scope| scope_transcript(self.epub, scope).text)
                 .collect()
         });
-        // Narration in another language matches no chapter's text.
         let other_language = clues
             .heard
             .as_deref()
@@ -1954,8 +1829,6 @@ impl AutomaticFixes<'_> {
         Ok(())
     }
 
-    /// Aligns one chapter again as `cause` calls for, and keeps the result
-    /// if it grades better than `grade`.
     async fn attempt(
         &self,
         index: usize,
@@ -1969,7 +1842,6 @@ impl AutomaticFixes<'_> {
         let label = &scope.label;
         let outcome = &run.outcomes[index];
         let mut paired_with = outcome.paired_with;
-        // Later model retries keep any chapter pairing already repaired.
         let scope = SyncAlignmentScope {
             section_range: paired_with
                 .map(|other| self.scopes[other].section_range.clone())
@@ -2095,7 +1967,6 @@ impl AutomaticFixes<'_> {
     }
 }
 
-/// One chapter's grade from the timing that starts in it.
 fn chapter_grade(
     span: &sync_report::ChapterSpan,
     fragments: &[alignment::SyncFragment],
@@ -2112,8 +1983,6 @@ fn chapter_grade(
     .and_then(sync_report::chapter_grade)
 }
 
-/// The scope whose text a chapter's recognized opening clearly belongs to,
-/// when that is not the chapter's own.
 fn matching_scope(opening: &str, transcripts: &[String], own: usize) -> Option<usize> {
     let words = opening
         .split_whitespace()
@@ -2136,7 +2005,6 @@ fn matching_scope(opening: &str, transcripts: &[String], own: usize) -> Option<u
         .map(|(index, _)| index)
 }
 
-/// "Chapter 3", or "Chapter 3, Chapter 5 and Chapter 7", for the job log.
 fn chapter_labels(chapters: &[JobChapter]) -> String {
     let labels = chapters
         .iter()
@@ -2149,9 +2017,6 @@ fn chapter_labels(chapters: &[JobChapter]) -> String {
     }
 }
 
-/// Sync maps name every sentence of a book, so they are written compactly:
-/// pretty-printing a long title's map adds a third to several megabytes
-/// that every reader downloads. Returns the identity a report names it by.
 async fn write_sync_map(
     path: &FsPath,
     map: &alignment::SyncMap,
@@ -2175,21 +2040,14 @@ pub(crate) fn scope_transcript(
 
 pub(crate) struct ScopePlan {
     pub(crate) scopes: Vec<SyncAlignmentScope>,
-    /// How the book was divided, for the job log.
     pub(crate) note: Option<String>,
 }
 
-/// Divides a book into the scopes it is aligned in. Grading uses the same
-/// plan, so a report's chapters are exactly the stretches that were aligned.
 pub(crate) fn plan_scopes(
     epub: &alignment::EpubDocument,
     tracks: &[SyncTrackInput],
     chapter_slicing: bool,
 ) -> anyhow::Result<ScopePlan> {
-    // Prefer embedded chapter boundaries for a single large audio file. This
-    // resets the aligner throughout an M4B instead of letting small errors
-    // accumulate over the entire book. Keep the established whole-track path
-    // when chapter metadata, TOC matching, or ffmpeg slicing is unavailable.
     if tracks.len() == 1 {
         return Ok(
             match chapter_alignment_scopes(&tracks[0], &epub.toc, &epub.sections, chapter_slicing) {
@@ -2294,9 +2152,6 @@ fn chapter_alignment_scopes(
         .collect()
 }
 
-/// Skipped credits, reordered apparatus, and audio-only bonus chapters must
-/// hold the reader's place. A matched illustration scope remains covered even
-/// when it deliberately produces no text fragments.
 fn unscoped_audio_gaps(
     track: &SyncTrackInput,
     scopes: &[SyncAlignmentScope],
@@ -2332,40 +2187,16 @@ fn unscoped_audio_gaps(
     gaps
 }
 
-/// Audio the forced aligner sees at once. Its working set grows with input
-/// length (about 1.4 GB per 1,000 s of audio on a 55-hour test book), so
-/// longer scopes are cut into windows this size, each tied to the transcript
-/// by speech recognition.
 const WINDOW_SECONDS: f64 = 240.0;
-/// A window's closing anchor must end this long before the window does, so
-/// the recognizer had context on both sides of the words it was matched on.
 const WINDOW_MARGIN_SECONDS: f64 = 30.0;
-/// Scopes up to this long are aligned in a single pass. Longer ones are
-/// windowed, and a windowed scope's final stretch is at most this long.
 const MAX_SINGLE_PASS_SECONDS: f64 = WINDOW_SECONDS * 1.5;
-/// How much transcript to search when matching a window's recognized words,
-/// as a multiple of what the window would cover at the scope's average pace.
 const WINDOW_TEXT_LOOKAHEAD: f64 = 1.8;
-/// After losing text, scan short overlapping audio intervals without guessing
-/// a new text cursor. Overlap keeps a sentence at a scan boundary recoverable.
 const RECOVERY_SCAN_SECONDS: f64 = 60.0;
 const RECOVERY_OVERLAP_SECONDS: f64 = 15.0;
-/// OpenAI recognition of a windowed scope is requested ahead of the window
-/// loop, in pieces of about this length. A window's start depends on where
-/// the previous one anchored, so windows cannot be sent ahead themselves;
-/// fixed pieces can, and each window takes its words from them.
 const PREFETCH_PIECE_SECONDS: f64 = 240.0;
-/// Extra audio sent on each side of a piece, so words near its edges are
-/// heard in context. Only words centred inside the piece are kept.
 const PREFETCH_OVERLAP_SECONDS: f64 = 15.0;
-/// Pieces requested beyond the one a window needs, continuing into the next
-/// chapters. OpenAI takes about as long for one piece as for several sent at
-/// once, so this many in flight keeps recognition ahead of alignment. Bounds
-/// the audio billed for nothing when a job is paused, cancelled, or fails.
 const PREFETCH_AHEAD: usize = 6;
 
-/// OpenAI word timings for one windowed scope, fetched a few pieces ahead of
-/// the window being aligned so that waiting on OpenAI overlaps alignment.
 struct CloudPrefetch {
     state: AppState,
     cloud: Arc<cloud_recognition::CloudRecognizer>,
@@ -2374,17 +2205,12 @@ struct CloudPrefetch {
     source: PathBuf,
     temp_dir: PathBuf,
     scope_number: usize,
-    /// Names this set's audio files, so that a repair pass over the same
-    /// scope never shares one with the run's own pieces.
     pass: &'static str,
-    /// Track seconds each piece supplies words for.
     cores: Vec<(f64, f64)>,
     scope_range: (f64, f64),
     pieces: Vec<PrefetchPiece>,
 }
 
-/// Where a window's audio is, for re-checking uncertain recognition: a file
-/// cut to the window, or a stretch of the track starting at `start`.
 #[derive(Clone, Copy)]
 enum WindowAudio<'a> {
     Sliced(&'a FsPath),
@@ -2393,9 +2219,7 @@ enum WindowAudio<'a> {
 
 enum PrefetchPiece {
     Pending(tokio::task::JoinHandle<anyhow::Result<Vec<alignment::RecognizedWord>>>),
-    /// Word timings in track seconds.
     Ready(Vec<alignment::RecognizedWord>),
-    /// Passed over before any window needed it.
     Skipped,
 }
 
@@ -2448,7 +2272,6 @@ impl CloudPrefetch {
             .unwrap_or(self.cores.len() - 1)
     }
 
-    /// The pieces holding the words between two track times.
     fn span(&self, start: f64, end: f64) -> (usize, usize) {
         (
             self.piece_at(start),
@@ -2456,8 +2279,6 @@ impl CloudPrefetch {
         )
     }
 
-    /// Stops pieces still being recognized and lets go of the words of the
-    /// rest; the scope is finished with.
     fn finish(&mut self) {
         for piece in self.pieces.drain(..) {
             if let PrefetchPiece::Pending(task) = piece {
@@ -2466,9 +2287,6 @@ impl CloudPrefetch {
         }
     }
 
-    /// Requests the pieces from `first` through `last`. Earlier pieces are
-    /// no longer needed: a recovery scan can pass over several, which are
-    /// then never sent.
     fn request(&mut self, first: usize, last: usize) {
         for piece in self.pieces.iter_mut().take(first) {
             if let PrefetchPiece::Pending(task) = piece {
@@ -2502,8 +2320,6 @@ impl CloudPrefetch {
         let last_piece = index + 1 == self.cores.len();
         PrefetchPiece::Pending(tokio::spawn(async move {
             extract_alignment_audio(&ffmpeg, &source, &audio, start, end).await?;
-            // Turning OpenAI off stops audio leaving at the next piece,
-            // including pieces cut while it was being turned off.
             if !cloud_recognition::still_enabled(&state).await {
                 let _ = fs::remove_file(&audio).await;
                 anyhow::bail!(
@@ -2525,8 +2341,6 @@ impl CloudPrefetch {
         }))
     }
 
-    /// The words heard between two track times, timed from `start`, as a
-    /// recognition of just that window would report them.
     async fn words(
         &mut self,
         start: f64,
@@ -2574,17 +2388,11 @@ impl Drop for CloudPrefetch {
     }
 }
 
-/// The OpenAI pieces of every scope a run will align, in the order it aligns
-/// them, so that the next chapter's opening is already recognized when the
-/// current one ends instead of each chapter starting with a wait.
 struct BookPrefetch {
-    /// Scope number and its pieces.
     scopes: Vec<(usize, CloudPrefetch)>,
 }
 
 impl BookPrefetch {
-    /// Pieces for `scope_number` over exactly this audio, if the run planned
-    /// them. A fix that aligns other audio for the scope uses its own.
     fn has(&self, scope_number: usize, source: &FsPath, start: f64, end: f64) -> bool {
         self.scopes.iter().any(|(number, prefetch)| {
             *number == scope_number
@@ -2608,7 +2416,6 @@ impl BookPrefetch {
             earlier.finish();
         }
         let (first, last) = self.scopes[at].1.span(start, end);
-        // Pieces past the end of a scope carry over to the next one.
         let (mut from, mut to) = (first, last + PREFETCH_AHEAD);
         for (_, prefetch) in &mut self.scopes[at..] {
             let count = prefetch.cores.len();
@@ -2622,17 +2429,11 @@ impl BookPrefetch {
     }
 }
 
-/// Which recognizer model to anchor windows with. English books get the
-/// English-only model, which is markedly better at the same size.
 #[derive(Clone)]
 struct RecognitionSettings {
     model: &'static str,
-    /// Re-checks uncertain windows and scans for a way back after a lost
-    /// stretch.
     retry_model: &'static str,
     language: Option<String>,
-    /// Set when the owner chose OpenAI to transcribe instead of on-device
-    /// whisper. Its one model is used for every pass.
     cloud: Option<Arc<cloud_recognition::CloudRecognizer>>,
 }
 
@@ -2674,8 +2475,6 @@ impl RecognitionSettings {
         }
     }
 
-    /// For a scope the first pass crashed on: whisper crashes are particular
-    /// to a model and its input, so lead with the other one.
     fn swapped(&self) -> Self {
         Self {
             model: self.retry_model,
@@ -2684,15 +2483,10 @@ impl RecognitionSettings {
         }
     }
 
-    /// Whether rerunning with the retry model could hear anything new. The
-    /// same model on the same audio only repeats the pass, which for OpenAI
-    /// would upload and bill it again.
     fn has_retry_model(&self) -> bool {
         self.retry_model != self.model
     }
 
-    /// One last, slower pass for audio the usual models could not follow.
-    /// OpenAI has no larger model.
     fn larger(&self) -> Option<Self> {
         if self.cloud.is_some() {
             return None;
@@ -2710,8 +2504,6 @@ impl RecognitionSettings {
     }
 }
 
-/// The settings a book's sync recognizes speech with: the language an
-/// administrator chose for it, or else the EPUB's own label.
 async fn book_recognition(
     state: &AppState,
     book_id: &str,
@@ -2722,7 +2514,6 @@ async fn book_recognition(
         .with_cloud(cloud_recognition::configured(state).await)
 }
 
-/// Runs the alignment CLI for one job, sharing its temp directory and tools.
 struct Aligner<'a> {
     state: &'a AppState,
     job_id: &'a str,
@@ -2731,10 +2522,7 @@ struct Aligner<'a> {
     ffmpeg_path: Option<&'a FsPath>,
     temp_dir: &'a FsPath,
     recognition: &'a RecognitionSettings,
-    /// What recognition heard in the scope being aligned, kept even when the
-    /// scope fails, since that is when it is wanted.
     heard: std::sync::Mutex<Heard>,
-    /// OpenAI pieces the run requested across its chapters.
     prefetch: Option<&'a tokio::sync::Mutex<BookPrefetch>>,
 }
 
@@ -2744,16 +2532,12 @@ struct Heard {
     words: Vec<alignment::RecognizedWord>,
 }
 
-/// Words of a scope's opening kept to look for elsewhere in the book: about
-/// the first minute of narration.
 const OPENING_WORDS: usize = 150;
 
 #[derive(Default)]
 struct ScopeAlignment {
     fragments: Vec<alignment::SyncFragment>,
     recovery_gaps: Vec<alignment::RecoveryGap>,
-    /// Edition-only text deliberately left unmatched, in the units
-    /// `sync_report::text_units` counts, so it does not lower the grade.
     skipped_text: u64,
 }
 
@@ -2799,8 +2583,6 @@ impl<'a> Aligner<'a> {
         change(&mut self.heard.lock().unwrap_or_else(|error| error.into_inner()));
     }
 
-    /// What was heard since the last call, measured against the text the
-    /// scope was aligned with.
     fn take_evidence(&self, text: &str) -> sync_report::ScopeEvidence {
         let Heard {
             mut evidence,
@@ -2867,7 +2649,6 @@ impl<'a> Aligner<'a> {
         Ok(aligned)
     }
 
-    /// The established path: one aligner run over the scope's whole audio.
     async fn align_single_pass(
         &self,
         scope: &SyncAlignmentScope,
@@ -2931,11 +2712,6 @@ impl<'a> Aligner<'a> {
         })
     }
 
-    /// Walks the scope in windows. Each window is transcribed to find where
-    /// its speech sits in the transcript; the stretch up to the last confident
-    /// sentence end is then force-aligned with exactly its own text, and the
-    /// next window starts there. The recognizer's word timings are used only
-    /// at those anchors.
     #[allow(clippy::too_many_arguments)]
     async fn align_windowed(
         &self,
@@ -2948,7 +2724,6 @@ impl<'a> Aligner<'a> {
         scope_end: f64,
         progress: &ScopeProgress,
     ) -> anyhow::Result<ScopeAlignment> {
-        // Book time of position zero in this file.
         let book_offset = scope.time_offset_seconds - scope_start;
         let text_len = transcript.len_utf16();
         let mut transcript = transcript.window(0, text_len);
@@ -3014,10 +2789,6 @@ impl<'a> Aligner<'a> {
                         "recovery",
                     )
                     .await?;
-                // Recovery requires an exact, unique sentence. The normal
-                // window model can have enough short anchors to avoid retry
-                // while still mishearing every complete sentence after noise.
-                // Use the stronger model for these bounded recovery scans.
                 let mut recognized = match self
                     .transcribe(
                         &audio,
@@ -3134,8 +2905,6 @@ impl<'a> Aligner<'a> {
                     position = end;
                     cursor =
                         alignment::skip_whitespace_utf16(&transcript.text, anchor.text_end_utf16);
-                    // Recognition alone is not enough: keep the gap open if
-                    // forced alignment cannot produce a usable sentence.
                     if let Some(first) = recovered.fragments.first() {
                         if first.start_seconds > gap_start {
                             recovery_gaps.push(alignment::RecoveryGap {
@@ -3226,8 +2995,6 @@ impl<'a> Aligner<'a> {
                                 &recognition_text.text,
                             )
                             .await?;
-                        // Inspect the recognition lookahead before cutting the
-                        // alignment window. An omission may cross that cut.
                         skipped_text += self
                             .mask_unspoken_sentences(
                                 &mut transcript,
@@ -3245,7 +3012,6 @@ impl<'a> Aligner<'a> {
                         if anchor.end.is_some() || window >= WINDOW_SECONDS * 2.0 {
                             break (anchor, recognized);
                         }
-                        // Nothing usable: look twice as far once before giving up.
                         window *= 2.0;
                     };
                     let recognition_text = transcript.window(cursor, text_len);
@@ -3262,9 +3028,6 @@ impl<'a> Aligner<'a> {
                             anchor.lead_in_seconds,
                         ),
                         None => {
-                            // Never advance text by an average-rate guess. An
-                            // error here otherwise becomes the next window's
-                            // starting point and can persist for the chapter.
                             unanchored += 1;
                             self.record(|heard| heard.evidence.unanchored_windows += 1);
                             recovering = true;
@@ -3380,9 +3143,6 @@ impl<'a> Aligner<'a> {
         Ok(path)
     }
 
-    /// The checked recognition of one stretch of a windowed scope: from
-    /// prefetched OpenAI pieces when there are any, otherwise by cutting the
-    /// window and recognizing it.
     #[allow(clippy::too_many_arguments)]
     async fn window_words(
         &self,
@@ -3447,8 +3207,6 @@ impl<'a> Aligner<'a> {
         .await
     }
 
-    /// Recognizes a window, or takes the words already heard in it, and
-    /// re-checks uncertain results the same way either way.
     async fn check_window(
         &self,
         audio: WindowAudio<'_>,
@@ -3498,10 +3256,6 @@ impl<'a> Aligner<'a> {
         }
         let model = self.recognition.retry_model;
         self.record(|heard| heard.evidence.recognition_retries += 1);
-        // Retries only refine a usable result. The larger model can crash on
-        // audio the first one handled, so keep that result rather than fail
-        // the book. A pass already using the larger model goes straight to
-        // shorter windows.
         let recognized = if !self.recognition.has_retry_model() {
             recognized
         } else {
@@ -3516,8 +3270,6 @@ impl<'a> Aligner<'a> {
                     self.transcribe(audio_path, scope_number, &window.to_string(), model)
                         .await
                 }
-                // Prefetched words come only from OpenAI, which has no
-                // retry model.
                 WindowAudio::Track { .. } => Err(anyhow::anyhow!(
                     "A prefetched window has no audio of its own to retry."
                 )),
@@ -3601,8 +3353,6 @@ impl<'a> Aligner<'a> {
         Ok(shorter)
     }
 
-    /// The language a sample of the scope's audio is spoken in, as a code
-    /// and a name, when the recognizer is confident of it.
     async fn detect_language(
         &self,
         scope: &SyncAlignmentScope,
@@ -3680,7 +3430,6 @@ impl<'a> Aligner<'a> {
         model: &str,
     ) -> anyhow::Result<Vec<alignment::RecognizedWord>> {
         if let Some(cloud) = &self.recognition.cloud {
-            // Turning OpenAI off stops audio leaving at the next window.
             anyhow::ensure!(
                 cloud_recognition::still_enabled(self.state).await,
                 "OpenAI transcription was turned off while this book was syncing. Sync it again to use on-device recognition."
@@ -3725,7 +3474,6 @@ impl<'a> Aligner<'a> {
         Ok(alignment::recognized_words(&entries))
     }
 
-    /// Returns how much text was masked, as `sync_report::text_units`.
     async fn mask_unspoken_sentences(
         &self,
         transcript: &mut alignment::Transcript,
@@ -3738,7 +3486,6 @@ impl<'a> Aligner<'a> {
         if count > 0 {
             let start = alignment::utf16_to_byte_index(&transcript.text, range.start);
             let end = alignment::utf16_to_byte_index(&transcript.text, range.end);
-            // Masking blanks text in place, so the difference is what was hidden.
             masked = sync_report::text_units(&transcript.text[start..end])
                 .saturating_sub(sync_report::text_units(&window.text));
             transcript.text.replace_range(start..end, &window.text);
@@ -3801,7 +3548,6 @@ impl<'a> Aligner<'a> {
                 "  Verifying apparently missing narration before splitting alignment.\n",
             )
             .await;
-            // Without confirmation, align the window whole instead of splitting.
             confirmation = match self
                 .transcribe(
                     audio_path,
@@ -3833,9 +3579,6 @@ impl<'a> Aligner<'a> {
                 recognized
             }
         };
-        // Long windows can lose the opening words after an interruption,
-        // which leaves it without an end. Recognizing the span alone can hear
-        // them; otherwise the window is aligned whole as before.
         let unheard = alignment::unheard_interruption_endings(transcript, recognized);
         let spliced;
         let recognized = match self.ffmpeg_path {
@@ -3846,8 +3589,6 @@ impl<'a> Aligner<'a> {
                     "  Rechecking where narration resumes after apparently missing narration.\n",
                 )
                 .await;
-                // Only passages this recheck completes are new; any other
-                // passage keeps the confirmation's verdict.
                 let mut known = candidates;
                 known.extend(
                     alignment::interrupted_passages(transcript, recognized)
@@ -4005,9 +3746,6 @@ impl<'a> Aligner<'a> {
         label: &str,
         recognized: &[alignment::RecognizedWord],
     ) -> anyhow::Result<Vec<alignment::SyncFragment>> {
-        // A recognizer may capture only the end of a closing description.
-        // The unique final prose anchor still identifies where printed text
-        // stops. Clip there rather than stretch prose over unrecognized audio.
         let mapped_end = transcript
             .sections
             .iter()
@@ -4046,9 +3784,6 @@ impl<'a> Aligner<'a> {
             transcript_path.as_os_str().into(),
             output_path.as_os_str().into(),
         ];
-        // Without a language, Echogarden guesses one from this window's text.
-        // Short or name-heavy passages can read as Klingon or Tagalog, which
-        // eSpeak cannot voice, and the whole book then fails.
         if let Some(language) = &self.recognition.language {
             args.push(format!("--language={language}").into());
         }
@@ -4087,8 +3822,6 @@ impl<'a> Aligner<'a> {
     }
 }
 
-/// Echogarden's launcher reports a crashed worker as a clean exit, so a
-/// missing result is the only sign the command failed.
 pub(crate) async fn read_cli_output(path: &FsPath, what: &str) -> anyhow::Result<String> {
     fs::read_to_string(path).await.map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -4132,7 +3865,6 @@ pub(crate) async fn run_alignment_cli(
     Ok(())
 }
 
-/// The last 12 lines of a failed command's stderr, for its error message.
 fn stderr_tail(output: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let lines = stderr.lines().collect::<Vec<_>>();
@@ -4373,9 +4105,7 @@ mod tests {
             serde_json::to_value(&job).unwrap()["cause"],
             "runtime-missing"
         );
-        // Other kinds of job keep their raw error alone.
         assert_eq!(finish("faststart", missing).await.cause, None);
-        // A run that diagnosed its own failure keeps that cause.
         let id = create_job(&state, SYNC_GENERATE_JOB_KIND).await;
         state.jobs.write().await.get_mut(&id).unwrap().cause =
             Some(sync_report::Cause::EditionMismatch);
@@ -4395,8 +4125,6 @@ mod tests {
 
     #[test]
     fn recognition_language_is_a_code_the_recognizer_accepts() {
-        // Echogarden rejects bibliographic codes such as `ger`, failing the
-        // book, and only a two-letter `en` picks the English models.
         for (label, language) in [
             ("ger", "de"),
             ("fre", "fr"),
@@ -4454,7 +4182,6 @@ mod tests {
         );
         assert_eq!(recognition.larger().unwrap().model, "small.en");
         assert_eq!(recognition.swapped().model, "base.en");
-        // Another book keeps its own label.
         let other = book_recognition(&state, "other", &epub).await;
         assert_eq!(other.language.as_deref(), Some("nl"));
         assert_eq!(other.larger().unwrap().model, "small");
@@ -4470,8 +4197,6 @@ mod tests {
             .await
             .unwrap();
         let cli = root.path().join("aligner");
-        // Gate the second track so pausing must interrupt an unfinished section
-        // while preserving the completed first track across a restart.
         write_executable(
             &cli,
             r#"#!/bin/sh
@@ -4550,8 +4275,6 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
         assert_eq!(checkpoint.completed_scopes, 1);
         assert_eq!(checkpoint.fragments.len(), 1);
         assert_eq!(checkpoint.outcomes.len(), 1);
-        // Stand in for edition-only text the first track's run left unmatched;
-        // the resumed run must grade with it rather than start from zero.
         let mut edited: serde_json::Value =
             serde_json::from_slice(&fs::read(sync_checkpoint_path(&state, &id)).await.unwrap())
                 .unwrap();
@@ -4651,8 +4374,6 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
         // skipped text accounts for the rest of the first.
         assert_eq!(report.chapters[0].text_coverage, 1.0);
         assert!(report.chapters[1].text_coverage < 0.8);
-        // Reusing a checkpoint after an EPUB change must start over, even
-        // with the same job ID and unchanged audio.
         fs::write(
             sync_checkpoint_path(&state, &id),
             serde_json::to_vec(&checkpoint).unwrap(),
@@ -4714,7 +4435,6 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
             let generation =
                 run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks, None);
             if script.contains("sleep") {
-                // Interrupted once the aligner is running, as by a shutdown.
                 let started = cli.with_extension("started");
                 tokio::time::timeout(Duration::from_secs(30), async {
                     tokio::select! {
@@ -4785,8 +4505,6 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
         let (state, _) = crate::unit_tests::fake_libation_state(root.path());
         let job_id = create_job(&state, "sync-generate").await;
         let cli = root.path().join("aligner");
-        // Echogarden's own guess for a short passage can be a language eSpeak
-        // cannot voice; only an explicit language avoids that failure.
         write_executable(
             &cli,
             r#"#!/bin/sh
@@ -5477,8 +5195,6 @@ esac
             } else {
                 script
             };
-            // Echogarden's launcher exits 0 without output when its worker
-            // segfaults, as the larger whisper model does on some audio.
             let script = if crashing_retry_model {
                 script.replace(
                     "command=\"$1\"",
@@ -5574,8 +5290,6 @@ esac
                 completed: 0,
                 total: 1,
             };
-            // Window recovery can find no timing; scope generation rejects that
-            // result, while these tests inspect the gaps it recovered through.
             let result = aligner
                 .align_windowed(
                     &scope,
@@ -5589,7 +5303,6 @@ esac
                 )
                 .await
                 .unwrap();
-            // Masked edition-only text is reported so it does not lower the grade.
             assert_eq!(
                 result.skipped_text,
                 if unspoken_after.is_some() {
@@ -5623,9 +5336,6 @@ esac
                 );
             }
             let job = state.jobs.read().await.get(&job_id).unwrap().clone();
-            // Every window reports where it got to, so the bar reaches the end
-            // of this scope's share rather than sitting still until the job is
-            // over.
             if track.duration_seconds.unwrap() > MAX_SINGLE_PASS_SECONDS {
                 let reported = job
                     .progress
@@ -5672,7 +5382,6 @@ esac
                     fragment.start_seconds
                 );
             }
-            // Nothing was aligned onto the unscripted heading.
             assert!(fragments[0].start_seconds >= HEADING_SECONDS - 0.5);
             assert!(output.contains(" windows.\n"), "{output}");
             assert!(!output.contains("without a recognized anchor"), "{output}");
@@ -5695,8 +5404,6 @@ esac
                 assert_monotonic(&fragments);
                 for (index, fragment) in fragments.iter().enumerate() {
                     assert_eq!(fragment.text, sentence(index));
-                    // Single-pass fake alignment includes the narrated heading;
-                    // the windowed path also removes that heading's lead-in.
                     if count > 40 {
                         assert!(
                             (fragment.start_seconds - narrated_start(index)).abs() < 0.75,
@@ -5717,8 +5424,6 @@ esac
             assert_monotonic(&fragments);
             assert!(output.contains("without a recognized anchor"), "{output}");
             assert!(output.contains("Recovered at 772.0 s"), "{output}");
-            // The first clear sentence recovers immediately, not many windows
-            // later. No guessed sentence is emitted during the outage.
             for (index, fragment) in (0..60).chain(190..count).zip(&fragments) {
                 assert_eq!(fragment.text, sentence(index));
                 let expected = narrated_start(index);
@@ -5730,12 +5435,10 @@ esac
             }
         }
 
-        /// What a stand-in for OpenAI was asked for.
         #[derive(Default)]
         struct OpenAiCalls {
             in_flight: usize,
             most_in_flight: usize,
-            /// Seconds of audio sent as whole pieces.
             seconds_sent: f64,
             starts: Vec<f64>,
         }
@@ -5771,9 +5474,6 @@ esac
                             calls.in_flight += 1;
                             calls.starts.push(start);
                             calls.most_in_flight = calls.most_in_flight.max(calls.in_flight);
-                            // The scripted narration makes every window
-                            // uncertain, so each is re-checked in two halves
-                            // of about two minutes. Count the pieces only.
                             if duration > 200.0 {
                                 calls.seconds_sent += duration;
                             }
@@ -5834,8 +5534,6 @@ esac
                 calls.most_in_flight > 1,
                 "pieces were requested one at a time"
             );
-            // Each second of narration goes to OpenAI in about one piece: the
-            // pieces' overlaps are the only audio sent twice.
             let narrated = narrated_start(count);
             assert!(
                 calls.seconds_sent < narrated * 1.2,
@@ -5867,7 +5565,6 @@ esac
             );
             cloud_recognition::enable_for_test(&state).await;
             let cloud = Arc::new(cloud_recognition::CloudRecognizer::for_test(&endpoint));
-            // Two chapters of one file.
             let scopes = [(0.0, 4000.0), (4000.0, 5000.0)]
                 .into_iter()
                 .enumerate()
@@ -5904,8 +5601,6 @@ esac
             }
             prefetch.words(0, 0.0, 240.0).await.unwrap();
             settle(&mut prefetch).await;
-            // Recovery moved the window far ahead of the pieces requested,
-            // close enough to the chapter's end to reach into the next.
             let words = prefetch.words(0, 2400.0, 2640.0).await.unwrap();
             assert!(!words.is_empty());
             assert!(
@@ -5942,10 +5637,6 @@ esac
                 })
                 .collect::<Vec<_>>();
             sent.sort_unstable();
-            // The first window covers pieces 0 and 1 and requests six more.
-            // The second covers 10 and 11 of the chapter's 17 and requests
-            // to its end and the next chapter's first piece. None in between
-            // is sent.
             let expected = (0..8)
                 .chain(10..17)
                 .map(|index| (0, index))
@@ -5953,7 +5644,6 @@ esac
                 .collect::<Vec<_>>();
             assert_eq!(sent, expected);
 
-            // Starting the next chapter lets go of the one before.
             prefetch.words(1, 4000.0, 4240.0).await.unwrap();
             assert!(prefetch.scopes[0].1.pieces.is_empty());
         }
@@ -6351,8 +6041,6 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
             fn seed_previous_map(&self) -> Vec<u8> {
                 let mut fragments = (0..self.tracks.len())
                     .map(|index| {
-                        // A sixth chapter starts at a time that only exact
-                        // float parsing writes back unchanged.
                         let offset = if index == 5 { 2576.400999999998 } else { 20.0 };
                         serde_json::json!({
                             "startSeconds": index as f64 * 3600.0 + offset,
@@ -6430,8 +6118,6 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
             let generated = book.run(None).await.unwrap();
             assert_eq!(generated.failed, vec![chapter(1)]);
             let map = book.map();
-            // Chapter 2 keeps both earlier sentences and its gaps, clipped to
-            // it; the gap's part in chapter 1 went with chapter 1's old timing.
             assert_eq!(starts(&map), [1.0, 3620.0, 3640.0, 7201.0, 10801.0]);
             assert_eq!(gaps(&map), [(3600.0, 3700.0), (3800.0, 3900.0)]);
             let report = book.report();
@@ -6455,7 +6141,6 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
             assert_eq!(report.grade, Some(Grade::Failed));
             assert_eq!(report.quality().unwrap().flagged, 1);
 
-            // Without an earlier map, readers hold their place through it.
             std::fs::remove_file(book.map_path()).unwrap();
             let generated = book.run(None).await.unwrap();
             assert_eq!(generated.failed, vec![chapter(1)]);
@@ -6483,7 +6168,6 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
                 report
             );
 
-            // However few chapters a book has, all of them failing fails it.
             let book = ChapterBook::new(2);
             let previous = book.seed_previous_map();
             book.control("fail", "1.wav\n2.wav\n");
@@ -6561,14 +6245,11 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
                 starts(&after),
                 [20.0, 3605.0, 7220.0, 10820.0, 14420.0, 20576.400999999998]
             );
-            // Untouched timing is written back exactly as it was read.
             assert!(
                 String::from_utf8(std::fs::read(book.map_path()).unwrap())
                     .unwrap()
                     .contains("20576.400999999998")
             );
-            // Chapter 2's gap is gone; the part of the boundary gap in
-            // chapter 1 stays.
             assert_eq!(gaps(&after), [(3500.0, 3600.0)]);
             assert_ne!(after.generated_at, before.generated_at);
             assert_eq!(after.mapping_revision, before.mapping_revision);
@@ -6612,7 +6293,6 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
             assert_eq!(in_chapter(&after, 1), in_chapter(&before, 1));
             assert_eq!(in_chapter(&after, 2), in_chapter(&before, 2));
 
-            // A whole-book sync also keeps usable timing for an empty chapter.
             let generated = book.run(None).await.unwrap();
             assert_eq!(generated.failed, vec![failed.clone()]);
             assert_eq!(in_chapter(&book.map(), 1), in_chapter(&before, 1));
@@ -6651,13 +6331,11 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
             book.control("fail", "2.wav\n");
             book.run(Some(&[1])).await.unwrap_err();
             assert_eq!(std::fs::read(book.map_path()).unwrap(), previous);
-            // The report still describes the unchanged map, now with the error.
             let report = book.report();
             assert_eq!(report.chapters[1].status, ChapterStatus::KeptPrevious);
             assert!(report.chapters[1].error.is_some());
             assert_eq!(report.chapters[0].status, ChapterStatus::Aligned);
 
-            // One of two chapters failing still replaces the other.
             let generated = book.run(Some(&[0, 1])).await.unwrap();
             assert_eq!(generated.failed, vec![chapter(1)]);
             let after = book.map();
@@ -6668,7 +6346,6 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
             assert_eq!(report.chapters[0].status, ChapterStatus::Aligned);
             assert_eq!(report.chapters[1].status, ChapterStatus::KeptPrevious);
 
-            // A chapter the book no longer has is refused before any work.
             let error = book.run(Some(&[3])).await.unwrap_err();
             assert_eq!(error.to_string(), sync_report::BOOK_CHANGED);
         }
@@ -6732,7 +6409,6 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
             let book = ChapterBook::new(4);
             book.seed_previous_map();
             book.control("crash", "2.wav\n3.wav\n");
-            // Hold chapter 3's retry, after chapter 2's has finished.
             book.control("gate", "3.wav\n");
             book.control("gate-repeats", "");
             let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
@@ -6756,7 +6432,6 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
             book.control("release", "");
             resume(&book, &job).await;
             let generated = book.run_job(&job, None).await.unwrap();
-            // Each crashed chapter was retried exactly once across the pause.
             assert_eq!(
                 book.calls(),
                 ["1.wav", "2.wav", "3.wav", "4.wav", "2.wav", "3.wav"]
@@ -6781,7 +6456,6 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
                 assert!(diagnosis.fix.attempted && !diagnosis.fix.applied);
             }
 
-            // A re-run of one chapter tries its fix again, once.
             book.run(Some(&[1])).await.unwrap_err();
             assert_eq!(book.calls().len(), 8);
         }
@@ -6959,7 +6633,6 @@ esac
                 std::fs::write(self.runtime.cli_path.with_extension(name), value).unwrap();
             }
 
-            /// `command track model` per recognizer call.
             fn calls(&self) -> Vec<String> {
                 std::fs::read_to_string(self.runtime.cli_path.with_extension("calls"))
                     .unwrap_or_default()
@@ -7035,7 +6708,6 @@ esac
                 "{larger:?}"
             );
 
-            // When neither model finds timing, the previous map stays.
             std::fs::remove_file(book.runtime.cli_path.with_extension("calls")).unwrap();
             book.control("clear-models", "");
             let before = book.map();
@@ -7054,7 +6726,6 @@ esac
                 in_range(&book.map(), &report.chapters[1]),
                 in_range(&before, &report.chapters[1])
             );
-            // Exactly one larger-model pass over the chapter's windows.
             assert_eq!(output.matches("trying the larger whisper").count(), 1);
         }
 
@@ -7096,7 +6767,6 @@ esac
                 "{output}"
             );
             assert!(report.chapters[0].diagnosis.is_none());
-            // The language was never in doubt.
             assert!(!book.calls().iter().any(|call| call.starts_with("detect")));
         }
 
@@ -7138,7 +6808,6 @@ esac
                     ..Default::default()
                 }],
             };
-            // A correct pairing can still leave coverage Poor on difficult audio.
             book.control("partial", "");
             fixes
                 .attempt(0, Cause::ChapterMismatch, Grade::Failed, &mut run)
@@ -7310,7 +6979,6 @@ esac
         #[tokio::test]
         async fn a_mislabelled_language_is_suggested_not_applied_and_the_override_fixes_it() {
             let book = SpokenBook::new(&[0, 1, 2], Some("nl"));
-            // Nothing matches anywhere, so the whole run fails, saying why.
             let job = create_job(&book.state, SYNC_GENERATE_JOB_KIND).await;
             let error = book.run_job(&job, None).await.unwrap_err();
             let failure = error
@@ -7320,7 +6988,6 @@ esac
             assert_eq!(failure.heard_language.as_deref(), Some("en"));
             let calls = book.calls();
             assert_eq!(calls.iter().filter(|c| c.starts_with("detect")).count(), 1);
-            // A suggestion is never applied on its own.
             assert!(
                 !calls.iter().any(|call| call.ends_with(" small")),
                 "{calls:?}"
@@ -7331,8 +6998,6 @@ esac
             assert_eq!(grades(&report), [Some(Grade::Good); 3], "{output}");
             assert!(output.contains("whisper tiny.en, language en"), "{output}");
 
-            // Clearing the override puts the EPUB's label back, and a re-run
-            // of one chapter shows the suggestion on that chapter.
             let map_path = generated_map_path(&book.state, "fixture");
             let before = std::fs::read(&map_path).unwrap();
             set_language(&book, None).await;

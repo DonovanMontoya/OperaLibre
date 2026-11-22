@@ -18,11 +18,6 @@ import type { AuthUser, Book, Track } from "./types";
 import type { PendingSeek } from "./playbackTypes";
 import type { PlaybackGainChain } from "./playbackGain";
 
-/**
- * Keeps the audio element (or the native player behind it) attached to the
- * current track: its source, speed, volume and gain, a pending seek, and
- * the native player's events.
- */
 export function useAudioElement({
   activeTrackIndex,
   applyPlaybackVolume,
@@ -141,9 +136,6 @@ export function useAudioElement({
     const audio = audioRef.current;
     if (!nativeAudio) return;
     if (carPlaybackBookId) {
-      // CarPlay is driving the shared player. Attaching would load this app's
-      // book over the driver's, and the next detach would stop it outright.
-      // The element stays muted so nothing here can be heard over the car.
       if (audio) {
         audio.muted = true;
         forgetDetachedNativeClock(audio);
@@ -152,20 +144,12 @@ export function useAudioElement({
       return;
     }
     if (!audio || !playbackBook || !currentTrack) {
-      // The player closed. The attach cleanup keeps the audio session so a
-      // track change does not hand audio to other apps between chapters;
-      // nothing follows this time, so give the session up. Skipped on the
-      // app's first render, where a WebView reload may have left native
-      // audio playing that React is about to pick back up.
       if (nativeAudioAttachedRef.current) {
         nativeAudioAttachedRef.current = false;
         void releaseNativeAudioSession();
       }
       return;
     }
-    // AVPlayer receives its complete local-first queue on the initial load.
-    // Attaching earlier would start a one-item player and tear it down again
-    // when slower filesystem checks for later chapters completed.
     if (!nativeAudioQueueReady) return;
     nativeAudioAttachedRef.current = true;
     const actionVersionAtAttach = playbackActionVersionRef.current;
@@ -190,9 +174,6 @@ export function useAudioElement({
         setNativeAudioFailed(true);
       },
       {
-        // The queue is the atomic local-first resolution. Its first item must
-        // also seed AVPlayer; using the separately resolved control source can
-        // overwrite a just-downloaded local chapter with its old remote URL.
         source: nativeAttachmentSource,
         clipPreview: () => clipPreviewBookIdRef.previewingBookId === playbackBook.id,
         awaitingReturn: () => clipPreviewBookIdRef.returningBookId === playbackBook.id,
@@ -229,14 +210,7 @@ export function useAudioElement({
         },
         sleepAtChapterEnd: () => sleepAtChapterEndRef.current,
         adopted: ({ positionSeconds, sleepTimerSeconds, sleepAtChapterEnd }) => {
-          // Committed before the next native tick runs: that tick announces
-          // metadata, and a pending seek still in React's render state would
-          // move the live player back to the position restored at startup.
           flushSync(() => {
-            // AVPlayer kept playing, so the listener's own session owns the
-            // position, as it would after a lock-screen action. A seek they
-            // made while adoption was being decided is newer still; the next
-            // tick's metadata applies it.
             const listenerSeeked = playbackActionVersionRef.current !== actionVersionAtAttach
               && pendingSeekRef.current !== pendingSeekAtAttach;
             markPlaybackTouchedRef.current();
@@ -258,10 +232,6 @@ export function useAudioElement({
       },
       (trackId, positionSeconds, _bookPositionSeconds, nativeIsPlaying) => {
         if (!playbackBook.tracks.some((track) => track.id === trackId)) return false;
-        // getNativeAudioRecovery already participated in startup
-        // reconciliation. A paused trackChanged event emitted while AVPlayer
-        // rebuilds its queue is not a listener action and must not overwrite
-        // the restored checkpoint or make the player oscillate.
         if (!shouldAcceptNativeTrackChange(startupViewReadyRef.current, nativeIsPlaying)) return false;
         markPlaybackTouchedRef.current();
         nativePlaybackPlayingRef.current = nativeIsPlaying;
@@ -275,10 +245,6 @@ export function useAudioElement({
         return true;
       },
       () => {
-        // The native side has already moved the control clock to the seek.
-        // While a pending seek is still queued for this track it would win
-        // at loadedmetadata, so retarget it rather than let the lock-screen
-        // seek be undone.
         const nativePosition = Math.max(0, audio.currentTime);
         markPlaybackTouchedRef.current(
           true,
@@ -319,8 +285,6 @@ export function useAudioElement({
     scheduleStartupReveal
   ]);
 
-  // Progress often arrives after preload has already emitted loadedmetadata.
-  // Apply that late checkpoint as soon as the target media element is ready.
   useEffect(() => {
     const audio = audioRef.current;
     if (
@@ -341,9 +305,6 @@ export function useAudioElement({
     }
     setPosition(restoredPosition);
     setPendingSeek(null);
-    // Mirrors onLoadedMetadata. A queued autoplay whose element had already
-    // loaded this exact source gets no second metadata event, so without this
-    // a shelf Resume onto the track that was already staged never starts.
     if (playWhenTrackLoads.current) {
       playWhenTrackLoads.current = false;
       startPlayback(audio, !resumeAutoplayPendingRef.current);

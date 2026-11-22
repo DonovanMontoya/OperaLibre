@@ -2,12 +2,6 @@ import CarPlay
 import Foundation
 import UIKit
 
-/// The CarPlay scene.
-///
-/// Connecting to a car can be the only reason the app is running: iOS launches
-/// the process and creates this scene alone, with no window scene, no WebView
-/// and no React. Everything the car screen shows therefore comes from the
-/// snapshot on disk, and everything it plays goes straight to `AudiobookPlayer`.
 final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
     private var controller: CarPlayLibraryController?
 
@@ -29,18 +23,11 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     }
 }
 
-/// Builds and maintains the templates on the car screen.
 final class CarPlayLibraryController: NSObject, CPNowPlayingTemplateObserver, CPInterfaceControllerDelegate {
     private let interfaceController: CPInterfaceController
     private let coordinator = CarPlayCoordinator.shared
-    /// Tracked rather than read back from the interface controller, whose
-    /// `topTemplate` costs a synchronous trip to the car, and pushing a
-    /// template that is already on the stack is an error.
     private var isShowingNowPlaying = false
 
-    // The phone's own tabs are drawn with thin line glyphs — a stack of books
-    // for the shelf, headphones for what is playing. The car uses the system
-    // faces of the same idea, at the same weight, so the two read as one app.
     private lazy var listeningTemplate = makeListTemplate(
         title: "Listening",
         symbol: "headphones",
@@ -101,9 +88,6 @@ final class CarPlayLibraryController: NSObject, CPNowPlayingTemplateObserver, CP
         let downloaded = snapshot.books.filter { $0.downloaded }
         listeningTemplate.updateSections(sections(for: listening, playingBookId: playingBookId))
         downloadedTemplate.updateSections(sections(for: downloaded, playingBookId: playingBookId))
-        // Grouped exactly as the shelf groups it — what you are part-way
-        // through, then what is waiting, then what is done — so a driver
-        // glancing at the car finds the library in the order they know.
         libraryTemplate.updateSections(
             snapshot.libraryGroups(maximumItemCount: CPListTemplate.maximumItemCount)
                 .compactMap { section($0.0, $0.1, playingBookId) }
@@ -127,9 +111,6 @@ final class CarPlayLibraryController: NSObject, CPNowPlayingTemplateObserver, CP
 
     private func sections(for books: [CarLibraryBook], playingBookId: String?) -> [CPListSection] {
         guard !books.isEmpty else { return [] }
-        // The car trims anything past its own limit, so trimming here keeps the
-        // list honest about what it is showing rather than silently losing the
-        // tail of the library.
         let items = books.prefix(CPListTemplate.maximumItemCount).map { book in
             listItem(for: book, isPlaying: book.id == playingBookId)
         }
@@ -142,9 +123,6 @@ final class CarPlayLibraryController: NSObject, CPNowPlayingTemplateObserver, CP
             detailText: book.carSubtitle,
             image: CarLibraryStore.shared.artwork(for: book),
             accessoryImage: nil,
-            // A book that is not downloaded needs the server to be in reach,
-            // which in a moving car it often is not. The cloud marker says so
-            // before the driver taps it.
             accessoryType: book.downloaded ? .none : .cloud
         )
         item.userInfo = book.id
@@ -163,9 +141,6 @@ final class CarPlayLibraryController: NSObject, CPNowPlayingTemplateObserver, CP
     // MARK: - Selection
 
     private func select(book: CarLibraryBook) {
-        // Tapping the book already loaded resumes it rather than starting the
-        // queue again from the saved position, which after a pause would be
-        // seconds behind where the listener actually is.
         if coordinator.currentBook()?.id == book.id {
             coordinator.resume()
             showNowPlaying()
@@ -202,18 +177,9 @@ final class CarPlayLibraryController: NSObject, CPNowPlayingTemplateObserver, CP
         template.upNextTitle = "Chapters"
     }
 
-    /// The speed control.
-    ///
-    /// CarPlay's own rate button renders the rate the player is publishing,
-    /// which is zero whenever playback is paused — a paused audiobook then
-    /// reads "0×", and the lock screen needs that zero, so it cannot be
-    /// changed. Drawing the button here shows the speed the listener actually
-    /// chose, and lets it be set in a serif, as the app's own type is.
     private func speedButton(rate: Double) -> CPNowPlayingButton {
         CPNowPlayingImageButton(image: speedImage(for: rate)) { [weak self] _ in
             guard let self else { return }
-            // The engine applies the new rate on a later main-queue turn, so
-            // draw the rate that was chosen rather than reading it back.
             self.configureNowPlayingButtons(rate: self.coordinator.advancePlaybackRate())
         }
     }
@@ -226,8 +192,6 @@ final class CarPlayLibraryController: NSObject, CPNowPlayingTemplateObserver, CP
         let font = base.fontDescriptor.withDesign(.serif).map { UIFont(descriptor: $0, size: 17) } ?? base
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
-            // Provided as a dark variant: CarPlay recolors it for the car's
-            // current appearance.
             .foregroundColor: UIColor.black
         ]
         let size = CPNowPlayingButtonMaximumImageSize

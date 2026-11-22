@@ -120,7 +120,6 @@ button {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* --------- Shell --------- */
 .shell {
   display: grid;
   grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
@@ -218,7 +217,6 @@ html:not(.native-app) .web-shell > .player-pane {
   border: 0;
 }
 
-/* --------- Library toolbar --------- */
 .library-toolbar {
   display: grid;
   gap: 10px;
@@ -4561,7 +4559,6 @@ input[type="range"]::-moz-range-thumb {
   font-weight: 500;
 }
 
-/* --------- Transport --------- */
 .transport {
   display: flex;
   align-items: center;
@@ -4698,7 +4695,6 @@ input[type="range"]::-moz-range-thumb {
   transform: scale(1.04);
 }
 
-/* --------- Controls grid --------- */
 .controls-grid {
   display: grid;
   grid-template-columns: 1.5fr 1fr 1fr;
@@ -5185,7 +5181,6 @@ select:focus {
   color: rgba(var(--on-spine-rgb), 0.62);
 }
 
-/* --------- Track list --------- */
 .track-list-section {
   display: grid;
   gap: 16px;
@@ -8377,7 +8372,6 @@ button.upload-file-picker {
   background: rgba(184, 137, 58, 0.32);
 }
 
-/* ============== Profile ============== */
 .profile-shell {
   position: fixed;
   inset: 0;
@@ -10193,7 +10187,6 @@ html.native-app .timeline input[type="range"]::-moz-range-thumb {
   background: var(--oxblood);
 }
 
-/* Transport */
 html.native-app .transport {
   gap: clamp(24px, 10vw, 42px);
   padding: 10px 0 18px;
@@ -17747,7 +17740,6 @@ html.native-app[data-shelf-transition="player-split"]::view-transition-new(shelf
     --phone-games-gap: clamp(12px, 2.4vw, 22px);
   }
 
-  /* --- Games ------------------------------------------------------ */
   html.native-app .games-shell,
   html.native-app .native-shell.has-mini-player .games-shell {
     grid-template-columns: minmax(0, 1fr) var(--phone-board-col);
@@ -17811,7 +17803,6 @@ html.native-app[data-shelf-transition="player-split"]::view-transition-new(shelf
     right: calc(max(12px, env(safe-area-inset-right)) + var(--phone-board-col) + var(--phone-games-gap));
   }
 
-  /* --- Ledger ----------------------------------------------------- */
   html.native-app .profile-page.ledger-dashboard {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -17874,7 +17865,6 @@ html.native-app[data-shelf-transition="player-split"]::view-transition-new(shelf
   html.native-app .ledger-dashboard .recent-row { grid-template-columns: 32px minmax(0, 1fr) auto; gap: 10px; padding: 6px 0; }
   html.native-app .ledger-dashboard .recent-cover { width: 32px; height: 32px; }
 
-  /* --- Settings --------------------------------------------------- */
   html.native-app .settings-shell {
     gap: 0;
     padding: max(10px, var(--status-h)) max(16px, env(safe-area-inset-right))

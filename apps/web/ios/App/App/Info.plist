@@ -52,12 +52,6 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>OperaLibre connects to your audiobook server on the local network.</string>
-	<!--
-		Adopted for CarPlay: an app that offers a CarPlay scene has to declare
-		its own window scene alongside it. The window scene still builds from
-		Main.storyboard, so Capacitor's bridge view controller comes up exactly
-		as it did before. Multiple scenes let the phone and car coexist.
-	-->
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

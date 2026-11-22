@@ -18,8 +18,6 @@ import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
 
-/** All GiftImport byte operations share a native lease, not a WebView mutex.
- * Tokens and recovery records are bearer secrets; never log them. */
 final class GiftStagingStore {
     private static final long MAX_ARCHIVE = 25L * 1024 * 1024 * 1024;
     private static final int MAX_CHUNK = 64 * 1024;
@@ -50,8 +48,6 @@ final class GiftStagingStore {
         return stat;
     }
 
-    /** Called only under the gift's inactive staging guard after extraction.
-     * Return no bytes until this bounded regular file matches its receipt. */
     static String readMetadata(File directory, GiftArchiveExtractor.Asset asset) throws Exception {
         final int maximum = 256 * 1024;
         if (asset == null || asset.size < 1 || asset.size > maximum || asset.name == null
@@ -91,9 +87,6 @@ final class GiftStagingStore {
     private static Guard guard(File data, String id) throws Exception {
         if (id == null || !id.matches("[A-Za-z0-9_-]{16,128}")) throw new IOException();
         File parent = new File(data.getCanonicalFile(), "gift-incoming");
-        // POSIX record locks can be dropped when any descriptor for the same
-        // inode is closed. Reject same-process contention before opening a
-        // second descriptor, not just after FileChannel.tryLock fails.
         for (Session session : leases.values()) if (session.id.equals(id) && session.guard.parent.equals(parent)) throw new IOException();
         if (!parent.getCanonicalFile().equals(parent.getAbsoluteFile())) throw new IOException();
         if (!parent.isDirectory() && !parent.mkdirs() && !parent.isDirectory()) throw new IOException();
@@ -121,8 +114,6 @@ final class GiftStagingStore {
             }
             if (fd == null) fd = GiftRecoveryStore.open(path, OsConstants.O_RDWR | OsConstants.O_NOFOLLOW, 0);
             StructStat stat = regular(fd, maximum); Os.fchmod(fd, 0600);
-            // A fresh orphan is reusable only when empty and there is no
-            // committed or ambiguous recovery record. Never truncate it.
             if (create && (stat.st_size != 0 || !GiftRecoveryStore.freshAllowed(data, id))) throw new IOException();
             Session session = new Session(owner, id, held, fd, maximum, stat.st_size);
             String hash = digest(session);

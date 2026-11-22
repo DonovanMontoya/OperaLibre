@@ -24,20 +24,12 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(windows)]
 const DETACHED_PROCESS: u32 = 0x0000_0008;
 
-/// How long the launcher waits for a freshly started server to answer on its
-/// port. The server can scan a large library before it is ready, so the
-/// ceiling is generous; an exited process is reported immediately instead.
 const STARTUP_CEILING: Duration = Duration::from_secs(10 * 60);
-/// How long a stopped server may take to shut down before it is killed.
 const SHUTDOWN_CEILING: Duration = Duration::from_secs(30);
 
-/// What happened after the launcher asked the server to start.
 #[derive(Debug, PartialEq, Eq)]
 enum StartOutcome {
-    /// The server answered on its port.
     Ready,
-    /// The server process is still running but had not answered within the
-    /// startup ceiling — usually a long first scan. Not an error.
     StillStarting,
 }
 
@@ -101,9 +93,6 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-/// The data folder the server will use: `data_dir` from `server.config`
-/// (relative paths resolve against the config file's folder, as the server
-/// does), then `OPERALIBRE_DATA_DIR`, then `data` beside the server.
 fn data_dir(root: &Path) -> PathBuf {
     configured_value(&root.join("server.config"), "data_dir")
         .filter(|value| !value.is_empty())
@@ -127,8 +116,6 @@ fn pid_path(root: &Path) -> PathBuf {
     data_dir(root).join("operalibre-server.pid")
 }
 
-/// Best-effort note in the server log, which is the file users are told to
-/// check; the launchers themselves have no console.
 fn append_log(root: &Path, message: &str) {
     if let Ok(mut log) = OpenOptions::new()
         .create(true)
@@ -166,9 +153,6 @@ fn is_stop_launcher() -> bool {
         || env::args().any(|argument| argument == "--stop")
 }
 
-/// Starts the server and waits for it. `trial_token` marks a build the
-/// updater has just installed: it refuses requests until committed with that
-/// token (see `commit_update_trial`).
 fn start_server(
     root: &Path,
     open_when_ready: bool,
@@ -184,9 +168,6 @@ fn start_server(
     let port = server_port(root);
     let log_path = data_dir.join("server.log");
 
-    // A server already up, or still coming up from an earlier start, is
-    // waited on rather than started twice. One that goes away meanwhile
-    // (`None`) gets a fresh start below.
     if !matches!(server_readiness(port), ServerReadiness::Absent)
         && let Some(outcome) = wait_for_readiness(port, open_when_ready, &log_path, None)?
     {
@@ -251,12 +232,6 @@ fn start_server(
     Ok(outcome)
 }
 
-/// Polls the server until it is ready, has failed, or the startup ceiling
-/// passes: the listener comes up before a large first scan has published its
-/// catalogue, so a `Starting` answer is waited on. `child` is the process
-/// this launcher started, if any; its exit is reported as soon as it
-/// happens. Without one, a server that stops answering yields `None` so the
-/// caller can start its own.
 fn wait_for_readiness(
     port: u16,
     open_when_ready: bool,
@@ -344,8 +319,6 @@ fn update_lock(root: &Path) -> Result<fs::File, String> {
 
 #[cfg(target_os = "linux")]
 fn start_supervised_server(root: &Path) -> Result<(), String> {
-    // The descriptor closes on exec. Hold the lock through retirement and PID
-    // publication so a queued updater cannot race the takeover.
     let _lock = update_lock(root)?;
     stop_server(root)?;
     fs::write(pid_path(root), std::process::id().to_string())
@@ -378,8 +351,6 @@ fn publish_update_result(root: &Path, result: &Result<(), String>) -> Result<(),
     let temporary = data.join("update-result.txt.tmp");
     fs::write(&temporary, format!("{message}\n")).map_err(|error| error.to_string())?;
     secure_file(&temporary)?;
-    // This is the completion signal. Never watch VERSION.txt, which changes
-    // while the transaction is still in progress (and again during rollback).
     fs::rename(temporary, data.join("update-result.txt")).map_err(|error| error.to_string())
 }
 
@@ -408,8 +379,6 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
         .to_string_lossy()
         .parse::<u16>()
         .map_err(|_| "The update server port is invalid.".to_string())?;
-    // Servers older than the --layout argument omit it; those are always
-    // combined installations.
     let includes_web = match optional_named_update_argument(arguments, "--layout") {
         None => true,
         Some(layout) if layout == "combined" => true,
@@ -425,7 +394,6 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     let package_root = PathBuf::from(package_root);
     let install_root = PathBuf::from(install_root);
     validate_update_paths(&package_root, &install_root)?;
-    // Before the running server is waited out, so failing here leaves it up.
     let trial_token = update_trial_token()?;
     wait_for_server_exit(server_pid, port)?;
 
@@ -448,7 +416,6 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
         .and_then(|backup_root| {
             let result = prepare_update(&install_root, &backup_root, includes_web);
             if result.is_err() {
-                // Only clean up a snapshot made by this transaction.
                 let _ = fs::remove_dir_all(backup_root.join("data"));
             }
             result.map(|()| backup_root)
@@ -475,16 +442,9 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
         if includes_web {
             move_required(&package_root.join("web"), &install_web)?;
         }
-        // Independent of the web bundle: every managed installation has
-        // launchers, and leaving them behind strands the updater at the
-        // version that shipped with the original download.
         refresh_launchers(&package_root, &install_root)?;
         move_required(&package_root.join("VERSION.txt"), &install_version)?;
         set_executable(&install_server)?;
-        // An update is successful only after its first catalogue is published;
-        // a failed or indefinitely withheld scan must restore the old build.
-        // Until the commit below the new build acknowledges nothing, so a
-        // rollback up to that point discards no client's change.
         require_ready_start(start_server(&install_root, false, Some(&trial_token))?)?;
         match commit_update_trial(server_port(&install_root), &trial_token)? {
             TrialCommit::Committed => {}
@@ -521,12 +481,7 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     Ok(())
 }
 
-/// A rolled-back update keeps its generation for recovery, and a retry can
-/// start within the same second. Take the next free number so the retry gets
-/// its own generation and still sorts after the one it follows.
 fn create_backup_generation(backups: &Path, mut timestamp: u64) -> std::io::Result<PathBuf> {
-    // Outside the loop: a file in place of the folder also reports
-    // AlreadyExists, and must fail the update rather than retry forever.
     fs::create_dir_all(backups)?;
     loop {
         let backup = backups.join(timestamp.to_string());
@@ -596,16 +551,11 @@ fn wait_for_server_exit(server_pid: u32, port: u16) -> Result<(), String> {
     ))
 }
 
-/// Whether `pid` is alive. A zombie — a child of this launcher that has
-/// exited but not been reaped — counts as gone, otherwise waiting for a
-/// server this process started could never finish.
 #[cfg(target_os = "linux")]
 fn process_is_running(pid: u32) -> bool {
     let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
     };
-    // The state letter follows the parenthesised command name, which may
-    // itself contain spaces and parentheses.
     let state = stat
         .rsplit_once(')')
         .map(|(_, rest)| rest.trim_start())
@@ -719,9 +669,6 @@ fn stage_installed_files(
 ) -> Result<(), String> {
     fs::create_dir_all(backup_root)
         .map_err(|error| format!("Could not create {}: {error}", backup_root.display()))?;
-    // Recorded before anything moves, so failing here leaves the installation
-    // as it was. Rollback then removes the new build's VERSION.txt rather
-    // than keeping it.
     if !install_root.join("VERSION.txt").exists() {
         fs::write(backup_root.join(NO_VERSION_MARKER), b"")
             .map_err(|error| format!("Could not record the missing VERSION.txt: {error}"))?;
@@ -736,9 +683,6 @@ fn stage_installed_files(
             continue;
         }
         if let Err(error) = move_required(&source, &backup_root.join(name)) {
-            // Staging can fail after moving only part of the installation.
-            // Full rollback deletes installed files first, so use the journal
-            // here to leave every file not yet backed up alone.
             let mut restore_errors = Vec::new();
             for moved_name in moved.into_iter().rev() {
                 if let Err(restore_error) = move_required(
@@ -763,10 +707,6 @@ fn stage_installed_files(
     Ok(())
 }
 
-/// Everything rollback needs, in place before the new build is moved in.
-/// Without the data snapshot and its restore copies a failed start could leave
-/// nothing the previous build can open, or no space to put it back, so a
-/// failure here stops the update before anything is swapped.
 fn prepare_update(
     install_root: &Path,
     backup_root: &Path,
@@ -782,9 +722,6 @@ const RESTORE_PENDING: &str = "restore-pending";
 const FAILED_DATA: &str = "failed-data";
 const FAILED_DATA_PARTIAL: &str = "failed-data.partial";
 
-/// Rollback may run on a disk the failed build filled, so what it records is
-/// made now: the folder that keeps the failed build's data, and the marker
-/// that a rename turns into `restore-required`.
 fn prepare_rollback_records(backup_root: &Path) -> Result<(), String> {
     let partial = backup_root.join(FAILED_DATA_PARTIAL);
     fs::create_dir_all(&partial)
@@ -797,13 +734,6 @@ fn prepare_rollback_records(backup_root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The data half of a rollback, with the failed server stopped. Only putting
-/// the snapshot back can fail it: keeping the failed build's data and
-/// recording the decision are worth having, never worth leaving the
-/// installation down for. `restore-required` is recorded after the failed
-/// data is kept and before the snapshot goes back, so it also marks the point
-/// past which the live files may be the snapshot's: a rollback that finds it
-/// restores again and never adds those files to what was kept.
 fn roll_back_data(install_root: &Path, data: &Path, backup_root: &Path) -> Result<(), String> {
     let marker = backup_root.join(RESTORE_REQUIRED);
     let kept = if marker.is_file() {
@@ -843,13 +773,8 @@ fn rollback_update(
     let stopped = stop_server(install_root);
     let data = data_dir(install_root);
     let snapshot = backup_root.join("data");
-    // Decided once: after a restore the formats match the snapshot again, so a
-    // rollback run a second time (the previous build failed to start after
-    // the first) still restores instead of keeping that build's leftovers.
     let restore_marker = backup_root.join(RESTORE_REQUIRED);
     if restore_marker.is_file() || data_was_upgraded(&data, &snapshot) {
-        // Files replaced under a server that is still running would keep
-        // receiving its writes after the previous build had started.
         stopped?;
         roll_back_data(install_root, &data, backup_root)?;
     }
@@ -875,10 +800,6 @@ fn rollback_update(
     Ok(())
 }
 
-/// Puts back one file or folder the update moved aside. A backup already
-/// gone was put back by an earlier run of this rollback, so the installed
-/// copy is kept rather than deleted.
-/// Left in the backup by an installation that had no VERSION.txt.
 const NO_VERSION_MARKER: &str = "no-version";
 
 fn restore_backed_up(backup: &Path, installed: &Path) -> Result<(), String> {
@@ -893,16 +814,6 @@ fn restore_backed_up(backup: &Path, installed: &Path) -> Result<(), String> {
     move_required(backup, installed)
 }
 
-/// Keeps the failed build's data beside the snapshot before the snapshot is
-/// put back, for an owner to recover anything from by hand. The database and
-/// identities are hard-linked, so the restore can still replace each live
-/// file with a single rename and there is never a moment without one; the
-/// write-ahead log and shared memory, which the restore removes anyway, are
-/// moved with them so the database stays readable on its own. A volume
-/// without hard links gets moves instead. Collected under `.partial` and
-/// renamed when complete, so an interrupted run resumes: until then no
-/// restore has begun, every live file is still the failed build's, and a
-/// file already kept is never replaced.
 fn preserve_failed_data(data: &Path, backup_root: &Path) -> Result<PathBuf, String> {
     let kept = backup_root.join(FAILED_DATA);
     if kept.is_dir() {
@@ -939,23 +850,13 @@ fn preserve_failed_data(data: &Path, backup_root: &Path) -> Result<PathBuf, Stri
     Ok(kept)
 }
 
-/// State the server upgrades in place and an older build then refuses: the
-/// database by its `schema_version`, the library identities by `version`.
 const DATABASE: &str = "operalibre.db";
 const IDENTITIES: &str = "library-identities.json";
 
-/// Copies of the snapshot that rollback renames over the live files. The new
-/// build may use up the free disk space, so they are made before it runs and
-/// rollback copies nothing. They sit in the snapshot folder, never beside the
-/// live files, and the snapshot itself stays whole for another try.
 fn restore_copies(snapshot: &Path) -> PathBuf {
     snapshot.join("restore")
 }
 
-/// Copies the state an update may upgrade into `snapshot`, with its restore
-/// copies. The server has stopped by now; `VACUUM INTO` still yields a
-/// consistent copy if it left a write-ahead log behind, which copying the file
-/// would not.
 fn snapshot_data(data: &Path, snapshot: &Path) -> Result<(), String> {
     let prepared = restore_copies(snapshot);
     let result = (|| {
@@ -972,7 +873,6 @@ fn snapshot_data(data: &Path, snapshot: &Path) -> Result<(), String> {
                 .map_err(|error| format!("Could not copy the database: {error}"))?;
             secure_file(&copy)?;
             sync_file(&copy)?;
-            // A copy that cannot be read back is no copy to roll back to.
             schema_version(&copy)?;
         }
         let identities = data.join(IDENTITIES);
@@ -995,8 +895,6 @@ fn snapshot_data(data: &Path, snapshot: &Path) -> Result<(), String> {
                 sync_file(&copy)?;
             }
         }
-        // The new build may migrate the database as soon as it starts, so the
-        // folders leading to the copies must be on disk before then too.
         for directory in prepared
             .ancestors()
             .take_while(|directory| directory.starts_with(snapshot) || directory.starts_with(data))
@@ -1011,11 +909,7 @@ fn snapshot_data(data: &Path, snapshot: &Path) -> Result<(), String> {
     result
 }
 
-/// Whether the failed build raised a format the snapshot was taken at. Only
-/// then is the snapshot restored: otherwise the previous build reads the data
-/// as it is, including listening progress saved while the new build ran.
 fn data_was_upgraded(data: &Path, snapshot: &Path) -> bool {
-    // A readable snapshot against current data that is newer or unreadable.
     let raised = |before: Result<i64, String>, after: Result<i64, String>| match (before, after) {
         (Ok(before), Ok(after)) => after > before,
         (Ok(_), Err(_)) => true,
@@ -1035,18 +929,12 @@ fn data_was_upgraded(data: &Path, snapshot: &Path) -> bool {
             ))
 }
 
-/// Puts the whole snapshot back, so the database and identities stay a pair.
-/// The snapshot is only read: until the previous build has started it is the
-/// one copy that build can open, and a restore that stops partway must be
-/// able to run again.
 fn restore_data(data: &Path, snapshot: &Path) -> Result<(), String> {
     let names: Vec<&str> = [DATABASE, IDENTITIES]
         .into_iter()
         .filter(|name| snapshot.join(name).is_file())
         .collect();
     let prepared = restore_copies(snapshot);
-    // Each file lands with one rename on one volume, so the live file is
-    // either the old one or the new one.
     let mut copied = Vec::new();
     let result = (|| {
         let mut sources = Vec::new();
@@ -1056,8 +944,6 @@ fn restore_data(data: &Path, snapshot: &Path) -> Result<(), String> {
                 sources.push(ready);
                 continue;
             }
-            // No prepared copy left (an earlier restore used it): copy the
-            // snapshot beside the live file. Only this needs free space.
             let copy = data.join(format!("{name}.restoring"));
             copied.push(copy.clone());
             fs::copy(snapshot.join(name), &copy)
@@ -1068,8 +954,6 @@ fn restore_data(data: &Path, snapshot: &Path) -> Result<(), String> {
         }
         for (name, source) in names.iter().zip(&sources) {
             if *name == DATABASE {
-                // The failed build's write-ahead log belongs to its database;
-                // replayed onto the restored one it would corrupt it.
                 remove_if_exists(&data.join(format!("{DATABASE}-wal")))?;
                 remove_if_exists(&data.join(format!("{DATABASE}-shm")))?;
             }
@@ -1087,8 +971,6 @@ fn restore_data(data: &Path, snapshot: &Path) -> Result<(), String> {
 }
 
 fn open_database(path: &Path) -> Result<rusqlite::Connection, String> {
-    // Without SQLITE_OPEN_CREATE a missing file is an error, not a new empty
-    // database; without SQLITE_OPEN_URI the VACUUM INTO target is a plain path.
     rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
         .map_err(|error| format!("Could not open {}: {error}", path.display()))
 }
@@ -1104,11 +986,9 @@ fn schema_version(database: &Path) -> Result<i64, String> {
         })
 }
 
-/// The identities `version` the server reads; files without one are format 0.
 fn identity_version(path: &Path) -> Result<i64, String> {
     let contents = fs::read_to_string(path)
         .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
-    // SQLite's JSON functions spare the launcher a JSON parser.
     rusqlite::Connection::open_in_memory()
         .and_then(|connection| {
             connection.query_row(
@@ -1121,7 +1001,6 @@ fn identity_version(path: &Path) -> Result<i64, String> {
 }
 
 fn sync_file(path: &Path) -> Result<(), String> {
-    // Windows flushes only handles opened for writing.
     OpenOptions::new()
         .write(true)
         .open(path)
@@ -1129,7 +1008,6 @@ fn sync_file(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("Could not save {}: {error}", path.display()))
 }
 
-/// Best effort: makes the renames in `path` survive a power cut.
 fn sync_directory(path: &Path) {
     #[cfg(unix)]
     if let Ok(directory) = fs::File::open(path) {
@@ -1196,8 +1074,6 @@ fn copy_launcher(source: &Path, destination: &Path) -> Result<(), String> {
         .ok_or_else(|| format!("{} has no parent folder.", destination.display()))?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
-    // A systemd starter may be running from the old launcher while waiting
-    // on update.lock. Replace the inode instead of overwriting its executable.
     let temporary = destination.with_extension("new");
     fs::copy(source, &temporary).map_err(|error| {
         format!(
@@ -1243,9 +1119,6 @@ fn stop_server(root: &Path) -> Result<(), String> {
         ));
     }
 
-    // The updater may restart the server as soon as the old process and port
-    // disappear. Retire the old PID before signalling, so this stop cannot erase
-    // the new server's PID file after the updater writes it.
     fs::remove_file(&pid_path)
         .map_err(|error| format!("Could not retire {}: {error}", pid_path.display()))?;
     if let Err(error) = signal_server(pid_number, false)
@@ -1256,8 +1129,6 @@ fn stop_server(root: &Path) -> Result<(), String> {
         return Err(format!("Could not stop server process {pid}: {error}"));
     }
 
-    // The stop must not return while the server is still shutting down: the
-    // installer replaces the files under it as soon as this launcher exits.
     if !wait_for_process_exit(pid_number, SHUTDOWN_CEILING) {
         append_log(
             root,
@@ -1294,11 +1165,6 @@ fn wait_for_process_exit(pid: u32, ceiling: Duration) -> bool {
     }
 }
 
-/// Asks the server to stop, or kills it when `force` is set.
-///
-/// The server is spawned in its own process group so that helpers it runs
-/// (ffmpeg, echogarden, Libation) stop with it; the group is signalled first
-/// and the single process only if that fails.
 #[cfg(unix)]
 fn signal_server(pid: u32, force: bool) -> Result<(), String> {
     let signal = if force { "-KILL" } else { "-TERM" };
@@ -1321,8 +1187,6 @@ fn signal_server(pid: u32, force: bool) -> Result<(), String> {
 
 #[cfg(windows)]
 fn signal_server(pid: u32, _force: bool) -> Result<(), String> {
-    // taskkill /F /T ends the whole process tree; there is no gentler
-    // signal for a console-less process on Windows.
     match Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .creation_flags(CREATE_NO_WINDOW)
@@ -1338,8 +1202,6 @@ fn configured_port(config_path: &Path) -> Option<u16> {
     port_from(configured_value(config_path, "port"), env::var("PORT").ok())
 }
 
-/// The server's rule: a blank or missing `port` falls back to the `PORT`
-/// environment variable. The caller supplies 4920 when both are unset.
 fn port_from(configured: Option<String>, environment: Option<String>) -> Option<u16> {
     [configured, environment]
         .into_iter()
@@ -1350,11 +1212,6 @@ fn port_from(configured: Option<String>, environment: Option<String>) -> Option<
         .ok()
 }
 
-/// The value of `key` in a `server.config` file, read the way the server
-/// reads it: keys are case-insensitive with `-` and `_` interchangeable, a
-/// repeated key takes its last value, and one matching pair of surrounding
-/// quotes is stripped. Reading a repeated `port` differently from the server
-/// would have the launcher wait on a port nothing listens on.
 fn configured_value(config_path: &Path, key: &str) -> Option<String> {
     let contents = fs::read_to_string(config_path).ok()?;
     configured_value_in(&contents, key)
@@ -1362,23 +1219,17 @@ fn configured_value(config_path: &Path, key: &str) -> Option<String> {
 
 fn configured_value_in(contents: &str, key: &str) -> Option<String> {
     let wanted = key.to_ascii_lowercase().replace('-', "_");
-    contents
-        .lines()
-        // Searched from the end: the server keeps a repeated key's last value.
-        .rev()
-        .find_map(|raw_line| {
-            let line = raw_line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                return None;
-            }
-            let (candidate, value) = line.split_once('=')?;
-            (candidate.trim().to_ascii_lowercase().replace('-', "_") == wanted)
-                .then(|| unquote_config_value(value.trim()))
-        })
+    contents.lines().rev().find_map(|raw_line| {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return None;
+        }
+        let (candidate, value) = line.split_once('=')?;
+        (candidate.trim().to_ascii_lowercase().replace('-', "_") == wanted)
+            .then(|| unquote_config_value(value.trim()))
+    })
 }
 
-/// One matching pair of surrounding quotes, as the server's
-/// `unquote_config_value` strips.
 fn unquote_config_value(value: &str) -> String {
     let bytes = value.as_bytes();
     if bytes.len() >= 2
@@ -1390,7 +1241,6 @@ fn unquote_config_value(value: &str) -> String {
     value.to_string()
 }
 
-/// The variable and header the server reads for an update trial.
 const UPDATE_TRIAL_ENV: &str = "OPERALIBRE_UPDATE_TRIAL";
 const UPDATE_TRIAL_HEADER: &str = "X-OperaLibre-Update-Trial";
 
@@ -1398,7 +1248,6 @@ fn server_port(root: &Path) -> u16 {
     configured_port(&root.join("server.config")).unwrap_or(4920)
 }
 
-/// Unguessable, so no other local process or web page can commit a trial.
 fn update_trial_token() -> Result<String, String> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes)
@@ -1409,19 +1258,13 @@ fn update_trial_token() -> Result<String, String> {
 #[derive(Debug, PartialEq, Eq)]
 enum TrialCommit {
     Committed,
-    /// The build predates update trials: it never refused requests.
     Unsupported,
 }
 
-/// Commits the trial so the new build starts accepting changes. Anything but
-/// a clear answer counts as a failed start and rolls the update back; the
-/// build may then have been committed and accepted a change in the moment
-/// before it went away, which the rollback discards.
 fn commit_update_trial(port: u16, token: &str) -> Result<TrialCommit, String> {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
         .map_err(|error| format!("Could not reach the new server to commit it: {error}"))?;
-    // The commit restores the read-along queue first, which reads one file.
     let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
     let request = format!(
         "POST /api/update-trial/commit HTTP/1.1\r\nHost: localhost\r\n{UPDATE_TRIAL_HEADER}: {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -1503,8 +1346,6 @@ fn parse_health_response(response: &[u8]) -> ServerReadiness {
     if compact_body.contains("\"catalogueError\":true") {
         ServerReadiness::Unavailable
     } else if compact_body.contains("\"ready\":true") || !compact_body.contains("\"ready\":") {
-        // Servers from before catalogue readiness was exposed are already
-        // fully started by the time their health route answers.
         ServerReadiness::Ready
     } else {
         ServerReadiness::Starting
@@ -1538,8 +1379,6 @@ fn open_browser(port: u16) -> Result<(), String> {
 fn show_message(message: &str) {
     #[cfg(target_os = "windows")]
     {
-        // The message carries install paths and OS errors; pass it as data so
-        // no quoting rule (PowerShell also treats curly quotes as quotes) applies.
         let script = "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show($env:OPERALIBRE_MESSAGE, 'OperaLibre')";
         let _ = Command::new("powershell.exe")
             .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
@@ -1614,7 +1453,6 @@ mod tests {
         let backup = root.join("backup");
         std::fs::create_dir_all(install.join("web")).unwrap();
         std::fs::write(install.join(super::server_binary_name()), "old server").unwrap();
-        // The marker cannot be written where a folder already sits.
         std::fs::create_dir_all(backup.join(super::NO_VERSION_MARKER)).unwrap();
 
         assert!(super::stage_installed_files(&install, &backup, true).is_err());
@@ -1827,8 +1665,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// A data folder shaped like the server's: a WAL database at `schema` with
-    /// one progress row, and identities at `identities`.
     fn seed_data(data: &Path, schema: i64, identities: &str) -> rusqlite::Connection {
         fs::create_dir_all(data).unwrap();
         let connection = rusqlite::Connection::open(data.join("operalibre.db")).unwrap();
@@ -1862,7 +1698,6 @@ mod tests {
         let root = scratch("data-upgraded");
         let data = root.join("data");
         let snapshot = root.join("snapshot");
-        // Held open so the snapshot is taken with a live write-ahead log.
         let live = seed_data(&data, 4, "{\"version\":1,\"books\":[]}");
         live.execute_batch(
             "PRAGMA wal_autocheckpoint = 0; INSERT INTO progress VALUES ('in-wal', 30);",
@@ -1899,7 +1734,6 @@ mod tests {
             .unwrap()
             .execute("UPDATE schema_version SET version = 5", [])
             .unwrap();
-        // The database goes back, then the identities cannot be replaced.
         let identities = data.join("library-identities.json");
         fs::remove_file(&identities).unwrap();
         fs::create_dir_all(identities.join("blocked")).unwrap();
@@ -1919,7 +1753,6 @@ mod tests {
                 .is_file()
         );
 
-        // Restarting the failed build would migrate the restored database again.
         rusqlite::Connection::open(data.join("operalibre.db"))
             .unwrap()
             .execute("UPDATE schema_version SET version = 5", [])
@@ -1935,9 +1768,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// Rollback can run on a disk the failed build filled. What it records
-    /// is prepared before the new build runs, and failing to record it never
-    /// stops the snapshot going back.
     #[test]
     fn the_data_goes_back_even_when_nothing_else_can_be_recorded() {
         let root = scratch("data-rollback-records");
@@ -1953,7 +1783,6 @@ mod tests {
             .execute("UPDATE schema_version SET version = 5", [])
             .unwrap();
 
-        // Neither the marker nor the kept folder can land.
         fs::remove_file(backup.join(super::RESTORE_PENDING)).unwrap();
         fs::create_dir_all(backup.join(super::RESTORE_REQUIRED).join("blocked")).unwrap();
         fs::write(backup.join(super::FAILED_DATA), b"blocked").unwrap();
@@ -1962,8 +1791,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// A rollback run again, after the previous build failed to start on the
-    /// restored data, must not top up what was kept with the restored files.
     #[test]
     fn a_second_rollback_never_mixes_restored_files_into_the_kept_data() {
         let root = scratch("data-rollback-twice");
@@ -1977,7 +1804,6 @@ mod tests {
             .execute("UPDATE schema_version SET version = 5", [])
             .unwrap();
         fs::write(data.join("library-identities.json"), "{\"version\":2}").unwrap();
-        // Keeping the failed data cannot finish.
         let partial = backup.join(super::FAILED_DATA_PARTIAL);
         fs::write(backup.join(super::FAILED_DATA), b"blocked").unwrap();
         super::roll_back_data(&root, &data, &backup).unwrap();
@@ -1987,7 +1813,6 @@ mod tests {
         );
         assert!(backup.join(super::RESTORE_REQUIRED).is_file());
 
-        // The previous build starts, writes a log, and fails readiness.
         fs::write(data.join("operalibre.db-wal"), b"previous build wal").unwrap();
         fs::remove_file(backup.join(super::FAILED_DATA)).unwrap();
         super::roll_back_data(&root, &data, &backup).unwrap();
@@ -2044,15 +1869,12 @@ mod tests {
             )
             .unwrap();
         fs::write(data.join("library-identities.json"), "{\"version\":2}").unwrap();
-        // Left behind by a build that stopped without checkpointing.
         fs::write(data.join("operalibre.db-wal"), b"failed build wal").unwrap();
         fs::write(data.join("operalibre.db-shm"), b"failed build shm").unwrap();
 
         let kept = super::preserve_failed_data(&data, &backup).unwrap();
         assert_eq!(kept, backup.join("failed-data"));
         assert!(!backup.join("failed-data.partial").exists());
-        // Its log and shared memory moved with it, so nothing is replayed onto
-        // the restored database.
         assert!(!data.join("operalibre.db-wal").exists());
         assert!(!data.join("operalibre.db-shm").exists());
         assert_eq!(
@@ -2071,7 +1893,6 @@ mod tests {
             super::identity_version(&kept.join("library-identities.json")),
             Ok(2)
         );
-        // A second run finds it kept and leaves it alone.
         assert_eq!(super::preserve_failed_data(&data, &backup).unwrap(), kept);
         assert_eq!(super::schema_version(&kept.join("operalibre.db")), Ok(5));
         fs::remove_dir_all(root).unwrap();
@@ -2084,7 +1905,6 @@ mod tests {
         let backup = root.join("backup");
         drop(seed_data(&data, 5, "{\"version\":2}"));
         fs::write(data.join("operalibre.db-wal"), b"failed build wal").unwrap();
-        // Stopped after the database was kept and before the log moved.
         let partial = backup.join("failed-data.partial");
         fs::create_dir_all(&partial).unwrap();
         fs::hard_link(data.join("operalibre.db"), partial.join("operalibre.db")).unwrap();
@@ -2098,7 +1918,6 @@ mod tests {
         fs::remove_file(kept.join("operalibre.db-wal")).unwrap();
         assert_eq!(super::schema_version(&kept.join("operalibre.db")), Ok(5));
         assert!(kept.join("library-identities.json").is_file());
-        // The live files the restore replaces are still there.
         assert!(data.join("operalibre.db").is_file());
         assert!(data.join("library-identities.json").is_file());
         fs::remove_dir_all(root).unwrap();
@@ -2115,7 +1934,6 @@ mod tests {
 
         super::restore_backed_up(&backup, &installed).unwrap();
         assert_eq!(fs::read_to_string(&installed).unwrap(), "previous build");
-        // The previous build failed to start and the rollback runs again.
         super::restore_backed_up(&backup, &installed).unwrap();
         assert_eq!(fs::read_to_string(&installed).unwrap(), "previous build");
         fs::remove_file(&installed).unwrap();
@@ -2159,8 +1977,6 @@ mod tests {
             .execute("UPDATE schema_version SET version = 5", [])
             .unwrap();
         fs::write(data.join("library-identities.json"), "{\"version\":2}").unwrap();
-        // Rollback-time copies fail, as they would on a disk the failed build
-        // filled; the prepared copies need only renames.
         for name in ["operalibre.db", "library-identities.json"] {
             fs::create_dir_all(data.join(format!("{name}.restoring")).join("blocked")).unwrap();
         }
@@ -2172,7 +1988,6 @@ mod tests {
         );
         assert_eq!(progress_books(&data), ["before-update"]);
 
-        // Once used, a later restore copies from the snapshot, which is whole.
         rusqlite::Connection::open(data.join("operalibre.db"))
             .unwrap()
             .execute("UPDATE schema_version SET version = 5", [])
@@ -2196,7 +2011,6 @@ mod tests {
         fs::write(install.join(super::server_binary_name()), "old server").unwrap();
         fs::write(install.join("VERSION.txt"), "old version").unwrap();
         drop(seed_data(&install.join("data"), 4, "{\"version\":1}"));
-        // The snapshot can be written but its restore copies cannot.
         fs::create_dir_all(backup.join("data")).unwrap();
         fs::write(super::restore_copies(&backup.join("data")), "occupied").unwrap();
 
@@ -2225,15 +2039,12 @@ mod tests {
         let snapshot = root.join("snapshot");
         drop(seed_data(&data, 4, "{\"books\":[]}"));
         super::snapshot_data(&data, &snapshot).unwrap();
-        // Progress saved while the new build was up must survive the rollback.
         rusqlite::Connection::open(data.join("operalibre.db"))
             .unwrap()
             .execute("INSERT INTO progress VALUES ('new-build', 60)", [])
             .unwrap();
         assert!(!super::data_was_upgraded(&data, &snapshot));
 
-        // Pre-versioned identities rewritten in the versioned format count as
-        // an upgrade, and so does a database the launcher cannot read.
         fs::write(data.join("library-identities.json"), "{\"version\":1}").unwrap();
         assert!(super::data_was_upgraded(&data, &snapshot));
         fs::write(data.join("library-identities.json"), "{\"books\":[]}").unwrap();
@@ -2254,7 +2065,6 @@ mod tests {
         assert!(!snapshot.exists());
         assert!(!super::data_was_upgraded(&data, &snapshot));
 
-        // An installation that has no database yet still snapshots.
         fs::remove_file(data.join("operalibre.db")).unwrap();
         super::snapshot_data(&data, &snapshot).unwrap();
         assert!(!data.join("operalibre.db").exists());

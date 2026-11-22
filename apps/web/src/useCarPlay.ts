@@ -49,25 +49,9 @@ export function useCarPlay({
   speed: number;
   updateBookProgress: (bookId: string, saved: Progress) => void;
 }) {
-  /**
-   * The book CarPlay started on the shared native player, if any.
-   *
-   * While it is set the app leaves the player alone: the driver's book is
-   * playing through the same engine, and attaching this app's player to it
-   * would load another book over theirs.
-   */
   const [carPlaybackBookId, setCarPlaybackBookId] = useState<string | null>(null);
-  /** When the app last claimed the player back from the car. */
   const carTakeoverAtRef = useRef(0);
 
-  /**
-   * What the car needs to know about, reduced to the parts it acts on.
-   *
-   * Positions are bucketed to the minute on purpose: a snapshot costs a
-   * filesystem lookup per downloaded track, and rebuilding it every few seconds
-   * while a book plays would keep the disk busy for a resume point the car
-   * refines from the player's own checkpoint anyway.
-   */
   const carLibrarySignature = useMemo(() => {
     if (!supportsCarPlay()) return "";
     return books
@@ -97,8 +81,6 @@ export function useCarPlay({
   useEffect(() => {
     if (!supportsCarPlay() || carLibrarySignature === "") return;
     let active = true;
-    // Debounced: a library load, its progress fetch and the download scan all
-    // land within a moment of each other, and the car only needs the result.
     const timer = window.setTimeout(() => {
       void buildCarLibrarySnapshot({
         scopePrefix: `${getServerStorageKey()}:${currentUser.id}`,
@@ -111,8 +93,6 @@ export function useCarPlay({
           return local ?? (book.coverArtUrl ? mediaUrl(book.coverArtUrl) : null);
         },
         resolveTrackUrl: async (book, track) => {
-          // Only a book with local files is worth a disk lookup; everything
-          // else streams, and the car will say so with a cloud marker.
           const local = book.source === "device"
             || book.deviceBookId
             || downloadedBookIds.has(book.id)
@@ -135,10 +115,6 @@ export function useCarPlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [carLibrarySignature, currentUser.id, speed]);
 
-  // Installed once per library, but the work they do reads the live player —
-  // which book, which track, where its clock is. Going through a ref keeps a
-  // listener from persisting progress against the track that was open when it
-  // was registered.
   const carEventHandlersRef = useRef({
     playbackStarted: (_bookId: string) => {},
     sync: () => {}
@@ -171,9 +147,6 @@ export function useCarPlay({
       if (!active) void handle?.remove();
       else handles.push(handle);
     });
-    // The listeners above only fire while JS is running. Everything that
-    // happened during a drive is collected here instead, whenever the app
-    // comes back to the foreground.
     document.addEventListener("visibilitychange", sync);
     sync();
     return () => {
@@ -181,23 +154,12 @@ export function useCarPlay({
       document.removeEventListener("visibilitychange", sync);
       for (const handle of handles) void handle?.remove();
     };
-    // Keyed on the library rather than on nothing: a session for a book the app
-    // had not loaded yet is left pending, and this re-runs — and saves it — once
-    // that book is on the shelf.
   }, [bookIdsKey, currentUser.id]);
 
-  /**
-   * Picks up whatever happened on the car screen: who owns the player, and the
-   * progress made during a drive.
-   */
   async function adoptCarPlaybackState() {
     if (!supportsCarPlay()) return;
     const state = await getCarPlayState().catch(() => null);
     if (!state) return;
-    // A take-over the app just performed is not yet visible natively — the
-    // hand-back happens on the load() the attach is about to make — so a
-    // reported owner from the moments after one is ignored rather than
-    // parking the player that is starting up.
     const takeoverIsSettling = Date.now() - carTakeoverAtRef.current < 5_000;
     if (!state.carOwnedBookId || !takeoverIsSettling) {
       setCarPlaybackOwner(state.carOwnedBookId);
@@ -206,20 +168,10 @@ export function useCarPlay({
     if (state.sessions.length > 0) await saveCarPlaybackSessions(state.sessions);
   }
 
-  /**
-   * Saves what was listened to in the car.
-   *
-   * The car deliberately writes nothing itself: this goes through the same
-   * queue as every other checkpoint, so the local copy, the offline cache and
-   * the server's staleness and suspect-reset rules all apply exactly as they do
-   * to playback on the phone.
-   */
   function queueCarPlaybackSessions(sessions: CarPlaybackSession[]) {
     const handled: CarPlaybackSession[] = [];
     for (const session of sessions) {
       const book = booksRef.current.find((candidate) => candidate.id === session.bookId);
-      // A book the app has not loaded yet is left pending rather than dropped;
-      // the next sync, once the library is in, will save it.
       if (!book) continue;
       handled.push(session);
       if (!carSessionIsWorthSaving(session, book)) continue;
@@ -248,8 +200,6 @@ export function useCarPlay({
         bookId: book.id,
         progress,
         seekIntentId: seekIntent?.id,
-        // Every deliberate seek needs authorization, but only a rewind or
-        // restart may bypass reset protection if a stale clock replaces it.
         intentionalSeekGeneration: newIntentionalSeek
           ? (acknowledgedSeekGenerationRef.current.get(book.id) ?? 0) + 1
           : 0,
@@ -263,9 +213,6 @@ export function useCarPlay({
 
   async function flushCarPlaybackSessions(handled: CarPlaybackSession[]) {
     if (queuedProgressSaves.current.size > 0) await flushProgressSaveQueue();
-    // Acknowledged even when the server write failed: the position is in the
-    // local checkpoint and the offline cache by now, and the usual retry owns
-    // it from here. Holding the session instead would replay it forever.
     await acknowledgeCarSessions(handled).catch(() => undefined);
   }
 
@@ -278,17 +225,10 @@ export function useCarPlay({
     const state = await stopCarPlayback(bookId);
     setCarPlaybackOwner(state.carOwnedBookId);
     setCarPlaybackBookId(state.carOwnedBookId);
-    // Bank the final checkpoint before deletion, without waiting for an offline
-    // server. Native sessions remain durable until the normal sync acknowledges them.
     const handled = queueCarPlaybackSessions(state.sessions);
     void flushCarPlaybackSessions(handled).catch(() => undefined);
   }
 
-  /**
-   * Takes the shared player back from the car. Ownership is dropped before the
-   * player attaches so the attach does its normal work — including the load()
-   * that tells the native side the app is driving again.
-   */
   function takeOverFromCar() {
     carTakeoverAtRef.current = Date.now();
     releaseCarPlaybackOwnership();

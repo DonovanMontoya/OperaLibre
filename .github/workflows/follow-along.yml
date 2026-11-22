@@ -18,7 +18,6 @@ on:
 permissions:
   contents: read
 
-# Only obsolete PR runs are cancelled; main, scheduled and manual runs are unique.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -54,8 +53,6 @@ jobs:
 
   audio:
     name: Follow-along real speech and edition differences
-    # Models are costly; ordinary PRs use deterministic server tests and browsers.
-    # This job contains only original generated content, never private books.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60

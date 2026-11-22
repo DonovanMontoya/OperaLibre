@@ -1,7 +1,6 @@
 name: Create Release
 
 on:
-  # Nightlies are started by nightly.yml shortly after 8:17 p.m. Eastern.
   repository_dispatch:
     types: [nightly]
   push:
@@ -53,8 +52,6 @@ jobs:
       id-token: write
       attestations: write
 
-  # Keep both channels in this run so the release lock covers publication
-  # and queued manual releases cannot be displaced by a nightly dispatch.
   nightly:
     name: Nightly from stable source
     needs: release

@@ -20,7 +20,6 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
 
-/** Experimental streaming extraction; not registered as a Capacitor plugin. */
 public final class GiftArchiveExtractor {
     private static final int MAX_ENTRIES = 256;
     private static final long MAX_BYTES = 25L * 1024 * 1024 * 1024;
@@ -37,12 +36,6 @@ public final class GiftArchiveExtractor {
 
     private GiftArchiveExtractor() {}
 
-    /**
-     * Extract only manifest entries into a private staging directory. A per-ID
-     * file lock serializes commits across processes; the final rename stays on
-     * the same filesystem. The caller must separately publish a library index
-     * entry only after success and handle recovery if publication fails.
-     */
     public static synchronized File extract(File archive, File privateRoot, String giftId, List<Asset> assets) throws Exception {
         if (giftId == null || !giftId.matches("[A-Za-z0-9_-]{16,128}") || assets == null || assets.isEmpty() || assets.size() > MAX_ENTRIES) throw new IOException("Invalid gift manifest.");
         Map<String, Asset> expected = new HashMap<>();
@@ -106,9 +99,6 @@ public final class GiftArchiveExtractor {
         }
     }
 
-    /** APPNOTE 4.3.14-16: bound the single-disk directory before a library
-     * allocates its index. ZipInputStream alone never reads these records.
-     * ZIP64 values are unsigned: reject the high bit before any arithmetic. */
     private static long unsigned(byte[] bytes, int at, int width) throws IOException {
         if (at < 0 || at > bytes.length - width || (width == 8 && bytes[at + 7] < 0)) throw new IOException("Invalid ZIP integer.");
         long value = 0;
@@ -147,8 +137,6 @@ public final class GiftArchiveExtractor {
                 if (endOffset < 76 || zip64Offset > endOffset - 76) throw new IOException("Invalid ZIP64 offset.");
                 byte[] zip64 = readAt(file, zip64Offset, 56);
                 long recordSize = unsigned(zip64, 4, 8);
-                // The server has no ZIP64 extensible metadata. Bound that
-                // optional sector before a platform library can allocate it.
                 if (unsigned(zip64, 0, 4) != 0x06064b50L || recordSize < 44 || recordSize > 64 * 1024 || recordSize != endOffset - 20 - zip64Offset - 12
                     || unsigned(zip64, 14, 2) < 45 || unsigned(zip64, 16, 4) != 0 || unsigned(zip64, 20, 4) != 0) throw new IOException("Invalid ZIP64 end record.");
                 long wideDiskCount = unsigned(zip64, 24, 8), wideCount = unsigned(zip64, 32, 8);
@@ -157,15 +145,11 @@ public final class GiftArchiveExtractor {
                     || (size != 0xffffffffL && size != wideSize) || (offset != 0xffffffffL && offset != wideOffset)) throw new IOException("Inconsistent ZIP64 end records.");
                 diskCount = wideDiskCount; count = wideCount; size = wideSize; offset = wideOffset; directoryEnd = zip64Offset;
             } else if (required) throw new IOException("Missing ZIP64 locator.");
-            // Each central header has at most a 255-byte selected name and
-            // uint16-sized extra/comment fields. Never index an unbounded CD.
             long maximumDirectory = MAX_ENTRIES * (46L + 255 + 65535 + 65535);
             if (count < 1 || count > MAX_ENTRIES || count != diskCount || count != expected.size()
                 || size < count * 46 || size > maximumDirectory || offset > directoryEnd || size != directoryEnd - offset) throw new IOException("Invalid ZIP directory bounds.");
             validateHeaders(file, offset, directoryEnd, count);
         }
-        // Use the vetted ZIP64 central parser as well as the local streaming
-        // parser. Their selected entry names and sizes must agree with receipts.
         try (ZipFile zip = new ZipFile(archive)) {
             Set<String> seen = new HashSet<>();
             Enumeration<? extends ZipEntry> entries = zip.entries();
@@ -181,8 +165,6 @@ public final class GiftArchiveExtractor {
         return checksums;
     }
 
-    /** ZIP64 extra fields contain only sentinel-replaced values, in the fixed
-     * size/compressed-size/local-offset/disk order (APPNOTE 4.5.3). */
     private static long[] expanded(byte[] extra, long size, long compressed, long offset, long disk) throws IOException {
         long[] values = {size, compressed, offset, disk};
         boolean[] wide = {size == 0xffffffffL, compressed == 0xffffffffL, offset == 0xffffffffL, disk == 65535};

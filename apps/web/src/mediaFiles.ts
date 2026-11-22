@@ -23,7 +23,6 @@ export const SUPPORTED_AUDIO_EXTENSIONS = [
   "wav"
 ] as const;
 
-/** The extension of a file name, without the dot, lowercased. */
 export function fileExtension(name: string | null | undefined, fallback: string) {
   const base = (name ?? "").split(/[?#]/)[0];
   const match = /\.([A-Za-z0-9]{1,8})$/.exec(base);

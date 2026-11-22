@@ -2,39 +2,19 @@ import Foundation
 import UIKit
 import WidgetKit
 
-/// Bookkeeping shared by the CarPlay scene, the audio engine and the web layer.
-///
-/// The car and the phone drive one `AudiobookPlayer`, so something has to say
-/// which of them started what is playing. That matters in both directions: the
-/// web player must not tear down a book the driver just started, and the app
-/// must be able to save the progress made in the car through its usual
-/// server-side defenses rather than letting a second writer near it.
 final class CarPlayCoordinator: AudiobookPlayerMonitor {
     static let shared = CarPlayCoordinator()
 
-    /// The car screen is attached. Kept separate from `carOwnedBookId`: a
-    /// connected car that is showing a book the phone started is normal.
     private(set) var isConnected = false
 
-    /// The book the car itself started, if any. While this is set the web layer
-    /// leaves the engine alone.
     private(set) var carOwnedBookId: String?
 
-    /// Set by the CarPlay scene so the car screen can redraw when playback
-    /// changes underneath it — including while the phone app is backgrounded,
-    /// where the web layer's own event stream is deliberately silent.
     var onPlaybackChange: (() -> Void)?
     var onPlaybackFailure: ((String) -> Void)?
-    /// The web layer pushed a new snapshot: the car's lists are out of date.
     var onLibraryChange: (() -> Void)?
 
-    /// Set by the Capacitor plugin while a WebView exists, so the app can learn
-    /// what happened in the car as soon as JS runs again.
     var onWebNotification: ((String, [String: Any]) -> Void)?
 
-    /// What the car's lists last drew: which book is playing, and whether it
-    /// is. Now Playing updates arrive on every chapter, rate and artwork
-    /// change, and the lists only need redrawing when this moves.
     private struct ListedPlayback: Equatable {
         var bookId: String?
         var isPlaying: Bool
@@ -44,18 +24,9 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     private let store = CarLibraryStore.shared
     private let engine = AudiobookPlayer.shared
     private var lastSessionWrite = 0.0
-    /// Whether the position this car session is about to save got there by a
-    /// jump rather than by playing forward. It lifts the server's reset guard,
-    /// so it lasts only until the app has saved a record written after the
-    /// jump; from then on the car's forward progress is checked as usual.
     private var deliberateRegression = false
-    /// When the current jump was stamped, in the checkpoint clock. Nil until
-    /// the stamp lands; the flag cannot be cleared before then.
     private var deliberateRegressionSince: Double?
     private var deliberateRegressionGeneration = 0
-    /// A car session's position is written on a timer of its own rather than on
-    /// every checkpoint: the engine checkpoints every two seconds, and the
-    /// handoff record does not need that resolution.
     private static let sessionWriteIntervalSeconds = 15.0
 
     private var lastWidgetBook: ResumeWidgetBook?
@@ -71,7 +42,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         refreshWidget()
     }
 
-    // MARK: - Scene lifecycle
 
     func carSceneDidConnect() {
         isConnected = true
@@ -83,7 +53,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         onPlaybackChange = nil
         onPlaybackFailure = nil
         onLibraryChange = nil
-        // Unplugging is the last chance to record where the drive ended.
         recordSession(force: true)
         notifyWeb("carDisconnected", data: [:])
     }
@@ -94,8 +63,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         store.snapshot()
     }
 
-    /// The book the engine is playing, resolved through the snapshot, whichever
-    /// side started it.
     func currentBook() -> CarLibraryBook? {
         let snapshot = store.snapshot()
         guard
@@ -107,19 +74,12 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         return snapshot.book(withId: bookId)
     }
 
-    /// Starts a book from the car, at a whole-book position.
-    ///
-    /// Like the web player, the queue holds the rest of the book from the track
-    /// the position falls in, so the engine rolls from one track to the next
-    /// without the app being awake to feed it.
     @discardableResult
     func play(book: CarLibraryBook, atBookPosition requested: Double?, restorePendingSession: Bool = true) -> Bool {
         let snapshot = store.snapshot()
         let book = restorePendingSession ? snapshot.resuming(book, sessions: store.pendingSessions()) : book
         let position = requested ?? book.resumePositionSeconds
         guard let target = book.target(atBookPosition: position) else { return false }
-        // A track whose URL will not resolve is dropped rather than queued: the
-        // engine would fail the item and stop the drive on it.
         let queue = book.tracks[target.trackIndex...].compactMap { track -> NativeAudioQueuedTrack? in
             guard let url = resolveNativeAudioSourceURL(track.url) else { return nil }
             return NativeAudioQueuedTrack(
@@ -136,12 +96,8 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
             return false
         }
 
-        // The previous book's position is recorded before the engine is handed
-        // a new one: a load() tears the old player down, and with it the only
-        // copy of where the listener stopped.
         recordSession(force: true)
         carOwnedBookId = book.id
-        // Resuming is never a regression; a chapter jump and a restart both are.
         let isRegression = requested != nil || book.isFinished
         if !isRegression { clearDeliberateRegression() }
 
@@ -175,8 +131,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         return true
     }
 
-    /// Moves within a book already playing rather than reloading it, so a
-    /// chapter jump inside the current file does not restart the queue.
     func seek(_ book: CarLibraryBook, toBookPosition position: Double) {
         let status = engine.status
         if status.isLoaded,
@@ -188,16 +142,12 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         {
             engine.seek(toPositionSeconds: position - track.bookOffsetSeconds)
             flagDeliberateRegression()
-            // Queued behind the seek, so the record carries its target.
             DispatchQueue.main.async { [weak self] in self?.recordSession(force: true) }
             return
         }
         play(book: book, atBookPosition: position)
     }
 
-    /// Starts the book already loaded, whichever side loaded it. Resuming
-    /// does not claim the session: a book the phone is playing stays the
-    /// phone's, and its progress keeps being saved the way it always was.
     func resume() {
         if engine.isClipPreview {
             DispatchQueue.main.async { [weak self] in _ = self?.resumeAudiobook() }
@@ -206,8 +156,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         engine.play()
     }
 
-    /// Siri shares the car's native ownership and progress handoff, even when
-    /// no car or WebView is connected. All access runs on the main actor.
     @MainActor
     func resumeAudiobook() -> Bool {
         guard let book = resumeCandidate() else { return false }
@@ -225,8 +173,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
             if let duration = book.durationSeconds, book.positionSeconds >= duration - 1 { return nil }
             return book
         }
-        // The engine checkpoint is account/server scoped. Pending car records
-        // contain only book IDs, so they cannot identify Siri's last session.
         var sessions: [CarPlaybackSession] = []
         if let checkpoint = engine.loadCheckpoint(),
            checkpoint.scopeKey.hasPrefix(snapshot.scopePrefix + ":"),
@@ -298,8 +244,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     }
 
     func clearLibrary() {
-        // Drop ownership before stopping, so the stop checkpoint cannot create
-        // a new pending session belonging to the account we just left.
         carOwnedBookId = nil
         pendingWidgetResume = nil
         store.clear()
@@ -312,8 +256,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
 
     func stopPlayback(forBookId bookId: String) {
         guard carOwnedBookId == bookId else { return }
-        // Retain ownership through the final checkpoint and stop synchronously:
-        // the bridge's reply permits the web layer to delete these media files.
         engine.stopOnMainThread(releaseSession: true)
         recordSession(force: true)
         carOwnedBookId = nil
@@ -321,8 +263,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         redrawCarLists()
     }
 
-    /// Cycles the speeds the app's own player offers, so the car and the phone
-    /// agree on what the button does.
     static let playbackRates: [Double] = [1, 1.25, 1.5, 1.75, 2, 0.75]
 
     var playbackRate: Double {
@@ -352,9 +292,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
 
     // MARK: - Handing back to the app
 
-    /// The web layer loaded something itself, so the car session is over. Its
-    /// last position is banked first — the app is about to replace the player
-    /// the position lives in.
     func webLayerDidTakeOver() {
         guard carOwnedBookId != nil else { return }
         recordSession(force: true)
@@ -382,10 +319,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         }
     }
 
-    /// Flags a jump the listener asked for. Call it after the engine call that
-    /// makes the jump: engine calls run on a later main-queue turn, and
-    /// stamping behind them keeps every checkpoint that still shows the old
-    /// position older than the stamp.
     private func flagDeliberateRegression() {
         deliberateRegression = true
         deliberateRegressionSince = nil
@@ -403,14 +336,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         deliberateRegressionGeneration += 1
     }
 
-    /// Banks where the car session has got to.
-    ///
-    /// The position comes from the engine's own checkpoint rather than from the
-    /// live player, and only when that checkpoint still belongs to the book the
-    /// car claimed. Starting a second book claims it before the engine has torn
-    /// the first one down, and the teardown's last checkpoint would otherwise be
-    /// filed under the new book — moving it to a position from another book
-    /// entirely. Matching on the scope key makes that impossible.
     private func recordSession(force: Bool, finished: Bool = false) {
         guard !engine.isClipPreview else { return }
         guard let bookId = carOwnedBookId else { return }
@@ -431,8 +356,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         ))
     }
 
-    /// Redraws unconditionally, for changes the playing state does not show
-    /// (a finished book, a cleared library).
     private func redrawCarLists() {
         listedPlayback = nil
         onPlaybackChange?()
@@ -450,8 +373,6 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     }
 
     func audiobookPlayerDidChangePlaybackState(_ player: AudiobookPlayer) {
-        // A transport change is where a session is most worth banking: it is
-        // the moment a listener stops, and the point they will resume from.
         recordSession(force: true)
         refreshWidget()
         guard let onPlaybackChange else { return }

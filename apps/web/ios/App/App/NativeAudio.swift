@@ -1,12 +1,6 @@
 import Capacitor
 import Foundation
 
-/// The web layer's door onto `AudiobookPlayer`.
-///
-/// All of the playback behavior lives in the engine, which outlives any one
-/// WebView and is shared with the CarPlay scene. This plugin only translates
-/// between Capacitor calls and the engine's Swift API, and relays the engine's
-/// events to JS.
 @objc(NativeAudioPlugin)
 public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlayerObserver {
     public let identifier = "NativeAudioPlugin"
@@ -38,8 +32,6 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
             call.reject("The audio URL is invalid.")
             return
         }
-        // The web layer always sends a position, so a missing one is a bug;
-        // starting at 0:00 instead would overwrite the reader's place.
         guard let positionSeconds = call.getDouble("positionSeconds"), positionSeconds.isFinite else {
             call.reject("The playback position is invalid.")
             return
@@ -57,11 +49,6 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
             queue: queuedTracks(from: call.getArray("queue", JSObject.self) ?? []),
             clipPreview: call.getBool("clipPreview") ?? false
         )
-        // Loading is how the web player claims the engine. If a car session was
-        // running, its position is banked before this load replaces the player
-        // it lives in. Plugin calls arrive off the main thread and the car
-        // bookkeeping lives on it; queued ahead of the engine's own main-queue
-        // work, the handoff still runs before the teardown.
         DispatchQueue.main.async {
             CarPlayCoordinator.shared.webLayerDidTakeOver()
         }
@@ -148,8 +135,6 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
         call.resolve(result)
     }
 
-    /// Answers an empty object unless the engine is already playing this
-    /// track from this file, which a reloaded page then takes over as is.
     @objc public func getAdoptableSession(_ call: CAPPluginCall) {
         guard
             let scopeKey = call.getString("scopeKey"),
@@ -173,9 +158,6 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
     }
 
     @objc public func stop(_ call: CAPPluginCall) {
-        // The attach cleanup passes false: it runs on every track change and
-        // the next load() follows at once, so releasing the session there
-        // would hand audio back to other apps between every two chapters.
         engine.stop(releaseSession: call.getBool("releaseSession") ?? true)
         call.resolve()
     }
@@ -229,8 +211,6 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
 
 }
 
-/// Native event payloads are plain Swift values; the bridge only carries the
-/// strings, numbers and booleans they are made of.
 func bridgeEventPayload(from data: [String: Any]) -> JSObject {
     var object = JSObject()
     for (key, value) in data {

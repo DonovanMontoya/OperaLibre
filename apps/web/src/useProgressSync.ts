@@ -99,8 +99,6 @@ export function useProgressSync({
   position: number;
   progressMutationVersion: RefObject<number>;
   progressSaveAbortController: RefObject<AbortController | null>;
-  /** Whether the listener can see the player: the tab, or the web's pop-out
-      window while the tab is hidden. */
   playerOnScreen?: () => boolean;
   progressSaveDrainPromiseRef: RefObject<Promise<void> | null>;
   queuedProgressSaves: RefObject<Map<string, QueuedProgressSave>>;
@@ -130,7 +128,6 @@ export function useProgressSync({
   };
 
   function persistProgress(options?: { keepalive?: boolean }): Promise<void> {
-    // Preview positions never enter the local journal or server save queue.
     if (playbackBook && clipPreviewBookIdRef.current === playbackBook.id) return Promise.resolve();
     if (
       !playbackBook ||
@@ -140,29 +137,11 @@ export function useProgressSync({
     ) {
       return Promise.resolve();
     }
-    // A shelf Resume plays the optimistic local copy while the server's is
-    // still being fetched. Until that reconciliation settles, nothing goes
-    // to the server: the position being played may be about to be replaced
-    // by a fresher copy, and a push would make it look like the newest. The
-    // local checkpoint is still kept — the window can span several retries
-    // when the server is slow, and listening during it must survive a kill.
-    // It does not advance progressMutationVersion, so the reconciled copy
-    // still applies when it lands.
     const reconciling = resumeReconciliationBookIdRef.current === playbackBook.id;
-    // Nothing moved playback since this book was restored: there is nothing
-    // new to save, and writing the restored position back with a fresh
-    // timestamp would let a device whose restore silently failed outrank —
-    // and then erase — real progress recorded elsewhere. Opening a book and
-    // closing it again must write nothing.
     if (!playbackTouchedRef.current) {
       return Promise.resolve();
     }
 
-    // While a seek is queued the media element does not reflect the real
-    // position yet — a restore or track jump reads currentTime 0 until
-    // metadata loads. Persist the seek target instead; persisting element
-    // time here would overwrite the real position everywhere, including the
-    // server's only copy.
     const pending = pendingSeekRef.current;
     if (pending && pending.trackId !== currentTrack.id) {
       return Promise.resolve();
@@ -189,8 +168,6 @@ export function useProgressSync({
     serverRevisionFromSummary(playbackBook.progress), newIntentionalSeek);
     if (!reconciling) progressMutationVersion.current += 1;
     if (newIntentionalSeek) {
-      // Retries still carry seek authorization, but observing a later shelf
-      // revision must not rebase an already journaled, unacknowledged seek.
       journaledSeekGenerationRef.current.set(playbackBook.id, intentionalSeekGenerationRef.current.get(playbackBook.id)!);
       overruledSaveRef.current.delete(playbackBook.id);
     }
@@ -213,9 +190,6 @@ export function useProgressSync({
       existingQueued?.intentionalSeekGeneration ?? 0,
       intentionalSeekGenerationRef.current.get(playbackBook.id) ?? 0
     );
-    // Lifting the server's reset guard is decided by where the seek went,
-    // not by the position being saved now: a +30 s tap must not turn a stale
-    // near-zero clock persisted after it into the authoritative copy.
     const intentionalRegression =
       (existingQueued?.intentionalRegression ?? false) ||
       persistedIntent.intentionalRegression ||
@@ -240,9 +214,6 @@ export function useProgressSync({
       return existingDrain;
     }
     const drain = (async () => {
-      // A slow request must not cause a newer position to be discarded. Each
-      // in-flight save is followed by the most recent checkpoint queued while
-      // it was running.
       while (queuedProgressSaves.current.size > 0) {
         const entry = queuedProgressSaves.current.values().next().value as QueuedProgressSave;
         queuedProgressSaves.current.delete(entry.bookId);
@@ -275,8 +246,6 @@ export function useProgressSync({
             }
           );
           acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, entry.bookId, entry.seekIntentId);
-          // Whatever the server answered is now its position — the copy a
-          // later rewind is measured against.
           acknowledgedServerPositionRef.current.set(entry.bookId, saved.bookPositionSeconds);
           acknowledgedSeekGenerationRef.current.set(
             entry.bookId,
@@ -302,21 +271,14 @@ export function useProgressSync({
             }
           }
           if (reconciled === saved) {
-            // Heal future-skewed and rejected local checkpoints with the
-            // server's canonical response. Without this, the same stale copy
-            // wins every restart and is retried indefinitely.
             const book = books.find((candidate) => candidate.id === entry.bookId);
             if (book) storeCanonicalServerProgress(book, saved, entry.progress);
             if (saveWasOverruled(entry.progress, saved)) {
               overruledSaveRef.current.set(entry.bookId, entry.progress);
-              // Move an idle player off the refused position now, not at the
-              // next resume. Adoption waits for the rest of this drain.
               void foregroundProgressActionsRef.current.adoptNewerServerProgress();
             }
           }
         } catch {
-          // The synchronous checkpoint and IndexedDB copy already contain the
-          // position. A later playback tick or reconnect will retry the server.
         } finally {
           if (progressSaveAbortController.current === abortController) {
             progressSaveAbortController.current = null;
@@ -352,9 +314,6 @@ export function useProgressSync({
   function storeCanonicalServerProgress(book: Book, saved: Progress, attempted?: Progress | null, journal?: Progress | null) {
     const local = readProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, book.id);
     if (attempted !== undefined) {
-      // A library replay may come from cache rather than the journal. Guard
-      // against changes to the journal it observed, while rebasing from the
-      // checkpoint actually sent.
       const current = progressAfterSave(local, journal === undefined ? attempted : journal, saved);
       if (current !== saved) {
         const rebased = attempted ? rebasePendingProgress(current, attempted, saved) : current;
@@ -367,16 +326,11 @@ export function useProgressSync({
       }
     }
     acknowledgedServerPositionRef.current.set(book.id, saved.bookPositionSeconds);
-    // Acknowledging an older cache/legacy replay now must not hide listening
-    // recorded natively after that checkpoint's actual mutation time.
     const acknowledgedCheckpoint = saved.accepted === true ? attempted ?? local : null;
     const recordedAt = acknowledgedCheckpoint?.localUpdatedAt
       ?? acknowledgedCheckpoint?.updatedAt ?? local?.localUpdatedAt;
     const canonical = syncedProgress(saved, recordedAt, acknowledgedCheckpoint);
     if (saved.accepted === false && local) {
-      // Healing the durable position does not move an active/native engine.
-      // Keep its rejected base across autosaves, background recovery and
-      // CarPlay replay until the canonical position is actually adopted.
       canonical.baseUpdatedAt = local.baseUpdatedAt;
       overruledSaveRef.current.set(book.id, local);
     }
@@ -406,15 +360,6 @@ export function useProgressSync({
     updateBookProgress(book.id, saved);
   }
 
-  /**
-   * Returning to the foreground, or resuming from the pop-out player while
-   * the tab stays hidden, is the one moment another device's position can be
-   * newer without any local signal — the restore effect runs once per
-   * book and deliberately never re-fires. Adopt the server's copy only while
-   * this session is provably idle: restore finished, playback paused, and no
-   * local save queued or in flight. A moving or unsynced session is always
-   * authoritative and is left completely alone.
-   */
   async function adoptNewerServerProgress() {
     const book = playbackBook;
     const audio = audioRef.current;
@@ -436,10 +381,6 @@ export function useProgressSync({
       return;
     }
     if (queuedProgressSaves.current.size > 0 || progressSaveDrainPromiseRef.current) {
-      // The save a pause makes on its way to the background is suspended with
-      // the WebView and often lands only after resume. Giving up here lost the
-      // handoff for the whole session, and the next Play resumed the stale
-      // position. Ask again once the queue settles.
       const pendingGeneration = nativeForegroundSyncGateRef.current.generation;
       void flushProgressSaveQueue().then(() => {
         if (nativeForegroundSyncGateRef.current.generation === pendingGeneration) {
@@ -474,9 +415,6 @@ export function useProgressSync({
         currentUser.id,
         book.id
       );
-      // A refused save can carry the fresher timestamp — resuming re-stamps an
-      // unchanged position — so it is measured by distance alone: the server
-      // already vetted its own copy when it refused ours.
       const overruled = overruledSaveRef.current.get(book.id);
       const adopted = overruled
         ? server
@@ -494,8 +432,6 @@ export function useProgressSync({
       );
     } finally {
       foregroundAdoptInFlightRef.current = false;
-      // A later resume may have tried while this obsolete request still held
-      // the in-flight guard. Give that handoff a fresh read of the server.
       if (nativeForegroundSyncGateRef.current.generation !== foregroundGeneration) {
         void foregroundProgressActionsRef.current.adoptNewerServerProgress();
       }
@@ -503,8 +439,6 @@ export function useProgressSync({
   }
 
   function clearPlaybackSession() {
-    // Completion owns the durable final position. Prevent pause/teardown
-    // events from following it with a stale media-element clock.
     playbackSessionVersion.current += 1;
     playbackTouchedRef.current = false;
     nativePlaybackPlayingRef.current = false;

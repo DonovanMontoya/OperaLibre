@@ -1,26 +1,13 @@
-//! Readalong sync-map support: EPUB text extraction, echogarden timeline
-//! parsing, and conversion into the `.sync.json` sidecar format that maps
-//! audiobook timestamps to EPUB text locations.
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
 
-/// Version 1 carried sentences only. Version 2 adds the map's precision and
-/// optional word timings inside each sentence; a version 1 file still reads.
 pub const SYNC_MAP_VERSION: u32 = 2;
 
-/// Bump only when alignment changes make remapping worthwhile, independently
-/// of release numbers and the sidecar schema version. Legacy maps are revision 0.
 pub const MAPPING_REVISION: u32 = 1;
 
-/// How the map's timings were produced. Only a forced alignment is ever
-/// served, so this is always `sentence`.
 pub const PRECISION_SENTENCE: &str = "sentence";
 
-/// The `.sync.json` sidecar format. Fragments are sentence-level spans of the
-/// audiobook mapped to a spine document (`href`, as written in the OPF
-/// manifest) and the sentence text to locate inside that document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncMap {
@@ -31,27 +18,19 @@ pub struct SyncMap {
     pub generator: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generated_at: Option<String>,
-    /// `sentence` for a forced alignment. Absent in version 1 files, which
-    /// were always aligned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub precision: Option<String>,
     pub fragments: Vec<SyncFragment>,
-    /// Audio whose text could not be established. The reader must hold its
-    /// place here rather than interpret the silence in the map as a picture.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recovery_gaps: Vec<RecoveryGap>,
 }
 
 impl SyncMap {
-    /// Reads a map off the async runtime: a long book's map is several
-    /// megabytes of JSON.
     pub(crate) async fn read(path: std::path::PathBuf) -> anyhow::Result<Self> {
         tokio::task::spawn_blocking(move || Ok(serde_json::from_slice(&std::fs::read(&path)?)?))
             .await?
     }
 
-    /// Whether the map follows the narration sentence by sentence, rather
-    /// than estimating where chapters fall.
     pub(crate) fn is_sentence_precise(&self) -> bool {
         self.precision
             .as_deref()
@@ -73,32 +52,18 @@ pub struct SyncFragment {
     pub end_seconds: f64,
     pub href: String,
     pub text: String,
-    /// Word timings inside `text`, when the aligner produced them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub words: Vec<WordTiming>,
 }
 
-/// `[startSeconds, endSeconds, offsetUtf16, lengthUtf16]`: a word's span in
-/// the audio and its span inside the fragment text. Offsets are UTF-16 code
-/// units because the reader is JavaScript. A compact array rather than an
-/// object because a long book has a hundred thousand of these.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WordTiming(pub f64, pub f64, pub u32, pub u32);
 
-// ---------------------------------------------------------------------------
-// EPUB parsing
-// ---------------------------------------------------------------------------
-
-// Bounds parser work and the number of synthetic illustration sections in a
-// single spine document, independently of the archive's expanded-byte limits.
 const MAX_EPUB_DOCUMENT_TAGS: usize = 100_000;
 
 #[derive(Debug, Clone)]
 pub struct SpineSection {
-    /// Manifest href exactly as written in the OPF (relative to the OPF dir).
     pub href: String,
-    /// Plain text extracted from the document, whitespace-collapsed with
-    /// paragraph breaks as `\n\n`.
     pub text: String,
 }
 
@@ -112,10 +77,7 @@ pub struct TocEntry {
 pub struct EpubDocument {
     pub sections: Vec<SpineSection>,
     pub toc: Vec<TocEntry>,
-    /// Pictures declared in the manifest. Used to tell an illustrated
-    /// supplement from a text.
     pub image_count: usize,
-    /// `dc:language` from the package metadata, lowercased, when present.
     pub language: Option<String>,
 }
 
@@ -124,17 +86,12 @@ pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
     parse_epub_archive(&mut zip::ZipArchive::new(std::io::Cursor::new(bytes))?)
 }
 
-/// The most text one EPUB may decompress, across every entry read.
 pub(crate) const EPUB_TEXT_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Parses an EPUB straight from disk. Only the entries the reader needs are
-/// decompressed, so the file is never held in memory whole.
 pub fn parse_epub_file(path: &std::path::Path) -> anyhow::Result<EpubDocument> {
     parse_epub_file_within(path, EPUB_TEXT_BYTES)
 }
 
-/// As `parse_epub_file`, but fails once the EPUB's text passes `text_bytes`,
-/// for callers that hold several documents at once.
 pub(crate) fn parse_epub_file_within(
     path: &std::path::Path,
     text_bytes: u64,
@@ -210,10 +167,6 @@ pub(crate) fn parse_epub_archive_within<R: Read + std::io::Seek>(
             href: item.href.clone(),
             text,
         });
-        // A separately narrated illustration may be the last element of a
-        // prose document rather than a separate spine item. Empty logical
-        // sections let its audio have a boundary without moving any text or
-        // changing the href used by sentence highlights.
         for _ in 0..trailing_images {
             sections.push(SpineSection {
                 href: item.href.clone(),
@@ -222,8 +175,6 @@ pub(crate) fn parse_epub_archive_within<R: Read + std::io::Seek>(
         }
     }
 
-    // Prefer EPUB 3 labels, but recover documents omitted from its TOC
-    // when the older NCX still lists them.
     let mut toc_links = Vec::new();
     let nav_item = manifest
         .values()
@@ -277,7 +228,6 @@ pub(crate) fn parse_epub_archive_within<R: Read + std::io::Seek>(
     })
 }
 
-/// Text content of the first `<name>...</name>` element, if any.
 fn element_text(xml: &str, name: &str) -> Option<String> {
     let lower = xml.to_ascii_lowercase();
     let open = format!("<{name}");
@@ -300,7 +250,6 @@ fn read_zip_text<R: Read + std::io::Seek>(
         return Ok(None);
     };
     let file = archive.by_index(index)?;
-    // Count every read, including repeated spine references to the same entry.
     let limit = (*remaining).min(8 * 1024 * 1024);
     anyhow::ensure!(file.size() <= limit, "EPUB text exceeds the reading limit.");
     let mut contents = String::new();
@@ -320,8 +269,6 @@ fn parent_dir(path: &str) -> String {
     }
 }
 
-/// Resolves a (possibly percent-encoded) href relative to a base directory
-/// inside the zip, normalizing `.` and `..` segments and stripping fragments.
 fn resolve_href(base_dir: &str, href: &str) -> String {
     let href = href.split(['#', '?']).next().unwrap_or("");
     let href = percent_decode(href);
@@ -361,16 +308,6 @@ fn percent_decode(value: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-// ---------------------------------------------------------------------------
-// Minimal XML/HTML helpers (attribute scanning, no full parser)
-// ---------------------------------------------------------------------------
-
-/// Returns the attribute region of each `<name ...>` tag occurrence.
-///
-/// Case-insensitive scanning throughout this module uses `to_ascii_lowercase`
-/// (never `to_lowercase`): the lowered copy must stay byte-for-byte aligned
-/// with the original so offsets found in one can slice the other, and Unicode
-/// case folding can change byte lengths (e.g. `İ`).
 fn find_tags(xml: &str, name: &str) -> Vec<String> {
     let mut results = Vec::new();
     let lower = xml.to_ascii_lowercase();
@@ -380,7 +317,6 @@ fn find_tags(xml: &str, name: &str) -> Vec<String> {
         let start = search_from + found;
         let after = start + open.len();
         let boundary = lower.as_bytes().get(after).copied();
-        // Require a tag boundary so `<item` doesn't match `<itemref`.
         if !matches!(
             boundary,
             Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r') | Some(b'/') | Some(b'>')
@@ -402,7 +338,6 @@ fn attr_value(tag_body: &str, name: &str) -> Option<String> {
     let mut search_from = 0;
     while let Some(found) = lower[search_from..].find(name) {
         let start = search_from + found;
-        // Attribute name must start at a boundary and be followed by `=`.
         let boundary_ok =
             start == 0 || matches!(lower.as_bytes()[start - 1], b' ' | b'\t' | b'\n' | b'\r');
         let rest = tag_body[start + name.len()..].trim_start();
@@ -450,8 +385,6 @@ const BLOCK_TAGS: &[&str] = &[
     "title",
 ];
 
-/// Extracts readable text from an (X)HTML document: skips head/script/style,
-/// collapses whitespace, and inserts paragraph breaks at block elements.
 pub fn html_to_text(document: &str) -> String {
     extract_html(document, None)
         .expect("text extraction without a tag limit cannot fail")
@@ -479,8 +412,6 @@ fn extract_html(document: &str, tag_limit: Option<usize>) -> anyhow::Result<(Str
                 if piece.is_whitespace() {
                     pending_space = true;
                 } else {
-                    // Every readable character disqualifies all earlier
-                    // pictures; no image candidate needs a suffix reparse.
                     trailing_images = 0;
                     if pending_break && !out.is_empty() {
                         out.push_str("\n\n");
@@ -501,7 +432,6 @@ fn extract_html(document: &str, tag_limit: Option<usize>) -> anyhow::Result<(Str
             "EPUB spine document contains too many markup tags."
         );
 
-        // Comments.
         if bytes[index..].starts_with("<!--") {
             if let Some(end) = bytes[index..].find("-->") {
                 skip_to(&mut chars, index + end + 3);
@@ -532,7 +462,6 @@ fn extract_html(document: &str, tag_limit: Option<usize>) -> anyhow::Result<(Str
             trailing_images += 1;
         }
 
-        // Skip container elements whose text should never be narrated.
         if let Some(kind) = ["script", "style", "head"]
             .iter()
             .position(|name| *name == tag_name && !tag.starts_with('/'))
@@ -547,8 +476,6 @@ fn extract_html(document: &str, tag_limit: Option<usize>) -> anyhow::Result<(Str
                     continue;
                 }
             }
-            // A failed search remains failed for all later openings of this
-            // kind. Cache it so malformed markup cannot rescan the suffix.
             missing_close[kind] = true;
         }
 
@@ -558,7 +485,6 @@ fn extract_html(document: &str, tag_limit: Option<usize>) -> anyhow::Result<(Str
         skip_to(&mut chars, index + end + 1);
     }
 
-    // The existing section represents the first picture on an image-only page.
     if out.is_empty() {
         trailing_images = trailing_images.saturating_sub(1);
     }
@@ -574,8 +500,6 @@ fn skip_to(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>, target: u
     }
 }
 
-/// If `ch` starts an entity reference, consumes it and returns the decoded
-/// text; otherwise returns `ch` itself.
 fn decode_entity_at(
     bytes: &str,
     index: usize,
@@ -598,8 +522,6 @@ fn decode_entity_at(
     decoded
 }
 
-/// Finds a `;` within the first 12 bytes (the longest entity we decode)
-/// without byte-slicing, which could split a multi-byte character.
 fn find_entity_terminator(value: &str) -> Option<usize> {
     value
         .char_indices()
@@ -662,8 +584,6 @@ fn decode_entities(value: &str) -> String {
 }
 
 fn parse_nav_links(document: &str, base_dir: &str) -> Vec<(String, String)> {
-    // Restrict to the toc <nav> element when one is marked, otherwise use the
-    // whole document.
     let lower = document.to_ascii_lowercase();
     let scope = lower
         .find("epub:type=\"toc\"")
@@ -758,10 +678,6 @@ fn strip_tags(value: &str) -> String {
         .join(" ")
 }
 
-// ---------------------------------------------------------------------------
-// Transcript building
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 pub struct TranscriptSection {
     pub href: String,
@@ -775,8 +691,6 @@ pub struct Transcript {
     pub sections: Vec<TranscriptSection>,
 }
 
-/// Joins section texts with paragraph breaks, recording each section's UTF-16
-/// offset range so aligned sentences can be mapped back to their document.
 pub fn build_transcript(sections: &[SpineSection]) -> Transcript {
     let mut text = String::new();
     let mut ranges = Vec::new();
@@ -806,12 +720,7 @@ pub fn build_transcript(sections: &[SpineSection]) -> Transcript {
 }
 
 impl Transcript {
-    /// Consume narration printed in an image without emitting a highlight
-    /// for text that the EPUB DOM cannot contain.
     pub fn prepend_unmapped(&mut self, heading: &str) {
-        // EPUB contents often abbreviate an interlude as I-3; the narrator
-        // says "Interlude three". Feed the spoken label to the aligner so
-        // those title words cannot consume the first prose sentence.
         let expanded;
         let heading = if let Some((series, number, start, end)) = find_series_number(heading)
             && series == "i"
@@ -839,9 +748,6 @@ impl Transcript {
         self.text.insert_str(0, &prefix);
     }
 
-    /// Keep only recognized opening narration before a unique match to the
-    /// first printed words. TOC labels and image placement are not evidence
-    /// that a title was spoken.
     pub fn include_unmapped_leading_narration(&mut self, recognized: &[RecognizedWord]) -> usize {
         let words = transcript_words(&self.text, 0, self.len_utf16());
         let Some(opening) = words.get(..ANCHOR_NGRAM) else {
@@ -901,10 +807,6 @@ impl Transcript {
         (offset_utf16 >= section.start_utf16).then_some(section.href.as_str())
     }
 
-    /// Keep additional narration (for example an inline diagram description)
-    /// in the aligner's input, without assigning it to visible EPUB prose.
-    /// Unique phrases must bracket a sentence boundary in the text and a
-    /// substantial run of extra recognized speech in the audio.
     pub fn include_unmapped_narration(&mut self, recognized: &[RecognizedWord]) -> usize {
         const CONTEXT: usize = 3;
         let words = transcript_words(&self.text, 0, self.len_utf16());
@@ -955,9 +857,6 @@ impl Transcript {
                 continue;
             }
             let extra = &recognized[start..*right];
-            // A recognizer can repeat a real passage with slightly different
-            // word splitting. Do not mistake that duplicate scripted speech
-            // for a new description merely because the boundary match is unique.
             if extra.windows(ANCHOR_NGRAM).any(|run| {
                 scripted_phrases.contains(
                     &run.iter()
@@ -1023,9 +922,6 @@ impl Transcript {
         count
     }
 
-    /// Additional narration after the final sentence needs no following text
-    /// anchor. Only call this for the actual end of an alignment scope, never
-    /// for a window whose recognizer looked beyond its audio cut.
     fn trailing_narration_start(&self, recognized: &[RecognizedWord]) -> Option<usize> {
         let words = transcript_words(&self.text, 0, self.len_utf16());
         if words.len() < ANCHOR_NGRAM {
@@ -1127,9 +1023,6 @@ impl Transcript {
         1
     }
 
-    /// Leave edition-only sentences unmatched when unique spoken phrases on
-    /// either side are adjacent in the audio. Preserve UTF-16 offsets so the
-    /// remaining text still maps to the original EPUB sections.
     pub fn mask_unspoken_sentences(&mut self, recognized: &[RecognizedWord]) -> usize {
         const CONTEXT: usize = 3;
         let words = transcript_words(&self.text, 0, self.len_utf16());
@@ -1148,9 +1041,6 @@ impl Transcript {
         }
         let mut ranges = Vec::new();
         for run in recognized.windows(CONTEXT * 2) {
-            // A recognizer can attach the first returning word to the start
-            // of an outage. It cannot establish an edition omission when its
-            // own word spans that interruption.
             if run.iter().any(|word| !valid_word_clock(word)) {
                 continue;
             }
@@ -1172,9 +1062,6 @@ impl Transcript {
             };
             let after_left = left + CONTEXT;
             let missing = right.saturating_sub(after_left);
-            // Require whole sentences and too little elapsed audio to contain
-            // their words, even at eight words per second. Recognition failure
-            // across a real spoken passage leaves time between the anchors.
             let silence = run[CONTEXT].start_time - run[CONTEXT - 1].end_time;
             if !(6..=128).contains(&missing)
                 || !words[after_left - 1].sentence_final
@@ -1187,8 +1074,6 @@ impl Transcript {
             }
             let start = words[after_left].start_utf16;
             let end = words[*right].start_utf16;
-            // Never infer an omission across a document boundary or over an
-            // unmapped heading. Those regions have separate audio semantics.
             if self.href_for_offset(start).filter(|href| !href.is_empty())
                 != self.href_for_offset(end.saturating_sub(1))
             {
@@ -1211,9 +1096,6 @@ impl Transcript {
         self.text.encode_utf16().count() as u64
     }
 
-    /// The stretch of text between two UTF-16 offsets as a transcript of its
-    /// own, with section ranges rebased so an aligner's offsets into the
-    /// window map straight back to documents.
     pub fn window(&self, start_utf16: u64, end_utf16: u64) -> Transcript {
         let end_utf16 = end_utf16.max(start_utf16);
         let start_byte = utf16_to_byte_index(&self.text, start_utf16);
@@ -1235,8 +1117,6 @@ impl Transcript {
     }
 }
 
-/// Byte index of the character that starts at a UTF-16 offset (or the end of
-/// the text when the offset lies beyond it).
 pub fn utf16_to_byte_index(text: &str, offset_utf16: u64) -> usize {
     let mut seen = 0u64;
     for (byte_index, ch) in text.char_indices() {
@@ -1248,7 +1128,6 @@ pub fn utf16_to_byte_index(text: &str, offset_utf16: u64) -> usize {
     text.len()
 }
 
-/// First non-whitespace UTF-16 offset at or after `offset_utf16`.
 pub fn skip_whitespace_utf16(text: &str, offset_utf16: u64) -> u64 {
     let start = utf16_to_byte_index(text, offset_utf16);
     let mut offset = offset_utf16;
@@ -1260,10 +1139,6 @@ pub fn skip_whitespace_utf16(text: &str, offset_utf16: u64) -> u64 {
     }
     offset
 }
-
-// ---------------------------------------------------------------------------
-// Echogarden timeline parsing
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1284,8 +1159,6 @@ pub struct TimelineEntry {
     pub timeline: Option<Vec<TimelineEntry>>,
 }
 
-/// Accepts either a bare timeline array (what the echogarden CLI writes for
-/// `.json` outputs) or an object with a `timeline` field.
 pub fn parse_timeline(json: &str) -> anyhow::Result<Vec<TimelineEntry>> {
     if let Ok(entries) = serde_json::from_str::<Vec<TimelineEntry>>(json) {
         return Ok(entries);
@@ -1327,9 +1200,6 @@ fn entry_offsets(entry: &TimelineEntry) -> (Option<u64>, Option<u64>) {
     (start, end)
 }
 
-/// Recover a one-word utterance that the forced aligner collapsed to zero
-/// duration, but only when unique surrounding recognition phrases locate it
-/// near the aligner's own position. Missing or ambiguous speech stays unmapped.
 pub fn recover_zero_duration_sentences(
     entries: &mut [TimelineEntry],
     transcript: &str,
@@ -1423,8 +1293,6 @@ pub fn recover_zero_duration_sentences(
     visit(entries, &words, recognized);
 }
 
-/// Converts an alignment timeline into sync fragments, shifting times by
-/// `time_offset_seconds` (the containing track's start position in the book).
 pub fn fragments_from_timeline(
     entries: &[TimelineEntry],
     transcript: &Transcript,
@@ -1433,7 +1301,6 @@ pub fn fragments_from_timeline(
     let mut sentences = Vec::new();
     collect_sentences(entries, &mut sentences);
     if sentences.is_empty() {
-        // Fall back to whatever top-level granularity the engine produced.
         sentences = entries.iter().collect();
     }
 
@@ -1487,10 +1354,6 @@ fn collect_words<'a>(entry: &'a TimelineEntry, out: &mut Vec<&'a TimelineEntry>)
     }
 }
 
-/// Places the aligner's word entries inside the sentence text they came
-/// from. Words are located in order, so a repeated word lands on its own
-/// occurrence; an entry whose text cannot be found is left out rather than
-/// guessed.
 fn word_timings(sentence: &TimelineEntry, text: &str, time_offset_seconds: f64) -> Vec<WordTiming> {
     let mut words = Vec::new();
     collect_words(sentence, &mut words);
@@ -1524,8 +1387,6 @@ fn round_millis(seconds: f64) -> f64 {
     (seconds * 1000.0).round() / 1000.0
 }
 
-/// Sequential text search that tracks UTF-16 offsets incrementally, used when
-/// timeline entries carry no source offsets.
 struct TextCursor<'a> {
     text: &'a str,
     byte_position: usize,
@@ -1562,20 +1423,6 @@ impl<'a> TextCursor<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Windowed alignment anchors
-// ---------------------------------------------------------------------------
-//
-// The forced aligner holds a whole input in memory and, given more text than
-// speech (or the reverse), spreads the mismatch evenly across the input rather
-// than parking it at one end. Long audio is therefore aligned in windows whose
-// text is known exactly: a speech recognizer transcribes the window, runs of
-// recognized words are located in the transcript, and the last confident
-// match at a sentence end becomes the window's boundary. Recognizer word
-// timings are only trusted at those anchors; the forced aligner produces the
-// sentence timings in between.
-
-/// A recognizer word, normalized for matching against transcript tokens.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecognizedWord {
     pub text: String,
@@ -1583,8 +1430,6 @@ pub struct RecognizedWord {
     pub end_time: f64,
 }
 
-/// Every `word` entry of a recognizer timeline, in order, with punctuation
-/// and case removed. Words that normalize to nothing are dropped.
 pub fn recognized_words(entries: &[TimelineEntry]) -> Vec<RecognizedWord> {
     let mut out = Vec::new();
     collect_recognized_words(entries, &mut out);
@@ -1608,8 +1453,6 @@ fn collect_recognized_words(entries: &[TimelineEntry], out: &mut Vec<RecognizedW
     }
 }
 
-/// Lowercases and keeps only letters and digits, so `“Kaladin,”` in the
-/// transcript and `kaladin` from the recognizer compare equal.
 fn normalize_word(value: &str) -> String {
     value
         .chars()
@@ -1622,13 +1465,9 @@ struct TranscriptWord {
     text: String,
     start_utf16: u64,
     end_utf16: u64,
-    /// The token closes a sentence: it ends in terminal punctuation (allowing
-    /// closing quotes or brackets after it) or is followed by a line break.
     sentence_final: bool,
 }
 
-/// Whitespace-delimited tokens of `text` that lie wholly inside the UTF-16
-/// range `[start, start + max_len)`.
 fn transcript_words(text: &str, start_utf16: u64, max_len_utf16: u64) -> Vec<TranscriptWord> {
     let limit = start_utf16.saturating_add(max_len_utf16);
     let mut words = Vec::new();
@@ -1659,7 +1498,6 @@ fn transcript_words(text: &str, start_utf16: u64, max_len_utf16: u64) -> Vec<Tra
     for ch in text.chars() {
         let width = ch.len_utf16() as u64;
         if offset >= limit {
-            // A token cut by the limit is unusable, and `current` is one.
             current.clear();
             break;
         }
@@ -1682,8 +1520,6 @@ fn transcript_words(text: &str, start_utf16: u64, max_len_utf16: u64) -> Vec<Tra
     words
 }
 
-/// Retry bounded recognition when it repeats itself or skips a large stretch
-/// of otherwise anchored text. A forced aligner cannot repair that evidence.
 pub fn recognition_needs_retry(recognized: &[RecognizedWord], text: &str) -> bool {
     if recognized.len() < 20 {
         return text.split_whitespace().take(20).count() == 20;
@@ -1708,9 +1544,6 @@ pub fn recognition_needs_retry(recognized: &[RecognizedWord], text: &str) -> boo
     })
 }
 
-/// How many of the recognized three-word runs there are, and how many of them
-/// appear anywhere in `text`. Order is ignored, so this measures whether the
-/// narrator is reading this text at all rather than how well it lines up.
 pub fn recognized_runs_in_text(recognized: &[RecognizedWord], text: &str) -> (usize, usize) {
     let words = transcript_words(text, 0, text.encode_utf16().count() as u64);
     let runs = words
@@ -1724,7 +1557,6 @@ pub fn recognized_runs_in_text(recognized: &[RecognizedWord], text: &str) -> (us
     (total, heard.filter(|run| runs.contains(run)).count())
 }
 
-/// Comparable evidence when retrying the same audio with shorter windows.
 pub fn recognition_anchor_count(recognized: &[RecognizedWord], text: &str) -> usize {
     recognition_anchor_chain(recognized, text).len()
 }
@@ -1752,8 +1584,6 @@ fn recognition_anchor_chain(recognized: &[RecognizedWord], text: &str) -> Vec<(u
 
 const ANCHOR_NGRAM: usize = 5;
 
-/// Word locations supported by phrases unique in both the script and speech.
-/// Long recognizer words spanning silence are not clock evidence.
 fn unique_spoken_words(
     recognized: &[RecognizedWord],
     text: &str,
@@ -1802,16 +1632,10 @@ fn valid_word_clock(word: &RecognizedWord) -> bool {
         && word.end_time - word.start_time <= 2.0
 }
 
-/// Recognizers often stretch the first word after an interruption back across
-/// part of it, while its speech stays at the end beside the next word. Such a
-/// word must not move the next slice's start into the interruption.
 fn boundary_word_clock(word: &RecognizedWord) -> bool {
     valid_word_clock(word) && word.end_time - word.start_time <= 1.0
 }
 
-/// Whole sentences without speech support between nearby unique anchors must
-/// not be force-aligned across a long interruption. These are slice boundaries,
-/// not estimated word timings: each retained slice is aligned afresh.
 pub fn interrupted_passages(
     transcript: &Transcript,
     recognized: &[RecognizedWord],
@@ -1819,10 +1643,6 @@ pub fn interrupted_passages(
     find_interruptions(transcript, recognized).0
 }
 
-/// Audio spans, from the end of the speech before an apparent interruption to
-/// the first anchor after it, where the recognizer missed the opening of the
-/// passage that follows. Without that opening the interruption has no end, so
-/// recognizing the span alone (see `splice_recognition`) may complete it.
 pub fn unheard_interruption_endings(
     transcript: &Transcript,
     recognized: &[RecognizedWord],
@@ -1830,8 +1650,6 @@ pub fn unheard_interruption_endings(
     find_interruptions(transcript, recognized).1
 }
 
-/// Replaces the words heard between `start` and `end` with `clip`, a
-/// recognition of that span alone whose clocks begin at zero.
 pub fn splice_recognition(
     recognized: &[RecognizedWord],
     start: f64,
@@ -1854,9 +1672,6 @@ fn find_interruptions(
 ) -> (Vec<RecoveryAnchor>, Vec<(f64, f64)>) {
     let words = transcript_words(&transcript.text, 0, transcript.len_utf16());
     let matches = unique_spoken_words(recognized, &transcript.text, true);
-    // A collapsed word clock is not evidence that the word was unspoken.
-    // Lexical matches prevent dropping heard sentences; only valid clocks
-    // may establish the boundaries of a genuine interruption.
     let spoken = unique_spoken_words(recognized, &transcript.text, false);
     let mut sentences = Vec::new();
     let mut start = 0;
@@ -1899,9 +1714,6 @@ fn find_interruptions(
         }
         let la = matches[&li];
         let ra = matches[&ri];
-        // Short local phrases cannot establish clocks or locate a chapter,
-        // but can veto deleting speech between already proven anchors. A
-        // missed word or misspelled name must not erase a whole utterance.
         let missing_words = &words[sentences[first].start..right.start];
         if ra <= la
             || missing_words.windows(3).any(|phrase| {
@@ -1935,9 +1747,6 @@ fn find_interruptions(
         }
         let mut begin = recognized[ra].start_time;
         if ri - right.start > 3 {
-            // The anchor is too far in to walk back to the opening, so only
-            // the opening phrase itself, heard between the anchors, ends the
-            // interruption. Otherwise the opening is still unheard.
             let opening = &words[right.start..right.start + 3];
             let heard = recognized[la + 1..ra].windows(3).rposition(|heard| {
                 heard.iter().all(boundary_word_clock)
@@ -1972,9 +1781,6 @@ fn find_interruptions(
     (result, unheard)
 }
 
-/// Fix a late sentence opening only when a unique nearby spoken phrase backs
-/// the actual first word. Correct the supported late prefix until the two
-/// clocks agree again; retain forced alignment for the rest of the sentence.
 pub fn reconcile_sentence_starts(
     entries: &mut [TimelineEntry],
     transcript: &str,
@@ -2042,9 +1848,6 @@ pub fn reconcile_sentence_starts(
     visit(entries, &words, &matches, recognized, &mut 0.0);
 }
 
-/// Repair local forced-alignment drift using uniquely located spoken words.
-/// Proposals must stay nearby and ordered relative to every neighboring word;
-/// ambiguous speech and clocks stretching across silence cannot move a word.
 pub fn reconcile_word_clocks(
     entries: &mut [TimelineEntry],
     transcript: &str,
@@ -2115,8 +1918,6 @@ pub fn reconcile_word_clocks(
             proposals[start..index].fill(None);
         }
     }
-    // Reverting a proposal can expose a conflict with its next neighbor.
-    // Repeat until all remaining proposals are safe together and individually.
     loop {
         let mut rejected = Vec::new();
         for i in 0..aligned.len().saturating_sub(1) {
@@ -2152,8 +1953,6 @@ pub fn reconcile_word_clocks(
             word.end_time = end;
             changed = true;
         }
-        // Neighboring clocks can disagree about the end of a word. Preserve
-        // confirmed onsets and cap their duration at the next word's onset.
         if (proposal.is_some() || proposals.get(index + 1).is_some_and(Option::is_some))
             && let Some(next) = starts.get(index + 1)
             && *next > word.start_time
@@ -2166,9 +1965,6 @@ pub fn reconcile_word_clocks(
     }
 }
 
-/// A complete sentence backed by a unique, longer phrase after alignment loss.
-/// These bounds select audio/text for a fresh forced alignment; they are not
-/// used as an interpolated timing map.
 #[derive(Debug, PartialEq)]
 pub struct RecoveryAnchor {
     pub text_start_utf16: u64,
@@ -2177,8 +1973,6 @@ pub struct RecoveryAnchor {
     pub end_seconds: f64,
 }
 
-/// Search only forward from the last trusted text position. Repeated phrases,
-/// partial sentences, and invalid recognizer clocks cannot restart following.
 pub fn find_recovery_anchor(
     recognized: &[RecognizedWord],
     text: &str,
@@ -2186,8 +1980,6 @@ pub fn find_recovery_anchor(
     duration: f64,
 ) -> Option<RecoveryAnchor> {
     const CONTEXT: usize = ANCHOR_NGRAM * 2;
-    // Include consumed text when checking uniqueness, so a repeated earlier
-    // line cannot masquerade as a new occurrence later in the same scope.
     let words = transcript_words(text, 0, u64::MAX);
     let mut phrases = HashMap::new();
     for (index, run) in words.windows(CONTEXT).enumerate() {
@@ -2255,9 +2047,6 @@ pub fn find_recovery_anchor(
     None
 }
 
-/// A long word clock at the first unique phrase can include preceding noise.
-/// Re-recognize a shorter audio window near its end before trusting recovery.
-/// This only chooses audio for recognition; it never supplies a word timestamp.
 pub fn recovery_clock_retry_start(recognized: &[RecognizedWord], text: &str) -> Option<f64> {
     let (audio, _) = recognition_anchor_chain(recognized, text)
         .first()
@@ -2270,8 +2059,6 @@ pub fn recovery_clock_retry_start(recognized: &[RecognizedWord], text: &str) -> 
         .then_some((word.end_time - 2.0).max(0.0))
 }
 
-/// A later sentence match cannot justify force-aligning a substantial missing
-/// prefix. Small recognition mistakes near the opening retain the normal path.
 pub fn recognition_misses_opening(recognized: &[RecognizedWord], text: &str) -> bool {
     recognition_anchor_chain(recognized, text)
         .first()
@@ -2285,30 +2072,18 @@ pub fn recognition_misses_ending(recognized: &[RecognizedWord], text: &str) -> b
         .is_some_and(|(_, word)| count.saturating_sub(word + ANCHOR_NGRAM) >= 32)
 }
 
-/// Where a recognized window can be tied to the transcript.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowAnchor {
-    /// Seconds of unscripted audio at the start of the window (a narrated
-    /// heading, an image description), or zero. Only set when the first
-    /// scripted words were recognized after the window opened.
     pub lead_in_seconds: f64,
-    /// The last confident sentence boundary inside the window.
     pub end: Option<WindowEnd>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowEnd {
-    /// Seconds into the window at which the sentence-final word ends.
     pub seconds: f64,
-    /// Absolute UTF-16 offset in the transcript just past that word.
     pub text_end_utf16: u64,
 }
 
-/// Ties a window's recognized words to the transcript from
-/// `text_start_utf16` onward (looking at most `text_len_utf16` ahead). Runs
-/// of `ANCHOR_NGRAM` words that occur once in that stretch are matched, the
-/// longest monotonic chain of matches is kept, and the latest chained word
-/// that closes a sentence no later than `latest_seconds` becomes the end.
 pub fn find_window_anchor(
     recognized: &[RecognizedWord],
     transcript_text: &str,
@@ -2336,11 +2111,6 @@ pub fn find_window_anchor(
         .collect();
     let chain = longest_increasing_chain(&matches);
 
-    // The first five-word match can begin a few words into the transcript
-    // when recognition misspells a name near the start. Keep looking for a
-    // shorter match to the transcript's opening before that anchor. Otherwise
-    // the forced aligner spreads a narrated image heading across the first
-    // real text sentences.
     let lead_in_seconds = chain
         .first()
         .and_then(|(recognized_index, word_index)| {
@@ -2385,9 +2155,6 @@ pub fn find_window_anchor(
     }
 }
 
-/// Longest subsequence of `matches` (already ordered by recognizer position)
-/// whose transcript positions strictly increase. Drops matches that would
-/// require the narrator to jump backwards or forwards through the text.
 fn longest_increasing_chain(matches: &[(usize, usize)]) -> Vec<(usize, usize)> {
     let mut tails: Vec<usize> = Vec::new();
     let mut previous: Vec<Option<usize>> = vec![None; matches.len()];
@@ -2410,18 +2177,12 @@ fn longest_increasing_chain(matches: &[(usize, usize)]) -> Vec<(usize, usize)> {
     chain
 }
 
-// ---------------------------------------------------------------------------
-// Track-to-chapter scoping for multi-file books
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, PartialEq)]
 pub struct TrackScope {
     pub track_index: usize,
     pub section_range: std::ops::Range<usize>,
 }
 
-/// A matched embedded-audio chapter (or consecutive A/B parts) and its EPUB
-/// sections. The exclusive chapter end preserves the full audio interval.
 #[derive(Debug, PartialEq)]
 pub struct ChapterScope {
     pub chapter_index: usize,
@@ -2429,15 +2190,8 @@ pub struct ChapterScope {
     pub section_range: std::ops::Range<usize>,
 }
 
-/// The score at or above which two chapter labels are taken to name the
-/// same chapter: an exact number, an exact title, or a strong combination.
 pub const LABEL_MATCH_THRESHOLD: u32 = 70;
 
-/// Maps each audio track to a run of spine sections by matching track titles
-/// against the EPUB table of contents in order. A track that matches nothing
-/// is left out of the result — its audio is not aligned — rather than
-/// failing the whole book; the error is reserved for finding no chapter at
-/// all.
 pub fn build_track_scopes(
     track_titles: &[String],
     toc: &[TocEntry],
@@ -2478,12 +2232,6 @@ pub fn build_track_scopes(
         .collect())
 }
 
-/// Turns an in-order match into `(target index, spine index)` anchors whose
-/// spine indices strictly increase. Several table-of-contents entries can
-/// point into one spine document (a file holding many chapters, each behind
-/// an anchor); the first such match keeps the whole document and the rest
-/// fold into it, since a section cannot be split without positions the
-/// table of contents does not carry.
 pub fn anchor_pairs(matched: &[Option<usize>], toc: &[TocEntry]) -> Vec<(usize, usize)> {
     let mut pairs: Vec<(usize, usize)> = Vec::new();
     for (target_index, item) in matched.iter().enumerate() {
@@ -2502,9 +2250,6 @@ pub fn anchor_pairs(matched: &[Option<usize>], toc: &[TocEntry]) -> Vec<(usize, 
     pairs
 }
 
-/// Labels that name the book's apparatus rather than its text: an audiobook
-/// opens with credits and an EPUB with a title page, and neither has a
-/// counterpart on the other side.
 fn is_apparatus(label: &ParsedLabel) -> bool {
     const APPARATUS: &[&str] = &[
         "cover",
@@ -2532,14 +2277,6 @@ fn is_apparatus(label: &ParsedLabel) -> bool {
     label.number.is_none() && APPARATUS.contains(&label.key.as_str())
 }
 
-/// Pairs audio chapter labels with table-of-contents labels in order.
-///
-/// A monotonic alignment rather than a best-match-per-title: chapters are
-/// read in order, so a duplicate title ("Interlude" three times) or a weak
-/// match lands on the right occurrence. When nothing matches by name or
-/// number and both sides list the same number of real chapters, the two are
-/// paired by position — a book whose tracks are called `Track 07` still has
-/// a seventh chapter.
 pub fn match_in_order(targets: &[ParsedLabel], items: &[ParsedLabel]) -> Vec<Option<usize>> {
     let matched = align_labels(targets, items, LABEL_MATCH_THRESHOLD);
     let matched_count = matched.iter().flatten().count();
@@ -2568,10 +2305,6 @@ pub fn match_in_order(targets: &[ParsedLabel], items: &[ParsedLabel]) -> Vec<Opt
     matched
 }
 
-/// Monotonic alignment of two label sequences that maximizes the summed
-/// match score, counting only pairs at or above `min_score`. Standard
-/// dynamic programming over (targets × items); both are chapter lists, so
-/// the table is small.
 pub fn align_labels(
     targets: &[ParsedLabel],
     items: &[ParsedLabel],
@@ -2580,7 +2313,6 @@ pub fn align_labels(
     let rows = targets.len();
     let columns = items.len();
     let mut best = vec![vec![0u32; columns + 1]; rows + 1];
-    // 0: leave the target unmatched, 1: skip the item, 2: pair them.
     let mut choice = vec![vec![0u8; columns + 1]; rows + 1];
     for row in 1..=rows {
         for column in 1..=columns {
@@ -2615,14 +2347,6 @@ pub fn align_labels(
     matched
 }
 
-/// Maps embedded audiobook chapters to EPUB chapter runs. Unmatched material
-/// at either edge and reordered apparatus are allowed. With source sections,
-/// an uncertain interior boundary becomes a combined scope between reliable
-/// reset points; the speech aligner must establish its sentence locations.
-/// Metadata-only callers cannot verify that interval and reject it.
-///
-/// At least two chapters must match. A single match does not create useful
-/// reset points and is too weak a signal to justify slicing the source audio.
 #[cfg(test)]
 pub fn build_chapter_scopes(
     chapter_titles: &[String],
@@ -2660,9 +2384,6 @@ fn build_grouped_chapter_scopes(
     while index < labels.len() {
         let label = &labels[index];
         let mut end = index + 1;
-        // Only explicit consecutive A/B/... parts of one numbered chapter,
-        // whose EPUB has an unsplit label. Distinct EPUB A/B chapters retain
-        // their own boundaries, as do repeated or missing part labels.
         if label.number.is_some()
             && label.series.is_empty()
             && label.key == "a"
@@ -2718,8 +2439,6 @@ fn build_chapter_scopes_inner(
         .iter()
         .map(|title| parse_label(title))
         .collect::<Vec<_>>();
-    // Some publishers put illustration links after the main chapter list in
-    // the NCX even though their EPUB pages occur between those chapters.
     let mut ordered_toc = toc.iter().collect::<Vec<_>>();
     ordered_toc.sort_by_key(|entry| entry.spine_index);
     let items = ordered_toc
@@ -2731,9 +2450,6 @@ fn build_chapter_scopes_inner(
         .map(|index| index.map(|index| ordered_toc[index].spine_index))
         .collect::<Vec<_>>();
 
-    // A contents list may omit a prologue, dated opening, or internal story
-    // heading. Recover only an exact, unique heading between established
-    // neighbours, never a phrase found somewhere in the body of a chapter.
     if let Some(sections) = sections {
         for index in 0..matched.len() {
             if matched[index].is_some() {
@@ -2771,8 +2487,6 @@ fn build_chapter_scopes_inner(
         }
     }
 
-    // A narrated picture without a contents entry can still have one
-    // unambiguous image-only spine section between its matched neighbours.
     if let Some(sections) = sections {
         let known = matched
             .iter()
@@ -2806,9 +2520,6 @@ fn build_chapter_scopes_inner(
                         .is_some_and(|section| section.text.trim().is_empty())
                 })
                 .collect::<Vec<_>>();
-            // A trailing figure can be followed by an unspoken part divider.
-            // Prefer the exact run of figures attached to the preceding text
-            // over treating that divider as another narrated illustration.
             let trailing = image_sections
                 .iter()
                 .copied()
@@ -2820,8 +2531,6 @@ fn build_chapter_scopes_inner(
                 image_sections
             };
             if pictures.len() != missing.len() {
-                // One narration can cover an entire image-only document,
-                // including its part heading and the following illustration.
                 pictures.dedup_by(|right, left| sections[*right].href == sections[*left].href);
             }
             if pictures.len() == missing.len() {
@@ -2876,9 +2585,6 @@ fn build_chapter_scopes_inner(
         ));
     }
 
-    // The last chapter ends where the next table-of-contents entry begins,
-    // not at the end of the spine: back matter such as "About the Author" is
-    // not narrated, and the aligner would spread it over the closing audio.
     let last_spine = matched_indices.last().expect("checked above").1;
     let trailing_end = toc
         .iter()
@@ -2896,9 +2602,6 @@ fn build_chapter_scopes_inner(
                 .get(position + 1)
                 .map(|(_, next_start)| *next_start)
                 .unwrap_or(trailing_end);
-            // An unspoken acknowledgments page can sit after a dedication
-            // in print but be read at the end of the audiobook. Do not force
-            // that intervening apparatus into the preceding chapter's audio.
             let end = toc
                 .iter()
                 .filter(|entry| {
@@ -2922,10 +2625,6 @@ fn build_chapter_scopes_inner(
                 .unwrap_or(next_start);
             ChapterScope {
                 chapter_index: *chapter_index,
-                // Keep uncertain interior audio with all intervening EPUB
-                // text, bounded by the next established reset point. The
-                // recognizer must establish shared sentences inside this
-                // combined scope; metadata alone supplies no timings.
                 chapter_end_index: matched_indices
                     .get(position + 1)
                     .map(|(next, _)| *next)
@@ -2943,13 +2642,8 @@ fn build_chapter_scopes_inner(
 #[derive(Debug)]
 pub struct ParsedLabel {
     number: Option<u32>,
-    /// The lettered series a number belongs to — `i` for an interlude
-    /// written `I-3` — so interlude 3 never counts as chapter 3. Empty for
-    /// plain chapter numbers.
     series: String,
     key: String,
-    /// Explicit metadata hierarchy, e.g. `The Woods: Ada`. A short leaf is
-    /// meaningful after a delimiter; a coincidental suffix of prose is not.
     leaf: Option<String>,
 }
 
@@ -2980,10 +2674,6 @@ fn normalize_label_text(value: &str) -> String {
     out.trim().to_string()
 }
 
-/// "Chapter 000" is chapter zero, not a parse failure. A digit run too long
-/// for `u32` is no chapter number at all — timestamp- or ISBN-like digits
-/// must not read as chapter zero, or they would out-score a genuine prologue
-/// in the exact-number match.
 fn parse_chapter_number(digits: &str) -> Option<u32> {
     let significant = digits.trim_start_matches('0');
     if significant.is_empty() {
@@ -2994,12 +2684,6 @@ fn parse_chapter_number(digits: &str) -> Option<u32> {
 
 const LABEL_SEPARATORS: [char; 6] = ['.', ':', ')', '-', '–', '—'];
 
-/// Reads a chapter label into its number and its title.
-///
-/// The number can be written any way a publisher or narrator writes it —
-/// `Chapter 12`, `Chapter Twelve`, `Chapter XII`, `Ch. 12`, `12. The Long
-/// Road`, `Twelve: The Long Road` — because the audio's chapter list and the
-/// EPUB's table of contents rarely agree on the spelling.
 pub fn parse_label(value: &str) -> ParsedLabel {
     let lower = value.to_ascii_lowercase();
     let leaf = value
@@ -3008,7 +2692,6 @@ pub fn parse_label(value: &str) -> ParsedLabel {
     let mut number = None;
     let mut remainder = value.to_string();
 
-    // "Interlude I-3: Kaza" and "I-3. Kaza": a lettered series number.
     if !lower.contains("chapter ")
         && let Some((series, parsed, start, end)) = find_series_number(value)
     {
@@ -3028,8 +2711,6 @@ pub fn parse_label(value: &str) -> ParsedLabel {
         };
     }
 
-    // Publishers also spell the interlude series out: "Interludes:
-    // Interlude 3: A Visitor" is the same identity as "I-3. A Visitor".
     if !lower.contains("chapter ")
         && let Some(at) = lower.rfind("interlude ")
         && (at == 0 || !lower.as_bytes()[at - 1].is_ascii_alphanumeric())
@@ -3087,8 +2768,6 @@ pub fn parse_label(value: &str) -> ParsedLabel {
         }
     }
 
-    // Embedded chapter titles may carry a part label before the chapter
-    // number: "Part Four: A Knowledge: 74. A Symbol".
     if number.is_none()
         && let Some((_, tail)) = value.rsplit_once(':')
     {
@@ -3102,10 +2781,6 @@ pub fn parse_label(value: &str) -> ParsedLabel {
         }
     }
 
-    // Audiobook chapter metadata commonly prefixes individual interludes
-    // (`Interlude I-1: Puuli`) while the EPUB TOC uses only the interlude code
-    // (`I-1. Puuli`). The prefix carries no identity and otherwise prevents an
-    // exact title match.
     let remainder_lower = remainder.to_ascii_lowercase();
     if let Some(after) = remainder_lower
         .strip_prefix("interlude ")
@@ -3115,8 +2790,6 @@ pub fn parse_label(value: &str) -> ParsedLabel {
         remainder = remainder[prefix_bytes..].trim_start().to_string();
     }
 
-    // Parts use their own number series so Part II never matches Chapter II.
-    // Do this after nested chapter parsing: Part Four: ...: 73 is chapter 73.
     let mut series = String::new();
     if number.is_none()
         && lower.starts_with("part ")
@@ -3141,9 +2814,6 @@ pub fn parse_label(value: &str) -> ParsedLabel {
     }
 }
 
-/// A token of one to three letters, a hyphen, and digits — `I-3`, `E-12` —
-/// standing alone in the label. Returns the lower-cased letters, the number,
-/// and the token's byte range.
 fn find_series_number(value: &str) -> Option<(String, u32, usize, usize)> {
     let bytes = value.as_bytes();
     let mut index = 0;
@@ -3179,8 +2849,6 @@ fn find_series_number(value: &str) -> Option<(String, u32, usize, usize)> {
                 ));
             }
         }
-        // Skip the rest of an alphanumeric run so a token is only tried from
-        // its start.
         while index < bytes.len() && bytes[index].is_ascii_alphanumeric() {
             index += 1;
         }
@@ -3188,9 +2856,6 @@ fn find_series_number(value: &str) -> Option<(String, u32, usize, usize)> {
     None
 }
 
-/// A chapter number at the start of `value` as digits, a roman numeral, or
-/// a spelled-out English number, with the byte length consumed. The token
-/// must end at a word boundary so `Chapter Ivory` is not chapter four.
 fn parse_number_token(value: &str) -> Option<(u32, usize)> {
     let digits: String = value.chars().take_while(|c| c.is_ascii_digit()).collect();
     if !digits.is_empty() {
@@ -3209,8 +2874,6 @@ fn parse_number_token(value: &str) -> Option<(u32, usize)> {
         return Some((number, token.len()));
     }
     let lower = token.to_ascii_lowercase();
-    // "twenty two" with a space: the two-word form must be tried first, or
-    // "twenty" alone would claim the match.
     let rest = &value[word_end..];
     if let Some(rest) = rest.strip_prefix(' ') {
         let second_end = rest
@@ -3228,8 +2891,6 @@ fn parse_number_token(value: &str) -> Option<(u32, usize)> {
     parse_number_words(&lower).map(|number| (number, token.len()))
 }
 
-/// Uppercase roman numerals only, and only up to a plausible chapter count:
-/// title case and long forms are far more likely to be words (`Mix`, `Dix`).
 fn parse_roman_numeral(token: &str) -> Option<u32> {
     if token.is_empty() || !token.chars().all(|c| "IVXLCDM".contains(c)) {
         return None;
@@ -3254,8 +2915,6 @@ fn parse_roman_numeral(token: &str) -> Option<u32> {
             total = total.checked_add(value)?;
         }
     }
-    // Round-trip through the canonical spelling so `IIII` and `VX` are
-    // rejected rather than read as some number.
     let total = u32::try_from(total).ok()?;
     (total > 0 && total <= 200 && roman_numeral(total) == token).then_some(total)
 }
@@ -3286,7 +2945,6 @@ fn roman_numeral(mut value: u32) -> String {
     out
 }
 
-/// `one` … `ninety-nine`, hyphenated, in lower case.
 fn parse_number_words(token: &str) -> Option<u32> {
     const UNITS: &[&str] = &[
         "zero",
@@ -3358,11 +3016,8 @@ pub fn label_match_score(target: &ParsedLabel, item: &ParsedLabel) -> u32 {
                 .leaf
                 .as_ref()
                 .is_some_and(|leaf| !leaf.is_empty() && leaf == &target.key)
+            || (target.key.ends_with(&format!(" {}", item.key)) && item.key.len() >= 8)
         {
-            score += 80;
-        } else if target.key.ends_with(&format!(" {}", item.key)) && item.key.len() >= 8 {
-            // Embedded audio labels often include a part title before the
-            // EPUB's chapter title: "Part Four: A Knowledge: 74. A Symbol".
             score += 80;
         } else if target.key.contains(&item.key) || item.key.contains(&target.key) {
             score += 45;
@@ -3383,8 +3038,6 @@ pub fn label_match_score(target: &ParsedLabel, item: &ParsedLabel) -> u32 {
     score
 }
 
-/// A two-chapter EPUB with a navigation document, for tests across the
-/// crate: the alignment, the companion classifier, and the HTTP routes.
 #[cfg(test)]
 pub(crate) fn build_test_epub() -> Vec<u8> {
     build_test_epub_with_text(
@@ -3401,14 +3054,11 @@ pub(crate) fn build_test_epub_with_text(chapter_one: &str, chapter_two: &str) ->
     ])
 }
 
-/// An EPUB of `(table-of-contents title, body HTML)` chapters, one spine
-/// document each. The first carries a head the parser must ignore.
 #[cfg(test)]
 pub(crate) fn build_test_epub_with_chapters(chapters: &[(&str, &str)]) -> Vec<u8> {
     build_test_epub_in_language(chapters, None)
 }
 
-/// As `build_test_epub_with_chapters`, labelled with a `dc:language`.
 #[cfg(test)]
 pub(crate) fn build_test_epub_in_language(
     chapters: &[(&str, &str)],
@@ -3649,8 +3299,6 @@ mod tests {
 
     #[test]
     fn html_to_text_survives_multibyte_near_bare_ampersand() {
-        // A bare `&` followed by multi-byte characters inside the entity
-        // scan window must not split a UTF-8 character.
         let text = html_to_text("<body><p>Fish &— chips &“quoted” Ω&Ωμ; end</p></body>");
         assert!(text.contains("Fish"));
         assert!(text.contains("chips"));
@@ -3660,8 +3308,6 @@ mod tests {
 
     #[test]
     fn html_to_text_keeps_offsets_with_unicode_case_folding() {
-        // `İ` changes byte length under Unicode lowercasing; scanning must
-        // stay aligned with the original bytes.
         let text = html_to_text(
             "<html><head><title>İİİİ</title></head><body><p>İstanbul is old.</p></body></html>",
         );
@@ -4124,7 +3770,6 @@ mod tests {
 
     #[test]
     fn epub_rejects_excessive_valid_and_malformed_markup() {
-        // The fixture adds the body opening, body closing and HTML closing.
         let at_limit = format!("Prose.{}", "<img/>".repeat(MAX_EPUB_DOCUMENT_TAGS - 3));
         assert!(parse_epub(&build_test_epub_with_text(&at_limit, "Next.")).is_ok());
         for tag in ["<img/>", "<script>", "<style>", "<head>"] {
@@ -4299,8 +3944,6 @@ mod tests {
         assert_eq!(scopes[1].section_range, 1..3);
         sections[2].text = sections[1].text.clone();
         let scopes = build_chapter_scopes_with_sections(&titles, &toc, &sections).unwrap();
-        // Duplicate evidence stays inside a combined recognition scope. It
-        // must not manufacture a chapter boundary at either occurrence.
         assert_eq!(scopes.len(), 2);
         assert_eq!(scopes[0].section_range, 0..3);
         assert_eq!(scopes[0].chapter_end_index, 2);
@@ -4363,8 +4006,6 @@ mod tests {
             "Part Four: A Knowledge: 74. A Symbol",
         ]
         .map(str::to_string);
-        // The publisher lists the glyph page after the main chapters even
-        // though its spine section belongs between the part title and 73.
         let toc = [
             ("46. The Weight of the Tower", 0),
             ("47. A Cage Forged of Spirits", 2),
@@ -4503,7 +4144,6 @@ mod tests {
         );
         assert_eq!(anchor.start_seconds, 3.5);
         assert!((anchor.end_seconds - 7.4).abs() < 1e-9);
-        // An already-consumed sentence cannot drag recovery backwards.
         assert!(find_recovery_anchor(&recognized, &text, anchor.text_end_utf16, 30.0).is_none());
     }
 
@@ -4524,7 +4164,6 @@ mod tests {
             revised.encode_utf16().count() as u64
         );
         assert!(anchor.start_seconds >= 5.0);
-        // Reordered narration from a consumed section cannot pull us backward.
         assert!(
             find_recovery_anchor(&spoken(revised, 0.0), &text, anchor.text_end_utf16, 60.0)
                 .is_none()
@@ -4629,8 +4268,6 @@ mod tests {
         let mut repeated = recognition.clone();
         repeated.extend(recognition.clone());
         assert!(interrupted_passages(&transcript, &repeated).is_empty());
-        // A recognizer stretching the first word across noise cannot move the
-        // next alignment slice back into that noise.
         let at = spoken(left, 0.0).len();
         recognition[at].start_time = 7.0;
         let gaps = interrupted_passages(&transcript, &recognition);
@@ -4640,9 +4277,6 @@ mod tests {
 
     #[test]
     fn interruption_ends_where_a_shorter_recognition_hears_the_next_opening() {
-        // Recognizer output from synthesized narration whose second and third
-        // sentences were replaced by noise. The long window lost the opening
-        // of the sentence after the noise, so the interruption had no end.
         let missing = "Beyond the northern mountains an observatory recorded a different \
             constellation every winter night. The gardener carried a basket of yellow \
             flowers through the narrow passage behind the kitchen.";
@@ -4696,7 +4330,6 @@ mod tests {
         let unheard = unheard_interruption_endings(&transcript, &window);
         assert_eq!(unheard, [(10.31, 26.39)]);
         let (start, end) = unheard[0];
-        // The span recognized alone, and the same audio with two words merged.
         let clips = [
             heard(&[
                 ("under", 12.44, 12.46),
@@ -4735,11 +4368,9 @@ mod tests {
                     .collect::<Vec<_>>(),
                 missing.split_whitespace().collect::<Vec<_>>()
             );
-            // The next slice starts after the noise, just before "Under".
             assert!(gaps[0].start_seconds < 11.0);
             assert!((22.0..22.75).contains(&gaps[0].end_seconds));
         }
-        // Hearing nothing new, or hearing the missing passage, splits nothing.
         for clip in [
             heard(&[("the", 0.0, 0.34)]),
             spoken("Beyond the northern mountains an observatory recorded", 1.0),
@@ -4751,9 +4382,6 @@ mod tests {
 
     #[test]
     fn a_word_stretched_over_noise_does_not_move_the_interruption_end() {
-        // Recognized synthesized narration after noise replaced two sentences.
-        // The first word after the noise was stretched across its last two
-        // seconds; the next slice must still start where narration resumes.
         let transcript = build_transcript(&[SpineSection {
             href: "one.xhtml".into(),
             text: "The librarian found a folded letter between the final pages of an \
@@ -4824,8 +4452,6 @@ mod tests {
         }
         let mut timeline = parse_timeline(&original).unwrap();
         timeline[0].timeline.as_mut().unwrap()[0].start_offset_utf16 = None;
-        // The unlocated first word is a hard neighboring boundary. Repairs
-        // must not put the next word before its unchanged end.
         reconcile_word_clocks(&mut timeline, text, &speech);
         let children = timeline[0].timeline.as_ref().unwrap();
         assert!(
@@ -4848,8 +4474,6 @@ mod tests {
         recognition.extend(spoken("Recall, she whispered in Maryann's voice.", 8.0));
         recognition.extend(spoken(after, 15.0));
         assert!(interrupted_passages(&transcript, &recognition).is_empty());
-        // Matching words outside the two enclosing anchors are not evidence
-        // for the candidate passage; the real omission must still be found.
         let mut absent = spoken("She whispered in the courtyard.", 0.0);
         absent.extend(spoken(before, 4.0));
         absent.extend(spoken(after, 22.0));
@@ -4872,7 +4496,6 @@ mod tests {
         }
         recognition.extend(short);
         let mut following = spoken(after, 13.0);
-        // Two misspelled opening words remove cross-sentence phrase anchors.
         following[0].text = "anothername".into();
         following[1].text = "misspelled".into();
         recognition.extend(following);
@@ -5202,8 +4825,6 @@ mod tests {
         let mut gap = original();
         assert_eq!(gap.mask_unspoken_sentences(&missing), 0);
         assert_eq!(gap.text, text);
-        // Misplacing the returning word's onset before the silence must not
-        // reclassify an interruption as a known edition omission.
         missing[6].start_time -= 5.0;
         assert_eq!(gap.mask_unspoken_sentences(&missing), 0);
         assert_eq!(gap.text, text);
@@ -5253,7 +4874,6 @@ mod tests {
         assert_eq!(heading.mask_unspoken_sentences(&recognition), 0);
     }
 
-    /// UTF-16 offset just past the first occurrence of `needle`.
     fn utf16_end_of(needle: &str) -> u64 {
         let end = WINDOW_TEXT.find(needle).unwrap() + needle.len();
         WINDOW_TEXT[..end].encode_utf16().count() as u64
@@ -5265,7 +4885,6 @@ Then it rained for the rest of the day and everyone went inside.";
 
     #[test]
     fn window_anchor_skips_a_narrated_heading_and_ends_at_a_sentence() {
-        // Ten unscripted words, then the transcript read verbatim.
         let recognized = spoken(
             "A rough map of the battle annotated by the general. \
 The cat sat on the mat and looked at the dog. The dog barked loudly at the cat. \
@@ -5278,8 +4897,6 @@ Go away said the cat. Then it rained for the rest of the day",
         assert!((anchor.lead_in_seconds - 5.0).abs() < 1e-9);
         let end = anchor.end.unwrap();
         assert_eq!(end.text_end_utf16, utf16_end_of("said the cat."));
-        // "cat." is recognized word 32 (10 unscripted + 11 + 7 + 5 words
-        // before it): it ends at 32 * 0.5 + 0.4.
         assert!((end.seconds - 16.4).abs() < 1e-9);
     }
 
@@ -5295,8 +4912,6 @@ to look worn Dalinar stood at the back of the room",
 
         let anchor = find_window_anchor(&recognized, transcript, 0, 1000, 100.0);
 
-        // The first five-word match begins at "was", but the three opening
-        // words were recognized just before the misspelled name.
         assert!((anchor.lead_in_seconds - 2.5).abs() < 1e-9);
         assert!(anchor.end.is_some());
     }
@@ -5309,12 +4924,10 @@ The dog barked loudly at the cat. Go away said the cat.",
             0.0,
         );
 
-        // Only the first sentence ends early enough.
         let anchor = find_window_anchor(&recognized, WINDOW_TEXT, 0, 1000, 6.0);
         let end = anchor.end.unwrap();
         assert_eq!(end.text_end_utf16, utf16_end_of("dog."));
 
-        // Nothing ends by 3 s.
         assert!(
             find_window_anchor(&recognized, WINDOW_TEXT, 0, 1000, 3.0)
                 .end
@@ -5404,7 +5017,6 @@ The dog barked loudly at the cat. Go away said the cat.",
         assert!(json.contains("\"words\":[[1.5,3.25,0,5]]"));
     }
 
-    /// Maps written before precision and word timings existed still load.
     #[test]
     fn a_version_one_sync_map_still_reads() {
         let json = r#"{"version":1,"generator":"echogarden","fragments":[
@@ -5445,7 +5057,6 @@ The dog barked loudly at the cat. Go away said the cat.",
         );
     }
 
-    /// Publishers and narrators spell chapter numbers every way there is.
     #[test]
     fn subtractive_roman_chapters_round_trip() {
         for number in 1..=200 {
@@ -5482,9 +5093,6 @@ The dog barked loudly at the cat. Go away said the cat.",
         assert_eq!(prefixed.key, "a symbol");
     }
 
-    /// Interludes are numbered in their own series, and the narrator's
-    /// "Interlude I-3" must meet the publisher's "I-3." without ever being
-    /// taken for chapter three.
     #[test]
     fn parse_label_reads_lettered_series_numbers() {
         let spoken = parse_label("Interlude I-3: The Rhythm of the Lost");
@@ -5506,8 +5114,6 @@ The dog barked loudly at the cat. Go away said the cat.",
         assert_eq!(parse_label("Track-01").number, None);
     }
 
-    /// The same label three times must land on the right occurrence: the
-    /// order of the audio is the order of the book.
     #[test]
     fn labels_align_in_order_across_repeated_titles() {
         let targets = [
@@ -5537,8 +5143,6 @@ The dog barked loudly at the cat. Go away said the cat.",
         );
     }
 
-    /// Tracks named `Track 01` share no words or numbers with the table of
-    /// contents, but the book still has exactly that many chapters.
     #[test]
     fn unnamed_tracks_fall_back_to_matching_by_position() {
         let targets = [
@@ -5604,7 +5208,6 @@ The dog barked loudly at the cat. Go away said the cat.",
     fn recognized_runs_are_counted_against_the_text_in_any_order() {
         let text = "“Kaladin,” she said. The storm broke over the plateau at dawn.";
         let heard = spoken("the storm broke over the plateau kaladin she said", 0.0);
-        // The two runs that span the reordering are not in the text.
         assert_eq!(recognized_runs_in_text(&heard, text), (7, 5));
         assert_eq!(
             recognized_runs_in_text(&spoken("one two", 0.0), text),
