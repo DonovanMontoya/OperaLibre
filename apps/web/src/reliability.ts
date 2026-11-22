@@ -312,9 +312,7 @@ export function rebasePendingProgress(local: Progress, attempted: Progress, save
     ...(recording ? { recording, localRecordingId: recording.id } : {}) };
 }
 
-/** Mirrors the server's PROGRESS_NEAR_ZERO_SECONDS. */
 const NEAR_ZERO_PROGRESS_SECONDS = 60;
-/** Mirrors the server's PROGRESS_BACKUP_REGRESSION_SECONDS. */
 export const PROGRESS_RESET_GUARD_SECONDS = 300;
 
 function isSameProgressRevision(left: Progress, right: Progress): boolean {
