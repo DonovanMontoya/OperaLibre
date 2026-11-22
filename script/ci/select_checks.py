@@ -7,7 +7,14 @@ import subprocess
 import tomllib
 
 CHECKS = {'server', 'server_windows', 'launcher', 'web', 'playback', 'android',
-          'apple', 'carplay', 'bookplayer'}
+          'apple', 'carplay', 'bookplayer', 'formal'}
+# Code the TLA+ models describe; keep in step with each model's coverage record.
+FORMAL_INPUTS = {
+    'apps/server/src/progress.rs', 'apps/server/src/storage.rs',
+    'apps/web/src/reliability.ts', 'apps/web/src/useLibrary.ts',
+    'apps/web/src/usePlaybackRestore.ts', 'apps/web/src/useProgressSync.ts',
+    'apps/web/src/usePlaybackControls.ts',
+}
 VERSION_FILES = {
     f'apps/{component}/Cargo.{extension}': f'operalibre-{component}'
     for component in ('server', 'launcher') for extension in ('toml', 'lock')
@@ -19,7 +26,11 @@ def select(paths):
     for path in paths:
         if path.startswith('docs/') or path in {'README.md', 'CHANGELOG.md', 'AGENTS.md', 'CONTRIBUTING.md', 'LICENSE.md', 'REVIEW.md'}:
             continue
-        if path.startswith('apps/server/'):
+        if path in FORMAL_INPUTS:
+            selected.add('formal')
+        if path.startswith('verification/'):
+            selected.add('formal')
+        elif path.startswith('apps/server/'):
             selected.update({'server', 'server_windows', 'playback', 'bookplayer', 'web'})
         elif path.startswith('apps/launcher/'):
             selected.update({'launcher', 'web'})

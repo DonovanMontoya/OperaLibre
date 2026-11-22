@@ -408,3 +408,7 @@ These apply only to maintainers with write access.
 ### Animatic
 
 The animatic skill's voice, renderer, style and stitcher. See `docs/agents/animatic.md`.
+
+### Verify progress replay
+
+Model-check offline progress replay with TLA+ when changing it. See `docs/agents/verify-progress-replay.md`.

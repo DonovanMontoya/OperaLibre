@@ -30,6 +30,9 @@ on:
       bookplayer:
         description: Whether to run bookplayer checks
         value: ${{ jobs.changes.outputs.bookplayer }}
+      formal:
+        description: Whether to run formal model checks
+        value: ${{ jobs.changes.outputs.formal }}
       metadata_only:
         description: Whether only documentation or package versions changed
         value: ${{ jobs.changes.outputs.metadata_only }}
@@ -51,6 +54,7 @@ jobs:
       apple: ${{ steps.select.outputs.apple }}
       carplay: ${{ steps.select.outputs.carplay }}
       bookplayer: ${{ steps.select.outputs.bookplayer }}
+      formal: ${{ steps.select.outputs.formal }}
       metadata_only: ${{ steps.select.outputs.metadata_only }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

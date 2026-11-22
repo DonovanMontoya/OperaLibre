@@ -1,5 +1,5 @@
 import unittest
-from select_checks import CHECKS, VERSION_FILES, only_package_version, select
+from select_checks import CHECKS, FORMAL_INPUTS, VERSION_FILES, only_package_version, select
 
 
 class SelectionTests(unittest.TestCase):
@@ -23,6 +23,14 @@ class SelectionTests(unittest.TestCase):
 
     def test_mixed_changes_union_coverage(self):
         self.assertEqual(select(['docs/api.md', 'apps/launcher/src/main.rs', 'apps/web/src/App.tsx']), {'launcher', 'web', 'playback', 'android'})
+
+    def test_formal_models_run_for_the_model_and_the_code_it_describes(self):
+        self.assertEqual(select(['verification/run.sh', 'verification/progress-replay/current.cfg']), {'formal'})
+        for path in FORMAL_INPUTS:
+            with self.subTest(path=path):
+                self.assertIn('formal', select([path]))
+        self.assertEqual(select(['apps/web/src/usePlaybackRestore.ts']), {'web', 'playback', 'android', 'formal'})
+        self.assertNotIn('formal', select(['apps/server/src/http.rs']))
 
     def test_changelog_does_not_hide_code_changes(self):
         self.assertEqual(select(['CHANGELOG.md', 'apps/web/src/App.tsx']), {'web', 'playback', 'android'})
