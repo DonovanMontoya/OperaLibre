@@ -3,6 +3,10 @@ use crate::*;
 pub(crate) fn record_server_pid(data_dir: &std::path::Path) -> std::io::Result<()> {
     create_private_directory(data_dir)?;
     let pid_path = data_dir.join("operalibre-server.pid");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the pid file is rewritten on every start and is not a store"
+    )]
     std::fs::write(&pid_path, std::process::id().to_string())?;
     #[cfg(unix)]
     {
@@ -132,6 +136,7 @@ async fn ensure_parent_directory(path: &FsPath) -> io::Result<Vec<PathBuf>> {
     Ok(created)
 }
 
+#[expect(clippy::disallowed_methods, reason = "this is the atomic publish step")]
 #[cfg(unix)]
 async fn replace_file(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
     fs::rename(temp_path, path).await
@@ -146,6 +151,7 @@ async fn replace_file(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
         .map_err(io::Error::other)?
 }
 
+#[expect(clippy::disallowed_methods, reason = "this is the atomic publish step")]
 #[cfg(unix)]
 pub(crate) fn replace_file_blocking(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
     std::fs::rename(temp_path, path)

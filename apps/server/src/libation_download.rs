@@ -173,6 +173,10 @@ async fn download_with_budget(
                 .context("Missing staging directory name")?
                 .to_string_lossy()
                 .replace(".operalibre-libation-", "import-");
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "moves a finished download folder into a fresh import name"
+            )]
             std::fs::rename(&books, destination.join(import_name))?;
         }
     }

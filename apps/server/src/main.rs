@@ -5,6 +5,13 @@
 //! concern: `config` and `app` for startup and routing, `auth` for accounts and
 //! sessions, `library` for scanning and metadata, `media` for streaming,
 //! `progress` for playback positions, and `libation` for Audible imports.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::disallowed_methods,
+        reason = "tests build their fixtures with plain writes"
+    )
+)]
 
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use axum::{

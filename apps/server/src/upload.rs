@@ -390,6 +390,10 @@ async fn stage_and_publish_upload(
     // from the book that rename just published.
     tokio::task::spawn_blocking(move || {
         let mut staging = staging;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "moves a staged upload folder to a destination checked to be free"
+        )]
         std::fs::rename(staging.path(), &destination)?;
         staging.0 = None;
         Ok::<_, io::Error>(())

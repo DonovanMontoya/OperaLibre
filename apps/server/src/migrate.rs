@@ -287,6 +287,10 @@ pub(crate) fn migrate_if_needed(
             // migration publishes the database atomically below. Remove it
             // before replacing it with the complete import.
             remove_database_files(database_path);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "publishes the complete import after removing the old database files"
+            )]
             std::fs::rename(&temporary_path, database_path)?;
             db::secure_database_files(database_path);
             remove_legacy_sessions(layout, data_dir)?;
