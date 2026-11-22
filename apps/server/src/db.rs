@@ -334,8 +334,6 @@ pub(crate) fn secure_database_files(path: &FsPath) {
 #[cfg(not(unix))]
 pub(crate) fn secure_database_files(_path: &FsPath) {}
 
-/// A handle to the database.
-///
 /// `rusqlite::Connection` is `Send` but not `Sync`, and its calls block. Every
 /// query therefore runs on a blocking task holding the connection lock, which
 /// matches the `spawn_blocking` pattern the rest of the server already uses

@@ -106,8 +106,6 @@ pub(crate) struct AppState {
     pub(crate) backup_lock: Arc<Mutex<BackupLifecycle>>,
 }
 
-/// Assemble the full application router.
-///
 /// Split out of `main` so integration tests can drive the real routing,
 /// authentication, and middleware stack instead of calling handlers directly.
 pub(crate) fn build_router(

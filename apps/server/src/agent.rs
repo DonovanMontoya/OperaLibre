@@ -2050,10 +2050,6 @@ fn tail_characters(text: &str, max: usize) -> (String, bool) {
     (tail.to_string(), true)
 }
 
-// ---------------------------------------------------------------------------
-// Get books
-// ---------------------------------------------------------------------------
-//
 // Both tools go through the Get books page's own handlers with the listener's
 // account, so an agent sees the Audible and Libro.fm purchases they see and
 // can do with them only what they could: add a book directly, or file the

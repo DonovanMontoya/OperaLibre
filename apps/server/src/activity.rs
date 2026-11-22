@@ -258,7 +258,6 @@ pub(crate) async fn profile_stats(
     let library = state.library.read().await;
     let user_progress: Vec<(&String, &Progress)> = progress_map.iter().collect();
 
-    // Headline numbers.
     let mut books_finished = 0u32;
     let mut total_tracks_completed = 0u32;
     let mut narrator_hours: HashMap<String, f64> = HashMap::new();
@@ -327,7 +326,6 @@ pub(crate) async fn profile_stats(
     });
     recent.truncate(6);
 
-    // Activity-based numbers.
     let activity = state.activity.read().await;
     let no_activity = BTreeMap::new();
     let user_activity = activity.by_user.get(&auth.id).unwrap_or(&no_activity);

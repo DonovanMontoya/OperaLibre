@@ -303,7 +303,6 @@ pub(crate) async fn remove_chapter_notes_provider(
 pub(crate) enum TextSource {
     /// The book's own text, through its follow-along map.
     Ebook,
-    /// Recognized speech.
     Transcript,
 }
 
