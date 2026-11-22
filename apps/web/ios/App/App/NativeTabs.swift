@@ -16,13 +16,7 @@ private final class NativeTabContentHost: UIViewController {
     }
 }
 
-/// Holds the tab controller over the page. Only the bar itself takes touches;
-/// everything else belongs to the web view spanning the whole screen beneath.
 private final class TabsOverlayView: UIView {
-    /// The clear views that only frame the page: the tab hosts. iPad's floating
-    /// bar is not a descendant of `UITabBarController.tabBar`, so the bar is
-    /// found by exclusion — whatever is not the page's frame or one of its
-    /// full-screen containers.
     var hostViews: () -> [UIView] = { [] }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
@@ -32,24 +26,14 @@ private final class TabsOverlayView: UIView {
         }
         let frame = hit.convert(hit.bounds, to: self)
         if frame.width >= bounds.width * 0.9 && frame.height >= bounds.height * 0.9 { return nil }
-        // A bar hung down the side runs the screen's full height, but only its
-        // platter of items is a control; the page owns the rest of the rail.
         if hit is UITabBar && frame.height > frame.width { return nil }
         return hit
     }
 }
 
-/// Watches a touch on the bar without claiming it. The glass bar selects the
-/// tab in line with the finger wherever it lifts, so a swipe up from the bottom
-/// edge that starts a little high — closing the app — would otherwise leave
-/// the page on Games or Ledger.
 private final class BarTouchTracker: UIGestureRecognizer {
     private var start = CGPoint.zero
-    /// Whether the touch that just finished left the bar or was taken by the
-    /// system. UIKit asks about the selection before the turn is over; after
-    /// that the answer is stale for VoiceOver and keyboard selections.
     private(set) var strayed = false
-    // Room for a finger to roll off the bar's edge as it lifts.
     private static let slop: CGFloat = 24
 
     override init(target: Any?, action: Selector?) {
@@ -68,7 +52,6 @@ private final class BarTouchTracker: UIGestureRecognizer {
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
         guard let overlay = view, let end = touches.first?.location(in: overlay) else { return finish(strayed: false) }
-        // The overlay answers a hit test only where the bar is.
         finish(strayed: overlay.hitTest(end, with: nil) == nil
             && hypot(end.x - start.x, end.y - start.y) > Self.slop)
     }
@@ -84,8 +67,6 @@ private final class BarTouchTracker: UIGestureRecognizer {
     }
 }
 
-/// The web shell sends its screen colors as `#rrggbb`, the one spelling the
-/// stylesheet uses for them.
 private func chromeColor(_ hex: String) -> UIColor? {
     var text = hex.trimmingCharacters(in: .whitespacesAndNewlines)
     if text.hasPrefix("#") { text.removeFirst() }
@@ -94,17 +75,12 @@ private func chromeColor(_ hex: String) -> UIColor? {
                    blue: CGFloat(value & 0xff) / 255, alpha: 1)
 }
 
-/// Rec. 709 luma, deciding the same way the shell does whether a surface
-/// carries ink or paper on top of it.
 private func isDarkChrome(_ color: UIColor) -> Bool {
     var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
     guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return true }
     return 0.2126 * red + 0.7152 * green + 0.0722 * blue < 0.5
 }
 
-/// UIKit owns tab selection and safe-area layout. A single sibling bridge fills
-/// the selected host's content area, preserving playback and keyboard focus
-/// without reloading or reparenting the web view on navigation changes.
 final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     let content: ViewController
     private let navigation = UITabBarController()
@@ -120,35 +96,17 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     private var requestedSelection: String?
     private var selectionThisTurn: String?
     private var cover: UIView?
-    // Last top-bar clearance handed to the page; -1 until it has one.
     private var sentTopClearance: CGFloat = -1
-    // Whether the page was last told the floating top bar (rather than a
-    // legacy bottom bar) is in play; nil until it has been told at all.
     private var sentFloatingTopBar: Bool?
-    // The side rail's free slot last handed to the page; nil when there is
-    // none, and unset until the page has been told either way.
     private var sentRail: CGRect??
-    /// How far the visible bar's platter sits from its column's centre,
-    /// towards the page. The clock above it shares that offset, and the
-    /// reader's rail keeps it once the tabs are hidden.
     private var platterInset: CGFloat = 0
-    // A 44pt play/pause target plus padding can stay in the column even when
-    // Now Playing expands the system status area. The page drops secondary
-    // controls before giving up the rail.
     private static let minimumRailHeight: CGFloat = 60
-    // The color the visible screen carries, sent with every tab change. The
-    // page covers the window, so this shows only where it cannot reach — a
-    // rotation, an iPad's top-hung bar — and sets the status bar's polarity.
     private var chrome: UIColor?
     private var barTint: UIColor?
     private var accent: UIColor?
     private var chromeIsDark = true
-    // The launch screen is parchment, and the shell cannot report its color
-    // until the web view has loaded. Restoring the last one hands the two
-    // straight to each other instead of flashing the container between them.
     private static let chromeKey = "operalibre.nativeChrome"
     private static let barKey = "operalibre.nativeBarTint"
-    // Matches the web shell's spine, gold-soft, paper, and oxblood tokens.
     private let spine = UIColor(red: 26 / 255, green: 20 / 255, blue: 16 / 255, alpha: 1)
     private let brass = UIColor(red: 217 / 255, green: 181 / 255, blue: 116 / 255, alpha: 1)
     private let parchment = UIColor(red: 241 / 255, green: 231 / 255, blue: 208 / 255, alpha: 1)
@@ -165,9 +123,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = spine
-        // The page runs the full height of the screen, so the tab controller
-        // contributes nothing but its bar: no surface of its own for the page
-        // to butt against.
         navigation.view.backgroundColor = .clear
         applyBarTint()
         applyChrome(UserDefaults.standard.string(forKey: Self.chromeKey),
@@ -203,8 +158,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     }
 
     override var childForStatusBarStyle: UIViewController? { navigationVisible ? nil : content }
-    // The clock sits over the page itself, so it reads against the screen the
-    // selected tab shows rather than against the container behind it.
     override var preferredStatusBarStyle: UIStatusBarStyle { chromeIsDark ? .lightContent : .darkContent }
     override var childForStatusBarHidden: UIViewController? { content }
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { content.supportedInterfaceOrientations }
@@ -213,21 +166,12 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     func configure(items: [JSObject], selected: String, visible: Bool, blocked: Bool, appearance: String,
                    chrome: String?, bar: String?, accent: String? = nil, uncovered: Bool = false) {
         loadViewIfNeeded()
-        // The page may have reloaded and lost the clearance it was sent.
         sentTopClearance = -1
         sentFloatingTopBar = nil
         sentRail = .none
-        // The page can move to another tab and change its tones in one
-        // update. Retinting the floating bar and then selecting in the same
-        // pass leaves its labels drawn for the previous tab, platter aside,
-        // so the tones follow the selection a turn later, as they do after a
-        // tap.
         let reselecting = requestedSelection != nil && selected != requestedSelection
         if !reselecting { applyChrome(chrome, bar: bar, accent: accent) }
         if visible != navigationVisible && navigation.parent != nil && !uncovered {
-            // Showing or hiding the bar resizes the web view, and the page
-            // reflows over several frames as its safe area and viewport catch
-            // up. Hold the last frame until the page reveals itself.
             coverContent()
         }
         overrideUserInterfaceStyle = appearance == "dark" ? .dark : appearance == "light" ? .light : .unspecified
@@ -236,18 +180,12 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         let ids = items.compactMap { $0["id"] as? String }
         let tabsChanged = ids != identifiers
         if tabsChanged {
-            // The replacement selected host may not be attached until a
-            // later layout pass; its layout callback refreshes the bar's
-            // clearance once it is.
             identifiers = ids
             hosts = Dictionary(uniqueKeysWithValues: items.enumerated().compactMap { index, item in
                 guard let id = item["id"] as? String else { return nil }
                 let host = NativeTabContentHost()
                 host.view.backgroundColor = .clear
                 host.onLayout = { [weak self] in self?.updateContentInsets() }
-                // UIKit must measure complete items on the first layout. Adding
-                // titles after publishing incomplete tabs leaves unselected
-                // labels offset and clipped in the floating iPhone bar.
                 host.tabBarItem = UITabBarItem(
                     title: item["title"] as? String,
                     image: UIImage(systemName: item["symbol"] as? String ?? "circle"),
@@ -289,11 +227,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             DispatchQueue.main.async { [weak self] in self?.applyChrome(chrome, bar: bar, accent: accent) }
         }
         requestedSelection = selected
-        // Web sheets rise from the bottom of the page, which now runs under
-        // the bar. Taking the bar away leaves the sheet whole instead of
-        // ghosting a dimmed copy of it across the sheet's own footer.
-        // The bar returns with the page it was hidden for: the launch cover
-        // and closing sheets both fade, so it should not snap in over them.
         if blocked {
             tabsOverlay.alpha = 0
         } else if tabsOverlay.alpha != 1 {
@@ -318,23 +251,13 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         }
     }
 
-    /// The bar is glass over the screen it belongs to. Tinting that glass with
-    /// the page's own tone keeps it from reading as a bright slab laid on the
-    /// paper, and its labels take the page's ink: gold on the dark shelf and
-    /// parlour, and on paper the light theme's accent, the same color as the
-    /// play control (oxblood unless the page reports another).
     private func applyBarTint() {
         let selected = chromeIsDark ? brass : (accent ?? oxblood)
-        // Ink and spine are the same tone in the palette; on paper it reads
-        // as the text color rather than as the shelf's board.
         let resting = (chromeIsDark ? parchment : spine).withAlphaComponent(0.75)
         navigation.overrideUserInterfaceStyle = chromeIsDark ? .dark : .light
         navigation.view.tintColor = selected
         let appearance = UITabBarAppearance()
         appearance.configureWithDefaultBackground()
-        // iOS 26 owns the floating bar's glass and ignores this; on the older
-        // full-width bar it is what keeps the material on the page's tone
-        // instead of a lighter slab across the bottom of the screen.
         appearance.backgroundColor = (barTint ?? chrome)?.withAlphaComponent(0.9)
         appearance.shadowColor = .clear
         for item in [appearance.stackedLayoutAppearance, appearance.inlineLayoutAppearance,
@@ -354,9 +277,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         navigation.tabBar.unselectedItemTintColor = resting
     }
 
-    /// Take the tones the selected screen reports. Crossing them over the same
-    /// beat as the shell's tab fade keeps the clock and the bar from turning
-    /// over before the page behind them does.
     private func applyChrome(_ hex: String?, bar: String?, accent accentHex: String? = nil) {
         let tint = bar.flatMap(chromeColor)
         let newAccent = accentHex.flatMap(chromeColor)
@@ -381,10 +301,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         if first { paint() } else { UIView.animate(withDuration: 0.26, animations: paint) }
     }
 
-    /// The web view shows its own background wherever the page has not drawn
-    /// yet, most visibly mid-rotation before the page lays out at the new
-    /// size. Capacitor gives it the launch parchment; the screen's own tone
-    /// keeps a dark screen dark while it turns.
     private func paintWebView() {
         guard let chrome, let webView = content.webView else { return }
         webView.backgroundColor = chrome
@@ -417,7 +333,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         snapshot.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(snapshot)
         cover = snapshot
-        // Never leave a stale frame over the app if the page never reports in.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self, weak snapshot] in
             if let self, let snapshot, self.cover === snapshot { self.reveal() }
         }
@@ -432,8 +347,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
         coordinator.animate(alongsideTransition: nil) { [weak self] _ in
-            // The final WebKit viewport can settle after UIKit lays out the
-            // same bounds. Wake its page again when the scene transition ends.
             self?.contentDidLayout(force: true)
         }
     }
@@ -443,7 +356,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         let size = webView.bounds.size
         guard size.width > 0, size.height > 0, force || size != lastViewportSize else { return }
         lastViewportSize = size
-        // WebKit can settle a scene resize without another DOM resize event.
         webView.evaluateJavaScript("""
             window.dispatchEvent(new CustomEvent('operalibre:viewportchange', {
                 detail: { width: \(size.width), height: \(size.height) }
@@ -467,16 +379,9 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         if host === self {
             frame = view.bounds
         } else {
-            // didSelect can precede UIKit attaching the new host. Its layout
-            // callback supplies the final safe area once the transition lands.
             guard host.viewIfLoaded?.isDescendant(of: view) == true else { return }
             frame = host.view.convert(host.view.safeAreaLayoutGuide.layoutFrame, to: view)
         }
-        // The page owns the whole screen. The status bar sits on the page's
-        // own background and the bar glasses over it, so neither edge needs a
-        // strip of container color to butt against. Only the horizontal safe
-        // area still trims the web view, keeping text out of the notch in
-        // landscape.
         let hostSafeTop = frame.minY
         frame.origin.y = view.bounds.minY
         frame.size.height = view.bounds.height
@@ -485,8 +390,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         var topClearance: CGFloat = 0
         if navigationVisible, navigation.parent != nil, !navigation.view.isHidden {
             if host !== self {
-                // Measure UIKit's current presentation: narrow windows can
-                // move the bar from the top to the bottom while resizing.
                 topClearance = max(0, (hostSafeTop - view.safeAreaInsets.top).rounded())
                 if #available(iOS 18.0, *) {
                     usesFloatingTopBar = topClearance > 0
@@ -495,9 +398,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             if !usesFloatingTopBar {
                 let bar = navigation.tabBar.convert(navigation.tabBar.bounds, to: view)
                 if bar.intersects(view.bounds), bar.width >= view.bounds.width / 2, bar.midY >= view.bounds.midY {
-                    // The page keeps its own content clear of the floating bar
-                    // through the bottom safe area, the same inset it already
-                    // reserves for the home indicator.
                     clearance = view.bounds.maxY - bar.minY
                 }
             }
@@ -516,11 +416,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             webView.evaluateJavaScript(
                 "document.documentElement.classList.toggle('floating-tabs', \(usesFloatingTopBar))")
         }
-        // A foldable's cover screen hangs the bar down one edge, in a column
-        // that also carries the clock or camera island. Which edge UIKit picks
-        // follows the device's landscape direction. The page runs under that
-        // column too and is told which part of it is free: below the system
-        // chrome and above the bar's platter of items.
         var rail: CGRect?
         var sideBar = false
         var columnReserve = UIEdgeInsets.zero
@@ -539,9 +434,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             if sideBar, let items = itemsPlatter(in: column) {
                 let top = railTop(in: column, above: items.minY)
                 if items.minY - top >= Self.minimumRailHeight {
-                    // Centred on the platter, not the column: the platter
-                    // sits a few points off the bar's frame, and the page's
-                    // controls stand in line with it.
                     rail = CGRect(x: items.midX - column.width / 2 - view.bounds.minX, y: top,
                                   width: column.width, height: items.minY - top)
                     platterInset = barOnLeading ? items.midX - column.midX : column.midX - items.midX
@@ -559,11 +451,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                                                   direction: view.effectiveUserInterfaceLayoutDirection) {
                 let bottom = view.bounds.maxY - view.safeAreaInsets.bottom
                 let top = railTop(in: column, above: bottom)
-                // Reader transport and its secondary actions need 248pt,
-                // plus the web rail's 8pt padding at each end.
                 if bottom - top >= 264 {
-                    // In line with the clock above it and the bar's items
-                    // before they were hidden, a few points off the centre.
                     let onLeft = column.minX <= view.bounds.minX + 0.5
                     let midX = column.midX + (onLeft ? platterInset : -platterInset)
                     rail = CGRect(x: midX - column.width / 2 - frame.minX, y: top,
@@ -593,26 +481,16 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             webView.evaluateJavaScript(script)
         }
         if !sideBar {
-            // A phone's landscape notch margin is not a column either. The
-            // page runs under it and insets its own content by the safe area,
-            // as it already does with the bar hidden; trimming the web view
-            // left flat strips of container color beside a textured page.
             frame.origin.x = view.bounds.minX
             frame.size.width = view.bounds.width
         }
         let insets = [frame.minY, frame.maxY - view.bounds.height,
                       frame.minX, frame.maxX - view.bounds.width]
-        // These constraints always belong to the root, never a transient tab
-        // host. Updating constants also keeps the same WebView and its focus.
         for (constraint, inset) in zip(contentConstraints, insets) where constraint.constant != inset {
             constraint.constant = inset
         }
     }
 
-    /// What the page's safe area still lacks of a side column it runs under.
-    /// The cover screen's column also carries the clock, so the window's safe
-    /// area already excludes it. Beside another app the column holds only the
-    /// bar, and nothing else keeps the page's content out from under it.
     static func sideColumnReserve(width: CGFloat, onLeft: Bool, safeArea: UIEdgeInsets) -> UIEdgeInsets {
         var reserve = UIEdgeInsets.zero
         if onLeft {
@@ -627,8 +505,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     @available(iOS 27.1, *)
     static func hiddenRailColumn(in bounds: CGRect, insets: UIEdgeInsets,
                                  edge: UIVerticalBarEdge, direction: UIUserInterfaceLayoutDirection) -> CGRect? {
-        // A notch can have a large inset too. Only the system's bar edge
-        // identifies a column available to the reader when its tabs are hidden.
         guard edge == .leading || edge == .trailing else { return nil }
         let left = (edge == .leading) == (direction == .leftToRight)
         let width = left ? insets.left : insets.right
@@ -638,8 +514,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     }
     #endif
 
-    /// Where the free part of a side column starts: below the clock and
-    /// anything else the system sets at the top of it.
     private func railTop(in column: CGRect, above limit: CGFloat) -> CGFloat {
         var top = view.safeAreaInsets.top
         #if compiler(>=6.4)
@@ -653,10 +527,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         return top
     }
 
-    /// The platter holding a side-hung bar's items. Like iPad's floating bar,
-    /// it is not drawn inside `tabBar`, so it is found by where it sits: the
-    /// first visible view in the bar's column that is a control's height
-    /// rather than the column's.
     private func itemsPlatter(in column: CGRect) -> CGRect? {
         var queue: [UIView] = navigation.view.subviews
         while !queue.isEmpty {
@@ -681,9 +551,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         guard !configuring, let host = hosts[id] else { return }
         content.view.isHidden = false
         layoutContent(in: host)
-        // UIKit can deliver both delegate callbacks for one interaction.
-        // Coalesce them without suppressing a later re-tap of the active tab
-        // (Shelf uses that gesture to leave the bookstore catalogue).
         guard selectionThisTurn != id else { return }
         selectionThisTurn = id
         requestedSelection = id
@@ -700,8 +567,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
 
     @available(iOS 18.0, *)
     func tabBarController(_ tabBarController: UITabBarController, didSelectTab selectedTab: UITab, previousTab: UITab?) {
-        // The tab identifier is the route; controller loading and identity
-        // must not determine whether the web screen receives navigation.
         selectContent(id: selectedTab.identifier)
     }
 

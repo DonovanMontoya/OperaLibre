@@ -1,12 +1,6 @@
 import Capacitor
 import UIKit
 
-/// The phone window.
-///
-/// The app only needs a scene delegate because CarPlay does: an app that
-/// declares a CarPlay scene has to declare its own window scene too. UIKit
-/// builds the bridge from `Main.storyboard`; the navigation host keeps that
-/// same bridge alive through tab changes.
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
 
@@ -18,8 +12,6 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         if let content = window?.rootViewController as? ViewController {
             window?.rootViewController = NativeTabsController(content: content)
         }
-        // Anything still reaching for `AppDelegate.window` — Capacitor plugins
-        // included — finds the scene's window there.
         if let delegate = UIApplication.shared.delegate as? AppDelegate {
             delegate.window = window
         }
@@ -32,7 +24,6 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
-        // Display changes may finish while the scene is backgrounded.
         (window?.rootViewController as? NativeTabsController)?.contentDidLayout(force: true)
     }
 

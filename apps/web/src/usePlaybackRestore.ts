@@ -24,14 +24,8 @@ import { getProgress, getServerStorageKey, saveProgress } from "./api";
 import type { LibraryProgressReplay, PendingSeek } from "./playbackTypes";
 import { acknowledgeProgressSeekIntent, progressSeekStorage, progressSeekOptions, readProgressSeekIntent } from "./progressSeekIntent";
 
-// The restore effect's own /progress reads; local copies cover the wait.
 const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
 
-/**
- * Restores the position when a book becomes the playing book: it resumes at
- * once from the freshest copy on the device, then reconciles with the server
- * (retrying a failed fetch) and sends a newer local copy back to it.
- */
 export function usePlaybackRestore({
   acknowledgedServerPositionRef,
   currentUser,
@@ -99,9 +93,6 @@ export function usePlaybackRestore({
     setRestoredPlaybackBookId(null);
     if (!startupViewReadyRef.current) startupProgressAppliedRef.current = false;
     if (explicitSessionStartBookIdRef.current === playbackBook.id) {
-      // A shelf play/restart chose this pending position deliberately. It is
-      // the beginning of a new session, not a request to restore the previous
-      // session (especially important for "Read it again" on a finished book).
       explicitSessionStartBookIdRef.current = null;
       restoredProgressBookId.current = playbackBook.id;
       setRestoredPlaybackBookId(playbackBook.id);
@@ -115,8 +106,6 @@ export function usePlaybackRestore({
     const restoreVersion = progressMutationVersion.current;
     const restoreActionVersion = playbackActionVersionRef.current;
     const restoreCancelGeneration = playCancelGenerationRef.current;
-    // Starting a paused book must still accept the server position while the
-    // initial restore is pending. Deliberate seeks release this gate.
     resumeReconciliationBookIdRef.current = playbackBook.id;
     const applyProgress = (progress: Progress | null, canonical = false) => {
       if (
@@ -130,15 +119,9 @@ export function usePlaybackRestore({
       setCurrentTrackId(location?.trackId ?? null);
       setPendingSeek(location);
       if (progress && canonical && location && playbackBook.source !== "device") {
-        // The canonical target now owns the pending seek, so new playback
-        // may safely use its revision, including after a rejected save.
         storeCanonicalServerProgress(playbackBook, { ...progress, accepted: undefined });
-        // The rejected playhead has been replaced. Keeping its marker would
-        // let a later foreground return discard new offline listening.
         overruledSaveRef.current.delete(playbackBook.id);
       }
-      // Show the restored time immediately; the media element seeks to it
-      // once metadata loads.
       setPosition(location?.positionSeconds ?? 0);
       const restoredTrack = location
         ? playbackBook.tracks.find((track) => track.id === location.trackId)
@@ -147,30 +130,21 @@ export function usePlaybackRestore({
       restoredProgressBookId.current = playbackBook.id;
       setRestoredPlaybackBookId(playbackBook.id);
       startupProgressAppliedRef.current = true;
-      // The restored track and position are now known, so a queued shelf
-      // Resume can safely play: both places that consume this flag apply the
-      // pending seek before starting.
       if (armResumeAutoplay && playCancelGenerationRef.current === restoreCancelGeneration) {
         playWhenTrackLoads.current = true;
         resumeAutoplayPendingRef.current = true;
       }
-      // These updates are batched. The short quiet window also absorbs a
-      // fresher server reply or native metadata before the overlay leaves.
       scheduleStartupReveal();
     };
 
     void (async () => {
       const libraryReplay = libraryProgressReplaysRef.current.get(playbackBook.id);
-      // Independent local stores can answer concurrently; preserve the same
-      // freshest-copy reconciliation after both have completed.
       const [recoveredNative, cached] = await Promise.all([
         nativeAudio
           ? getNativeAudioRecovery(nativeAudioRecoveryScope(currentUser.id, playbackBook.id)).catch(() => null)
           : Promise.resolve(null),
         getCachedProgress(currentUser.id, playbackBook.id).catch(() => null)
       ]);
-      // A clip preview the app never came back from leaves the native
-      // checkpoint at the clip. The listener's place was saved before it began.
       const previewStartedAt = interruptedClipPreviewStart(
         window.localStorage, getServerStorageKey(), currentUser.id, playbackBook.id
       );
@@ -204,16 +178,10 @@ export function usePlaybackRestore({
       const localCopies = [mappedDevice, checkpoint, cached];
       const previousLocal = freshestProgress(...localCopies);
       if (nativeProgress) {
-        // Loading a paused native player can refresh its recovery timestamp.
-        // An unchanged acknowledged position is not new listening: uploading
-        // it would replace another device's recording merely by opening the app.
         const unchangedAcknowledgedPosition = previousLocal?.syncStatus === "synced"
           && nativeProgress.trackId === previousLocal.trackId
           && Math.abs(nativeProgress.positionSeconds - previousLocal.positionSeconds) <= 0.01
           && Math.abs(nativeProgress.bookPositionSeconds - previousLocal.bookPositionSeconds) <= 0.01;
-        // Compare with the surviving local copy, not superseded legacy mirrors
-        // that may still carry server time. Unmarked recovery retains its old
-        // timestamp ordering; acknowledgements contribute only recording time.
         const recordedAt = previousLocal?.localUpdatedAt
           ?? (previousLocal?.syncStatus !== "synced" ? previousLocal?.updatedAt : undefined);
         nativeProgress = unchangedAcknowledgedPosition
@@ -221,8 +189,6 @@ export function usePlaybackRestore({
           ? null
           : pendingProgress(nativeProgress, previousLocal,
               previousLocal?.syncStatus ? serverRevisionFromSummary(playbackBook.progress) : undefined);
-        // Recovery without an observed revision keeps legacy timestamp checks;
-        // the current shelf revision was fetched after this listening happened.
         if (nativeProgress && !previousLocal?.syncStatus) nativeProgress.baseUpdatedAt = undefined;
       }
       if (!nativeAudio && !cancelled && previewStartedAt !== null) {
@@ -234,36 +200,19 @@ export function usePlaybackRestore({
         applyProgress(local);
         return;
       }
-      // Progress saved on the device or while disconnected can be newer than
-      // the server. Resume from the freshest copy and converge the server.
       let freshestLocal = freshestProgress(...localCopies, nativeProgress);
-      // The summary embedded in the library listing is also the server's
-      // copy. It backstops a failed or empty progress fetch — without it, a
-      // fresh install that hits one failed request opens the book at zero and
-      // the next save wipes the real position on the server too.
       const listed = progressFromBookSummary(playbackBook.id, playbackBook.progress);
       const seekIntent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, playbackBook.id);
       const optimisticSeekOptions = freshestLocal ? progressSeekOptions(seekIntent, freshestLocal, listed?.bookPositionSeconds) : null;
-      // Resume from the best copy already on the device before asking the
-      // server. Waiting on that request left the player at 0:00 for the whole
-      // network timeout whenever the server was unreachable. A near-zero
-      // local copy that outranks substantial listed progress by timestamp
-      // alone is distrusted the same way the reconciliation below distrusts
-      // it — showing 0:00 here is what tempts a listener to "fix" it.
       const optimistic = !optimisticSeekOptions?.intentionalRegression && isSuspectProgressReset(freshestLocal, listed)
         ? listed
         : freshestProgress(freshestLocal, listed);
       applyProgress(optimistic, optimistic === listed || optimistic?.syncStatus === "synced");
-      // Show native recovery immediately, but let a library save already in
-      // flight finish before uploading it. Only an accepted save from this
-      // local baseline can advance the recovery checkpoint's revision.
       if (libraryReplay) {
         const replayed = await libraryReplay.catch(() => null);
         if (cancelled || playbackActionVersionRef.current !== restoreActionVersion) return;
         if (freshestLocal && replayed) {
           let rebased = freshestLocal;
-          // Recovery may join after several saves advanced the revision while
-          // its on-disk copy still carries an earlier base in that same chain.
           for (const { attempted, saved } of replayed.acknowledgements) {
             rebased = rebasePendingProgress(rebased, attempted, saved);
           }
@@ -272,8 +221,6 @@ export function usePlaybackRestore({
             const acknowledgedReplay = readProgressCheckpoint(
               window.localStorage, getServerStorageKey(), currentUser.id, playbackBook.id
             );
-            // Advance the captured journal only when it holds this response;
-            // a concurrent local edit must still win the later save.
             if (acknowledgedReplay?.syncStatus === "synced"
               && acknowledgedReplay.updatedAt === replayed.saved.updatedAt) {
               checkpoint = acknowledgedReplay;
@@ -283,12 +230,6 @@ export function usePlaybackRestore({
       }
       let server: Progress | null = null;
       let serverReachable = true;
-      // One failed fetch must not strand this device on a stale or empty
-      // copy — that is how a second device ends up at 0:00 and later pushes
-      // it over real progress. Retry briefly before reconciling.
-      // Each attempt is capped well below the client's 30 s default: local
-      // copies cover the wait, and no server checkpoint is queued until the
-      // window closes, so a long one is listening that goes unsynced.
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
           server = await getProgress(playbackBook.id, RESTORE_PROGRESS_TIMEOUT_MS);
@@ -306,9 +247,6 @@ export function usePlaybackRestore({
         return;
       }
       if (playbackActionVersionRef.current !== restoreActionVersion) {
-        // The listener already moved playback in this session; their live
-        // position and its queued saves outrank whatever this late fetch
-        // returned, and re-applying it would yank playback.
         return;
       }
       const lastKnownServer = server ?? listed;
@@ -354,14 +292,7 @@ export function usePlaybackRestore({
               currentUser.id,
               playbackBook.id
             );
-            // Native/cache recovery can be newer than the synchronous
-            // journal without having written it. An unchanged original
-            // journal is not a competing edit made during this request.
             const originalJournalUnchanged = progressAfterSave(currentCheckpoint, checkpoint, saved) === saved;
-            // The library's reconnect replay can answer the same checkpoint
-            // first and heal the journal to this very response. A synced
-            // copy at the revision just returned is agreement, not a
-            // competing edit: edits made during a request are always pending.
             const journalHealed = !originalJournalUnchanged
               && currentCheckpoint?.syncStatus === "synced"
               && currentCheckpoint.updatedAt === saved.updatedAt
@@ -374,10 +305,6 @@ export function usePlaybackRestore({
               target = saved;
               targetIsCanonical = true;
             } else if (journalHealed) {
-              // The journal already holds this response, so nothing is
-              // stored: recording a refusal again would mark an overruled
-              // save that never happened. Applying the target below stores
-              // the canonical copy without that marker.
               serverCorrectedLocal = saved.accepted === false || saved.trackId !== freshestLocal.trackId
                 || Math.abs(saved.bookPositionSeconds - freshestLocal.bookPositionSeconds) > 0.01;
               target = saved;
@@ -388,9 +315,6 @@ export function usePlaybackRestore({
           }
         }
       }
-      // Re-seek only when the reconciled copy is genuinely fresher than what
-      // was already applied (or the applied copy was a distrusted reset);
-      // re-applying an equal copy would yank playback.
       if (
         !optimistic ||
         suspectLocalReset ||
@@ -401,9 +325,6 @@ export function usePlaybackRestore({
         applyProgress(target, targetIsCanonical);
       }
     })().finally(() => {
-      // Let React commit a final reconciled seek before timeupdate is allowed
-      // to persist again; otherwise the optimistic media clock can win the
-      // narrow gap between setPendingSeek and its render.
       window.setTimeout(() => {
         if (resumeReconciliationBookIdRef.current === playbackBook.id) {
           resumeReconciliationBookIdRef.current = null;

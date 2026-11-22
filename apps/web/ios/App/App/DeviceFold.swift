@@ -1,10 +1,6 @@
 import Capacitor
 import UIKit
 
-/// Sits over the web view at its exact bounds, so its coordinate space is the
-/// page's CSS viewport. It takes no touches; it only notices when the fold may
-/// have moved (a rotation or resize lays it out again) and hosts the hinge
-/// interaction.
 private final class FoldProbeView: UIView {
     var onChange: (() -> Void)?
 
@@ -19,10 +15,6 @@ private final class FoldProbeView: UIView {
     }
 }
 
-/// Reports a foldable iPhone's posture and where its fold crosses the page, so
-/// the web layout can keep content off the crease and split across the two
-/// halves. Devices without a hinge never send anything, and the page keeps its
-/// ordinary layout.
 @objc(DeviceFoldPlugin)
 public class DeviceFoldPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "DeviceFoldPlugin"
@@ -96,8 +88,6 @@ public class DeviceFoldPlugin: CAPPlugin, CAPBridgedPlugin {
               frame.width > 0 || frame.height > 0,
               frame.minX.isFinite, frame.minY.isFinite,
               frame.maxX.isFinite, frame.maxY.isFinite else { return false }
-        // A multitasking window can occupy just one side of the display.
-        // Only split the page when the region leaves room on both sides.
         if frame.height >= frame.width {
             return frame.minX > bounds.minX && frame.maxX < bounds.maxX
                 && frame.maxY > bounds.minY && frame.minY < bounds.maxY

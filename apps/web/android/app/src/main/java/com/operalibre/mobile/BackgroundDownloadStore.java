@@ -12,7 +12,6 @@ final class BackgroundDownloadStore {
     private static final String PREFERENCES = "operalibre-background-downloads";
     private static final String PREFIX = "job.";
 
-    /** A stored job together with the id it is filed under. */
     static final class PendingJob {
         final String jobId;
         final JSONObject job;
@@ -35,7 +34,6 @@ final class BackgroundDownloadStore {
         preferences(context).edit().putString(PREFIX + jobId, job.toString()).apply();
     }
 
-    /** An old worker must never write into a replacement with the same book ID. */
     static synchronized boolean saveIfPresent(Context context, String jobId, JSONObject job) {
         if (!isCurrent(context, jobId, job)) return false;
         preferences(context).edit().putString(PREFIX + jobId, job.toString()).apply();
@@ -61,10 +59,6 @@ final class BackgroundDownloadStore {
         preferences(context).edit().remove(PREFIX + jobId).apply();
     }
 
-    /**
-     * The oldest job still waiting to transfer. Jobs left in {@code running} by a
-     * killed process are picked up again so their download resumes.
-     */
     static synchronized PendingJob nextPending(Context context) {
         PendingJob oldest = null;
         long oldestQueuedAt = Long.MAX_VALUE;

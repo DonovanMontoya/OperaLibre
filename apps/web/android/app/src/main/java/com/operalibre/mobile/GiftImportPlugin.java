@@ -16,7 +16,6 @@ import java.util.concurrent.Executors;
 import android.webkit.WebView;
 import android.webkit.RenderProcessGoneDetail;
 
-/** Disabled until the transfer, manifest trust and library recovery are reviewed. */
 @CapacitorPlugin(name = "GiftImport")
 public final class GiftImportPlugin extends Plugin {
     private static final boolean ENABLED = false;
@@ -26,7 +25,7 @@ public final class GiftImportPlugin extends Plugin {
         @Override public void onPageStarted(WebView view) { getBridge().execute(documents::reset); }
         @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
             getBridge().execute(documents::reset);
-            return false; // The host retains responsibility for renderer recovery.
+            return false;
         }
     };
 

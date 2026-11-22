@@ -6,10 +6,6 @@ import { updateNativeAudioNowPlaying } from "./nativeAudio";
 import type { Book, Track } from "./types";
 import type { ChapterSegment } from "./chapters";
 
-/**
- * Publishes the playing book, chapter and artwork to the lock screen and
- * Control Center.
- */
 export function useNowPlaying({
   activeChapter,
   activeTrackIndex,
@@ -80,8 +76,6 @@ export function useNowPlaying({
         .filter((chapter) => chapter.trackId === currentTrack.id)
         .map((chapter) => ({
           title: chapter.title,
-          // AVPlayer's clock is relative to the current audio file, while
-          // chapter markers are relative to the whole book.
           startSeconds: chapter.startSeconds - trackOffset,
           durationSeconds: chapter.durationSeconds
         }))

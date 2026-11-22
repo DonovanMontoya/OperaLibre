@@ -1,16 +1,3 @@
-//! MP4 "faststart" maintenance.
-//!
-//! An MP4/M4B file written without `-movflags +faststart` keeps its `moov`
-//! index *after* the audio data, so a player has to fetch the end of the file
-//! (or, over a slow link, most of it) before it can start. Rewriting the
-//! container fixes that without touching the audio itself.
-//!
-//! Conversion is never done in place. Each candidate is remuxed with `-c copy`
-//! into a temporary file, verified (box order, size, duration, stream and
-//! chapter layout), and only then swapped over the original with an atomic
-//! rename. A hard link keeps the original reachable until the swap succeeds,
-//! so a crash mid-conversion can never leave a book missing.
-
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -18,35 +5,18 @@ use std::time::{Duration, Instant};
 
 use crate::util::{find_on_path, random_hex_id};
 
-/// Extensions that use the ISO base media container — the only ones where a
-/// faststart layout means anything. MP3/FLAC/OGG stream from byte zero.
 const MP4_EXTENSIONS: &[&str] = &["m4a", "m4b", "mp4"];
 
-/// Prefix shared by the temporary and backup files conversion creates. Library
-/// scans skip it, so a half-written remux is never mistaken for a book.
 pub const TEMP_PREFIX: &str = ".operalibre-faststart-";
 
-/// A conversion is refused unless the volume keeps this much room beyond the
-/// copy it is about to write.
 pub const MIN_FREE_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Guards against walking a pathological file forever.
 const MAX_BOXES: usize = 4_096;
 
-/// A verified remux must stay within this fraction of the source duration.
 const DURATION_TOLERANCE_SECONDS: f64 = 1.0;
 
-/// ffprobe reads only headers and the index. Two minutes is the bound the
-/// loudness scan gives one decode window, far beyond a healthy probe even over
-/// a slow network share.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// A `-c copy` remux is disk-bound rather than CPU-bound: ffmpeg reads the
-/// book once and `+faststart` rewrites the output again to move the index
-/// forward, so the bound has to grow with the file. It starts from the ten
-/// minutes alignment allows one chapter extraction and adds a second per MiB,
-/// a rate below an SD card or a NAS share over Wi-Fi, so a multi-gigabyte book
-/// on a Raspberry Pi still finishes while a hung ffmpeg is stopped.
 const REMUX_BASE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const REMUX_MIN_BYTES_PER_SECOND: u64 = 1024 * 1024;
 
@@ -62,7 +32,6 @@ pub fn is_mp4_file(path: &Path) -> bool {
         })
 }
 
-/// True for the temporary and backup files this module writes beside a book.
 pub fn is_work_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -71,12 +40,8 @@ pub fn is_work_file(path: &Path) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
-    /// `moov` comes before `mdat`: the file streams from the first bytes.
     Faststart,
-    /// `mdat` comes before `moov`: worth converting.
     Trailing,
-    /// Not an MP4 container, or one whose box structure did not add up.
-    /// Never converted — a file we cannot read confidently is left alone.
     Unknown,
 }
 
@@ -86,9 +51,6 @@ pub fn inspect(path: &Path) -> io::Result<Layout> {
     inspect_boxes(&mut file, size)
 }
 
-/// Walks the top-level box chain far enough to learn whether `moov` precedes
-/// `mdat`. Only box headers are read, so the cost is a handful of seeks even
-/// on a multi-gigabyte file.
 pub fn inspect_boxes<R: Read + Seek>(reader: &mut R, size: u64) -> io::Result<Layout> {
     let mut offset = 0_u64;
     let mut seen_mdat = false;
@@ -111,8 +73,6 @@ pub fn inspect_boxes<R: Read + Seek>(reader: &mut R, size: u64) -> io::Result<La
         ]));
         let box_type = [header[4], header[5], header[6], header[7]];
 
-        // The first box of an ISO base media file is `ftyp`. Anything else
-        // means this is not a container we should be rewriting.
         if index == 0 && &box_type != b"ftyp" {
             return Ok(Layout::Unknown);
         }
@@ -132,12 +92,9 @@ pub fn inspect_boxes<R: Read + Seek>(reader: &mut R, size: u64) -> io::Result<La
             box_size = u64::from_be_bytes(extended);
             header_len = 16;
         } else if box_size == 0 {
-            // A zero size means "runs to the end of the file".
             box_size = size - offset;
         }
 
-        // A box that claims to be shorter than its own header, or to run past
-        // the end of the file, means a truncated or corrupt file.
         if box_size < header_len || offset.saturating_add(box_size) > size {
             return Ok(Layout::Unknown);
         }
@@ -157,20 +114,15 @@ pub fn inspect_boxes<R: Read + Seek>(reader: &mut R, size: u64) -> io::Result<La
         offset += box_size;
     }
 
-    // Media data with no index behind it is not a file to rewrite.
     Ok(Layout::Unknown)
 }
 
 #[derive(Debug, Clone)]
 pub struct Tools {
     pub ffmpeg: PathBuf,
-    /// Optional: without it a conversion is verified by container layout and
-    /// size alone, which is weaker, so its absence is surfaced to the admin.
     pub ffprobe: Option<PathBuf>,
 }
 
-/// Resolves the configured or `PATH`-provided ffmpeg toolchain. Returns `None`
-/// when ffmpeg is missing, which disables the whole feature.
 pub fn discover_tools(ffmpeg: Option<PathBuf>, ffprobe: Option<PathBuf>) -> Option<Tools> {
     let ffmpeg = ffmpeg
         .filter(|path| path.is_file())
@@ -182,8 +134,6 @@ pub fn discover_tools(ffmpeg: Option<PathBuf>, ffprobe: Option<PathBuf>) -> Opti
     Some(Tools { ffmpeg, ffprobe })
 }
 
-/// ffprobe normally ships beside ffmpeg, including in the static builds people
-/// unpack outside `PATH`.
 fn sibling_tool(ffmpeg: &Path, name: &str) -> Option<PathBuf> {
     let parent = ffmpeg.parent()?;
     let suffix = if ffmpeg
@@ -203,14 +153,10 @@ fn sibling_tool(ffmpeg: &Path, name: &str) -> Option<PathBuf> {
 pub struct MediaSummary {
     pub duration_seconds: Option<f64>,
     pub audio_streams: usize,
-    /// Cover art (and, in principle, real video). Counted separately from the
-    /// data tracks, which the remux deliberately regenerates.
     pub video_streams: usize,
     pub chapters: usize,
 }
 
-/// Reads the stream/chapter layout of a file. `None` when ffprobe is absent or
-/// its output could not be parsed.
 pub fn probe(tools: &Tools, path: &Path) -> Option<MediaSummary> {
     let ffprobe = tools.ffprobe.as_ref()?;
     let output = Command::new(ffprobe)
@@ -263,20 +209,18 @@ pub fn probe(tools: &Tools, path: &Path) -> Option<MediaSummary> {
     })
 }
 
-/// Why a candidate was rejected before or after the remux ran. Every variant
-/// leaves the original file exactly as it was.
 #[derive(Debug)]
 pub enum ConversionError {
-    /// The volume cannot hold a second copy of the file.
     NotEnoughSpace {
         needed_bytes: u64,
         available_bytes: u64,
     },
-    /// ffmpeg exited non-zero.
-    Remux { message: String },
-    /// The remux finished but the result did not match the original.
-    Verification { message: String },
-    /// Something went wrong reading, writing, or renaming.
+    Remux {
+        message: String,
+    },
+    Verification {
+        message: String,
+    },
     Io(io::Error),
 }
 
@@ -311,14 +255,9 @@ impl From<io::Error> for ConversionError {
 pub struct Converted {
     pub before_bytes: u64,
     pub after_bytes: u64,
-    /// False when ffprobe was unavailable, so only the container layout and
-    /// size could be checked.
     pub duration_verified: bool,
 }
 
-/// Remuxes one file to a faststart layout and swaps it in.
-///
-/// Blocking: run this on a blocking task, not on a runtime worker.
 pub fn convert_in_place(
     tools: &Tools,
     path: &Path,
@@ -351,8 +290,6 @@ fn convert_in_place_within(
     }
 
     let before = probe(tools, path);
-    // The temporary file keeps the source extension so ffmpeg picks the same
-    // muxer it would have used for the real name (`ipod` for m4a/m4b).
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
@@ -373,15 +310,10 @@ fn convert_in_place_within(
     if result.is_err() {
         let _ = std::fs::remove_file(&temp_path);
     }
-    // The backup only exists to survive a crash between the two renames; once
-    // the swap has returned either way it is redundant.
     let _ = std::fs::remove_file(&backup_path);
     result
 }
 
-/// The file a conversion started from. Checked again just before the swap, so
-/// a link or a different file put at the same name while ffmpeg ran is never
-/// replaced by, or turned into, the remux.
 struct Original {
     resolved: PathBuf,
     handle: same_file::Handle,
@@ -430,11 +362,6 @@ fn remux_and_swap(
         .args(crate::library::FFMPEG_TRACK_INPUT_OPTIONS)
         .arg("-i")
         .arg(path)
-        // Audio and cover art are copied verbatim. Data tracks are left out on
-        // purpose: an Audible-derived M4B carries its chapter list twice, once
-        // as real chapters and once as a QuickTime `bin_data` text track that
-        // the mp4/ipod muxer refuses to write back. `-map_chapters` rebuilds
-        // that track from the chapter list, so nothing is lost.
         .arg("-map")
         .arg("0:a")
         .arg("-map")
@@ -472,15 +399,10 @@ fn remux_and_swap(
         });
     }
 
-    // Preserve the original's permissions: the swapped-in file has to stay
-    // readable by whoever could read the book before.
     if let Ok(metadata) = std::fs::metadata(path) {
         let _ = std::fs::set_permissions(temp_path, metadata.permissions());
     }
 
-    // A hard link costs nothing and keeps the original content reachable if
-    // the process dies during the rename below. Filesystems that refuse it
-    // still get the atomic replace, just without the crash net.
     let linked = std::fs::hard_link(path, backup_path).is_ok();
     if let Err(error) = std::fs::rename(temp_path, path) {
         if linked && !path.exists() {
@@ -499,8 +421,6 @@ fn remux_and_swap(
     })
 }
 
-/// Rejects any remux that does not look like the same audiobook. The original
-/// is only replaced once every check here passes.
 fn verify(
     before_bytes: u64,
     after_bytes: u64,
@@ -512,8 +432,6 @@ fn verify(
     if after_bytes == 0 {
         return reject("the converted file was empty".to_string());
     }
-    // A remux moves bytes around; it does not shed half the file. This catches
-    // a truncated write that still parsed.
     if after_bytes < before_bytes / 2 {
         return reject(format!(
             "the converted file is {after_bytes} bytes against {before_bytes} in the original"
@@ -521,8 +439,6 @@ fn verify(
     }
 
     let (Some(before), Some(after)) = (before, after) else {
-        // No ffprobe: the layout check in the caller plus the size floor is
-        // all the evidence available.
         return Ok(());
     };
 
@@ -570,9 +486,6 @@ fn command_message(output: &std::process::Output) -> String {
     }
 }
 
-/// `Command::output` with a deadline. A child still running when it passes is
-/// killed and reaped before this returns, so nothing keeps writing to a file
-/// the caller is about to remove.
 trait OutputWithin {
     fn output_within(&mut self, timeout: Duration) -> io::Result<Output>;
 }
@@ -595,8 +508,6 @@ impl OutputWithin for Command {
                 waited => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    // The drain threads end once the pipes close. They are not
-                    // joined, in case something the child started holds them.
                     waited?;
                     let program = Path::new(self.get_program());
                     return Err(io::Error::new(
@@ -618,8 +529,6 @@ impl OutputWithin for Command {
     }
 }
 
-/// Reads a child's pipe on its own thread, so a chatty child never stalls on a
-/// full pipe while its caller waits for it to exit.
 fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
@@ -630,9 +539,6 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<V
     })
 }
 
-/// Removes temporary and backup files a previous run left behind after a
-/// crash. Only called with the conversion lock held, so anything matching is
-/// known to be stale.
 pub fn sweep_work_files(directory: &Path) -> usize {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return 0;
@@ -685,7 +591,6 @@ mod tests {
     #[test]
     fn sixty_four_bit_mdat_size_is_followed() {
         let mut bytes = box_bytes(b"ftyp", 16);
-        // size == 1 means the real length follows the type as a u64.
         bytes.extend(1_u32.to_be_bytes());
         bytes.extend_from_slice(b"mdat");
         bytes.extend((16_u64 + 40).to_be_bytes());
@@ -710,7 +615,6 @@ mod tests {
     #[test]
     fn a_truncated_box_is_left_alone() {
         let mut bytes = box_bytes(b"ftyp", 16);
-        // Claims far more payload than the file actually holds.
         bytes.extend(4096_u32.to_be_bytes());
         bytes.extend_from_slice(b"mdat");
         bytes.extend(std::iter::repeat_n(0_u8, 16));
@@ -801,9 +705,6 @@ mod tests {
         verify(1_000_000, 1_000_120, Some(&before), Some(&after)).expect("should accept");
     }
 
-    /// Builds an M4B with the stream layout Audible-derived books actually
-    /// have: AAC audio, the QuickTime `bin_data` chapter text track, embedded
-    /// cover art, and real chapters.
     fn write_audiobook_fixture(tools: &Tools, path: &Path) {
         let metadata_path = path.with_extension("ffmetadata");
         std::fs::write(
@@ -854,9 +755,6 @@ mod tests {
         std::fs::remove_file(metadata_path).unwrap();
     }
 
-    /// The layout that first broke conversion: the mp4/ipod muxer cannot copy
-    /// the `bin_data` chapter text track back, so it is dropped and rebuilt
-    /// from the chapter list instead.
     #[test]
     fn a_book_with_a_chapter_text_track_and_cover_art_converts() {
         let Some(tools) = discover_tools(None, None) else {
@@ -881,8 +779,6 @@ mod tests {
         assert_eq!(after.video_streams, before.video_streams);
     }
 
-    /// End to end against the real toolchain. Skipped where ffmpeg is not
-    /// installed, since the feature is disabled there anyway.
     #[test]
     fn a_real_file_is_converted_in_place_and_keeps_its_audio() {
         let Some(tools) = discover_tools(None, None) else {
@@ -910,7 +806,6 @@ mod tests {
             .expect("ffmpeg should run");
         assert!(created.success());
 
-        // ffmpeg writes a trailing moov unless asked for faststart.
         assert_eq!(inspect(&book).unwrap(), Layout::Trailing);
         let before = probe(&tools, &book);
 
@@ -929,8 +824,6 @@ mod tests {
             assert_eq!(before.audio_streams, after.audio_streams);
         }
 
-        // Nothing is left beside the book: the temporary remux was renamed
-        // over it and the crash-safety hard link was dropped.
         let leftovers = std::fs::read_dir(root.path())
             .unwrap()
             .filter_map(Result::ok)
@@ -939,9 +832,6 @@ mod tests {
         assert_eq!(leftovers, 0);
     }
 
-    /// Installs a stand-in ffmpeg. Copied into place with `cp` so no write
-    /// descriptor stays open in this process, which parallel tests forking
-    /// children would otherwise inherit ("Text file busy").
     #[cfg(unix)]
     fn stand_in_ffmpeg(directory: &Path, script: &str) -> Tools {
         use std::os::unix::fs::PermissionsExt;
@@ -969,7 +859,6 @@ mod tests {
     #[test]
     fn a_hung_remux_is_stopped_and_leaves_the_book_untouched() {
         let tools_dir = tempfile::tempdir().unwrap();
-        // Starts writing its output, then never finishes.
         let tools = stand_in_ffmpeg(
             tools_dir.path(),
             "#!/bin/sh\nfor last; do :; done\nprintf partial > \"$last\"\nexec sleep 600\n",
@@ -997,9 +886,6 @@ mod tests {
         assert!(remux_timeout(0) >= REMUX_BASE_TIMEOUT);
     }
 
-    /// The name is swapped for a link while ffmpeg runs. The conversion is
-    /// refused at the swap, so the link is not replaced with a copy of what it
-    /// points at, and that file is not rewritten.
     #[cfg(unix)]
     #[test]
     fn a_file_replaced_during_the_remux_is_not_swapped() {

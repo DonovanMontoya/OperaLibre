@@ -4,7 +4,6 @@ import java.io.File;
 import java.io.IOException;
 import java.util.Collection;
 
-/** Counts real retained files, including parts published before progress was saved. */
 final class BookDownloadBudget {
     static final long LIMIT = 25L * 1024 * 1024 * 1024;
     static final class Exceeded extends IOException {

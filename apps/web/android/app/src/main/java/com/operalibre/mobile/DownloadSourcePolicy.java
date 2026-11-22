@@ -6,18 +6,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * The single server a download job may fetch from: the origin of the server
- * address the app is connected to, plus any base path that address carries
- * (a server behind a reverse-proxy subpath). Media URLs carry the access token
- * in their query string, so both the source and every redirect hop must stay
- * inside it. Matches the origin and base-path rule of
- * BackgroundDownloadAllowlist on iOS.
- */
 final class DownloadSourcePolicy {
     private final String origin;
     private final List<String> basePath;
-    // Still percent-escaped, so a saved address parses back to the same policy.
     private final String rawBasePath;
 
     private DownloadSourcePolicy(String origin, List<String> basePath, String rawBasePath) {
@@ -26,7 +17,6 @@ final class DownloadSourcePolicy {
         this.rawBasePath = rawBasePath;
     }
 
-    /** @return null when the address is not a usable http(s) server address. */
     static DownloadSourcePolicy forServer(String serverAddress) {
         if (serverAddress == null) return null;
         try {
@@ -42,7 +32,6 @@ final class DownloadSourcePolicy {
         }
     }
 
-    /** The policy jobs saved before the server address was stored fell back to. */
     static DownloadSourcePolicy forSourceOrigin(URL source) {
         String origin = origin(source);
         return origin == null ? null : new DownloadSourcePolicy(origin, new ArrayList<>(), "");
@@ -69,14 +58,9 @@ final class DownloadSourcePolicy {
         return scheme + "://" + host + ":" + port;
     }
 
-    /**
-     * Decoded, non-empty path segments, or null when any segment is a dot
-     * segment: a server resolves {@code /base/../other} outside the base path.
-     */
     private static List<String> pathSegments(URL url) {
         String path;
         try {
-            // URI decodes percent escapes, so %2e%2e is caught as a dot segment.
             path = new URI(url.toString()).getPath();
         } catch (Exception invalid) {
             return null;

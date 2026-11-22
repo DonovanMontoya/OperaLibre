@@ -60,8 +60,6 @@ public class BackgroundDownloadPlugin extends Plugin {
                 if (existing != null) {
                     String state = existing.optString("state", "");
                     if ("queued".equals(state) || "running".equals(state)) {
-                        // The queue worker may have been killed with the process, so
-                        // make sure one is scheduled before reporting the job live.
                         ensureQueueWorker();
                         call.resolve();
                         return;
@@ -128,16 +126,12 @@ public class BackgroundDownloadPlugin extends Plugin {
             try {
                 job = BackgroundDownloadStore.load(getContext(), jobId);
             } catch (Exception ignored) {
-                // Removing an unreadable record still invalidates its worker.
             }
-            // Invalidate before deleting. Enqueue and final-file promotion use
-            // this same lock, so cancellation cannot delete a replacement.
             BackgroundDownloadStore.remove(getContext(), jobId);
             if (job != null) {
                 try {
                     OfflineDownloadWorker.deleteDownloadFiles(getContext(), job);
                 } catch (Exception ignored) {
-                    // The old worker cleans up its attempt-specific partial.
                 }
             }
         }
@@ -152,9 +146,6 @@ public class BackgroundDownloadPlugin extends Plugin {
             .setConstraints(constraints)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
             .build();
-        // KEEP joins the worker already draining the queue instead of chaining a
-        // new request behind it; a chain would cancel every book queued after
-        // one that is cancelled or fails.
         WorkManager.getInstance(getContext()).enqueueUniqueWork(
             DOWNLOAD_QUEUE,
             ExistingWorkPolicy.KEEP,

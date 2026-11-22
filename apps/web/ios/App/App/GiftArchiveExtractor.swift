@@ -6,7 +6,6 @@ import Darwin
 import ZIPFoundation
 import Capacitor
 
-/// Staged extraction behind the experimental native-plugin compilation gate.
 enum GiftArchiveExtractor {
     struct Asset {
         let name: String
@@ -18,8 +17,6 @@ enum GiftArchiveExtractor {
     private static let minimumFree: UInt64 = 256 * 1024 * 1024
     private static let lock = NSLock()
 
-    /// Commits extracted files to a private directory. The caller must publish
-    /// the local-library index separately and recover an interrupted publication.
     static func extract(archiveURL: URL, privateRoot: URL, giftID: String, assets: [Asset]) throws -> URL {
         guard giftID.range(of: "^[A-Za-z0-9_-]{16,128}$", options: .regularExpression) != nil,
               !assets.isEmpty, assets.count <= 256 else { throw Failure.invalid }
@@ -90,10 +87,6 @@ enum GiftArchiveExtractor {
         }
     }
 
-    /// APPNOTE 4.3.14-16. Bound unsigned ZIP64 metadata before ZIPFoundation
-    /// builds its central-directory index. Only single-disk gift ZIPs apply.
-    /// This also permits ZIP64 local headers with an ordinary small directory,
-    /// as emitted by the server's large_file(true) stored-entry writer.
     static func validateDirectory(_ url: URL, expectedCount: Int) throws {
         guard expectedCount >= 1, expectedCount <= 256 else { throw Failure.invalid }
         let file = try FileHandle(forReadingFrom: url)
@@ -133,7 +126,6 @@ enum GiftArchiveExtractor {
             guard endOffset >= 76, zip64Offset <= endOffset - 76 else { throw Failure.invalid }
             let zip64 = try read(zip64Offset, 56)
             let recordSize = try number(zip64, 4, 8)
-            // Bound optional ZIP64 extensible metadata before library indexing.
             guard try number(zip64, 0, 4) == 0x06064b50, recordSize >= 44, recordSize <= 64 * 1024,
                   recordSize == endOffset - 20 - zip64Offset - 12,
                   try number(zip64, 14, 2) >= 45, try number(zip64, 16, 4) == 0,
@@ -208,8 +200,6 @@ enum GiftArchiveExtractor {
         guard cursor == directoryEnd else { throw Failure.invalid }
     }
 
-    /// Read only the selected descriptor under the caller's staging guard.
-    /// openat anchors the child to the no-follow directory descriptor.
     static func readMetadata(_ directory: URL, asset: Asset) throws -> String {
         let maximum: UInt64 = 256 * 1024
         guard asset.size > 0, asset.size <= maximum, !asset.name.isEmpty,
@@ -271,9 +261,6 @@ enum GiftArchiveExtractor {
     }
 }
 
-/// Durable bearer state, serialized across plugin instances and processes.
-/// No logs or bridge errors may contain records, paths, or underlying errors.
-/// Cleanup holds the separate staging lease lock before taking this record lock.
 enum GiftRecoveryStore {
     private static let lock = NSLock()
     private static let maxState = 16 * 1024
@@ -304,8 +291,6 @@ enum GiftRecoveryStore {
         var isDirectory: ObjCBool = false
         guard parent.resolvingSymlinksInPath().standardizedFileURL.path == parent.path,
               fm.fileExists(atPath: parent.path, isDirectory: &isDirectory), isDirectory.boolValue else { throw Failure.unavailable }
-        // The staged archives and their bearer sidecars must never enter device
-        // backups. Locked-device protection applies to the directory and files.
         var values = URLResourceValues(); values.isExcludedFromBackup = true
         try parent.setResourceValues(values)
         try fm.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: parent.path)
@@ -343,8 +328,6 @@ enum GiftRecoveryStore {
         }
     }
 
-    /// The caller holds the staging guard. Persistent lock files are never
-    /// unlinked: a replacement inode would split the cross-process lock.
     static func cleanup(giftID: String) throws {
         try locked(giftID) { parent in
             var files: [URL] = []
@@ -362,8 +345,6 @@ enum GiftRecoveryStore {
         }
     }
 
-    /// A nil previous record means create-if-absent after a successful claim.
-    /// A failed response after rename is ambiguous: callers must load again.
     static func compareAndSwap(giftID: String, previous: String?, next: String) throws -> Bool {
         try locked(giftID) { parent in
             let after = try validate(giftID: giftID, raw: next)
@@ -411,8 +392,6 @@ enum GiftRecoveryStore {
         let fd = open(temporary.path, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
         guard fd >= 0 else { throw Failure.unavailable }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true); defer { try? handle.close() }
-        // Validate a crash-left temporary inode before truncation, including its
-        // link count. A hard link must never let a write alter another file.
         _ = try regular(fd, limit: Int64(maxState))
         guard fchmod(fd, mode_t(0o600)) == 0 else { throw Failure.unavailable }
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: temporary.path)
@@ -423,9 +402,6 @@ enum GiftRecoveryStore {
         guard fsync(fd) == 0, rename(temporary.path, destination.path) == 0 else { throw Failure.unavailable }
         let directory = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directory >= 0 else { throw Failure.unavailable }; defer { close(directory) }
-        // EINVAL or any other sync failure remains an ambiguous write after
-        // rename. Do not report success without directory durability. Confirm
-        // support on the target iOS filesystem before enabling this plugin.
         guard fsync(directory) == 0 else { throw Failure.unavailable }
     }
 
@@ -491,8 +467,6 @@ enum GiftRecoveryStore {
     }
 }
 
-/// Native transfer ownership spans inspection, negotiation, appends and verify.
-/// The persistent flock is nonblocking and is released by close or process exit.
 enum GiftStagingStore {
     private enum Failure: Error { case unavailable }
     private static let lock = NSLock()
@@ -680,9 +654,6 @@ public final class GiftImportPlugin: CAPPlugin, CAPBridgedPlugin {
         queue.async { operation(owner) }
     }
 
-    // CapacitorBridge.reset invokes this Objective-C selector with nil on both
-    // navigation and content-process termination. A real JS listener call must
-    // not reset native transfer ownership. IUO accepts the bridge's nil call.
     public override func removeAllListeners(_ call: CAPPluginCall!) {
         if let call { super.removeAllListeners(call); return }
         eventListeners?.removeAllObjects()
@@ -693,8 +664,6 @@ public final class GiftImportPlugin: CAPPlugin, CAPBridgedPlugin {
             queue.async { GiftStagingStore.releaseOwner(owner) }
             return
         }
-        // Drain plugin invocations already queued by the previous document
-        // before placing the reset barrier on the private IO queue.
         concrete.dispatchQueue.async { [weak self] in
             guard let self else { return }
             self.documentLock.lock(); defer { self.documentLock.unlock() }

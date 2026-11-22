@@ -1,26 +1,7 @@
-//! An Audiobookshelf-shaped API, for third-party players.
-//!
-//! This module exposes discovery, sign-in, browsing, downloads, direct-play
-//! descriptors, and per-item progress. Compatibility depends on which parts
-//! of Audiobookshelf a client uses; full session synchronization, authorization
-//! discovery, and socket events are not implemented. See docs/client-compatibility.md.
-//!
-//! It is mounted under `/abs`, not at the root: Audiobookshelf puts `/api/me`
-//! and `/login` where OperaLibre already has its own, and quietly changing the
-//! meaning of an existing route to suit a foreign client would be worse than
-//! asking for a base URL with a path in it. Point the client at
-//! `https://your-server/abs`.
-//!
-//! This is a translation layer, not an emulation. Anything a client asks for
-//! that OperaLibre has no concept of is answered with the most honest empty
-//! value rather than an invention.
-
 use std::collections::BTreeSet;
 
 use crate::*;
 
-/// The single library OperaLibre presents. The server has one library root,
-/// so there is one library, and its id is fixed.
 pub(crate) const ABS_LIBRARY_ID: &str = "operalibre";
 
 #[derive(Debug, Serialize)]
@@ -60,10 +41,8 @@ pub(crate) struct AbsUser {
 pub(crate) struct AbsMediaProgress {
     id: String,
     library_item_id: String,
-    /// Seconds into the book, not into the current file.
     current_time: f64,
     duration: f64,
-    /// A fraction, the way Audiobookshelf reports it.
     progress: f64,
     is_finished: bool,
     last_update: u64,
@@ -101,8 +80,6 @@ pub(crate) struct AbsLibraryItem {
     id: String,
     library_id: &'static str,
     media_type: &'static str,
-    // Retain the flat aliases for older clients. Current ABS clients read
-    // metadata and progress from the nested media/userMediaProgress fields.
     kind: &'static str,
     title: String,
     author_name: Option<String>,
@@ -116,8 +93,6 @@ pub(crate) struct AbsLibraryItem {
     progress: Option<f64>,
     current_time: Option<f64>,
     is_finished: Option<bool>,
-    /// BookPlayer's detail decoder expects the expanded Audiobookshelf item
-    /// to carry the files at the item level as well as inside `media`.
     library_files: Vec<AbsLibraryFile>,
     user_media_progress: Option<AbsItemProgress>,
     media: AbsMedia,
@@ -177,7 +152,6 @@ pub(crate) struct AbsAudioFile {
     index: usize,
     ino: String,
     duration: f64,
-    /// Seconds into the whole book at which this file begins.
     start_offset: f64,
     title: String,
     content_url: String,
@@ -232,8 +206,6 @@ pub(crate) struct AbsProgressUpdate {
     current_time: Option<f64>,
     progress: Option<f64>,
     is_finished: Option<bool>,
-    /// Audiobookshelf timestamps checkpoints in epoch milliseconds. Keeping
-    /// it lets the native stale-write defense reject a delayed request.
     last_update: Option<u64>,
 }
 
@@ -279,7 +251,6 @@ pub(crate) struct AbsCollection {
     books: Vec<AbsLibraryItem>,
 }
 
-/// Where a track begins within the whole book, and how long it runs.
 fn track_offsets(book: &Book) -> Vec<(f64, f64)> {
     let mut offsets = Vec::with_capacity(book.tracks.len());
     let mut running = 0.0;
@@ -300,9 +271,6 @@ fn book_duration(book: &Book) -> f64 {
     })
 }
 
-/// Clamp a requested whole-book position to the book's length, when the
-/// length is known. A book whose tracks carry no durations reports zero, and
-/// clamping against that pinned every listener to the start of it.
 pub(crate) fn clamp_abs_book_position(position: f64, duration: f64) -> f64 {
     let position = position.max(0.0);
     if duration > 0.0 {
@@ -331,9 +299,6 @@ fn audio_files(book: &Book, media_token: &str) -> Vec<AbsAudioFile> {
             duration,
             start_offset,
             title: track.file_name.clone(),
-            // The media credential rides in the URL because a player handing
-            // the address to the platform's own audio stack cannot attach a
-            // header to it. It is read-only and derived from the session.
             content_url: format!(
                 "/api/books/{}/tracks/{}/stream?token={}",
                 book.id, track.id, media_token
@@ -362,9 +327,6 @@ fn chapters(book: &Book) -> Vec<AbsChapter> {
         .map(|(index, chapter)| AbsChapter {
             id: index,
             start: chapter.start_seconds,
-            // A chapter without a recorded end runs to the next one, or to the
-            // end of the book. Audiobookshelf clients draw a scrubber from
-            // these, and a zero-length chapter renders as a broken tick.
             end: chapter.end_seconds.unwrap_or_else(|| {
                 starts
                     .get(index + 1)
@@ -417,8 +379,6 @@ fn library_item(book: &Book, media_token: &str, include_audio_files: bool) -> Ab
         duration,
         subtitle: book.metadata.subtitle.clone(),
         series: series.clone(),
-        // OperaLibre does not currently retain library-item creation/update
-        // timestamps, so leave these optional ABS fields honest.
         added_at: None,
         updated_at: None,
         cover_path: cover_path.clone(),
@@ -489,8 +449,6 @@ fn library_item(book: &Book, media_token: &str, include_audio_files: bool) -> Ab
 
 fn media_progress(book: &Book, progress: &Progress) -> AbsMediaProgress {
     let duration = book_duration(book);
-    // Older rows may carry only a track offset; the native read path derives
-    // the whole-book position from it, and this one must report the same.
     let progress = &enrich_progress(book, progress);
     let current_time = progress.book_position_seconds;
     AbsMediaProgress {
@@ -540,7 +498,6 @@ fn abs_user(auth: &AuthUser, token: String, progress: Vec<AbsMediaProgress>) -> 
     }
 }
 
-/// `GET /abs/status`
 pub(crate) async fn abs_status(State(state): State<AppState>) -> Json<AbsStatusResponse> {
     Json(AbsStatusResponse {
         is_init: !state.users.read().await.users.is_empty(),
@@ -549,20 +506,16 @@ pub(crate) async fn abs_status(State(state): State<AppState>) -> Json<AbsStatusR
     })
 }
 
-/// `GET /abs/ping`
 pub(crate) async fn abs_ping() -> Json<AbsPingResponse> {
     Json(AbsPingResponse { success: true })
 }
 
-/// `POST /abs/login`
 pub(crate) async fn abs_login(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(payload): Json<LoginRequest>,
 ) -> Result<Json<AbsLoginResponse>, ApiError> {
-    // Delegated so the throttle, the dummy-hash timing defence, and session
-    // pruning all behave exactly as they do for a first-party client.
     let (_user, issued) = authenticate_and_open_session(&state, peer, &headers, payload).await?;
     let auth = resolve_session(&state, &issued)
         .await
@@ -574,22 +527,17 @@ pub(crate) async fn abs_login(
     }))
 }
 
-/// `GET /abs/api/me`
 pub(crate) async fn abs_me(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
     headers: HeaderMap,
 ) -> Result<Json<AbsUser>, ApiError> {
-    // Only a bearer or cookie session reaches this route, never a media token,
-    // so the token the client presented is the one to echo back. The server
-    // keeps no copy to answer from.
     let token = token_from_headers(&headers)
         .ok_or_else(|| ApiError::unauthorized("Missing authentication token."))?;
     let progress = progress_for_user(&state, &auth).await?;
     Ok(Json(abs_user(&auth, token, progress)))
 }
 
-/// `GET /abs/api/libraries`
 pub(crate) async fn abs_libraries(
     State(state): State<AppState>,
     Extension(_auth): Extension<AuthUser>,
@@ -606,8 +554,6 @@ pub(crate) async fn abs_libraries(
             name,
             media_type: "book",
             provider: "audible",
-            // Browsing clients require these fields. The virtual library
-            // does not expose the host's filesystem layout.
             folders: Vec::new(),
             display_order: 1,
             icon: "audiobookshelf",
@@ -615,7 +561,6 @@ pub(crate) async fn abs_libraries(
     })
 }
 
-/// `GET /abs/api/libraries/{id}/items`
 pub(crate) async fn abs_library_items(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -660,8 +605,6 @@ pub(crate) async fn abs_library_items(
         }
     };
     let page = query.page.unwrap_or(0);
-    // Count and page under the library lock, then copy and enrich only the
-    // page, as the native listing does.
     let library = state.library.clone().read_owned().await;
     let visible: Vec<&Book> = library
         .books
@@ -710,7 +653,6 @@ pub(crate) async fn abs_library_items(
     .map_err(|_| ApiError::internal("Catalogue generation was interrupted."))?
 }
 
-/// `GET /abs/api/libraries/{id}/filterdata`
 pub(crate) async fn abs_filter_data(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -796,8 +738,6 @@ fn spool_named_entities(
     spool.bytes(b"]")
 }
 
-// Foundation appendingPathComponent preserves slashes. Reserve a prefix so
-// encoded names cannot collide with literal names that resemble their IDs.
 fn author_id(name: &str) -> String {
     if name.is_empty()
         || matches!(name, "." | "..")
@@ -814,7 +754,6 @@ fn author_matches(name: &str, id: &str) -> bool {
     author_id(name) == id || (!id.starts_with('~') && name == id)
 }
 
-/// `GET /abs/api/libraries/{id}/search`
 pub(crate) async fn abs_search(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -882,7 +821,6 @@ pub(crate) async fn abs_search(
     .map_err(|_| ApiError::internal("Catalogue generation was interrupted."))?
 }
 
-/// `GET /abs/api/libraries/{id}/collections`
 pub(crate) async fn abs_collections(
     Path(library_id): Path<String>,
 ) -> Result<Json<AbsCollectionsResponse>, ApiError> {
@@ -894,14 +832,12 @@ pub(crate) async fn abs_collections(
     }))
 }
 
-/// `GET /abs/api/collections/{id}`
 pub(crate) async fn abs_collection(
     Path(_collection_id): Path<String>,
 ) -> Result<Json<AbsCollection>, ApiError> {
     Err(ApiError::not_found("Collection not found."))
 }
 
-/// `GET /abs/api/authors/{id}?include=items`
 pub(crate) async fn abs_author(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -966,7 +902,6 @@ pub(crate) async fn abs_author(
     .map_err(|_| ApiError::internal("Catalogue generation was interrupted."))?
 }
 
-/// `GET /abs/api/items/{id}`
 pub(crate) async fn abs_library_item(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -987,7 +922,6 @@ pub(crate) async fn abs_library_item(
     Ok(Json(library_item(&book, &session.media_token, true)))
 }
 
-/// `POST /abs/api/items/{id}/play`
 pub(crate) async fn abs_play(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -1011,8 +945,6 @@ pub(crate) async fn abs_play(
         id: stable_id(&format!("abs-session:{}:{}", auth.id, item_id)),
         library_item_id: book.id.clone(),
         media_type: "book",
-        // Direct play: the files are served as they are, with byte ranges.
-        // Nothing here transcodes.
         play_method: 0,
         duration: book_duration(book),
         start_time: current_time,
@@ -1022,7 +954,6 @@ pub(crate) async fn abs_play(
     }))
 }
 
-/// `PATCH /abs/api/me/progress/{id}`
 pub(crate) async fn abs_update_progress(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -1040,9 +971,6 @@ pub(crate) async fn abs_update_progress(
             .ok_or(ApiError::not_found("Library item not found."))?
             .clone();
         let duration = book_duration(&book);
-        // Audiobookshelf clients send a position into the whole book, and some
-        // send only a fraction. Either is turned back into the track and
-        // offset OperaLibre stores.
         let book_position = update
             .current_time
             .or_else(|| update.progress.map(|fraction| fraction * duration))
@@ -1087,9 +1015,6 @@ pub(crate) async fn abs_update_progress(
             tz_offset_minutes: None,
             speed: None,
             client: Some("audiobookshelf"),
-            // A completion-only PATCH is a status choice, not evidence that
-            // the listener read the book today. Position-bearing updates can
-            // still record a natural crossing into finished.
             completion_source: requested_book_position.map(|_| CompletionSource::Reached),
         },
     )
@@ -1098,22 +1023,8 @@ pub(crate) async fn abs_update_progress(
     Ok(Json(serde_json::to_value(media_progress(&book, &saved))?))
 }
 
-/// How far back an Audiobookshelf client may move a position and still be
-/// taken at its word. Those clients send no seek flag, so without this every
-/// rewind past the jitter slack read as a late checkpoint and was refused.
-/// Half an hour covers going back over a chapter; a larger drop is more
-/// likely a device syncing a much earlier sitting, and is still refused.
 pub(crate) const ABS_INTENTIONAL_REWIND_MAX_SECONDS: f64 = 1800.0;
 
-/// Whether a backward Audiobookshelf write reads as a listener rewinding
-/// rather than a client that lost its place. Only a fresh write qualifies —
-/// a stale one is a replay whatever distance it covers. A small rewind into
-/// the first minute is allowed; erasing substantial progress near the start
-/// still meets the suspect-reset rule.
-///
-/// A client that sends no `lastUpdate` cannot be told fresh from stale and
-/// is taken at its word: the half-hour ceiling bounds what a replayed
-/// checkpoint from such a client can undo of progress made elsewhere.
 pub(crate) fn abs_write_is_intentional_rewind(
     previous: Option<&Progress>,
     book_position: f64,
@@ -1137,9 +1048,6 @@ pub(crate) fn abs_write_is_intentional_rewind(
     !stale
 }
 
-/// What one Audiobookshelf progress PATCH should do, decided without touching
-/// storage — the compatibility layer's counterpart to `decide_progress_write`,
-/// which it defers to whenever the request carries a position.
 pub(crate) fn decide_abs_progress_write(
     book: &Book,
     previous: Option<&Progress>,
@@ -1152,11 +1060,9 @@ pub(crate) fn decide_abs_progress_write(
     let explicit_restart =
         abs_checkpoint_is_restart(book, previous, requested_book_position, finished);
     let (mut saved, backup_previous) = if let Some(book_position) = requested_book_position {
-        // The handler rejects a book without tracks before deciding anything.
         let Some((track, track_position)) = track_at_book_position(book, book_position) else {
             return ProgressDecision::Keep;
         };
-        // Legacy rows may store only a track offset; compare whole-book positions.
         let enriched_previous = previous.map(|previous| enrich_progress(book, previous));
         let intentional_rewind = abs_write_is_intentional_rewind(
             enriched_previous.as_ref(),
@@ -1184,8 +1090,6 @@ pub(crate) fn decide_abs_progress_write(
             } => (saved, backup_previous),
         }
     } else {
-        // PATCH semantics: a completion-only request must not erase a
-        // position the client deliberately omitted.
         (
             previous
                 .cloned()
@@ -1195,8 +1099,6 @@ pub(crate) fn decide_abs_progress_write(
     };
     if let Some(finished) = finished {
         saved.finished_override = Some(finished);
-        // A completion-only PATCH is still a new media-progress revision.
-        // Clients use lastUpdate to choose the newest copy.
         saved.updated_at = next_progress_timestamp(previous, now_millis);
     }
     saved.recording = None;
@@ -1220,7 +1122,6 @@ fn abs_checkpoint_is_restart(
         && summarize_book_progress(book, previous).status == BookProgressStatus::Finished
 }
 
-/// `GET /abs/api/me/progress/{id}`
 pub(crate) async fn abs_get_progress(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -1238,7 +1139,6 @@ pub(crate) async fn abs_get_progress(
     Ok(Json(serde_json::to_value(media_progress(book, &progress))?))
 }
 
-/// `GET /abs/api/items/{id}/cover`
 pub(crate) async fn abs_cover(
     state: State<AppState>,
     auth: Extension<AuthUser>,
@@ -1249,8 +1149,6 @@ pub(crate) async fn abs_cover(
     get_cover_art(state, auth, item_id, query, headers).await
 }
 
-/// Which track a whole-book position lands in, and how far into it. `None`
-/// only for a book without tracks.
 pub(crate) fn track_at_book_position(book: &Book, book_position: f64) -> Option<(Track, f64)> {
     let offsets = track_offsets(book);
     for ((start, duration), track) in offsets.iter().zip(&book.tracks) {

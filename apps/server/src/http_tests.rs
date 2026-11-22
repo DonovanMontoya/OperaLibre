@@ -846,7 +846,6 @@ impl TestServer {
         assert_eq!(response.status, StatusCode::OK, "{}", response.text());
     }
 
-    /// The first book and its first track, as the API reports them.
     async fn first_book_and_track(&self, token: &str) -> (String, String) {
         let books = self.get("/api/books", token).await;
         assert_eq!(books.status, StatusCode::OK, "{}", books.text());
@@ -5511,10 +5510,6 @@ async fn restoring_a_backup_only_retains_a_session_for_an_account_in_the_backup(
     );
 }
 
-// ---------------------------------------------------------------------------
-// Review sweep: health, ranges, download headers, and access grants
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn health_reports_whether_the_library_is_still_being_scanned() {
     let server = TestServer::start(1).await;
@@ -7449,7 +7444,6 @@ async fn an_oversized_password_is_refused_even_when_its_prefix_is_correct() {
     assert_eq!(user.username, "longpass");
 }
 
-/// A reader account with a generated password, for sign-in tests.
 async fn reader_with_generated_password(server: &TestServer, username: &str) -> String {
     let owner = server.setup_owner().await;
     let password = format!("test-{}", super::mint_identity_id());

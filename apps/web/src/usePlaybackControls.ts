@@ -281,7 +281,6 @@ export function usePlaybackControls({
     }
   }
 
-  /** The whole-book position a track-relative seek on the playing book lands at. */
   function seekTargetInPlaybackBook(trackPosition: number) {
     if (!playbackBook) return undefined;
     return trackOffsetSeconds(playbackBook, activeTrackIndex) + Math.max(0, trackPosition);

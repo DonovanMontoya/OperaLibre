@@ -1,8 +1,6 @@
 import Foundation
 import UIKit
 
-/// Reads and writes the snapshot, the pending sessions, and the cached cover
-/// art. Everything here has to work with no network and no WebView.
 final class CarLibraryStore {
     static let shared = CarLibraryStore()
 
@@ -14,8 +12,6 @@ final class CarLibraryStore {
     private let invalidatedKey = "operalibre.car-library-invalidated"
     private var artworkMemoryCache: [String: UIImage] = [:]
     var onArtworkChange: (() -> Void)?
-    /// Bumped by `clear()`, so a cover download already running for the
-    /// signed-out library cannot put its results back.
     private var artworkEpoch = 0
     private var placeholderCache: [String: UIImage] = [:]
 
@@ -69,8 +65,6 @@ final class CarLibraryStore {
         cacheArtwork(for: snapshot)
     }
 
-    /// Drain older writes before invalidating disk state, so a queued snapshot
-    /// cannot restore a signed-out library after the bridge acknowledges logout.
     func clear() {
         cachedSnapshot = .empty
         snapshotQueue.sync {
@@ -80,8 +74,6 @@ final class CarLibraryStore {
         persistSessions(StoredRecordList())
         artworkMemoryCache.removeAll()
         artworkEpoch += 1
-        // Queued behind any cover download in flight, so what it writes is
-        // removed too. Covers belong to the account that just signed out.
         queue.async { [weak self] in
             guard let self else { return }
             if let artworkDirectory = self.artworkDirectory {
@@ -97,14 +89,10 @@ final class CarLibraryStore {
         storedSessions().records
     }
 
-    /// Sessions another app version saved in a shape this one cannot read stay
-    /// stored, so their listening is not lost before it reaches the server.
     private func storedSessions() -> StoredRecordList<CarPlaybackSession> {
         StoredRecordList(decoding: UserDefaults.standard.data(forKey: sessionsKey))
     }
 
-    /// One record per book: a car session that keeps running only moves its own
-    /// position forward, and the newest one is the only one worth saving.
     func recordSession(_ session: CarPlaybackSession) {
         var sessions = storedSessions()
         sessions.records.removeAll { $0.bookId == session.bookId }
@@ -112,9 +100,6 @@ final class CarLibraryStore {
         persistSessions(sessions)
     }
 
-    /// Drops the sessions the web layer has saved. Entries are matched on their
-    /// timestamp as well as their book so a session that advanced between the
-    /// read and the acknowledgement survives to be saved again.
     func acknowledgeSessions(_ acknowledged: [String: Double], clearRegressionForBookId: String? = nil) {
         var sessions = storedSessions()
         sessions.records = CarPlaybackSession.remainingAfterAcknowledgement(
@@ -131,11 +116,6 @@ final class CarLibraryStore {
 
     // MARK: - Artwork
 
-    /// A cover for the car list, at the size CarPlay draws it.
-    ///
-    /// Returns what is already cached; a miss falls back to the drawn spine
-    /// rather than blocking the car screen on a download, and the real cover
-    /// lands in the cache for the next look.
     func artwork(for book: CarLibraryBook) -> UIImage {
         if let source = book.artworkUrl, !source.isEmpty {
             if let image = artworkMemoryCache[book.id] { return image }
@@ -153,9 +133,6 @@ final class CarLibraryStore {
         return placeholder
     }
 
-    /// The shelf's own stand-in for a book with no artwork: an oxblood spine
-    /// with a gilt rule. A car list of blank rows says nothing about which book
-    /// is which, and the app already answers that question this way.
     private func spineArtwork() -> UIImage {
         let size = CGSize(width: 108, height: 160)
         return UIGraphicsImageRenderer(size: size).image { context in
@@ -184,8 +161,6 @@ final class CarLibraryStore {
                     options: []
                 )
             }
-            // The binding: a shadowed edge with the gilt line the shelf draws
-            // inside it.
             UIColor(white: 0, alpha: 0.3).setFill()
             cgContext.fill(CGRect(x: 0, y: 0, width: 6, height: size.height))
             UIColor(red: 0.722, green: 0.537, blue: 0.227, alpha: 0.4).setFill()
@@ -224,8 +199,6 @@ final class CarLibraryStore {
         let epoch = artworkEpoch
         queue.async { [weak self] in
             guard let self else { return }
-            // Read on the queue: a job queued behind another must see what
-            // that one saved, or writing its own copy back would drop it.
             var sources = UserDefaults.standard.dictionary(forKey: self.artworkSourcesKey)
                 as? [String: String] ?? [:]
             for bookId in Set(sources.keys).union(snapshot.books.map(\.id)) where wanted[bookId] == nil {
@@ -258,8 +231,6 @@ final class CarLibraryStore {
         }
     }
 
-    /// Car screens are small and their list rows smaller. A full-size cover
-    /// costs memory the app does not need to spend to fill a 60-point cell.
     private func scaled(_ image: UIImage) -> UIImage? {
         let side: CGFloat = 160
         guard image.size.width > side || image.size.height > side else { return image }
@@ -272,10 +243,6 @@ final class CarLibraryStore {
     }
 
     private func artworkFileName(_ bookId: String) -> String {
-        // Book ids come from library paths, so they are not safe as file
-        // names on their own. Sanitizing alone would let two books
-        // whose ids differ only in punctuation share one cover, so the id's
-        // hash rides along.
         let sanitized = bookId.unicodeScalars.prefix(48).reduce(into: "") { name, scalar in
             name.append(CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : "-")
         }

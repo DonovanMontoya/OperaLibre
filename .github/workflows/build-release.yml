@@ -88,10 +88,6 @@ jobs:
           }
           JS
 
-      # The read-along sync add-on is several hundred megabytes per platform
-      # and rarely changes, so it has its own release per add-on version
-      # (readalong-sync-v<version>) instead of riding along in every app
-      # release. It is built only when that release is missing or incomplete.
       - name: Check sync add-on release
         if: steps.release-ref.outputs.channel == 'stable' && steps.release-ref.outputs.publish == 'true'
         id: sync-addon
@@ -122,9 +118,6 @@ jobs:
             echo "needed=true" >> "${GITHUB_OUTPUT}"
           fi
 
-      # While on, releases also carry the per-file-signed update packages that
-      # servers older than the update manifest look for. See
-      # docs/update-manifest.md for when to turn it off.
       - name: Read update policy
         id: policy
         shell: bash
@@ -284,9 +277,6 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 
-      # A rebuilt stable tag can predate the version-aware staging script. Use
-      # the tooling from this workflow revision while validating the APK
-      # against the checked-out release source below.
       - name: Checkout Android release tools
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -416,9 +406,6 @@ jobs:
       - name: Build background launcher
         run: cargo build --release --locked --manifest-path apps/launcher/Cargo.toml
 
-      # One package per platform: the server, its web app, the launchers and
-      # what an in-app update applies. Server-only installs switch the web app
-      # off in server.config.
       - name: Package for Linux or macOS
         if: runner.os != 'Windows'
         shell: bash
@@ -480,7 +467,6 @@ jobs:
             Compress-Archive -Path "staging/$updatePackage" -DestinationPath "dist/$updatePackage.zip"
           }
 
-      # Use the workflow revision's tests even when rebuilding an older tag.
       - name: Checkout upgrade test tools
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -628,8 +614,6 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # The add-on packages need no signatures of their own: each app release's
-  # signed manifest lists their SHA-256, and servers check that.
   publish-sync-addon:
     name: Publish sync add-on release
     needs:
@@ -662,7 +646,6 @@ jobs:
         with:
           subject-path: sync-assets/*
 
-      # Never "latest": the app release is what releases/latest must point at.
       - name: Create or update sync add-on release
         shell: bash
         env:
@@ -695,8 +678,6 @@ jobs:
       - android
       - native
       - publish-sync-addon
-    # Runs when the sync add-on release was already published and its jobs
-    # were skipped, but never after any failure.
     if: ${{ !cancelled() && !failure() && needs.prepare.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
     env:
@@ -717,9 +698,6 @@ jobs:
           ref: ${{ needs.prepare.outputs.ref }}
           fetch-depth: 0
 
-      # A rebuilt tag can predate the update manifest. Use the tools and trust
-      # files from the workflow revision while keeping the packages tied to
-      # the release tag.
       - name: Checkout release signing tools
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -768,8 +746,6 @@ jobs:
             cat release/RELEASE_NOTES.md
           } > release/RELEASE_BODY.md
 
-      # Every in-app updater reads this one signed file to find the release's
-      # packages; nothing else about the release is built into them.
       - name: Build and sign the update manifest
         shell: bash
         env:
@@ -801,7 +777,6 @@ jobs:
           node release-signing-tools/script/release_signing.mjs verify-manifest \
             release-assets/operalibre-manifest-v1.json release-assets
 
-      # Servers older than the update manifest need per-file signatures.
       - name: Sign legacy update packages
         if: env.LEGACY_ASSETS == 'true'
         shell: bash
@@ -809,8 +784,6 @@ jobs:
           OPERALIBRE_RELEASE_SIGNING_KEY: ${{ secrets.OPERALIBRE_RELEASE_SIGNING_KEY }}
         run: node release-signing-tools/script/release_signing.mjs sign release-assets "${RELEASE_TAG}"
 
-      # A release missing any of these would strand the installs that update
-      # from it, so refuse to publish it.
       - name: Check packages that existing installs update from
         shell: bash
         working-directory: release-assets

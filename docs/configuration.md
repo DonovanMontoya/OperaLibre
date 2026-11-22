@@ -154,7 +154,7 @@ Owners of managed release installations can install and enable the generator und
 
 ### Optional MP4 faststart conversion
 
-MP4-family files written without a leading `moov` index start playing slowly over a network. Administrators can remux them in place from **Administration → Downloaded books**; the control needs ffmpeg, and uses ffprobe to verify each converted file before it replaces the original. Leave both blank to search `PATH`; without ffmpeg the control simply reports itself unavailable.
+MP4-family files written without a leading `moov` index can start slowly over a network. Administrators can remux them from **Administration → Downloaded books**. Leave both tool paths blank to search `PATH`. Conversion requires ffmpeg and checks the replacement's layout and size. When ffprobe is available, OperaLibre also checks duration, streams, and chapters before replacing the original.
 
 The same ffmpeg measures each book's loudness in the background after a scan, so badly mastered books can play at a corrected level. It reads a few minutes of each book at low priority and never changes the files. Without ffmpeg this is skipped.
 

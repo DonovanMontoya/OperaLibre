@@ -1,6 +1,3 @@
-//! Playback-progress checkpoints: validation rules, storage decisions, and the
-//! per-book summaries the library serves.
-
 use crate::*;
 
 #[derive(Debug, Clone, Serialize)]
@@ -16,9 +13,6 @@ pub(crate) struct BookProgress {
     pub(crate) updated_at: String,
 }
 
-/// One other listener's position in a book, as shown to a viewer who also
-/// shares. Deliberately narrower than `BookProgress`: a percentage and a
-/// status, never a resume point someone else could act on.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SharedProgress {
@@ -53,8 +47,6 @@ pub(crate) struct Progress {
     pub(crate) recording: Option<ProgressRecording>,
 }
 
-/// An opaque local recording lineage and its monotonically increasing edit.
-/// Stored with the position so a lost response does not erase its provenance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ProgressRecording {
     pub(crate) id: String,
@@ -69,10 +61,6 @@ impl ProgressRecording {
     }
 }
 
-/// A book's playback gain as a linear multiplier. The floor tames a book
-/// mastered hot; the ceiling is +24 dB, far enough to rescue a badly quiet
-/// transfer, and past the point where the limiter starts doing much of the
-/// work — which is the listener's trade to make.
 pub(crate) const BOOK_VOLUME_GAIN_MIN: f64 = 0.5;
 
 pub(crate) const BOOK_VOLUME_GAIN_MAX: f64 = 16.0;
@@ -86,15 +74,9 @@ pub(crate) fn clamp_book_volume_gain(value: f64) -> f64 {
     value.clamp(BOOK_VOLUME_GAIN_MIN, BOOK_VOLUME_GAIN_MAX)
 }
 
-/// Per-listener, per-book playback preferences, keyed like progress so one
-/// listener's tuning never leaks into another's library.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BookSettings {
-    /// Defaulted rather than required: this file is read on the way to serving
-    /// the whole library, so a row that is truncated, hand-edited, or written
-    /// by a future build with another shape must cost one book its gain — not
-    /// hide every book from every listener behind a 500.
     #[serde(default = "default_book_volume_gain")]
     pub(crate) volume_gain: f64,
 }
@@ -103,12 +85,9 @@ pub(crate) fn default_book_volume_gain() -> f64 {
     BOOK_VOLUME_GAIN_DEFAULT
 }
 
-/// One listener's volume settings for one book, as stored.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct BookVolumeSetting {
-    /// The level they set themselves, if they did. Always wins.
     pub(crate) manual_gain: Option<f64>,
-    /// Whether the suggested gain applies when they have no level of their own.
     pub(crate) auto_volume: bool,
 }
 
@@ -140,55 +119,27 @@ pub(crate) struct ProgressUpdate {
     pub(crate) position_seconds: f64,
     pub(crate) book_position_seconds: Option<f64>,
     pub(crate) duration_seconds: Option<f64>,
-    /// Client-side epoch milliseconds of when this position was recorded.
-    /// Optional for backwards compatibility; without it the write is always
-    /// accepted and stamped with the server clock, as before.
     pub(crate) updated_at_ms: Option<u64>,
-    /// Set when the listener deliberately jumped backwards (restarting a
-    /// book, scrubbing, picking an earlier chapter). Without it the server
-    /// refuses near-zero writes that would erase substantial progress.
     #[serde(default)]
     pub(crate) intentional_regression: bool,
-    /// Set for either a forward or backward user-initiated seek. Position
-    /// movement from this checkpoint must not be counted as listening time.
     #[serde(default)]
     pub(crate) intentional_seek: bool,
-    /// The listener's offset from UTC in minutes, east positive (the negation
-    /// of JavaScript's `getTimezoneOffset`). Activity is bucketed by the
-    /// listener's own calendar day, so an evening session west of UTC is not
-    /// filed under tomorrow and does not split a streak. Absent means UTC.
     pub(crate) tz_offset_minutes: Option<i32>,
-    /// Playback rate reported by the client. Invalid rates are ignored rather
-    /// than allowing a malformed request to poison reading-history averages.
     pub(crate) speed: Option<f64>,
-    /// A short client identifier such as `web`, `ios`, or `android`.
     pub(crate) client: Option<String>,
 }
 
-/// A progress checkpoint as it arrives on the wire: the update itself plus
-/// the server revision it was based on and the client's clock at send time.
-/// Kept apart from [`ProgressUpdate`] so the decision rules only ever see
-/// timestamps in the server's clock domain.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProgressCheckpoint {
     #[serde(flatten)]
     pub(crate) update: ProgressUpdate,
-    /// Client-side epoch milliseconds of when the request was sent, as
-    /// distinct from when the position was recorded. Optional: without it the
-    /// recorded timestamp is compared as it is, as before.
     pub(crate) sent_at_ms: Option<u64>,
-    /// Last server-issued `updatedAt` observed before recording this position.
-    /// An empty string means no server checkpoint was observed. Absent keeps
-    /// legacy clients on the timestamp and position guards alone.
     pub(crate) base_updated_at: Option<String>,
     #[serde(default)]
     pub(crate) recording: Option<ProgressRecording>,
 }
 
-/// PUT returns the resulting position plus whether this checkpoint was saved
-/// or recognized as an exact retry. Matching positions alone cannot distinguish
-/// an accepted save from a stale write against another device's identical position.
 #[derive(Debug, Serialize)]
 pub(crate) struct ProgressCheckpointResponse {
     #[serde(flatten)]
@@ -196,17 +147,6 @@ pub(crate) struct ProgressCheckpointResponse {
     pub(crate) accepted: bool,
 }
 
-/// Bring a client-recorded timestamp into the server's clock domain.
-///
-/// Stored revisions are server-issued, so comparing a raw client timestamp
-/// against one measures clock skew as much as staleness: a device five
-/// minutes behind the server had every checkpoint refused as a replay. The
-/// gap between when the client says it sent the request and when the server
-/// received it is that skew (plus transit time, which can only make the
-/// write look fresher, and is bounded by the cap at the server clock). A
-/// checkpoint recorded an hour before it was sent stays an hour old after the
-/// correction, so a genuine replay is still caught. Without `sent_at_ms` the
-/// raw value is kept.
 pub(crate) fn server_domain_timestamp_ms(
     updated_at_ms: Option<u64>,
     sent_at_ms: Option<u64>,
@@ -229,16 +169,9 @@ pub(crate) struct CompletionUpdate {
     pub(crate) position_seconds: Option<f64>,
     pub(crate) book_position_seconds: Option<f64>,
     pub(crate) duration_seconds: Option<f64>,
-    /// The reader's offset from UTC in minutes, with the same semantics as a
-    /// progress checkpoint. This is used only when the request carries the
-    /// final playback position; a status-only "mark finished" request does
-    /// not claim that the book was read today.
     pub(crate) tz_offset_minutes: Option<i32>,
 }
 
-/// Per-listener playback gain for one book. Unlike the metadata override this
-/// is not an admin edit: it only changes how loud the book is for the caller,
-/// so any listener with access to the book may set it.
 pub(crate) async fn update_book_volume(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -257,8 +190,6 @@ pub(crate) async fn update_book_volume(
     Ok(Json(book_with_progress(&state, &auth, book).await?))
 }
 
-/// Switch the suggested gain on or off for the caller's copy of one book.
-/// Like the volume itself this is the listener's own preference.
 pub(crate) async fn update_book_auto_volume(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -274,29 +205,15 @@ pub(crate) async fn update_book_auto_volume(
     Ok(Json(book_with_progress(&state, &auth, book).await?))
 }
 
-/// What a progress write should do, decided without touching storage.
-///
-/// Every defense against losing a listener's place lives here: a replayed
-/// checkpoint from an offline queue, a device with a skewed clock, a client
-/// that failed to restore its position and reported zero, and a backwards jump
-/// nobody asked for. Keeping it pure means the rules are identical whatever
-/// the storage backend is, and testable without any I/O.
 #[derive(Debug, Clone)]
 pub(crate) enum ProgressDecision {
-    /// Keep the stored position. The client converges back to it on its next
-    /// successful fetch.
     Keep,
-    /// Store this position, retaining the previous one first when the drop is
-    /// large enough to be worth recovering.
     Store {
         saved: Progress,
         backup_previous: bool,
     },
 }
 
-/// Normalize a wire checkpoint and reject changes based on a replaced revision.
-/// Clock correction cannot establish causality: network delay can make an old
-/// position look newer than an intentional rewind that arrived first.
 pub(crate) fn decide_progress_checkpoint(
     book: &Book,
     track: &Track,
@@ -309,8 +226,6 @@ pub(crate) fn decide_progress_checkpoint(
         .zip(checkpoint.recording.as_ref())
         .filter(|(stored, incoming)| stored.id == incoming.id)
         .map(|(stored, incoming)| incoming.sequence.cmp(&stored.sequence));
-    // The device can miss a reply without losing its own ordering. A different
-    // recording still requires the current revision; older edits never win.
     let continues_recording = recording_order == Some(std::cmp::Ordering::Greater);
     if recording_order.is_some() && !continues_recording {
         return ProgressDecision::Keep;
@@ -322,9 +237,6 @@ pub(crate) fn decide_progress_checkpoint(
         return ProgressDecision::Keep;
     }
     let mut update = checkpoint.update.clone();
-    // A matching server revision establishes ordering even when native
-    // listening was recorded long before an older local replay was uploaded.
-    // Legacy writes still need timestamp ordering; position guards apply to both.
     update.updated_at_ms = if checkpoint.base_updated_at.is_some() || continues_recording {
         None
     } else {
@@ -345,7 +257,6 @@ pub(crate) fn decide_progress_checkpoint(
     }
 }
 
-/// Decide what to do with one incoming progress write.
 pub(crate) fn decide_progress_write(
     book: &Book,
     track: &Track,
@@ -353,8 +264,6 @@ pub(crate) fn decide_progress_write(
     update: &ProgressUpdate,
     now_millis: u64,
 ) -> ProgressDecision {
-    // Cap client timestamps at the server clock so one device with a
-    // future-skewed clock cannot lock every other device out of this book.
     let now_seconds = now_millis as f64 / 1000.0;
     let incoming_seconds = update
         .updated_at_ms
@@ -362,15 +271,8 @@ pub(crate) fn decide_progress_write(
     if let (Some(previous), Some(incoming)) = (previous, incoming_seconds)
         && progress_write_is_stale(&previous.updated_at, incoming)
     {
-        // A replayed checkpoint - an offline queue flushing or a reinstalled
-        // client syncing old local state - must not roll back a position some
-        // device recorded more recently.
         return ProgressDecision::Keep;
     }
-    // Rows migrated from the JSON store may hold only a track offset. Every
-    // guard below compares whole-book positions, so derive the stored one the
-    // way reads do; otherwise a 0:00 write over hours of progress looks like
-    // no regression at all.
     let previous = previous.map(|previous| enrich_progress(book, previous));
     let previous = previous.as_ref();
 
@@ -463,8 +365,6 @@ pub(crate) async fn update_progress(
         ));
     }
     let update = &checkpoint.update;
-    // Copied out of the library once, so the library lock is not held across
-    // the write; the decision on the database's blocking task shares it.
     let (book, track) = {
         let library = state.library.read().await;
         let book = library.book(&book_id)?;
@@ -531,17 +431,11 @@ pub(crate) async fn update_progress(
     }))
 }
 
-/// Apply the durable history derived from an accepted playback checkpoint.
-/// Compatibility APIs call this too, so a position has the same activity,
-/// listening-session, and completion effects regardless of which client sent
-/// it.
 pub(crate) struct ProgressBookkeeping<'a> {
     pub(crate) intentional_seek: bool,
     pub(crate) tz_offset_minutes: Option<i32>,
     pub(crate) speed: Option<f64>,
     pub(crate) client: Option<&'a str>,
-    /// `None` for a status-only update. A dated completion needs evidence from
-    /// a playback position instead of being inferred from "mark finished".
     pub(crate) completion_source: Option<CompletionSource>,
 }
 
@@ -554,7 +448,6 @@ pub(crate) async fn record_progress_bookkeeping(
     bookkeeping: ProgressBookkeeping<'_>,
 ) {
     let tz_offset_minutes = sanitized_tz_offset_minutes(bookkeeping.tz_offset_minutes);
-    // A legacy row's raw zero would count the whole book as listening.
     let previous = previous.map(|previous| enrich_progress(book, previous));
     let previous = previous.as_ref();
     let listened_delta = plausible_listened_delta(previous, saved, bookkeeping.intentional_seek);
@@ -598,7 +491,6 @@ pub(crate) async fn update_book_completion(
         .first()
         .ok_or(ApiError::bad_request("This book has no playable tracks."))?
         .clone();
-    // Owned, because the decision travels to the database's blocking task.
     let final_position = match (&update.track_id, update.position_seconds) {
         (None, None) => None,
         (Some(track_id), Some(position_seconds)) => {
@@ -617,9 +509,6 @@ pub(crate) async fn update_book_completion(
             ));
         }
     };
-    // The player includes a final position when playback reaches the end. A
-    // manual button press intentionally omits it, because changing library
-    // status does not tell us which day the listener actually finished.
     let records_completion = final_position.is_some();
 
     let now_millis = unix_now_millis();
@@ -659,14 +548,6 @@ pub(crate) async fn update_book_completion(
     Ok(Json(summary))
 }
 
-/// What a completion request should store, decided without touching storage.
-///
-/// Marking a book finished or unfinished is an explicit instruction, so it
-/// bypasses the staleness and regression rules that guard automatic
-/// checkpoints. The rollback copy is not skipped with them: a final position
-/// far below the stored one is a lost place whichever request carried it, and
-/// the copy is what makes it recoverable. `final_position` is the already
-/// clamped track position the request carried, if it carried one.
 pub(crate) fn decide_completion_write(
     book: &Book,
     first_track: &Track,
@@ -690,10 +571,6 @@ pub(crate) fn decide_completion_write(
         saved.duration_seconds = update.duration_seconds.or(track.duration_seconds);
         saved.updated_at = next_progress_timestamp(previous, now_millis);
     }
-    // A status-only change keeps the revision. The app does not rewrite its
-    // local checkpoint for one, so a new revision would make that device's next
-    // checkpoint carry a stale base and be refused. The Audiobookshelf route
-    // bumps it instead, because those clients pick the newest copy by lastUpdate.
     saved.finished_override = Some(update.finished);
     saved.recording = None;
     let backup_previous = previous.is_some_and(|previous| {
@@ -707,15 +584,10 @@ pub(crate) fn decide_completion_write(
     }
 }
 
-/// Accept a plausible finite playback rate only. Playback engines vary, but
-/// this covers the useful range without allowing zero, negative, or absurd
-/// values to distort history aggregates.
 pub(crate) fn sanitized_playback_speed(speed: Option<f64>) -> Option<f64> {
     speed.filter(|rate| rate.is_finite() && (0.25..=4.0).contains(rate))
 }
 
-/// Keep client names small and printable. The value is descriptive metadata,
-/// not an arbitrary user-provided label.
 pub(crate) fn sanitized_client_name(client: Option<&str>) -> Option<String> {
     let client = client?;
     (!client.is_empty() && client.len() <= 64 && client.chars().all(|c| c.is_ascii_graphic()))
@@ -739,14 +611,10 @@ pub(crate) fn enrich_progress(book: &Book, progress: &Progress) -> Progress {
     enriched
 }
 
-/// Every book the reader may see, in library order, without progress. For
-/// listings that only describe the catalogue.
 pub(crate) async fn visible_books(state: &AppState, auth: &AuthUser) -> Vec<Book> {
     visible_books_where(state, auth, |_| true).await
 }
 
-/// The visible books `keep` accepts, copied under the library lock so a
-/// filtered listing clones only what it returns.
 pub(crate) async fn visible_books_where(
     state: &AppState,
     auth: &AuthUser,
@@ -771,8 +639,6 @@ pub(crate) async fn books_with_progress(
     enrich_books_with_progress(state, auth, books).await
 }
 
-/// Enrich an already-authorized selection so a page costs only its own
-/// metadata copies and progress summaries, regardless of catalogue size.
 pub(crate) async fn enrich_books_with_progress(
     state: &AppState,
     auth: &AuthUser,
@@ -878,7 +744,6 @@ impl ProgressEnrichment {
         book
     }
 
-    /// Check the borrowed source before cloning the potentially large book.
     pub(crate) fn apply_catalogue(&self, book: &Book) -> Result<Book, ApiError> {
         check_catalogue_book(book)?;
         Ok(self.apply(book.clone()))
@@ -896,10 +761,6 @@ pub(crate) async fn book_with_progress(
         .expect("one book was provided"))
 }
 
-/// The other listeners whose progress `auth` is allowed to see, as
-/// `(user_id, username)`. Sharing is reciprocal: a viewer who has switched
-/// their own sharing off sees nobody, so opting out is a symmetric trade
-/// rather than a way to watch without being watched.
 pub(crate) async fn progress_sharers(state: &AppState, auth: &AuthUser) -> Vec<(String, String)> {
     let users = state.users.read().await;
     visible_sharers(&users.users, auth)
@@ -916,9 +777,6 @@ pub(crate) fn visible_sharers(users: &[User], auth: &AuthUser) -> Vec<(String, S
         .collect()
 }
 
-/// A work can outlive the audiobook file that a reader finished. Keep this
-/// index separate from playback progress: a new edition inherits the finished
-/// label, but never a track or a resume position from another recording.
 #[derive(Default)]
 pub(crate) struct FinishedWorks {
     work_by_book: HashMap<String, String>,
@@ -985,8 +843,6 @@ impl FinishedWorks {
             if !user_ids.contains(&completion.user_id) {
                 continue;
             }
-            // An explicit later "mark unfinished" on this edition cancels its
-            // old completion as a source for the inherited shelf label.
             if saved_progress
                 .get(&progress_key(&completion.user_id, &completion.book_id))
                 .is_some_and(|saved| saved.finished_override == Some(false))
@@ -1028,8 +884,6 @@ pub(crate) fn progress_for_reader(
 ) -> Option<BookProgress> {
     let saved = saved_progress.get(&progress_key(user_id, &book.id));
     let current = saved.map(|progress| summarize_book_progress(book, progress));
-    // A local completion choice or actual progress belongs to this edition
-    // and takes precedence over a finish inherited from another one.
     if saved.is_some_and(|progress| progress.finished_override.is_some())
         || current
             .as_ref()
@@ -1065,8 +919,6 @@ pub(crate) fn collect_shared_progress(
         .iter()
         .filter_map(|(user_id, username)| {
             let summary = progress_for_reader(book, user_id, saved_progress, finished_works)?;
-            // A row exists as soon as a book is opened, so untouched books
-            // would otherwise report every user on the server as a reader.
             if summary.status == BookProgressStatus::NotStarted {
                 return None;
             }
@@ -1079,8 +931,6 @@ pub(crate) fn collect_shared_progress(
             })
         })
         .collect();
-    // Finished readers first, then the furthest along, so the truncated list
-    // shown on a library row leads with the most useful names.
     entries.sort_by(|a, b| {
         let rank = |entry: &SharedProgress| match entry.status {
             BookProgressStatus::Finished => 0,
@@ -1099,10 +949,6 @@ pub(crate) fn collect_shared_progress(
 
 pub(crate) fn summarize_book_progress(book: &Book, progress: &Progress) -> BookProgress {
     let enriched = enrich_progress(book, progress);
-    // A non-positive duration means "unknown", never "this book is zero
-    // seconds long". Treating it as known clamps the stored position to 0 and
-    // reports the book as not started — and the library summary is the resume
-    // point a reinstalled client falls back to when /progress is unavailable.
     let duration = book
         .duration_seconds
         .filter(|duration| *duration > 0.0)
@@ -1127,24 +973,12 @@ pub(crate) fn summarize_book_progress(book: &Book, progress: &Progress) -> BookP
     }
 }
 
-/// Whether playback itself has reached the book's finished range. Explicit
-/// status choices are deliberately ignored: a manual mark must neither create
-/// a dated completion nor suppress one when the listener later reaches the
-/// end for real.
 pub(crate) fn playback_position_is_finished(book: &Book, progress: &Progress) -> bool {
     let mut position_only = progress.clone();
     position_only.finished_override = None;
     summarize_book_progress(book, &position_only).status == BookProgressStatus::Finished
 }
 
-/// The furthest point a stored checkpoint reached, clamped to the book's real
-/// duration. A raw `book_position_seconds` is only as trustworthy as the client
-/// that reported it — when a book's track durations are unknown the server has
-/// to take the client's word for it, and an over-reported position would
-/// otherwise outrank every real one.
-///
-/// This is ground covered, not time spent: scrubbing forward moves it without
-/// any listening. Never sum it into a listening total.
 pub(crate) fn reached_position_seconds(book: &Book, progress: &Progress) -> f64 {
     summarize_book_progress(book, progress)
         .book_position_seconds
@@ -1204,9 +1038,6 @@ pub(crate) fn clamped_track_position(position_seconds: f64, duration_seconds: Op
         .unwrap_or(position)
 }
 
-/// The track id and server-side ordering are authoritative. Trust a reported
-/// whole-book offset only when an earlier track has no known duration and the
-/// server therefore cannot derive the offset itself.
 pub(crate) fn validated_book_position_seconds(
     book: &Book,
     track: &Track,
@@ -1231,30 +1062,16 @@ pub(crate) fn validated_book_position_seconds(
     }
 }
 
-/// Slack absorbs realistic clock skew between devices; a genuinely stale
-/// replay (offline queue flush, reinstalled client) is hours or days old.
 pub(crate) const PROGRESS_STALE_WRITE_SLACK_SECONDS: f64 = 300.0;
 
-/// How far backwards an accepted write must jump before the replaced copy is
-/// preserved on disk.
 pub(crate) const PROGRESS_BACKUP_REGRESSION_SECONDS: f64 = 300.0;
 
-/// AVPlayer and HTMLMediaElement clocks can differ by a fraction of a second
-/// around pause and route-change events. Anything beyond this is a real
-/// backwards move and must have been initiated by the listener.
 pub(crate) const PROGRESS_AUTOMATIC_REGRESSION_SLACK_SECONDS: f64 = 2.0;
 
 pub(crate) const PROGRESS_BACKUPS_PER_BOOK: usize = 20;
 
-/// Positions this close to the start of a book are treated as "not started"
-/// when they arrive over substantial stored progress.
 pub(crate) const PROGRESS_NEAR_ZERO_SECONDS: f64 = 60.0;
 
-/// Carries an explicit completion choice onto the next checkpoint, except
-/// when the listener deliberately jumps back to the start of a book they had
-/// marked finished. That is a re-listen, and keeping the override would label
-/// the whole second pass "Finished". Only a deliberate seek clears it, so an
-/// automatic position report can never erase the choice.
 pub(crate) fn carried_finished_override(
     previous: Option<&Progress>,
     incoming_book_position: f64,
@@ -1277,8 +1094,6 @@ pub(crate) fn plausible_listened_delta(
     intentional_seek: bool,
 ) -> f64 {
     let Some(previous) = previous else {
-        // A first checkpoint may be a restore from another installation; no
-        // elapsed interval exists from which listening can be inferred.
         return 0.0;
     };
     if intentional_seek {
@@ -1291,9 +1106,6 @@ pub(crate) fn plausible_listened_delta(
     let previous_timestamp = progress_timestamp_seconds(&previous.updated_at);
     let saved_timestamp = progress_timestamp_seconds(&saved.updated_at);
     let elapsed = (saved_timestamp - previous_timestamp).max(0.0);
-    // OperaLibre tops out at 2x. A small grace window covers rounded
-    // timestamps and progress-save scheduling jitter without allowing a
-    // multi-hour scrub to become activity.
     position_delta.min(elapsed * 2.1 + 5.0)
 }
 
@@ -1315,9 +1127,6 @@ pub(crate) fn progress_timestamp_millis(value: &str) -> u64 {
     }
 }
 
-/// The position for a book nobody has played yet: parked at the start of its
-/// first track. Native and Audiobookshelf completion writes both start from
-/// this, so the two clients can never initialize progress differently.
 pub(crate) fn fresh_progress(
     book: &Book,
     first_track: &Track,
@@ -1336,9 +1145,6 @@ pub(crate) fn fresh_progress(
     }
 }
 
-/// Accepted writes receive a server-issued monotonic millisecond revision.
-/// This distinguishes a rapid rewind from the older high position it replaces
-/// without allowing a future-skewed client clock to control ordering.
 pub(crate) fn next_progress_timestamp(previous: Option<&Progress>, now_millis: u64) -> String {
     let previous_millis = previous
         .map(|progress| progress_timestamp_millis(&progress.updated_at))
@@ -1349,17 +1155,10 @@ pub(crate) fn next_progress_timestamp(previous: Option<&Progress>, now_millis: u
 }
 
 pub(crate) fn progress_write_is_stale(stored_updated_at: &str, incoming_seconds: f64) -> bool {
-    // Progress revisions may be legacy epoch seconds or monotonic epoch
-    // milliseconds. Anything unparsable never blocks a write.
     let stored = progress_timestamp_seconds(stored_updated_at);
     incoming_seconds + PROGRESS_STALE_WRITE_SLACK_SECONDS < stored
 }
 
-/// A near-zero write that erases substantial progress is the signature of a
-/// client that failed to restore its position, not of a listener starting
-/// over — deliberate restarts and rewinds are flagged by the client. The
-/// timestamp-staleness check cannot catch this case because the broken
-/// client's write is genuinely fresh.
 pub(crate) fn progress_write_is_suspect_reset(
     previous_book_position: f64,
     incoming_book_position: f64,
@@ -1370,10 +1169,6 @@ pub(crate) fn progress_write_is_suspect_reset(
         && previous_book_position - incoming_book_position > PROGRESS_BACKUP_REGRESSION_SECONDS
 }
 
-/// Periodic, pause, background, and completion-adjacent checkpoints are
-/// monotonic. A late request must never roll back a newer position, regardless
-/// of clock skew or network ordering. Explicit seeks and restarts are the sole
-/// paths allowed to move backward.
 pub(crate) fn progress_write_is_unintentional_regression(
     previous_book_position: f64,
     incoming_book_position: f64,

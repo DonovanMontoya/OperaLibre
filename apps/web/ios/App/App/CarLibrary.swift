@@ -1,18 +1,6 @@
 import Foundation
 
-/// The library, as the car screen sees it.
-///
-/// Connecting to CarPlay can launch the app with no window scene at all: there
-/// is no WebView, no React, no server session, and nothing to ask what is on
-/// the shelf. So the app keeps a snapshot of the library on disk, written by
-/// the web layer whenever it changes, and the car screen reads that. Every
-/// value the car needs to start playing — track URLs with their media token,
-/// the saved position, the book's gain — is in the snapshot, because none of it
-/// can be fetched from a cold launch parked in a garage.
 struct CarLibrarySnapshot: Codable {
-    /// `serverStorageKey:userId`, the first two thirds of the recovery scope
-    /// key the web player uses. Kept whole rather than rebuilt natively so the
-    /// two sides cannot drift apart.
     var scopePrefix: String
     var playbackRate: Double
     var updatedAt: Double
@@ -28,8 +16,6 @@ struct CarLibrarySnapshot: Codable {
         books.first { $0.id == bookId }
     }
 
-    /// Resume must identify a book, never pick an arbitrary title from the shelf.
-    /// Callers supply only playback records belonging to this snapshot's scope.
     func audiobookToResume(sessions: [CarPlaybackSession]) -> CarLibraryBook? {
         guard !scopePrefix.isEmpty else { return nil }
         let latest = sessions.filter { book(withId: $0.bookId) != nil }
@@ -78,7 +64,6 @@ struct CarLibraryBook: Codable {
     var author: String?
     var artworkUrl: String?
     var durationSeconds: Double?
-    /// Whole-book position, in seconds, as the web layer last knew it.
     var positionSeconds: Double
     var status: String
     var downloaded: Bool
@@ -89,16 +74,12 @@ struct CarLibraryBook: Codable {
     var isFinished: Bool { status == "finished" }
     var isInProgress: Bool { status == "inProgress" }
 
-    /// Where a plain "play this book" starts. A book that was played to the
-    /// end starts over rather than resuming a second past the last word.
     var resumePositionSeconds: Double {
         if isFinished { return 0 }
         if let durationSeconds, durationSeconds > 0, positionSeconds >= durationSeconds - 1 { return 0 }
         return max(0, positionSeconds)
     }
 
-    /// Where in the queue a whole-book position lands: the track holding it,
-    /// and the offset into that track.
     func target(atBookPosition position: Double) -> (trackIndex: Int, positionInTrack: Double)? {
         guard !tracks.isEmpty else { return nil }
         let position = max(0, position)
@@ -129,14 +110,6 @@ struct CarLibraryChapter: Codable {
     var trackId: String?
 }
 
-/// Progress made in the car, waiting for the web layer to save it.
-///
-/// The car never writes to the server itself. Every defense against a bad
-/// progress write — the staleness check, the suspect-reset rule, the
-/// book-summary fallback — lives in the web player and the server, and a second
-/// writer that skipped them is exactly the failure those defenses exist for. So
-/// a car session leaves its position here, and the app persists it through the
-/// usual path the next time it runs.
 struct CarPlaybackSession: Codable {
     var bookId: String
     var trackId: String
@@ -145,14 +118,8 @@ struct CarPlaybackSession: Codable {
     var durationSeconds: Double?
     var updatedAt: Double
     var finished: Bool
-    /// The listener jumped rather than simply listening on. The server refuses
-    /// a write that drops a substantial position back to near zero unless the
-    /// client says the move was deliberate, so the car has to pass that intent
-    /// along with the position.
     var intentionalRegression: Bool
 
-    /// A newer checkpoint survives an acknowledgement, but the reset-guard
-    /// bypass must not survive once the jump that set it has been saved.
     static func remainingAfterAcknowledgement(
         _ sessions: [CarPlaybackSession],
         acknowledged: [String: Double],
@@ -171,8 +138,6 @@ struct CarPlaybackSession: Codable {
 }
 
 extension CarLibraryBook {
-    /// The line under a book's title on the car screen: who wrote it, and what
-    /// tapping it will do.
     var carSubtitle: String {
         var parts: [String] = []
         if let author, !author.isEmpty { parts.append(author) }
@@ -189,7 +154,6 @@ extension CarLibraryBook {
     }
 }
 
-/// How much listening is left, in the shelf's own phrasing.
 func carDurationLabel(seconds: Double) -> String {
     let total = Int(max(0, seconds.rounded()))
     let hours = total / 3600
@@ -199,9 +163,6 @@ func carDurationLabel(seconds: Double) -> String {
     return "under a minute"
 }
 
-/// A position in the book, as a clock reads it. The duration label answers
-/// "how much is left"; a chapter list answers "where does this start", and
-/// "under a minute" is not an answer to that question.
 func carTimestampLabel(seconds: Double) -> String {
     let total = Int(max(0, seconds.rounded()))
     let hours = total / 3600, minutes = (total % 3600) / 60, remainder = total % 60

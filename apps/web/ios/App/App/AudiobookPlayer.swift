@@ -3,8 +3,6 @@ import Foundation
 import MediaPlayer
 import UIKit
 
-/// Older servers ignore this hint. File URLs and other server APIs keep their
-/// existing sources; OperaLibre may return a smaller, equivalent MP4 index.
 func compactAudioSource(_ source: URL) -> URL {
     guard var components = URLComponents(url: source, resolvingAgainstBaseURL: false),
           components.scheme == "http" || components.scheme == "https" else { return source }
@@ -65,8 +63,6 @@ struct AudiobookLoadRequest {
     var recoveryTrackId: String?
     var recoveryBookOffsetSeconds: Double
     var queue: [NativeAudioQueuedTrack]
-    /// Set when the player rebuilds itself in place: a lock-screen seek the
-    /// web layer has not been told about yet is still owed to it.
     var keepsPendingIntentionalSeek = false
     var clipPreview = false
 }
@@ -81,8 +77,6 @@ struct AudiobookNowPlayingRequest {
     var chapters: [NativeNowPlayingChapter]
 }
 
-/// A read-only look at the player, for callers that drive it without the web
-/// layer's event stream (CarPlay).
 struct AudiobookPlayerStatus {
     var isLoaded: Bool
     var isPlaying: Bool
@@ -102,8 +96,6 @@ struct AudiobookAdoptableSession {
     var sleepAtChapterEnd: Bool
 }
 
-/// Stream URLs carry a media credential in the query that a reloaded page may
-/// mint afresh, so the same file is the same scheme, host, port and path.
 func sameAudioSource(_ playing: URL, _ requested: URL) -> Bool {
     if playing.isFileURL || requested.isFileURL {
         return playing.isFileURL && requested.isFileURL
@@ -115,25 +107,15 @@ func sameAudioSource(_ playing: URL, _ requested: URL) -> Bool {
         && playing.path == requested.path
 }
 
-/// The web bridge's view of the player. Delivery follows the rules the
-/// Capacitor layer depends on: events raised while WKWebView is suspended are
-/// held back and replayed once the app is active again, so JS never has to
-/// reason about a clock that moved while it was not running.
 protocol AudiobookPlayerObserver: AnyObject {
     func audiobookPlayer(_ player: AudiobookPlayer, didEmit event: String, data: [String: Any])
 }
 
-/// A second, ungated view of the player for the CarPlay scene, which keeps
-/// running — and has to stay correct — while the phone app is backgrounded and
-/// the observer above is deliberately silent.
 protocol AudiobookPlayerMonitor: AnyObject {
     func audiobookPlayer(_ player: AudiobookPlayer, didPersist checkpoint: NativeAudioCheckpoint)
     func audiobookPlayerDidChangePlaybackState(_ player: AudiobookPlayer)
     func audiobookPlayerDidFinishPlayback(_ player: AudiobookPlayer)
     func audiobookPlayer(_ player: AudiobookPlayer, didFail message: String)
-    /// A jump the listener asked for, from the car screen or the lock screen,
-    /// as opposed to playback simply advancing. Only these may move a stored
-    /// position backwards; the server refuses the rest as suspect resets.
     func audiobookPlayerDidSeekDeliberately(_ player: AudiobookPlayer)
 }
 
@@ -145,14 +127,6 @@ extension AudiobookPlayerMonitor {
     func audiobookPlayerDidSeekDeliberately(_ player: AudiobookPlayer) {}
 }
 
-/// The app's one audio engine.
-///
-/// It is a singleton rather than plugin state because CarPlay can be the only
-/// scene the app ever creates: connecting to a car launches the process with no
-/// window scene, so no Capacitor bridge and no `NativeAudioPlugin` instance
-/// exist to own an `AVPlayer`. Both the plugin and the CarPlay scene drive this
-/// object, which keeps one audio session, one Now Playing entry, and one
-/// recovery checkpoint whichever of them the listener is using.
 public final class AudiobookPlayer {
     static let shared = AudiobookPlayer()
 
@@ -181,23 +155,13 @@ public final class AudiobookPlayer {
     private var willEnterForegroundObserver: NSObjectProtocol?
     private var enteredBackgroundObserver: NSObjectProtocol?
     private var desiredRate: Float = 1
-    /// The listener's per-book boost, separate from `player.volume` because
-    /// that one cannot exceed unity and this one has to.
     private var boostGain: Float = 1
     private var pendingPosition: Double = 0
-    // AVPlayer can briefly report an invalid or reset clock while iOS swaps
-    // audio routes. Keep the last clock delivered by its periodic observer so
-    // an AirPods transition cannot replace a live checkpoint with 0:00.
     private var lastKnownPosition: Double = 0
     private var shouldAutoplay = false
     private var wasPlayingBeforeInterruption = false
     private var interruptionIsActive = false
-    /// Counts interruption starts, so an activation that finishes after a
-    /// newer interruption began cannot resume playback that one paused.
     private var interruptionSerial = 0
-    /// AVAudioSession calls can block while the audio server reconfigures a
-    /// route, which hangs the UI when they run on main. They run here instead;
-    /// the queue is serial, so activations and releases keep their order.
     private let sessionQueue = DispatchQueue(label: "com.operalibre.audio-session", qos: .userInitiated)
     private var pendingRemoteIntentionalSeek = false
     private var generation = 0
@@ -215,9 +179,6 @@ public final class AudiobookPlayer {
     private var recoveryTrackId: String?
     private var recoveryBookOffset: Double = 0
     private var lastCheckpointWrite = 0.0
-    /// How long a play() that arrived before its track was loaded stays
-    /// eligible to start that track. Long enough for a React track swap,
-    /// short enough that it cannot outlive the tap that caused it.
     private static let playIntentGraceSeconds = 5.0
     private var playIntentAt = 0.0
     private var queuedTracks: [NativeAudioQueuedTrack] = []
@@ -225,10 +186,7 @@ public final class AudiobookPlayer {
     private var activeQueueIndex = 0
     private var packetAudio: PacketAudioAsset?
     private var initialSeekComplete = false
-    /// The active item has reached a real position since loading. Until then a
-    /// seek that never lands must keep reporting the resume target, not 0:00.
     private var positionEstablished = false
-    /// Preview clocks never become recovery or car-session progress.
     private(set) var isClipPreview = false
     private var seekSerial = 0
     private var finishedWhileInactive = false
@@ -237,32 +195,16 @@ public final class AudiobookPlayer {
     private var sleepTimerRemaining: TimeInterval = 0
     private var sleepTimerLastTick: TimeInterval?
     private var sleepTimerFinishedWhileInactive = false
-    /// Stop at the end of the chapter being played instead of after a countdown.
     private var sleepAtChapterEnd = false
     private var sleepChapterLastPosition: Double?
-    /// The longest stretch of an item one playback tick can cover.
     private static let sleepChapterStepSeconds = 4.0
-    /// A marker this close to a file's start opens the file.
     private static let sleepChapterFileStartSeconds = 1.0
     private var pendingErrorWhileInactive: String?
-    /// Set when an interruption ended without `.shouldResume` while the app
-    /// was not active. The retained play intent may only auto-resume within a
-    /// short window after this; an old timestamp means iOS meant the missing
-    /// hint — another app owns the audio session now.
     private static let interruptionResumeGraceSeconds = 30.0
     private var interruptionEndedWhileInactiveAt: TimeInterval?
-    /// Whatever interrupted playback can still hold the audio session for a
-    /// moment after iOS reports the interruption over, and activation fails
-    /// until it lets go. A resume waits these out before giving up.
     private static let interruptionResumeRetryDelays: [TimeInterval] = [0.5, 1, 2]
-    /// A resume that has not started by then is abandoned. iOS can refuse
-    /// the background task below and suspend the app with a retry queued;
-    /// it would otherwise start playback whenever the app next ran.
     private static let interruptionResumeWindowSeconds = 10.0
-    /// Identifies the newest resume, so a superseded one stops retrying.
     private var interruptionResumeSerial = 0
-    /// Keeps a backgrounded app running through those retries; a paused app
-    /// is otherwise suspended before they fire.
     private var interruptionResumeTask: UIBackgroundTaskIdentifier = .invalid
 
     deinit {
@@ -330,11 +272,6 @@ public final class AudiobookPlayer {
         let install = { [weak self] in
             guard let self else { return }
 
-            // A shelf Resume tap can reach play() while React is still
-            // replacing the previous track. Preserve that queued intent
-            // across teardown so the newly loaded item actually starts —
-            // but only briefly, so an intent left over from playback that
-            // stopped long ago cannot silently start an unrelated book.
             let playIntentAge = Date.timeIntervalSinceReferenceDate - self.playIntentAt
             let retainedPlayIntent =
                 self.shouldAutoplay && playIntentAge <= Self.playIntentGraceSeconds
@@ -373,15 +310,10 @@ public final class AudiobookPlayer {
                     self.packetAudio = packet
                     asset = packet.asset
                 }
-                // The URL initializer waits for asset duration before readiness.
-                // Start decoding without that extra prerequisite; duration is
-                // fetched after readiness and published when it becomes available.
                 let item = AVPlayerItem(
                     asset: asset,
                     automaticallyLoadedAssetKeys: []
                 )
-                // Apple's time-domain algorithm is designed for spoken audio and
-                // preserves pitch throughout OperaLibre's 0.75–2x range.
                 item.audioTimePitchAlgorithm = .timeDomain
                 return item
             }
@@ -393,8 +325,6 @@ public final class AudiobookPlayer {
             player.volume = volume
             self.player = player
             self.activateQueuedTrack(at: 0)
-            // Queue activation resets later tracks to their natural beginning,
-            // but the first track must honor the restored resume position.
             self.pendingPosition = position
             self.lastKnownPosition = position
             self.configureRemoteCommandsIfNeeded()
@@ -420,7 +350,6 @@ public final class AudiobookPlayer {
             if player.currentItem?.status == .readyToPlay && self.initialSeekComplete {
                 self.activateAudioSession { [weak self] activated in
                     guard let self, player === self.player else { return }
-                    // A pause that arrived during activation wins.
                     if activated && self.shouldAutoplay {
                         player.playImmediately(atRate: self.desiredRate)
                     }
@@ -462,7 +391,6 @@ public final class AudiobookPlayer {
         let position = max(0, requested)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            // Bank the listener's place before the first temporary seek.
             if clipPreview && !self.isClipPreview { self.persistCheckpoint(force: true) }
             let returningFromPreview = self.isClipPreview && !clipPreview
             self.isClipPreview = clipPreview
@@ -470,8 +398,6 @@ public final class AudiobookPlayer {
         }
     }
 
-    /// All seek sources share readiness and cancellation handling. A lock-screen
-    /// seek can supersede the initial resume seek while the item is still loading.
     private func performSeek(to position: Double, intentional: Bool, requiresExactPosition: Bool = false) {
         let leavingPreview = requiresExactPosition || (intentional && isClipPreview)
         pendingPosition = position
@@ -484,9 +410,6 @@ public final class AudiobookPlayer {
         }
         seekCurrentItem(player, item: item, to: position) { [weak self] reached in
             guard let self else { return }
-            // A seek that never lands leaves the audio where it was. Once this
-            // item has a real position, follow that audio rather than freezing
-            // the clock and checkpoints at the unreached target.
             guard reached || (self.positionEstablished && !leavingPreview) else {
                 if leavingPreview { self.isClipPreview = true }
                 self.failUnreachedResumeSeek()
@@ -496,21 +419,15 @@ public final class AudiobookPlayer {
             self.positionEstablished = true
             self.lastKnownPosition = self.finiteSeconds(player.currentTime())
             if !reached {
-                // The audio did not move, so there is no deliberate jump to authorize.
                 self.pendingPosition = self.lastKnownPosition
                 self.pendingRemoteIntentionalSeek = false
             }
-            // Publish the intentional seek before state can persist a backwards
-            // jump. React uses that event to authorize a deliberate rewind.
             if UIApplication.shared.applicationState == .active {
                 self.emitRemoteIntentionalSeek()
             }
             self.persistCheckpoint(force: true)
             self.emitState()
             if self.shouldAutoplay, player.timeControlStatus != .playing {
-                // Seeking may finish while the activation kicked off by Play
-                // is still waiting on AVAudioSession. Request activation here
-                // too so a seek cannot start the clock before audio is ready.
                 self.activateAudioSession { [weak self] activated in
                     guard let self, activated, self.shouldAutoplay,
                           player === self.player,
@@ -524,17 +441,10 @@ public final class AudiobookPlayer {
         }
     }
 
-    /// The saved position could not be reached before this item ever played.
-    /// Playing from wherever AVPlayer stopped would overwrite that position, so
-    /// hand playback to web audio, which restores the saved target instead.
-    /// Checkpoints keep reporting the target until then.
     private func failUnreachedResumeSeek() {
         emitError("The audiobook could not resume at its saved position.")
     }
 
-    /// Seeks the current item exactly. A seek superseded by a newer one leaves
-    /// readiness to that seek; one interrupted by anything else is retried, and
-    /// `completion(false)` reports a target that still was not reached.
     private func seekCurrentItem(
         _ player: AVPlayer,
         item: AVPlayerItem,
@@ -545,8 +455,6 @@ public final class AudiobookPlayer {
         seekSerial += 1
         let serial = seekSerial
         let seekGeneration = generation
-        // A seek that lands just past a chapter boundary is not that chapter
-        // ending; the end-of-chapter stop starts over from where it lands.
         sleepChapterLastPosition = nil
         player.seek(to: CMTime(seconds: position, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
@@ -554,8 +462,6 @@ public final class AudiobookPlayer {
                   player === self.player, player.currentItem === item else { return }
             self.sleepChapterLastPosition = nil
             if finished || item.status != .readyToPlay {
-                // An item that is not ready yet runs its resume seek from the
-                // status observer; that seek owns readiness.
                 if finished { completion(true) }
             } else if attempts > 1 {
                 self.seekCurrentItem(player, item: item, to: position, attempts: attempts - 1, completion: completion)
@@ -565,10 +471,6 @@ public final class AudiobookPlayer {
         }
     }
 
-    /// A relative jump, as the car's skip buttons and the lock screen make it.
-    /// Unlike `seek(toPositionSeconds:)` this reports the move as a deliberate
-    /// one, which is what lets the web layer save a backwards jump the server
-    /// would otherwise refuse as a suspect reset.
     func skip(bySeconds offset: Double) {
         DispatchQueue.main.async { [weak self] in
             self?.seekFromRemote(by: offset)
@@ -614,7 +516,6 @@ public final class AudiobookPlayer {
             self.nowPlayingArtist = request.artist
             self.nowPlayingAlbum = request.album
             self.nowPlayingChapters = request.chapters.sorted { $0.startSeconds < $1.startSeconds }
-            // Markers arriving mid-chapter are not a boundary being played across.
             self.sleepChapterLastPosition = nil
             self.suppliedNowPlayingChapter = suppliedChapter
             self.activeNowPlayingChapterIndex = nil
@@ -644,20 +545,11 @@ public final class AudiobookPlayer {
         }
     }
 
-    /// The stored checkpoint, when it belongs to the requested book. Reads
-    /// `UserDefaults` and no player state, so it answers before — or without —
-    /// a player ever being loaded.
     func recoveryState(forScope scope: String) -> NativeAudioCheckpoint? {
         guard let checkpoint = loadCheckpoint(), checkpoint.scopeKey == scope else { return nil }
         return checkpoint
     }
 
-    /// The running session a freshly loaded page may take over instead of
-    /// loading the book again. iOS can discard the WebView's content process
-    /// during a long background listen while AVPlayer plays on; the reloaded
-    /// page restores the same book, and its load() would otherwise tear the
-    /// live player down. Only a player that is playing the requested track
-    /// from the same file qualifies; anything else answers nil and loads.
     func adoptableSession(
         scopeKey: String,
         trackId: String,
@@ -685,8 +577,6 @@ public final class AudiobookPlayer {
                 sleepTimerSeconds: self.sleepTimerRemaining,
                 sleepAtChapterEnd: self.sleepAtChapterEnd
             ))
-            // The page drops ticks until it has decided, and a player that is
-            // buffering sends none of its own; hand it a clock straight away.
             DispatchQueue.main.async { [weak self] in self?.emitState() }
         }
     }
@@ -697,15 +587,9 @@ public final class AudiobookPlayer {
         }
     }
 
-    /// Stops and checkpoints before returning, so callers can safely remove media.
     func stopOnMainThread(releaseSession: Bool) {
         precondition(Thread.isMainThread)
         generation += 1
-        // stop() must disarm the sleep timer so it cannot keep counting
-        // into a session that did not arm it (logout, failover, reload).
-        // stop() also runs between track reattachments, so the JS attach
-        // path re-arms the timer with the seconds React still holds;
-        // load() leaves the timer alone for the same reason.
         sleepTimerRemaining = 0
         sleepTimerLastTick = nil
         sleepTimerFinishedWhileInactive = false
@@ -717,7 +601,6 @@ public final class AudiobookPlayer {
         }
     }
 
-    /// Main-thread only, like every other player read.
     var status: AudiobookPlayerStatus {
         let position = player == nil ? 0 : stablePlayerPosition()
         let duration = finiteSeconds(player?.currentItem?.duration ?? .invalid)
@@ -739,20 +622,12 @@ public final class AudiobookPlayer {
         observer?.audiobookPlayer(self, didEmit: event, data: data)
     }
 
-    /// Mix the following file before the queue advances into it, so a boosted
-    /// book does not start each file at the unboosted level. Deferred until the
-    /// active file has settled so it does not compete with startup.
     private func prepareBoostForNextQueuedItem() {
         let next = activeQueueIndex + 1
         guard queuedItems.indices.contains(next) else { return }
         applyBoost(to: queuedItems[next], gain: boostGain)
     }
 
-    /// `AVPlayer.volume` is capped at unity, so a book mastered quiet is lifted
-    /// by the mixer instead: audio mix input parameters take a linear gain that
-    /// may run above 1. The asset's tracks are needed to address that gain, and
-    /// for a streamed item they are not loaded yet, so the mix is attached once
-    /// they arrive — playback that has already started picks it up in place.
     private func applyBoost(to item: AVPlayerItem, gain: Float) {
         guard gain != 1 else {
             item.audioMix = nil
@@ -772,8 +647,6 @@ public final class AudiobookPlayer {
                 return parameters
             }
             DispatchQueue.main.async {
-                // The book may have been swapped, or the gain changed again,
-                // while the tracks were loading.
                 guard
                     let self,
                     let item,
@@ -861,10 +734,6 @@ public final class AudiobookPlayer {
             }
         }
 
-        // The observation above owns the resume seek and so only covers the
-        // item playback starts on. Later queue entries still have to report a
-        // load failure, otherwise AVQueuePlayer skips a missing track in
-        // silence and the web layer never fails over.
         failureObservations = queuedItems.dropFirst().map { queuedItem in
             queuedItem.observe(\.status, options: [.new]) { [weak self] observedItem, _ in
                 DispatchQueue.main.async {
@@ -891,10 +760,6 @@ public final class AudiobookPlayer {
                     let player,
                     generation == self.generation
                 else { return }
-                // AVQueuePlayer can discard an interrupted initial stream
-                // before AVPlayerItem publishes `.failed`. Without a current
-                // item there will be no later readiness or status event, so
-                // explicitly fail over instead of leaving Play waiting forever.
                 guard let currentItem = player.currentItem else {
                     if !self.initialSeekComplete {
                         if self.retryWithoutPacketAudio() { return }
@@ -948,9 +813,6 @@ public final class AudiobookPlayer {
             if chapterIndex != self.activeNowPlayingChapterIndex {
                 self.updateNowPlayingInfo()
             }
-            // Once WKWebView is suspended, crossing the Capacitor bridge on
-            // every timer tick can starve AVPlayer's time-pitch processing.
-            // The native player and Now Playing center keep their own clocks.
             if UIApplication.shared.applicationState == .active {
                 self.emitState()
             }
@@ -967,10 +829,6 @@ public final class AudiobookPlayer {
                 let endedItem = notification.object as? AVPlayerItem,
                 let endedIndex = self.queuedItems.firstIndex(where: { $0 === endedItem })
             else { return }
-            // A chapter that ends with its file stops here, as the queue
-            // moves on. A next file that opens without a marker continues the
-            // chapter, and the book's last file ends the wait without a pause
-            // of its own.
             if self.sleepAtChapterEnd {
                 if endedIndex >= self.queuedItems.count - 1 {
                     self.sleepAtChapterEnd = false
@@ -1017,8 +875,6 @@ public final class AudiobookPlayer {
         }
         let track = queuedTracks[index]
         activeQueueIndex = index
-        // Loading track metadata for every queued item competes with startup
-        // on books split into many files. Future tracks get their mix on activation.
         if queuedItems.indices.contains(index) {
             let item = queuedItems[index]
             applyBoost(to: item, gain: boostGain)
@@ -1032,8 +888,6 @@ public final class AudiobookPlayer {
                     self.emitState()
                 }
             }
-            // Later tracks are already active when this runs. The first track
-            // requests duration only after its initial resume seek completes.
             if index > 0 {
                 item.asset.loadValuesAsynchronously(forKeys: ["duration"]) {}
             }
@@ -1182,12 +1036,6 @@ public final class AudiobookPlayer {
                 self.emit("sleepTimerEnded", data: [:])
             }
             self.emitRemoteIntentionalSeek()
-            // Some short notification interruptions do not deliver their end
-            // callback until the app is active again. Resume the exact native
-            // clock if playback was running before that interruption — but
-            // only within the grace window and while nothing else is playing:
-            // an interruption that ended without `.shouldResume` long ago
-            // means another app owns the session now.
             if self.wasPlayingBeforeInterruption && self.shouldAutoplay {
                 if self.interruptionResumeIsFresh()
                     && !AVAudioSession.sharedInstance().isOtherAudioPlaying {
@@ -1217,10 +1065,6 @@ public final class AudiobookPlayer {
                 self.emitTrackChanged()
                 self.emitState()
             }
-            // Deliver a deferred error last: the JS error listener fails over
-            // to web audio and stops listening, so replaying it first would
-            // swallow the events above — and the state emit must correct the
-            // web element's stale clock before the fallback plays from it.
             if let pendingError = self.pendingErrorWhileInactive {
                 self.pendingErrorWhileInactive = nil
                 self.emit("error", data: ["message": pendingError])
@@ -1235,18 +1079,6 @@ public final class AudiobookPlayer {
         }
     }
 
-    /// didBecomeActive only fires once the unlock or app-switch animation has
-    /// finished, so the WebView would show its pre-background clock for that
-    /// whole transition. Hand it the live clock as the app heads back to the
-    /// foreground instead; didBecomeActive still re-emits it afterwards.
-    ///
-    /// Only the plain case is sent early. A book that finished while away
-    /// reports its final state together with `ended`, and an interruption
-    /// that may still auto-resume would flash a pause the resume undoes.
-    /// A pending sleep-timer end or lock-screen seek must reach JS before the
-    /// clock it explains, and the WebView may not be listening yet (its
-    /// content process can be evicted in the background) — so those stay
-    /// queued for didBecomeActive, which delivers them in order.
     private func emitForegroundClockEarly() {
         guard
             player != nil,
@@ -1269,9 +1101,6 @@ public final class AudiobookPlayer {
         case .began:
             let rawReason = notification.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt
             NSLog("Audio interruption began (reason %@)", rawReason.map(String.init) ?? "unknown")
-            // Since iOS 17 a disconnected route also arrives as an
-            // interruption, and that one never ends. It is a route loss, not
-            // something to resume from.
             if #available(iOS 17.0, *),
                rawReason == AVAudioSession.InterruptionReason.routeDisconnected.rawValue {
                 pauseForLostRoute()
@@ -1280,9 +1109,6 @@ public final class AudiobookPlayer {
             interruptionIsActive = true
             interruptionSerial += 1
             interruptionEndedWhileInactiveAt = nil
-            // iOS may have already changed AVPlayer to paused by the time this
-            // notification is delivered. The retained play intent is the
-            // reliable signal that playback should continue afterward.
             wasPlayingBeforeInterruption = shouldAutoplay
             pendingPosition = stablePlayerPosition()
             lastKnownPosition = pendingPosition
@@ -1302,14 +1128,6 @@ public final class AudiobookPlayer {
             if wasPlayingBeforeInterruption && shouldAutoplay && options.contains(.shouldResume) {
                 resumeAfterInterruption()
             } else {
-                // `shouldResume` is a system hint, and iOS does not include it
-                // for every interruption that finishes while the app remains
-                // inactive. Retain the user's play intent in that case so the
-                // didBecomeActive fallback can restore playback. If the app is
-                // already active, the missing hint remains authoritative. The
-                // timestamp bounds the retention: a latch that is hours old
-                // means the hint was meant, and resuming would hijack whatever
-                // now owns the audio session.
                 if UIApplication.shared.applicationState == .active {
                     wasPlayingBeforeInterruption = false
                 } else {
@@ -1336,14 +1154,6 @@ public final class AudiobookPlayer {
         case .oldDeviceUnavailable:
             pauseForLostRoute()
         case .newDeviceAvailable:
-            // Putting in AirPods can play a connection chime that begins an
-            // interruption without a useful matching `.ended` notification.
-            // The retained play intent is authoritative: reclaim the session
-            // and Now Playing ownership once the new output route is ready.
-            // A route change is not proof the interruption is over, though:
-            // a phone call is still one while AirPods go in. Only a session
-            // activation that succeeds ends the interruption bookkeeping; a
-            // failed one keeps the play intent for the `.ended` notification.
             if shouldAutoplay {
                 if interruptionIsActive {
                     activateAudioSession { [weak self] activated in
@@ -1370,8 +1180,6 @@ public final class AudiobookPlayer {
         return retryInitialItem(item)
     }
 
-    /// The queue may already have discarded this item when its failure arrives.
-    /// Keep its clock paired with its track, including during teardown's checkpoint.
     @discardableResult func retryInitialItem(_ item: AVPlayerItem) -> Bool {
         precondition(Thread.isMainThread)
         guard let player, activeQueueIndex == 0, queuedItems.first === item,
@@ -1388,21 +1196,13 @@ public final class AudiobookPlayer {
         initialSeekComplete = false
         packetAudio?.cancel()
         self.packetAudio = nil
-        // Invalidate late item/queue callbacks before rebuilding the player.
         generation += 1
         load(request, allowsPacketAudio: false)
         return true
     }
 
-    /// iOS restarted its audio services, which leaves the existing AVPlayer
-    /// silent for good. Rebuild it from the queue it held, at the position it
-    /// had reached, and keep playing only if it was. A book that already
-    /// finished has nothing to rebuild and still owes its `ended` event.
     private func handleMediaServicesReset() {
         guard let player, !finishedWhileInactive else { return }
-        // The queue can move to its next file a moment before that track is
-        // adopted here. Adopt it first: rebuilding the previous track at the
-        // new file's clock would send the listener backwards.
         if let item = player.currentItem,
            let index = queuedItems.firstIndex(where: { $0 === item }),
            index != activeQueueIndex {
@@ -1431,10 +1231,6 @@ public final class AudiobookPlayer {
         ))
     }
 
-    /// Removing wired headphones or disconnecting AirPods is not reliably
-    /// delivered as an audio interruption. Treat the route loss as an explicit
-    /// pause so playback never spills onto the speaker, and record AVPlayer's
-    /// clock before a suspended WebView can lose the position.
     private func pauseForLostRoute() {
         guard let player else { return }
         shouldAutoplay = false
@@ -1457,9 +1253,6 @@ public final class AudiobookPlayer {
         guard !interruptionIsActive, let player else { return }
         wasPlayingBeforeInterruption = false
         interruptionEndedWhileInactiveAt = nil
-        // Still seeking to the saved position: the retained play intent
-        // starts playback once it lands, and playing now would start from
-        // the top of the file until then.
         guard initialSeekComplete else { return }
         interruptionResumeSerial += 1
         let resume = interruptionResumeSerial
@@ -1467,8 +1260,6 @@ public final class AudiobookPlayer {
             interruptionResumeTask = UIApplication.shared.beginBackgroundTask(
                 withName: "Resume after interruption"
             ) { [weak self] in
-                // Out of background time: a retry that fired after the app
-                // was suspended would start playback long after the fact.
                 self?.interruptionResumeSerial += 1
                 self?.endInterruptionResumeTask()
             }
@@ -1488,8 +1279,6 @@ public final class AudiobookPlayer {
             return
         }
         let interruption = interruptionSerial
-        // A failure here is the interrupter still letting go of the session,
-        // not a broken player, so it is retried rather than reported.
         activateAudioSession(reportingFailure: false) { [weak self] activated in
             guard let self, player === self.player, resume == self.interruptionResumeSerial else { return }
             let wanted = self.shouldAutoplay && !self.interruptionIsActive
@@ -1503,7 +1292,6 @@ public final class AudiobookPlayer {
                     DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                         guard let self, player === self.player,
                               resume == self.interruptionResumeSerial else { return }
-                        // A pause or a newer interruption in the meantime wins.
                         guard self.shouldAutoplay, !self.interruptionIsActive else {
                             self.endInterruptionResumeTask()
                             return
@@ -1525,9 +1313,6 @@ public final class AudiobookPlayer {
 
     private func finishResumeAfterInterruption(givingUp: Bool) {
         if givingUp {
-            // Something else kept the session. Stay paused where the listener
-            // can press play, instead of resuming unprompted whenever the
-            // session next frees up.
             NSLog("Audio session stayed unavailable after an interruption; leaving playback paused")
             shouldAutoplay = false
         }
@@ -1543,12 +1328,6 @@ public final class AudiobookPlayer {
         interruptionResumeTask = .invalid
     }
 
-    /// Activates the session on `sessionQueue` and calls `completion` on main
-    /// with whether playback may start. It reports false for a failure and
-    /// for an activation overtaken by a newer interruption. A teardown in the
-    /// meantime drops the completion: that player is gone. A caller that
-    /// retries passes `reportingFailure: false` to keep a failure from
-    /// reaching the web layer, which answers one by leaving native audio.
     private func activateAudioSession(
         reportingFailure: Bool = true,
         then completion: @escaping (Bool) -> Void
@@ -1572,11 +1351,6 @@ public final class AudiobookPlayer {
                     completion(!overtaken)
                     return
                 }
-                // iOS refuses activation while another interruption (a phone
-                // call) owns the session. That is expected, not a broken
-                // native player: keep the play intent and let the
-                // interruption's end resume playback instead of failing over
-                // to web audio for good.
                 if !reportingFailure || interruptedAtRequest || overtaken || self.interruptionIsActive {
                     NSLog("Audio session activation deferred during an interruption: %@", failure.localizedDescription)
                 } else {
@@ -1587,8 +1361,6 @@ public final class AudiobookPlayer {
         }
     }
 
-    /// Gives the audio session up after a teardown so other apps' audio can
-    /// resume. Pausing keeps the session; only a stop releases it.
     private func deactivateAudioSession() {
         sessionQueue.async {
             do {
@@ -1672,11 +1444,6 @@ public final class AudiobookPlayer {
         monitor?.audiobookPlayerDidChangePlaybackState(self)
     }
 
-    /// Now Playing extrapolates its clock from elapsed time and playback rate.
-    /// AVPlayer's spoken-audio processing can quantize the requested rate, so
-    /// use the current item's timebase rather than the UI's requested value.
-    /// Waiting and paused players must publish zero or the lock-screen clock
-    /// continues moving while the media clock is stopped.
     private func effectivePlaybackRate(for player: AVPlayer) -> Double {
         guard player.timeControlStatus == .playing else { return 0 }
         if let timebase = player.currentItem?.timebase {
@@ -1710,8 +1477,6 @@ public final class AudiobookPlayer {
                 let data = fetchArtworkData(from: url),
                 let original = UIImage(data: data)
             else { return }
-            // The lock screen and car draw a few hundred points at most, and
-            // the image is held for as long as the book is loaded.
             let image = downscaledArtwork(original, maximumSide: 1024)
             DispatchQueue.main.async {
                 guard let self, requestedGeneration == self.artworkGeneration else { return }
@@ -1732,8 +1497,6 @@ public final class AudiobookPlayer {
         ))
     }
 
-    /// A `state` payload. The track id lets the JS side drop a clock that
-    /// belongs to a track it has already moved away from.
     private func stateData(positionSeconds: Double, durationSeconds: Double, isPlaying: Bool) -> [String: Any] {
         var data: [String: Any] = [
             "positionSeconds": positionSeconds,
@@ -1750,9 +1513,6 @@ public final class AudiobookPlayer {
     }
 
     private func emitError(_ message: String) {
-        // Only `.background` suspends the WKWebView; in `.inactive` (control
-        // center, app switcher, call banner) JS still runs and the web-audio
-        // failover must stay immediate.
         monitor?.audiobookPlayer(self, didFail: message)
         if UIApplication.shared.applicationState == .background {
             pendingErrorWhileInactive = message
@@ -1782,9 +1542,6 @@ public final class AudiobookPlayer {
         finishSleepTimer()
     }
 
-    /// Only a step the size of ordinary playback counts as reaching the end
-    /// of the chapter. A larger move is the listener skipping or picking
-    /// another chapter, and the one they land in is then the one to finish.
     private func updateChapterSleep() {
         guard sleepAtChapterEnd, initialSeekComplete, let player,
               player.timeControlStatus == .playing else {
@@ -1801,8 +1558,6 @@ public final class AudiobookPlayer {
         finishSleepTimer()
     }
 
-    /// The last chapter that has started, matching the web player's rule, so
-    /// a gap between markers still belongs to the chapter before it.
     private func sleepChapterIndex(at position: Double) -> Int? {
         nowPlayingChapters.lastIndex { position >= $0.startSeconds }
     }
@@ -1820,8 +1575,6 @@ public final class AudiobookPlayer {
         sleepAtChapterEnd = false
         sleepChapterLastPosition = nil
         shouldAutoplay = false
-        // pause() drives the timeControlStatus observation, which republishes
-        // Now Playing info — no explicit updateNowPlayingInfo() needed here.
         player?.pause()
         persistCheckpoint(force: true)
         if UIApplication.shared.applicationState == .active {
@@ -1923,10 +1676,6 @@ public final class AudiobookPlayer {
         guard let current = validSeconds(time) else {
             return lastKnownPosition
         }
-        // A route swap can expose the replacement renderer's initial 0:00
-        // before it has adopted the existing item clock. Explicit seeks and
-        // queue changes update lastKnownPosition first, so preserving it here
-        // does not block a real rewind to the beginning.
         if current < 0.01 && lastKnownPosition >= 1 {
             return lastKnownPosition
         }
@@ -1941,17 +1690,12 @@ public final class AudiobookPlayer {
         Float(min(1, max(0, value)))
     }
 
-    /// Matches the server's clamp. A hand-edited or buggy value must not turn
-    /// into an eardrum-splitting multiplier on a pair of headphones.
     private func clampedGain(_ value: Double) -> Float {
         guard value.isFinite else { return 1 }
         return Float(min(16, max(0.5, value)))
     }
 }
 
-/// Artwork bytes from a downloaded file or the server. Blocking: call it off
-/// the main thread. A remote fetch gives up after a bounded wait, where
-/// `Data(contentsOf:)` could hold its thread for as long as the network did.
 func fetchArtworkData(from url: URL, timeout: TimeInterval = 20) -> Data? {
     if url.isFileURL { return try? Data(contentsOf: url) }
     var request = URLRequest(url: url)
@@ -1984,9 +1728,6 @@ func downscaledArtwork(_ image: UIImage, maximumSide: CGFloat) -> UIImage {
     }
 }
 
-/// Accepts both a plain file/https URL and the `capacitor://` form the WebView
-/// hands out for a downloaded file, so a queue built by the web layer and one
-/// built by the CarPlay scene resolve the same way.
 func resolveNativeAudioSourceURL(_ source: String) -> URL? {
     guard let url = URL(string: source) else { return nil }
     guard url.scheme == "capacitor" else { return url }

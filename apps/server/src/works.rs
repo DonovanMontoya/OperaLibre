@@ -1,49 +1,13 @@
-//! Works: the book behind the file.
-//!
-//! Book identity is byte identity. Two copies of *The Odyssey* — one downloaded
-//! from Audible, one uploaded from a personal archive, one a different
-//! translation with a different ISBN — are three unrelated books to the scanner,
-//! because they are three unrelated sets of bytes. That is the right answer for
-//! playback, where a position in one file means nothing in another. It is the
-//! wrong answer for a reading history, where all three are *The Odyssey*.
-//!
-//! A [`Work`] sits above those editions and collects them. Progress stays keyed
-//! by book, always; a work is a view, never a replacement. Linking is additive
-//! and reversible, and an uncertain match becomes a [`WorkSuggestion`] for an
-//! administrator rather than a silent merge — crossing two books' histories is
-//! not a mistake a reading log can recover from.
-//!
-//! Matching runs in tiers, strongest first:
-//!
-//! 1. **Manual** — an administrator said so. Always wins.
-//! 2. **ASIN** — Audible's product id. Exact, and shared by every download of
-//!    the same title.
-//! 3. **ISBN** — the print id, where a file carries one.
-//! 4. **Title, author, and duration** — normalized title and author with
-//!    runtimes within [`DURATION_TOLERANCE`]. The duration check is what keeps
-//!    an abridged reading, a dramatization, and a full translation apart when
-//!    they all agree on title and author.
-//!
-//! A title-and-author agreement whose durations disagree is exactly the case
-//! worth a human glance, so it is suggested and not merged.
-
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-/// How far two runtimes may differ and still be taken for the same reading.
-/// Editions of one recording vary by a few minutes of front and back matter;
-/// an abridgement is shorter by a third or more. Fifteen percent sits in the
-/// empty space between those.
 pub(crate) const DURATION_TOLERANCE: f64 = 0.15;
 
-/// A book, as distinct from any particular recording of it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Work {
     pub(crate) id: String,
-    /// Display title and author, taken from the first edition seen and left
-    /// alone afterwards so a badly tagged import cannot rename the work.
     pub(crate) title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) author: Option<String>,
@@ -51,33 +15,19 @@ pub(crate) struct Work {
     pub(crate) asins: Vec<String>,
     #[serde(default)]
     pub(crate) isbns: Vec<String>,
-    /// Normalized `title|author` keys this work is known by. More than one
-    /// accumulates when editions disagree about punctuation or subtitles.
     #[serde(default)]
     pub(crate) keys: Vec<String>,
-    /// Representative runtime, used for the fuzzy tier. Holds the longest
-    /// edition seen: an unabridged recording is the better reference point,
-    /// since a shorter one is what the tolerance is meant to catch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) duration_seconds: Option<f64>,
-    /// Every edition ever linked, including ones no longer on disk. Never
-    /// pruned — a deleted book is the whole reason this record exists.
     #[serde(default)]
     pub(crate) book_ids: Vec<String>,
-    /// Editions an administrator attached by hand. Each is also in `book_ids`,
-    /// which [`WorkStore::resolve`] checks before any heuristic, so a manual
-    /// link is never overridden.
     #[serde(default)]
     pub(crate) manual_book_ids: Vec<String>,
-    /// Editions an administrator detached. A book listed here is never
-    /// re-linked to this work by any tier, so a rejected suggestion stays
-    /// rejected across rescans.
     #[serde(default)]
     pub(crate) excluded_book_ids: Vec<String>,
     pub(crate) created_at_ms: u64,
 }
 
-/// A match that was close enough to notice and not close enough to act on.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkSuggestion {
@@ -98,14 +48,10 @@ pub(crate) struct WorkSuggestion {
 pub(crate) struct WorkStore {
     #[serde(default)]
     pub(crate) works: Vec<Work>,
-    /// Uncertain matches awaiting an administrator. Rebuilt on each scan, so a
-    /// suggestion disappears once its book does.
     #[serde(default)]
     pub(crate) suggestions: Vec<WorkSuggestion>,
 }
 
-/// Which tier claimed an edition, so the caller can log it and the admin UI can
-/// explain itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum MatchTier {
@@ -116,7 +62,6 @@ pub(crate) enum MatchTier {
     New,
 }
 
-/// What the scanner knows about one edition when it asks for a work.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct EditionCandidate {
     pub(crate) book_id: String,
@@ -127,10 +72,6 @@ pub(crate) struct EditionCandidate {
     pub(crate) duration_seconds: Option<f64>,
 }
 
-/// Strips case, punctuation, and articles so two spellings of a title compare
-/// equal. Deliberately the same shape of normalization the Libation matcher
-/// uses, extended with leading-article removal because "The Odyssey" and
-/// "Odyssey" are one book.
 pub(crate) fn normalize_key(value: &str) -> String {
     let cleaned = value
         .to_lowercase()
@@ -153,8 +94,6 @@ pub(crate) fn normalize_key(value: &str) -> String {
     words.join(" ")
 }
 
-/// The `title|author` key a work is looked up by. Author is included because
-/// title alone collides constantly — every catalog has a dozen *Persuasion*s.
 pub(crate) fn work_key(title: &str, author: Option<&str>) -> String {
     let title = normalize_key(title);
     match author {
@@ -165,11 +104,6 @@ pub(crate) fn work_key(title: &str, author: Option<&str>) -> String {
     }
 }
 
-/// Whether two runtimes are close enough to be the same reading.
-///
-/// An unknown duration on either side is not evidence of a match. Returning
-/// `false` there sends the pair to the suggestion queue instead of merging on
-/// title and author alone.
 pub(crate) fn durations_agree(left: Option<f64>, right: Option<f64>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) if left > 0.0 && right > 0.0 => {
@@ -181,25 +115,12 @@ pub(crate) fn durations_agree(left: Option<f64>, right: Option<f64>) -> bool {
 }
 
 impl WorkStore {
-    /// Finds or creates the work for one edition.
-    ///
-    /// Returns the work id and the tier that claimed it. When a tier only
-    /// half-matches, a suggestion is recorded and the edition still gets its
-    /// own work: an unmerged history is recoverable, a wrongly merged one is
-    /// not.
     pub(crate) fn resolve(
         &mut self,
         candidate: &EditionCandidate,
         now_ms: u64,
         new_id: impl FnOnce() -> String,
     ) -> (String, MatchTier) {
-        // A scan sees the same byte-identity again on every run. Preserve its
-        // existing work before metadata heuristics so unknown or edited tags
-        // cannot mint a duplicate work for the same edition. `Manual` here
-        // means "a settled link was honoured", whichever tier originally made
-        // it — the tiers distinguish how fresh evidence was weighed, and a
-        // link being re-seen is the same non-decision as one an administrator
-        // pinned.
         if let Some(index) = self
             .works
             .iter()
@@ -266,10 +187,6 @@ impl WorkStore {
             .map(|index| (index, MatchTier::TitleAuthorDuration))
     }
 
-    /// Records the works this edition nearly joined: the title and author line
-    /// up, the runtimes do not. Either it is a different abridgement — which is
-    /// correctly a separate work — or a duration is missing or mistagged, which
-    /// only a person can tell.
     fn note_near_misses(&mut self, candidate: &EditionCandidate, now_ms: u64) {
         let key = work_key(&candidate.title, candidate.author.as_deref());
         let mut found = Vec::new();
@@ -308,7 +225,6 @@ impl WorkStore {
         }
     }
 
-    /// Folds an edition's identifiers into the work it matched.
     fn link(&mut self, index: usize, candidate: &EditionCandidate) {
         let work = &mut self.works[index];
         if !work.book_ids.contains(&candidate.book_id) {
@@ -328,9 +244,6 @@ impl WorkStore {
         if !work.keys.contains(&key) {
             work.keys.push(key);
         }
-        // The longest edition is the reference runtime, so a later abridgement
-        // is measured against the full recording rather than the other way
-        // round.
         if let Some(duration) = candidate.duration_seconds
             && duration > work.duration_seconds.unwrap_or(0.0)
         {
@@ -338,8 +251,6 @@ impl WorkStore {
         }
     }
 
-    /// Attaches an edition to a work by hand, detaching it from any other and
-    /// clearing the suggestion that prompted the decision.
     pub(crate) fn link_manually(&mut self, book_id: &str, work_id: &str) -> bool {
         if !self.works.iter().any(|work| work.id == work_id) {
             return false;
@@ -362,14 +273,6 @@ impl WorkStore {
         true
     }
 
-    /// Rejects a suggested link for good. The exclusion is permanent so a
-    /// rescan does not re-ask a question already answered.
-    ///
-    /// The edition is detached as well as excluded. A rejection can name a
-    /// work the edition was already linked to by a heuristic, and an exclusion
-    /// alone would have left that link standing — the very thing being
-    /// refused. Once detached, the next scan gives the edition a work of its
-    /// own, since every tier honours the exclusion.
     pub(crate) fn reject_suggestion(&mut self, book_id: &str, work_id: &str) -> bool {
         let Some(work) = self.works.iter_mut().find(|work| work.id == work_id) else {
             return false;
@@ -384,18 +287,12 @@ impl WorkStore {
         true
     }
 
-    /// The work an edition belongs to, if any.
     pub(crate) fn work_for_book(&self, book_id: &str) -> Option<&Work> {
         self.works
             .iter()
             .find(|work| work.book_ids.iter().any(|id| id == book_id))
     }
 
-    /// Book id to work id, as the index currently stands.
-    ///
-    /// Read paths resolve through this rather than trusting the work id frozen
-    /// onto an old log row, so an administrator linking two editions merges the
-    /// history those editions already accumulated.
     pub(crate) fn book_to_work(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
         for work in self.works.iter() {
@@ -406,8 +303,6 @@ impl WorkStore {
         map
     }
 
-    /// Drops suggestions naming books that are no longer in the library, so the
-    /// admin queue reflects what is actually on disk.
     pub(crate) fn prune_suggestions(&mut self, present_book_ids: &HashSet<String>) {
         self.suggestions
             .retain(|suggestion| present_book_ids.contains(&suggestion.book_id));
@@ -458,7 +353,6 @@ mod tests {
         let (work_id, tier) = store.resolve(&first, 0, &mut next_id);
         assert_eq!(tier, MatchTier::New);
 
-        // Re-downloaded later: new bytes, new book id, same Audible product.
         let mut again = edition("book-2", "The Odyssey", "Homer", Some(46_920.0));
         again.asin = Some("B002V1A0WE".to_string());
         let (rejoined, tier) = store.resolve(&again, 1_000, &mut next_id);
@@ -485,7 +379,6 @@ mod tests {
             0,
             &mut next_id,
         );
-        // Same recording, different container, uploaded under a different name.
         let (rejoined, tier) = store.resolve(
             &edition("book-2", "Odyssey", "Homer", Some(47_500.0)),
             1_000,
@@ -551,7 +444,6 @@ mod tests {
         assert!(store.link_manually("book-2", &full));
         assert!(store.suggestions.is_empty());
 
-        // The next scan sees the same two editions and must respect the choice.
         let (resolved, tier) = store.resolve(
             &edition("book-2", "The Odyssey", "Homer", Some(21_600.0)),
             2_000,
@@ -585,8 +477,6 @@ mod tests {
         );
         assert_eq!(store.book_to_work().get("book-1"), Some(&work));
 
-        // The next scan gives the edition a work of its own instead of
-        // re-linking it, and the exclusion survives.
         let (own, tier) = store.resolve(
             &edition("book-2", "The Odyssey", "Homer", Some(46_000.0)),
             2_000,
@@ -633,7 +523,6 @@ mod tests {
         first.asin = Some("B002V1A0WE".to_string());
         store.resolve(&first, 0, &mut next_id);
 
-        // book-1 is deleted from disk; a later scan only sees the new copy.
         let mut second = edition("book-2", "The Odyssey", "Homer", Some(46_920.0));
         second.asin = Some("B002V1A0WE".to_string());
         store.resolve(&second, 1_000, &mut next_id);

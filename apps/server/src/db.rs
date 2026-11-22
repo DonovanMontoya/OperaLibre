@@ -442,7 +442,6 @@ pub(crate) fn delete_document(connection: &Connection, name: &str) -> rusqlite::
     Ok(())
 }
 
-/// Write one JSON document.
 pub(crate) fn write_document(
     connection: &Connection,
     name: &str,

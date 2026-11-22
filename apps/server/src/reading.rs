@@ -51,7 +51,6 @@ pub(crate) async fn record_listening(
     persist_sessions(state, sessions).await;
 }
 
-/// The work this book is currently an edition of, if any.
 async fn current_work_id(state: &AppState, book_id: &str) -> Option<String> {
     state
         .works

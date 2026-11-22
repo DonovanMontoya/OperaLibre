@@ -8,7 +8,6 @@ on:
     branches: ["main"]
   pull_request:
 
-# Only obsolete PR runs are cancelled; main, scheduled and manual runs are unique.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -411,8 +410,6 @@ jobs:
       - name: Test simulator runtime selection
         run: python3 script/test_simulator_runtime.py
 
-      # Compile the otherwise excluded gift bridge without enabling the web,
-      # broker or server feature, signing an app, or publishing an artifact.
       - name: Setup Node for native gift compile
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
@@ -488,8 +485,6 @@ jobs:
         run: cargo test --locked --manifest-path apps/server/Cargo.toml bookplayer_live_contract -- --ignored --nocapture
 
   macos:
-    # Preserve the existing required check while covering selection failures and
-    # every selected job, including the native checks split out above.
     name: macOS app (Swift)
     if: always()
     needs: [changes, server, server-windows, launcher, web, playback, android, apple, carplay, bookplayer]

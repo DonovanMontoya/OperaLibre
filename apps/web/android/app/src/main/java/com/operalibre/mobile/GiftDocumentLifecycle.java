@@ -3,8 +3,6 @@ package com.operalibre.mobile;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 
-/** Called in Capacitor dispatch order. The native queue drains the abandoned
- * document before releasing its leases and admitting the next document. */
 final class GiftDocumentLifecycle {
     interface Operation { void run(Object owner); }
     private final Executor queue;

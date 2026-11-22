@@ -20,9 +20,6 @@ func normalizedBackgroundDownloadOrigin(_ url: URL) -> String? {
     return "\(scheme)://\(host):\(url.port ?? defaultPort)"
 }
 
-/// The path prefix a configured server address carries, if any. A server can
-/// live behind a reverse-proxy subpath (`https://host/books`), so media
-/// paths are only approved after that prefix is removed.
 func normalizedBackgroundDownloadBasePath(_ url: URL) -> String {
     var path = url.path
     while path.hasSuffix("/") { path.removeLast() }
@@ -53,7 +50,6 @@ func isApprovedBackgroundMediaPath(_ path: String, basePath: String = "") -> Boo
        components.last == "stream" {
         return true
     }
-    // Offline jobs include ebooks and images alongside the audio tracks.
     if components.count == 5,
        components[0] == "api",
        components[1] == "books",
@@ -63,8 +59,6 @@ func isApprovedBackgroundMediaPath(_ path: String, basePath: String = "") -> Boo
     return false
 }
 
-/// The single server a job is allowed to download from: its origin plus any
-/// base path the configured server address carries.
 struct BackgroundDownloadAllowlist: Equatable {
     let origin: String
     let basePath: String
@@ -111,8 +105,6 @@ func isLibroDownloadURL(_ url: URL) -> Bool {
 private let offlineMediaRootLock = NSLock()
 private var cachedOfflineMediaRoot: URL?
 
-/// Every destination check and progress callback asks for the root, so it is
-/// prepared once and only rebuilt if the directory disappears.
 func backgroundOfflineMediaRoot() throws -> URL {
     offlineMediaRootLock.lock()
     defer { offlineMediaRootLock.unlock() }
@@ -130,8 +122,6 @@ private func makeBackgroundOfflineMediaRoot() throws -> URL {
     }
     var root = documents.appendingPathComponent("offline-media", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    // Offline copies can be re-downloaded from the server, so keep gigabytes
-    // of audio out of the iCloud and iTunes backups of Documents.
     var resourceValues = URLResourceValues()
     resourceValues.isExcludedFromBackup = true
     do {
@@ -172,8 +162,6 @@ func validatedBackgroundMediaDestination(_ destination: URL) throws -> URL {
     try validatedBackgroundMediaDestination(destination, under: backgroundOfflineMediaRoot())
 }
 
-/// Rebuild completion totals from the replacement list, never from the old
-/// job's counters. Tasks still in flight count when their callbacks arrive.
 func completedBackgroundDownloadCounts(
     files: [(destination: String, required: Bool)],
     existingDestinations: Set<String>
@@ -182,8 +170,6 @@ func completedBackgroundDownloadCounts(
     return (existingFiles.count, existingFiles.filter { $0.required }.count)
 }
 
-/// Persisted high-water marks include background tasks whose temporary files
-/// are owned by URLSession, plus final files reconciled after a restart.
 struct BackgroundBookByteBudget: Codable {
     private(set) var received: [String: Int64] = [:]
 

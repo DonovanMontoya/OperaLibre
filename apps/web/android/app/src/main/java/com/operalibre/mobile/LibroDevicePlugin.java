@@ -18,7 +18,6 @@ import java.util.zip.*;
 import javax.crypto.*;
 import javax.crypto.spec.GCMParameterSpec;
 
-/** Fixed provider API only; passwords are transient and tokens never reach JS. */
 @CapacitorPlugin(name = "LibroDevice")
 public class LibroDevicePlugin extends Plugin {
     private static final String KEY = "operalibre-libro-device";
@@ -92,7 +91,6 @@ public class LibroDevicePlugin extends Plugin {
         if (envelope.toString().getBytes(StandardCharsets.UTF_8).length > 4 * 1024 * 1024) throw new ProviderError("Too many Libro.fm connections. Disconnect an account first.");
         File temp = new File(getContext().getNoBackupFilesDir(), "libro-connection.tmp");
         try (FileOutputStream output = new FileOutputStream(temp)) { output.write(envelope.toString().getBytes(StandardCharsets.UTF_8)); output.getFD().sync(); }
-        // POSIX rename is atomic and available on API 21+, unlike java.nio.file (26+).
         android.system.Os.rename(temp.getAbsolutePath(), credentialFile().getAbsolutePath());
     }
     private JSONObject api(String path, String token, JSONObject body) throws Exception {
@@ -210,7 +208,6 @@ public class LibroDevicePlugin extends Plugin {
                     while ((entry = zip.getNextEntry()) != null) {
                         String path = entry.getName(); entries++;
                         if (entries > 10000 || path.startsWith("/") || path.contains("\\") || Arrays.asList(path.split("/")).contains("..")) throw new ProviderError("Unsafe or oversized archive.");
-                        // ZipInputStream materializes regular files only, never archive symlinks.
                         if (entry.isDirectory()) continue;
                         if (!path.toLowerCase(Locale.ROOT).endsWith(".mp3")) {
                             int skipped;
@@ -235,7 +232,7 @@ public class LibroDevicePlugin extends Plugin {
                         }
                         if (size == 0) throw new ProviderError("Empty track in archive.");
                         files.put(new JSONObject().put("name", name).put("path", target.toURI().toString()));
-                        zip.closeEntry(); // CRC and size validation are performed by ZipInputStream.
+                        zip.closeEntry();
                     }
                 }
             }

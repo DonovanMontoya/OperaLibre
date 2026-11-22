@@ -13,7 +13,6 @@ permissions:
   contents: read
   security-events: write
 
-# Only obsolete PR runs are cancelled; main, scheduled and manual runs are unique.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -30,7 +29,6 @@ jobs:
       fail-fast: false
       matrix:
         language: [javascript-typescript, rust]
-    # Keep both required matrix check names present even on metadata-only PRs.
     steps:
       - name: Checkout
         if: needs.changes.outputs.metadata_only != 'true'

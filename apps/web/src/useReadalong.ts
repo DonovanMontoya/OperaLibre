@@ -24,7 +24,6 @@ import { createScreenAwakeController } from "./screenAwake";
 import type { ServerCapabilities } from "./serverCapabilities";
 import type { NativeTab } from "./nativeTabs";
 
-/** Pseudo companion id for the picture gallery tab. */
 export const GALLERY_COMPANION_ID = "__gallery__";
 
 export function useReadalong({
@@ -171,7 +170,6 @@ export function useReadalong({
     try {
       window.localStorage.setItem(readerStorageKey(readerScope, bookId, "open"), open ? "1" : "0");
     } catch {
-      // ignore storage failures
     }
   }
 

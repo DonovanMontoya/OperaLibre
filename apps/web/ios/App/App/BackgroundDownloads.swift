@@ -27,8 +27,6 @@ private struct StoredBackgroundTask: Codable {
     var attemptId: String? = nil
     let source: String?
     let allowedOrigin: String?
-    // Absent in jobs persisted before proxied subpaths were supported; those
-    // servers had no base path, so an empty prefix reproduces their rules.
     let allowedBasePath: String?
     let destination: String
     let label: String
@@ -54,8 +52,6 @@ private struct StoredBackgroundJob: Codable {
     var errors: [String]
     var enqueuedAt: Double?
     var files: [StoredBackgroundTask]?
-    // A replacement may observe a file after the move but before its task's
-    // completion callback. Do not count that callback a second time.
     var precountedDestinations: [String]?
 }
 
@@ -128,8 +124,6 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
             files: descriptions.map { (destination: $0.destination, required: $0.required) },
             existingDestinations: existingDestinations
         )
-        // Destinations the live job already has tasks for. A repeated enqueue
-        // may list files the first one did not; only those need new tasks.
         var alreadyScheduled = Set<String>()
         var replacedFiles = false
         let enqueueResult = mutateJobs { jobs -> (createTasks: Bool, shouldStart: Bool, shouldRecover: Bool) in
@@ -150,9 +144,6 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 existing.files = descriptions
                 existing.total = descriptions.count
                 existing.requiredTotal = requiredTotal
-                // Old counters may include files removed by this enqueue.
-                // Files already on disk are the only completed entries in the
-                // replacement list; retained active tasks count when they settle.
                 if fileListChanged {
                     existing.completed = diskProgress.completed
                     existing.completedRequired = diskProgress.completedRequired
@@ -168,8 +159,6 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
             let attemptId = UUID().uuidString
             descriptions = descriptions.map { var info = $0; info.attemptId = attemptId; return info }
             let shouldStart = !jobs.values.contains { $0.state == "running" }
-            // A retry must also fill missing EPUBs, covers and sync maps when
-            // the required audio files were downloaded by an earlier build.
             let alreadyComplete = existingDestinations.count == descriptions.count
             jobs[jobId] = StoredBackgroundJob(
                 title: title,
@@ -207,9 +196,6 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 task.resume()
             }
         }
-        // Close the small window between persisting a job and registering its
-        // URLSession tasks, and start it if the previous queue head finished
-        // while those tasks were being created.
         recoverAndStartNextJob()
     }
 
@@ -280,8 +266,6 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 else { continue }
                 try? FileManager.default.removeItem(at: destination)
             }
-            // Cancelling the queue head leaves the next book's tasks suspended,
-            // so promote it here rather than waiting for a relaunch.
             self.recoverAndStartNextJob()
             completion()
         }
@@ -412,8 +396,6 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 let destination = try validatedBackgroundMediaDestination(value)
                 try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
                 if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
-                // Quota reservation and publication share the job lock with
-                // cancellation/replacement and quota-failure cleanup.
                 try FileManager.default.moveItem(at: location, to: destination)
                 job.byteBudget = budget
                 jobs[info.jobId] = job
@@ -424,13 +406,8 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         catch { stopOversizedLibroJob(info); throw error }
     }
 
-    /// Moves a finished server file into place under the job lock, so a
-    /// cancel or replacement that already removed the job's files cannot be
-    /// followed by this move and leave an orphan behind.
     private func publishServerFile(_ info: StoredBackgroundTask, location: URL) throws {
         let result: Result<Void, Error> = mutateJobs { jobs in
-            // Matched on destination only, like record(): a repeated enqueue
-            // keeps live tasks whose source URL carries an older token.
             guard let job = jobs[info.jobId], job.attemptId == info.attemptId,
                   job.files?.contains(where: { $0.destination == info.destination }) != false,
                   job.state == "running" || job.state == "queued" else { return .failure(DownloadError.jobNotFound) }
@@ -507,7 +484,6 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         }
     }
 
-    // Callers hold the job lock so cleanup cannot remove a replacement attempt's files.
     private func failLibroBudget(in job: inout StoredBackgroundJob) {
         job.byteBudgetExceeded = true
         job.state = "failed"
@@ -523,8 +499,6 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         guard let files = job.files, !files.isEmpty else { return }
         if files.contains(where: { $0.allowedOrigin == "libro-device" }) {
             var budget = job.byteBudget ?? BackgroundBookByteBudget()
-            // Old jobs have no reservations. Reconcile retained parts before
-            // their file counts can turn an interrupted download into a success.
             guard job.byteBudgetExceeded != true,
                   budget.reserve(destination: "", bytes: 0, retained: retainedLibroBytes(files)) else {
                 failLibroBudget(in: &job)
@@ -541,7 +515,6 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         }
         job.completed = max(job.completed, existing.count)
         job.completedRequired = max(job.completedRequired, existing.filter(\.required).count)
-        // Optional transfers must settle too; completion cancels remaining tasks.
         if job.completed >= job.total, job.completedRequired >= job.requiredTotal {
             job.state = "completed"
             job.errors = []
@@ -657,8 +630,6 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
     private func mutateJobs<T>(_ mutation: (inout [String: StoredBackgroundJob]) -> T) -> T {
         lock.lock()
         defer { lock.unlock() }
-        // A job another app version saved in a shape this one cannot read is
-        // kept as it is, along with every other job, its files and its tasks.
         var jobs = StoredRecordMap<StoredBackgroundJob>(decoding: UserDefaults.standard.data(forKey: jobsKey))
         let result = mutation(&jobs.records)
         if let data = jobs.encoded() {

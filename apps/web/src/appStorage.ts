@@ -25,7 +25,6 @@ export function writeStoredSpeed(value: number) {
   try {
     writePlaybackSpeed(window.localStorage, value);
   } catch {
-    // ignore storage failures
   }
 }
 
@@ -41,7 +40,6 @@ export function writeStoredCustomSleepTimers(timers: readonly number[]) {
   try {
     writeCustomSleepTimers(window.localStorage, timers);
   } catch {
-    // ignore storage failures
   }
 }
 
@@ -68,7 +66,6 @@ export function writeStoredBookGains(userId: string, gains: Record<string, numbe
   try {
     writeBookGains(window.localStorage, bookVolumeStorageKey(getServerStorageKey(), userId), gains);
   } catch {
-    // ignore storage failures
   }
 }
 
@@ -86,7 +83,6 @@ export function unsyncedBookGainStore(userId: string) {
       try {
         writeUnsyncedBookGains(window.localStorage, unsyncedBookGainStorageKey(getServerStorageKey(), userId), entries);
       } catch {
-        // ignore storage failures
       }
     }
   };
@@ -118,7 +114,6 @@ export function writeStoredValue(key: string, value: string) {
   try {
     window.localStorage.setItem(key, value);
   } catch {
-    // ignore storage failures
   }
 }
 
@@ -131,7 +126,6 @@ export function writeStoredBookId(userId: string, field: "selectedBookId" | "pla
       window.localStorage.removeItem(key);
     }
   } catch {
-    // ignore storage failures
   }
 }
 

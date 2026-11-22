@@ -1,7 +1,6 @@
 import { buildChapterSegments } from "./chapters.ts";
 import type { Book, Track } from "./types.ts";
 
-/** Stops late snapshot work from republishing a library after sign-out. */
 export class CarLibraryAccess {
   private scope: string | null = null;
 
@@ -10,21 +9,6 @@ export class CarLibraryAccess {
   allows(scope: string) { return this.scope !== null && this.scope === scope; }
 }
 
-/**
- * The library as the car sees it, and the progress a drive leaves behind.
- *
- * The car screen cannot run the app: connecting to a car may launch the process
- * with a CarPlay scene and nothing else — no WebView, no session, no network.
- * So the app writes this snapshot to the native side whenever the library
- * changes, and the car reads it from disk.
- *
- * Progress travels the other way. The car deliberately writes nothing itself;
- * every guard against a bad position — the staleness check, the suspect-reset
- * rule, the retry before reconciling — lives in the app and the server, and a
- * second writer that skipped them is the exact failure those guards exist for.
- * A drive therefore leaves a session record behind, and the app saves it
- * through its usual path the next time it runs.
- */
 
 type CarLibraryTrack = {
   id: string;
@@ -56,7 +40,6 @@ type CarLibraryBook = {
 };
 
 export type CarLibrarySnapshot = {
-  /** `serverStorageKey:userId` — the recovery scope key without its book. */
   scopePrefix: string;
   playbackRate: number;
   updatedAt: number;
@@ -71,11 +54,9 @@ export type CarPlaybackSession = {
   durationSeconds?: number;
   updatedAt: number;
   finished: boolean;
-  /** The listener jumped rather than listened on; the server needs to be told. */
   intentionalRegression: boolean;
 };
 
-/** Tolerates anything the bridge hands back rather than losing a whole drive. */
 export function parseCarSessions(raw: unknown): CarPlaybackSession[] {
   if (typeof raw !== "string" || raw.length === 0) return [];
   let parsed: unknown;
@@ -94,13 +75,6 @@ export function parseCarSessions(raw: unknown): CarPlaybackSession[] {
     && Number.isFinite((entry as CarPlaybackSession).updatedAt));
 }
 
-/**
- * What the car should be told about the library.
- *
- * `resolveTrackUrl` is injected because a downloaded book plays from a file on
- * the device and a streamed one from the server with a media token, and only
- * the caller can tell which is which.
- */
 export async function buildCarLibrarySnapshot(options: {
   scopePrefix: string;
   playbackRate: number;
@@ -118,7 +92,6 @@ export async function buildCarLibrarySnapshot(options: {
     scopePrefix: options.scopePrefix,
     playbackRate: options.playbackRate,
     updatedAt: (options.now ?? Date.now)(),
-    // A book with nothing playable would be a dead end on the car screen.
     books: books.filter((book): book is CarLibraryBook => book !== null)
   };
 }
@@ -178,11 +151,6 @@ async function carBook(
   };
 }
 
-/**
- * A track's offset into the whole book. The car needs it for the same reason
- * the player does: the position it stores is a whole-book one, and every track
- * is played from its own zero.
- */
 function trackOffsetSeconds(book: Book, trackIndex: number) {
   return book.tracks
     .slice(0, Math.max(0, trackIndex))
@@ -194,12 +162,6 @@ function durationFromTracks(book: Book) {
   return total > 0 ? total : null;
 }
 
-/**
- * Whether a car session is worth saving over what the app already has.
- *
- * A drive that ended where the book already was writes nothing: the position is
- * unchanged, and a redundant write is one more chance to get progress wrong.
- */
 export function carSessionIsWorthSaving(
   session: CarPlaybackSession,
   book: Pick<Book, "progress">

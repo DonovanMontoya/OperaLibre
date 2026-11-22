@@ -2,16 +2,6 @@ import Capacitor
 import Foundation
 import WidgetKit
 
-/// The web layer's side of CarPlay.
-///
-/// It carries two things across the bridge: the library snapshot the car screen
-/// reads when the app is not running, and the progress made in the car, which
-/// the app saves through its own player rather than letting the car write to
-/// the server itself.
-///
-/// Both payloads travel as JSON strings. They are nested structures with
-/// optional numbers throughout, and one `Codable` model on each side is far
-/// harder to get subtly wrong than hand-walking `JSObject` dictionaries.
 @objc(CarPlayBridgePlugin)
 public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "CarPlayBridgePlugin"
@@ -107,8 +97,6 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc public func getState(_ call: CAPPluginCall) {
-        // The coordinator and its store are driven from the main thread; plugin
-        // calls are not.
         DispatchQueue.main.async {
             let sessions = self.coordinator.pendingSessions()
             let encoded = (try? JSONEncoder().encode(sessions))
@@ -146,9 +134,6 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    /// Called once the app has saved a car session's position. Sessions are
-    /// only dropped up to the timestamp the app actually saved, so a drive that
-    /// is still going does not lose the minutes since.
     @objc public func acknowledgeSessions(_ call: CAPPluginCall) {
         var acknowledged: [String: Double] = [:]
         for entry in call.getArray("sessions", JSObject.self) ?? [] {
@@ -158,8 +143,6 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
             guard let savedAt else { continue }
             acknowledged[bookId] = savedAt
         }
-        // On the main thread, like the car's own session writes: the store's
-        // read-filter-write would otherwise drop a record written in between.
         DispatchQueue.main.async {
             self.coordinator.acknowledgeSessions(acknowledged)
             call.resolve()
