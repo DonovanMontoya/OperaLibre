@@ -8,7 +8,6 @@ import tomllib
 
 CHECKS = {'server', 'server_windows', 'launcher', 'web', 'playback', 'android',
           'apple', 'carplay', 'bookplayer', 'formal'}
-# Code the TLA+ models describe; keep in step with each model's coverage record.
 FORMAL_INPUTS = {
     'apps/server/src/progress.rs', 'apps/server/src/storage.rs',
     'apps/web/src/reliability.ts', 'apps/web/src/useLibrary.ts',

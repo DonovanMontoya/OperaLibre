@@ -1,3 +1,5 @@
+from pathlib import Path
+import re
 import unittest
 from select_checks import CHECKS, FORMAL_INPUTS, VERSION_FILES, only_package_version, select
 
@@ -23,6 +25,12 @@ class SelectionTests(unittest.TestCase):
 
     def test_mixed_changes_union_coverage(self):
         self.assertEqual(select(['docs/api.md', 'apps/launcher/src/main.rs', 'apps/web/src/App.tsx']), {'launcher', 'web', 'playback', 'android'})
+
+    def test_formal_inputs_match_the_model_coverage_record(self):
+        skill = (Path(__file__).resolve().parents[2] / 'docs/agents/verify-progress-replay.md').read_text()
+        covered = {path for line in skill.splitlines() if line.startswith('| ')
+                   for path in re.findall(r'apps/[\w/.-]+\.(?:rs|ts)', line)}
+        self.assertEqual(covered, FORMAL_INPUTS)
 
     def test_formal_models_run_for_the_model_and_the_code_it_describes(self):
         self.assertEqual(select(['verification/run.sh', 'verification/progress-replay/current.cfg']), {'formal'})
