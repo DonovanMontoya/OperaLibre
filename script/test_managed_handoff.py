@@ -33,6 +33,11 @@ fn main() {
     // An update trial waits for the updater's commit, as the real server
     // does; a new build marked legacy predates trials and has no such route.
     let trial = env::var("OPERALIBRE_UPDATE_TRIAL").ok().filter(|_| env::var_os("TEST_LEGACY_NEW").is_none());
+    // Commit replies are lost: "once" drops only the first, "crash" drops
+    // them all, takes one progress checkpoint and exits.
+    let lose = if trial.is_some() { env::var("TEST_LOSE_COMMIT_REPLY").ok() } else { None };
+    let mut committed = false;
+    let mut replies_lost = 0;
     let listener = TcpListener::bind(format!("127.0.0.1:{}", env::var("TEST_PORT").unwrap())).unwrap();
     let start = Instant::now();
     for stream in listener.incoming() {
@@ -44,12 +49,31 @@ fn main() {
             let status = match &trial {
                 None => "404 Not Found",
                 Some(token) if request.contains(&format!("X-OperaLibre-Update-Trial: {token}\r\n")) => {
+                    // The real server records its commit before opening routes.
+                    fs::write("data/update-trial-committed", token).unwrap();
                     fs::write("data/trial-committed", version.trim()).unwrap();
-                    "204 No Content"
+                    committed = true;
+                    match lose.as_deref() {
+                        Some("crash") => continue,
+                        Some("once") if replies_lost == 0 => {
+                            replies_lost += 1;
+                            continue;
+                        }
+                        _ => "204 No Content",
+                    }
                 }
                 Some(_) => "403 Forbidden",
             };
             let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            continue;
+        }
+        if committed && request.starts_with("POST /api/progress ") {
+            assert!(Command::new("python3").args(["-I", &hook, "checkpoint"]).status().unwrap().success());
+            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            drop(stream);
+            if lose.as_deref() == Some("crash") {
+                std::process::exit(0);
+            }
             continue;
         }
         let ready = start.elapsed() > Duration::from_secs(2);
@@ -66,6 +90,10 @@ DATA_HOOK = '''
 import json, os, sqlite3, sys
 database = sqlite3.connect("data/operalibre.db")
 identities = "data/library-identities.json"
+if sys.argv[1] == "checkpoint":
+    with database:
+        database.execute("INSERT INTO progress VALUES ('after-commit')")
+    sys.exit(0)
 if sys.argv[1] == "2.0.0":
     upgrade = os.environ.get("TEST_UPGRADE_DATA")
     with database:
@@ -131,7 +159,8 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
     hook.write_text(DATA_HOOK)
     binary = scratch / "fake-server"
     subprocess.run(["rustc", "--edition=2024", str(source), "-o", str(binary)], check=True)
-    for scenario in ("success", "prune-failure", "legacy-target", "startup-failure", "upgraded-data-rollback", "staging-failure", "stop-handoff"):
+    for scenario in ("success", "prune-failure", "legacy-target", "startup-failure", "upgraded-data-rollback", "staging-failure", "stop-handoff",
+            "lost-commit-reply", "lost-commit-crash"):
         fails = scenario in ("startup-failure", "upgraded-data-rollback")
         root = scratch / scenario
         package = root / "package"
@@ -180,6 +209,13 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             env["TEST_UPGRADE_DATA"] = "1"
         if scenario == "legacy-target":
             env["TEST_LEGACY_NEW"] = "1"
+        if scenario == "lost-commit-reply":
+            env["TEST_LOSE_COMMIT_REPLY"] = "once"
+        if scenario == "lost-commit-crash":
+            # The new build upgrades the data, so a rollback would restore
+            # the snapshot and lose the checkpoint taken after the commit.
+            env["TEST_LOSE_COMMIT_REPLY"] = "crash"
+            env["TEST_UPGRADE_DATA"] = "1"
         old = subprocess.Popen([str(root / "operalibre-server")], cwd=root, env=env)
         (root / "data/operalibre-server.pid").write_text(str(old.pid))
         updater = starter = None
@@ -213,6 +249,13 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             # Deliberately request takeover before readiness, reproducing the
             # old VERSION watcher timing. The shared lock must defer it.
             starter = subprocess.Popen([str(root / "operalibre-service"), "--service-start"], env=env)
+            if scenario == "lost-commit-crash":
+                # A client saves progress once routes open; the trial then
+                # exits before the updater hears that its commit took effect.
+                until(lambda: (root / "data/update-trial-committed").exists())
+                checkpoint = urllib.request.Request(f"http://127.0.0.1:{port}/api/progress", data=b"{}", method="POST")
+                with urllib.request.urlopen(checkpoint, timeout=5) as response:
+                    assert response.status == 200
             assert updater.wait(timeout=20) == (1 if fails else 0)
             result = (root / "data/update-result.txt").read_text()
             assert result.startswith("Failed:" if fails else "Succeeded:"), result
@@ -229,11 +272,15 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                 assert len(kept) == 1, kept
                 assert read_data(kept[0]) == (5, 2, ["before-update", "new-build"]), read_data(kept[0])
                 assert not list((root / "data/update-backups").glob("*/restore-required"))
+            elif scenario == "lost-commit-crash":
+                assert read_data(root / "data") == (5, 2, ["after-commit", "before-update", "new-build"]), read_data(root / "data")
+                assert "its answer was lost" in (root / "data/server.log").read_text()
             else:
                 assert read_data(root / "data") == (4, 1, ["before-update", "new-build"]), read_data(root / "data")
             # Only an update to a build with trials is committed; a failed one never is.
             committed = root / "data/trial-committed"
-            assert committed.exists() == (scenario in ("success", "prune-failure")), scenario
+            assert committed.exists() == (scenario in ("success", "prune-failure", "lost-commit-reply", "lost-commit-crash")), scenario
+            assert not (root / "data/update-trial-committed").exists(), "the commit record was kept"
             assert not [path for path in (root / "data/update-backups").glob("*/data") if path.parent.name != "3"], "the data snapshot was kept"
             if fails:
                 assert not list((root / "data/update-backups").glob("*/.completed")), "failed update marked complete"

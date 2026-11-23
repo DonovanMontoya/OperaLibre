@@ -3,6 +3,10 @@ use crate::*;
 pub(crate) const UPDATE_TRIAL_ENV: &str = "OPERALIBRE_UPDATE_TRIAL";
 pub(crate) const UPDATE_TRIAL_HEADER: &str = "x-operalibre-update-trial";
 pub(crate) const UPDATE_TRIAL_COMMIT_PATH: &str = "/api/update-trial/commit";
+/// Written to the data dir, holding the trial's token, before a commit opens
+/// any route. The updater reads it after the trial has stopped, so a lost
+/// commit reply cannot lead it to restore data over changes made since.
+pub(crate) const UPDATE_TRIAL_COMMITTED_FILE: &str = "update-trial-committed";
 
 pub(crate) struct UpdateTrial {
     token: Option<String>,
@@ -94,6 +98,11 @@ pub(crate) async fn commit_update_trial(
         return Ok(StatusCode::NO_CONTENT);
     }
     sync::restore_queue(&state).await?;
+    let token = trial.token.as_deref().unwrap_or_default();
+    let record = state
+        .database_path
+        .with_file_name(UPDATE_TRIAL_COMMITTED_FILE);
+    write_bytes_atomic(&record, token.as_bytes()).await?;
     trial.committed.send_replace(true);
     tracing::info!("the updater committed this build");
     Ok(StatusCode::NO_CONTENT)

@@ -445,6 +445,7 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
         refresh_launchers(&package_root, &install_root)?;
         move_required(&package_root.join("VERSION.txt"), &install_version)?;
         set_executable(&install_server)?;
+        let _ = fs::remove_file(trial_commit_record(&install_root));
         require_ready_start(start_server(&install_root, false, Some(&trial_token))?)?;
         match commit_update_trial(server_port(&install_root), &trial_token)? {
             TrialCommit::Committed => {}
@@ -457,18 +458,38 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     })();
 
     if let Err(update_error) = install_result {
-        let rollback_result = rollback_update(&install_root, &backup_root, includes_web);
-        return match rollback_result {
-            Ok(()) => Err(format!(
-                "The update failed and OperaLibre restored the previous version: {update_error}"
-            )),
-            Err(rollback_error) => Err(format!(
-                "The update failed ({update_error}) and rollback also failed ({rollback_error}). The previous files remain in {}.",
-                backup_root.display()
-            )),
-        };
+        // Decide only once the trial has stopped: a commit it records after
+        // this check could open routes that a restore would then overwrite.
+        let stopped = stop_server(&install_root);
+        if trial_commit_recorded(&install_root, &trial_token) {
+            append_log(
+                &install_root,
+                &format!(
+                    "the new build committed the update but its answer was lost ({update_error}); keeping its data and starting it again"
+                ),
+            );
+            stopped.and_then(|()| require_ready_start(start_server(&install_root, false, None)?)).map_err(|restart_error| {
+                format!(
+                    "The update was committed, but the new server could not be started again ({restart_error}). Data was left as the new build saved it; the copy taken before the update is in {}.",
+                    data_snapshot.display()
+                )
+            })?;
+        } else {
+            let rollback_result =
+                rollback_update(&install_root, &backup_root, includes_web, stopped);
+            return match rollback_result {
+                Ok(()) => Err(format!(
+                    "The update failed and OperaLibre restored the previous version: {update_error}"
+                )),
+                Err(rollback_error) => Err(format!(
+                    "The update failed ({update_error}) and rollback also failed ({rollback_error}). The previous files remain in {}.",
+                    backup_root.display()
+                )),
+            };
+        }
     }
 
+    let _ = fs::remove_file(trial_commit_record(&install_root));
     let _ = fs::remove_dir_all(&data_snapshot);
     let _ = fs::remove_file(backup_root.join(RESTORE_PENDING));
     let _ = fs::remove_dir(backup_root.join(FAILED_DATA_PARTIAL));
@@ -768,9 +789,9 @@ fn rollback_update(
     install_root: &Path,
     backup_root: &Path,
     includes_web: bool,
+    stopped: Result<(), String>,
 ) -> Result<(), String> {
     let server_name = server_binary_name();
-    let stopped = stop_server(install_root);
     let data = data_dir(install_root);
     let snapshot = backup_root.join("data");
     let restore_marker = backup_root.join(RESTORE_REQUIRED);
@@ -1255,40 +1276,92 @@ fn update_trial_token() -> Result<String, String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+/// Matches the server's `UPDATE_TRIAL_COMMITTED_FILE`.
+fn trial_commit_record(root: &Path) -> PathBuf {
+    data_dir(root).join("update-trial-committed")
+}
+
+/// Whether this update's trial recorded its commit, and so may have accepted
+/// changes the pre-update snapshot does not have.
+fn trial_commit_recorded(root: &Path, token: &str) -> bool {
+    fs::read_to_string(trial_commit_record(root)).is_ok_and(|recorded| recorded.trim() == token)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum TrialCommit {
     Committed,
     Unsupported,
 }
 
+/// What one commit request learned. Any complete status line is the trial's
+/// decision; without one the commit may or may not have taken effect.
+#[derive(Debug, PartialEq, Eq)]
+enum CommitAnswer {
+    Answered(Result<TrialCommit, String>),
+    Unanswered(String),
+}
+
+const COMMIT_ATTEMPTS: u32 = 5;
+
+/// Commits are idempotent, so an unanswered one is asked again. If the trial
+/// never answers, the caller's check of the commit record settles it.
 fn commit_update_trial(port: u16, token: &str) -> Result<TrialCommit, String> {
+    let mut attempt = 1;
+    loop {
+        match request_trial_commit(port, token) {
+            CommitAnswer::Answered(answer) => return answer,
+            CommitAnswer::Unanswered(error) if attempt >= COMMIT_ATTEMPTS => return Err(error),
+            CommitAnswer::Unanswered(_) => {
+                attempt += 1;
+                thread::sleep(Duration::from_secs(1));
+            }
+        }
+    }
+}
+
+fn request_trial_commit(port: u16, token: &str) -> CommitAnswer {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
-        .map_err(|error| format!("Could not reach the new server to commit it: {error}"))?;
+    let mut stream = match TcpStream::connect_timeout(&address, Duration::from_secs(5)) {
+        Ok(stream) => stream,
+        Err(error) => {
+            return CommitAnswer::Unanswered(format!(
+                "Could not reach the new server to commit it: {error}"
+            ));
+        }
+    };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
     let request = format!(
         "POST /api/update-trial/commit HTTP/1.1\r\nHost: localhost\r\n{UPDATE_TRIAL_HEADER}: {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     );
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|error| format!("Could not commit the new server: {error}"))?;
+    if let Err(error) = stream.write_all(request.as_bytes()) {
+        return CommitAnswer::Unanswered(format!("Could not commit the new server: {error}"));
+    }
     let mut response = Vec::with_capacity(512);
     let _ = stream.take(16 * 1024).read_to_end(&mut response);
     parse_commit_response(&response)
 }
 
-fn parse_commit_response(response: &[u8]) -> Result<TrialCommit, String> {
+fn parse_commit_response(response: &[u8]) -> CommitAnswer {
     let response = String::from_utf8_lossy(response);
     let status = response
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .unwrap_or("");
+        .split_once("\r\n")
+        .and_then(|(line, _)| {
+            let mut parts = line.split_whitespace();
+            parts
+                .next()
+                .filter(|version| version.starts_with("HTTP/"))?;
+            parts.next()
+        })
+        .filter(|status| status.len() == 3 && status.bytes().all(|byte| byte.is_ascii_digit()));
     match status {
-        "204" => Ok(TrialCommit::Committed),
-        "404" => Ok(TrialCommit::Unsupported),
-        "" => Err("The new server closed the connection before committing.".to_string()),
-        status => Err(format!("The new server refused the commit ({status}).")),
+        Some("204") => CommitAnswer::Answered(Ok(TrialCommit::Committed)),
+        Some("404") => CommitAnswer::Answered(Ok(TrialCommit::Unsupported)),
+        Some(status) => CommitAnswer::Answered(Err(format!(
+            "The new server refused the commit ({status})."
+        ))),
+        None => CommitAnswer::Unanswered(
+            "The new server closed the connection without answering the commit.".to_string(),
+        ),
     }
 }
 
@@ -1943,18 +2016,41 @@ mod tests {
 
     #[test]
     fn only_a_clear_commit_answer_counts() {
-        use super::{TrialCommit, parse_commit_response};
+        use super::{CommitAnswer, TrialCommit, parse_commit_response};
+        let answered = |response: &[u8]| match parse_commit_response(response) {
+            CommitAnswer::Answered(answer) => answer,
+            CommitAnswer::Unanswered(error) => panic!("{error}"),
+        };
         assert_eq!(
-            parse_commit_response(b"HTTP/1.1 204 No Content\r\n\r\n"),
+            answered(b"HTTP/1.1 204 No Content\r\n\r\n"),
             Ok(TrialCommit::Committed)
         );
         assert_eq!(
-            parse_commit_response(b"HTTP/1.1 404 Not Found\r\n\r\n{}"),
+            answered(b"HTTP/1.1 404 Not Found\r\n\r\n{}"),
             Ok(TrialCommit::Unsupported)
         );
-        assert!(parse_commit_response(b"HTTP/1.1 403 Forbidden\r\n\r\n").is_err());
-        assert!(parse_commit_response(b"HTTP/1.1 500 Internal Server Error\r\n\r\n").is_err());
-        assert!(parse_commit_response(b"").is_err());
+        assert!(answered(b"HTTP/1.1 403 Forbidden\r\n\r\n").is_err());
+        assert!(answered(b"HTTP/1.1 500 Internal Server Error\r\n\r\n").is_err());
+        // A reply cut off before its status line leaves the commit unknown.
+        for lost in [&b""[..], b"HTTP/1.1 2", b"HTTP/1.1 204", b"garbage\r\n"] {
+            assert!(
+                matches!(parse_commit_response(lost), CommitAnswer::Unanswered(_)),
+                "{}",
+                String::from_utf8_lossy(lost)
+            );
+        }
+    }
+
+    #[test]
+    fn only_this_updates_commit_record_counts() {
+        let root = scratch("trial-commit-record");
+        fs::create_dir_all(root.join("data")).unwrap();
+        assert!(!super::trial_commit_recorded(&root, "this-token"));
+        fs::write(super::trial_commit_record(&root), "earlier-token").unwrap();
+        assert!(!super::trial_commit_recorded(&root, "this-token"));
+        fs::write(super::trial_commit_record(&root), "this-token").unwrap();
+        assert!(super::trial_commit_recorded(&root, "this-token"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
