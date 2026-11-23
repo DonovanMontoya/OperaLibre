@@ -2014,22 +2014,25 @@ test("overlapping CarPlay syncs send a healthy checkpoint once", async () => {
   assert.equal(c.native().length, 0);
 });
 
-for (const winner of ["older", "newer"] as const) {
-  test(`a server rejection with both local stores down releases a CarPlay checkpoint only for a ${winner} server copy`, async () => {
-    const c = carCheckpointFixture(carSession);
-    Object.assign(c.down, { localStorage: true, indexedDB: true });
-    const kept = { ...c.f.server, positionSeconds: 2500, bookPositionSeconds: 2500,
-      updatedAt: String(carSession.updatedAt + (winner === "newer" ? 60_000 : -60_000)) };
-    c.f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
-      c.f.writes.push({ progress, options });
-      return { ...kept, accepted: false };
-    };
-    const { car } = c.open();
-    await car.adoptCarPlaybackState();
-    assert.deepEqual(c.acknowledged, winner === "newer" ? [carSession.updatedAt] : []);
-    assert.equal(c.native().length, winner === "newer" ? 0 : 1);
-  });
-}
+test("a server rejection with both local stores down keeps a CarPlay checkpoint even when the server clock runs ahead", async () => {
+  const c = carCheckpointFixture(carSession);
+  Object.assign(c.down, { localStorage: true, indexedDB: true });
+  // An hour of server clock skew makes the kept copy look later than the car.
+  const kept = { ...c.f.server, positionSeconds: 2500, bookPositionSeconds: 2500,
+    updatedAt: String(carSession.updatedAt + 3_600_000) };
+  c.f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+    c.f.writes.push({ progress, options });
+    return { ...kept, accepted: false };
+  };
+  const { car } = c.open();
+  await car.adoptCarPlaybackState();
+  assert.deepEqual(c.acknowledged, []);
+  c.f.book.progress = { ...kept, status: "inProgress", serverUpdatedAt: kept.updatedAt };
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.length, 1, "a rejected session must not be resent on the server's new revision");
+  assert.deepEqual(c.acknowledged, []);
+  assert.equal(c.native().length, 1);
+});
 
 test("a retained CarPlay checkpoint does not replace later phone playback saved on this device", async () => {
   const c = carCheckpointFixture(carSession);
@@ -2049,21 +2052,33 @@ test("a retained CarPlay checkpoint does not replace later phone playback saved 
   assert.deepEqual(c.acknowledged, [carSession.updatedAt]);
 });
 
-for (const store of ["indexedDB", "server"] as const) {
-  test(`a reopened player does not replay a retained CarPlay checkpoint over later phone progress in ${store}`, async () => {
-    const c = carCheckpointFixture(carSession);
-    Object.assign(c.down, { localStorage: true, indexedDB: true, server: true });
-    await c.open().car.adoptCarPlaybackState();
-    const later = reliability.pendingProgress({ ...c.f.server, positionSeconds: 2400, bookPositionSeconds: 2400,
-      updatedAt: new Date(carSession.updatedAt + 60_000).toISOString() }, null, c.f.server.updatedAt);
-    if (store === "indexedDB") c.indexedDB.set("book", later);
-    else c.f.server = { ...c.f.server, bookPositionSeconds: 2400, positionSeconds: 2400,
-      updatedAt: String(carSession.updatedAt + 60_000) };
-    c.down[store] = false;
-    const { car } = c.open();
-    await car.adoptCarPlaybackState();
-    assert.equal(c.f.writes.length, 0, "the older car position must not be sent");
-    assert.notEqual(c.f.book.progress.bookPositionSeconds, 1800, "the shelf keeps the later copy");
-    assert.deepEqual(c.acknowledged, [carSession.updatedAt]);
-  });
-}
+test("a reopened player does not replay a retained CarPlay checkpoint over later phone progress in IndexedDB", async () => {
+  const c = carCheckpointFixture(carSession);
+  Object.assign(c.down, { localStorage: true, indexedDB: true, server: true });
+  await c.open().car.adoptCarPlaybackState();
+  c.indexedDB.set("book", reliability.pendingProgress({ ...c.f.server, positionSeconds: 2400, bookPositionSeconds: 2400,
+    updatedAt: new Date(carSession.updatedAt + 60_000).toISOString() }, null, c.f.server.updatedAt));
+  c.down.indexedDB = false;
+  const { car } = c.open();
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.length, 0, "the older car position must not be sent");
+  assert.notEqual(c.f.book.progress.bookPositionSeconds, 1800, "the shelf keeps the later copy");
+  assert.deepEqual(c.acknowledged, [carSession.updatedAt]);
+});
+
+test("a server revision that only looks later through clock skew does not discard a CarPlay checkpoint", async () => {
+  const c = carCheckpointFixture(carSession);
+  Object.assign(c.down, { localStorage: true, indexedDB: true, server: true });
+  await c.open().car.adoptCarPlaybackState();
+  c.f.server = { ...c.f.server, positionSeconds: 900, bookPositionSeconds: 900,
+    updatedAt: String(carSession.updatedAt + 3_600_000) };
+  const { car } = c.open();
+  await car.adoptCarPlaybackState();
+  assert.deepEqual(c.acknowledged, [], "nothing durable holds the car position yet");
+  assert.equal(c.native().length, 1);
+  assert.equal(c.f.book.progress.bookPositionSeconds, 1800);
+  c.down.server = false;
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.at(-1)!.progress.bookPositionSeconds, 1800);
+  assert.deepEqual(c.acknowledged, [carSession.updatedAt], "released only by the accepted save");
+});

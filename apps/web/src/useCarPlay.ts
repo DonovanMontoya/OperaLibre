@@ -33,29 +33,13 @@ function localRecordedAt(progress: Progress | null | undefined): number {
   return recordedAt ? progressTimestamp(recordedAt) : 0;
 }
 
-function acknowledgedRevision(progress: Progress | null | undefined): number {
-  const revision = progress?.acknowledgedUpdatedAt ?? (progress?.syncStatus === "synced" ? progress.updatedAt : undefined);
-  return revision ? progressTimestamp(revision) : 0;
-}
-
 /**
- * Whether a durable copy recorded after this native session already exists.
- * Local copies carry device times, comparable with the session's. The
- * server's revision uses the server's clock, so it is compared with the
- * session only when it is newer than every revision the local copies have
- * seen, that is, when the server holds a copy this phone never stored. A
- * summary built on the phone always has a serverUpdatedAt key; one from the
- * server does not, and its updatedAt is the server revision.
+ * Whether this phone holds a durable copy recorded after the native session.
+ * Only device times are compared: a server revision uses the server's clock,
+ * and skew would let it pass for a later copy and discard the only native one.
  */
-function carSessionIsSuperseded(
-  session: CarPlaybackSession, book: Pick<Book, "progress">, local: Array<Progress | null | undefined>
-): boolean {
-  if (Math.max(0, ...local.map(localRecordedAt)) > session.updatedAt) return true;
-  const summary = book.progress;
-  const revision = summary && ("serverUpdatedAt" in summary ? summary.serverUpdatedAt : summary.updatedAt);
-  if (!revision) return false;
-  const serverAt = progressTimestamp(revision);
-  return serverAt > Math.max(0, ...local.map(acknowledgedRevision)) && serverAt > session.updatedAt;
+function carSessionIsSuperseded(session: CarPlaybackSession, local: Array<Progress | null | undefined>): boolean {
+  return Math.max(0, ...local.map(localRecordedAt)) > session.updatedAt;
 }
 
 export function useCarPlay({
@@ -91,6 +75,8 @@ export function useCarPlay({
   const carTakeoverAtRef = useRef(0);
   // Book id to the newest native session applied without a durable copy yet.
   const unsavedCarSessionsRef = useRef(new Map<string, number>());
+  // Book id to the newest native session the server rejected in this run.
+  const rejectedCarSessionsRef = useRef(new Map<string, number>());
 
   const carLibrarySignature = useMemo(() => {
     if (!supportsCarPlay()) return "";
@@ -221,10 +207,14 @@ export function useCarPlay({
       const checkpoint = readProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, book.id);
       // Native retains a session until it is saved, so it can come back after
       // the phone has recorded and saved a later position.
-      if (carSessionIsSuperseded(session, book, [checkpoint, cachedProgress.get(book.id)])) {
+      if (carSessionIsSuperseded(session, [checkpoint, cachedProgress.get(book.id)])) {
         queued.push({ session, journaled: true, cached: Promise.resolve(true), answered: () => true });
         continue;
       }
+      // The server kept another copy; resending on its new revision would
+      // overwrite it, so the session stays native until something newer.
+      const rejectedAt = rejectedCarSessionsRef.current.get(book.id);
+      if (rejectedAt !== undefined && session.updatedAt <= rejectedAt) continue;
       // An applied session shows on the shelf before any copy of it is
       // durable, so it would otherwise look unchanged on the next sync.
       const unsavedAt = unsavedCarSessionsRef.current.get(book.id);
@@ -271,11 +261,11 @@ export function useCarPlay({
         intentionalRegression: newIntentionalSeek && shouldFlagIntentionalRegression(
           session.bookPositionSeconds, acknowledgedServerPositionRef.current.get(book.id)
         ),
-        // A rejection holds the server's own copy, which only releases the
-        // session when that copy is newer.
         onServerResponse: (saved) => {
           previousResponse?.(saved);
-          if (saved.accepted !== false || progressTimestamp(saved.updatedAt) > session.updatedAt) answered = true;
+          if (saved.accepted !== false) answered = true;
+          else rejectedCarSessionsRef.current.set(book.id,
+            Math.max(rejectedCarSessionsRef.current.get(book.id) ?? 0, session.updatedAt));
         }
       });
     }
