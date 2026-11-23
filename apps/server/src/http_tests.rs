@@ -8016,6 +8016,70 @@ async fn an_update_trial_refuses_every_dynamic_route_until_committed() {
     );
 }
 
+/// The commit is recorded on disk, with the trial's token, before any route
+/// opens, so an updater whose reply was lost can still learn that it took
+/// effect after the trial has gone. Publishing the record is the commit: a
+/// failure before it leaves the trial closed with no record, and nothing
+/// after it can turn the commit back into a refusal.
+#[tokio::test]
+async fn an_update_trial_records_its_commit_before_opening() {
+    let mut server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    start_update_trial(&mut server, "trial-token");
+    let record = server
+        .state
+        .database_path
+        .with_file_name(super::UPDATE_TRIAL_COMMITTED_FILE);
+    let books = || {
+        Request::builder()
+            .uri("/api/books")
+            .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    std::fs::create_dir(&record).unwrap();
+    assert_eq!(
+        send_raw(&server, commit_request(Some("trial-token"), [127, 0, 0, 1])).await,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert_eq!(
+        server.send(books()).await.status,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    std::fs::remove_dir(&record).unwrap();
+
+    // A record that cannot be prepared is never published.
+    let fault = &server.state.update_trial.record_fault;
+    fault.store(
+        super::RecordFault::BeforePublishing as u8,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    assert_eq!(
+        send_raw(&server, commit_request(Some("trial-token"), [127, 0, 0, 1])).await,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert!(!record.exists(), "a failed commit published its record");
+    assert!(!record.with_extension("tmp").exists());
+    assert_eq!(
+        server.send(books()).await.status,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    // Once published the record is the commit: a later failure cannot undo it.
+    fault.store(
+        super::RecordFault::AfterPublishing as u8,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    assert_eq!(
+        send_raw(&server, commit_request(Some("trial-token"), [127, 0, 0, 1])).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(std::fs::read_to_string(&record).unwrap(), "trial-token");
+    assert_eq!(server.send(books()).await.status, StatusCode::OK);
+}
+
 /// Without a trial the commit route does not exist, so an updater can tell
 /// a build that predates trials from one that refused it.
 #[tokio::test]
