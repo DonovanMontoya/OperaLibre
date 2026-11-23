@@ -8018,8 +8018,9 @@ async fn an_update_trial_refuses_every_dynamic_route_until_committed() {
 
 /// The commit is recorded on disk, with the trial's token, before any route
 /// opens, so an updater whose reply was lost can still learn that it took
-/// effect after the trial has gone. A commit that cannot be recorded leaves
-/// the trial closed and no record behind.
+/// effect after the trial has gone. Publishing the record is the commit: a
+/// failure before it leaves the trial closed with no record, and nothing
+/// after it can turn the commit back into a refusal.
 #[tokio::test]
 async fn an_update_trial_records_its_commit_before_opening() {
     let mut server = TestServer::start(0).await;
@@ -8049,20 +8050,28 @@ async fn an_update_trial_records_its_commit_before_opening() {
 
     std::fs::remove_dir(&record).unwrap();
 
-    // A write that fails after publishing the record withdraws it.
-    let fault = &server.state.update_trial.fail_after_record;
-    fault.store(true, std::sync::atomic::Ordering::SeqCst);
+    // A record that cannot be prepared is never published.
+    let fault = &server.state.update_trial.record_fault;
+    fault.store(
+        super::RecordFault::BeforePublishing as u8,
+        std::sync::atomic::Ordering::SeqCst,
+    );
     assert_eq!(
         send_raw(&server, commit_request(Some("trial-token"), [127, 0, 0, 1])).await,
         StatusCode::INTERNAL_SERVER_ERROR
     );
-    assert!(!record.exists(), "a failed commit left its record");
+    assert!(!record.exists(), "a failed commit published its record");
+    assert!(!record.with_extension("tmp").exists());
     assert_eq!(
         server.send(books()).await.status,
         StatusCode::SERVICE_UNAVAILABLE
     );
 
-    fault.store(false, std::sync::atomic::Ordering::SeqCst);
+    // Once published the record is the commit: a later failure cannot undo it.
+    fault.store(
+        super::RecordFault::AfterPublishing as u8,
+        std::sync::atomic::Ordering::SeqCst,
+    );
     assert_eq!(
         send_raw(&server, commit_request(Some("trial-token"), [127, 0, 0, 1])).await,
         StatusCode::NO_CONTENT

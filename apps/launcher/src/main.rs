@@ -1366,8 +1366,8 @@ fn after_failed_update(
     match record {
         CommitRecord::Absent => AfterFailure::RollBack,
         CommitRecord::Matches if !commit_refused => AfterFailure::KeepCommitted,
-        // A refusal after the record was published: the trial withdraws a
-        // record it cannot make durable, so one that stayed is a second fault.
+        // The trial publishes its record only as the last step of a commit,
+        // so a refusal beside one means the two disagree.
         CommitRecord::Matches => AfterFailure::Uncertain(
             "the new server refused the commit but left its record".to_string(),
         ),

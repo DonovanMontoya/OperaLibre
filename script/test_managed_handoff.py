@@ -54,6 +54,10 @@ fn main() {
                     let fault = env::var("TEST_COMMIT_RECORD_FAULT").ok();
                     let recorded = if fault.as_deref() == Some("damaged") { "damaged" } else { token.as_str() };
                     fs::write("data/update-trial-committed", recorded).unwrap();
+                    if fault.as_deref() == Some("exit") {
+                        // Exits at the commit point, before routes open or a reply.
+                        std::process::exit(0);
+                    }
                     if fault.as_deref() == Some("refused") {
                         let _ = write!(stream, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                         continue;
@@ -167,7 +171,7 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
     binary = scratch / "fake-server"
     subprocess.run(["rustc", "--edition=2024", str(source), "-o", str(binary)], check=True)
     for scenario in ("success", "prune-failure", "legacy-target", "startup-failure", "upgraded-data-rollback", "staging-failure", "stop-handoff",
-            "lost-commit-reply", "lost-commit-crash", "damaged-commit-record", "refused-after-record"):
+            "lost-commit-reply", "lost-commit-crash", "damaged-commit-record", "refused-after-record", "exit-after-publication"):
         # The updater cannot tell whether these trials accepted changes.
         uncertain = scenario in ("damaged-commit-record", "refused-after-record")
         fails = scenario in ("startup-failure", "upgraded-data-rollback", "damaged-commit-record", "refused-after-record")
@@ -228,6 +232,9 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
         if scenario == "damaged-commit-record":
             env["TEST_LOSE_COMMIT_REPLY"] = "crash"
             env["TEST_COMMIT_RECORD_FAULT"] = "damaged"
+            env["TEST_UPGRADE_DATA"] = "1"
+        if scenario == "exit-after-publication":
+            env["TEST_COMMIT_RECORD_FAULT"] = "exit"
             env["TEST_UPGRADE_DATA"] = "1"
         if scenario == "refused-after-record":
             env["TEST_COMMIT_RECORD_FAULT"] = "refused"
@@ -297,6 +304,10 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                 assert not list((root / "data/update-backups").glob("*/failed-data"))
                 snapshots = [path for path in (root / "data/update-backups").glob("*/data") if path.parent.name != "3"]
                 assert len(snapshots) == 1 and (snapshots[0] / "operalibre.db").is_file(), snapshots
+            elif scenario == "exit-after-publication":
+                # A published record is the commit, so the data is kept.
+                assert read_data(root / "data") == (5, 2, ["before-update", "new-build"]), read_data(root / "data")
+                assert "its answer was lost" in (root / "data/server.log").read_text()
             elif scenario == "lost-commit-crash":
                 assert read_data(root / "data") == (5, 2, ["after-commit", "before-update", "new-build"]), read_data(root / "data")
                 assert "its answer was lost" in (root / "data/server.log").read_text()
