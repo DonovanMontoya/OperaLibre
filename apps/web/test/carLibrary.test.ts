@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   buildCarLibrarySnapshot,
@@ -112,13 +113,64 @@ test("a book with no playable file is left out rather than offered as a dead end
   assert.deepEqual(snapshot.books.map((entry) => entry.id), ["book-1"]);
 });
 
-test("a track that will not resolve is dropped without taking the book with it", async () => {
+test("a track that will not resolve stays in place with no address, so the car stops before it", async () => {
   const snapshot = await buildCarLibrarySnapshot({
     ...defaults,
     books: [book()],
     resolveTrackUrl: async (_candidate, entry) => (entry.id === "track-2" ? null : "https://server/one")
   });
-  assert.deepEqual(snapshot.books[0].tracks.map((entry) => entry.id), ["track-1"]);
+  assert.deepEqual(
+    snapshot.books[0].tracks.map(({ id, title, url, bookOffsetSeconds }) => ({ id, title, url, bookOffsetSeconds })),
+    [
+      { id: "track-1", title: "Track One", url: "https://server/one", bookOffsetSeconds: 0 },
+      { id: "track-2", title: "Track Two", url: "", bookOffsetSeconds: 600 }
+    ]
+  );
+});
+
+test("a device book missing a local file keeps the gap where the file belongs", async () => {
+  const snapshot = await buildCarLibrarySnapshot({
+    ...defaults,
+    books: [book({
+      source: "device",
+      tracks: [
+        track({ streamUrl: "" }),
+        track({ id: "track-2", title: "Track Two", index: 1, streamUrl: "" }),
+        track({ id: "track-3", title: "Track Three", index: 2, streamUrl: "" })
+      ]
+    })],
+    resolveTrackUrl: async (_candidate, entry) =>
+      entry.id === "track-2" ? null : `capacitor://localhost/_capacitor_file_/var/media/${entry.id}.m4a`
+  });
+  const [entry] = snapshot.books;
+  assert.equal(entry.downloaded, true);
+  assert.deepEqual(entry.tracks.map((candidate) => candidate.url === ""), [false, true, false]);
+  assert.deepEqual(entry.tracks.map((candidate) => candidate.bookOffsetSeconds), [0, 600, 1200]);
+});
+
+// The native app decodes this same file (ios/Tests/CarLibraryTests.swift), so
+// a change to the snapshot shape has to keep both sides agreeing.
+test("the snapshot matches the shape the native car library decodes", async () => {
+  const snapshot = await buildCarLibrarySnapshot({
+    ...defaults,
+    books: [book({
+      durationSeconds: 1800,
+      trackCount: 3,
+      coverArtUrl: null,
+      tracks: [
+        track(),
+        track({ id: "track-2", title: "Track Two", index: 1, streamUrl: "/api/books/book-1/tracks/track-2/stream" }),
+        track({ id: "track-3", title: "Track Three", index: 2, streamUrl: "/api/books/book-1/tracks/track-3/stream" })
+      ]
+    })],
+    resolveTrackUrl: async (_candidate, entry) =>
+      entry.id === "track-2" ? null : `https://server${entry.streamUrl}`
+  });
+  const fixture = JSON.parse(await readFile(
+    new URL("../ios/Tests/fixtures/car-library-gap.json", import.meta.url),
+    "utf8"
+  ));
+  assert.deepEqual(JSON.parse(JSON.stringify(snapshot)), fixture);
 });
 
 test("a resolver failure is a missing file, not a failed sync", async () => {
@@ -130,7 +182,7 @@ test("a resolver failure is a missing file, not a failed sync", async () => {
       return "https://server/one";
     }
   });
-  assert.deepEqual(snapshot.books[0].tracks.map((entry) => entry.id), ["track-1"]);
+  assert.deepEqual(snapshot.books[0].tracks.map((entry) => entry.url), ["https://server/one", ""]);
 });
 
 test("downloaded and device books are marked so the car can show what plays offline", async () => {
@@ -161,6 +213,25 @@ test("progress becomes the position and status the car resumes from", async () =
   });
   assert.equal(snapshot.books[0].positionSeconds, 742);
   assert.equal(snapshot.books[0].status, "inProgress");
+});
+
+test("snapshot books carry the server revision native stamps on car sessions", async () => {
+  const progress = { status: "inProgress" as const, bookPositionSeconds: 742, durationSeconds: 1200,
+    remainingSeconds: 458, percentComplete: 61, updatedAt: "1790769600000" };
+  const fromServer = await buildCarLibrarySnapshot({ ...defaults, books: [book({ progress })] });
+  assert.equal(fromServer.books[0].serverRevision, "1790769600000");
+  // A summary built on the phone keeps its revision apart from its device time.
+  const local = await buildCarLibrarySnapshot({ ...defaults, books: [book({ progress: {
+    ...progress, updatedAt: "2026-09-30T12:05:00.000Z", serverUpdatedAt: "1790769600000" } })] });
+  assert.equal(local.books[0].serverRevision, "1790769600000");
+  const unsynced = await buildCarLibrarySnapshot({ ...defaults, books: [book({ progress: {
+    ...progress, updatedAt: "2026-09-30T12:05:00.000Z", serverUpdatedAt: null } })] });
+  assert.equal(unsynced.books[0].serverRevision, undefined, "a phone summary leaves the server unknown");
+  // A server listing with no progress for the book knows there is no copy yet.
+  const unplayed = await buildCarLibrarySnapshot({ ...defaults, books: [book({ progress: undefined })] });
+  assert.equal(unplayed.books[0].serverRevision, "");
+  const deviceOnly = await buildCarLibrarySnapshot({ ...defaults, books: [book({ progress: undefined, source: "device" })] });
+  assert.equal("serverRevision" in deviceOnly.books[0], false);
 });
 
 test("a book that was never opened is not started", async () => {
@@ -222,6 +293,8 @@ function session(overrides: Partial<CarPlaybackSession> = {}): CarPlaybackSessio
 
 test("sessions survive the trip across the bridge", () => {
   assert.deepEqual(parseCarSessions(JSON.stringify([session()])), [session()]);
+  const unplayed = session({ baseUpdatedAt: "" });
+  assert.deepEqual(parseCarSessions(JSON.stringify([unplayed])), [unplayed], "an empty base is not dropped");
 });
 
 test("nothing the bridge could hand back loses a whole drive", () => {

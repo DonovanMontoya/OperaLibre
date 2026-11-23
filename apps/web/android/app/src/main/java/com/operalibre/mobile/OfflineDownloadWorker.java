@@ -35,6 +35,7 @@ public class OfflineDownloadWorker extends Worker {
     private static final int NOTIFICATION_ID = 0x0F71;
     private static final int MAX_ATTEMPTS = 5;
     private static final int MAX_REDIRECTS = 5;
+    static final DownloadQueueHandoff HANDOFF = new DownloadQueueHandoff(BackgroundDownloadStore.class);
     private final NotificationManager notificationManager;
 
     private static final class DownloadCancelledException extends Exception {}
@@ -47,26 +48,23 @@ public class OfflineDownloadWorker extends Worker {
     @NonNull
     @Override
     public Result doWork() {
-        boolean settled = false;
-        while (true) {
-            if (isStopped()) return Result.retry();
-            BackgroundDownloadStore.PendingJob pending =
-                BackgroundDownloadStore.nextPending(getApplicationContext());
-            if (pending == null) {
-                if (settled) return Result.success();
-                settled = true;
-                try {
-                    Thread.sleep(1_000);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    return Result.retry();
-                }
-                continue;
+        return HANDOFF.drain(new DownloadQueueHandoff.Queue<BackgroundDownloadStore.PendingJob, Result>() {
+            @Override public BackgroundDownloadStore.PendingJob nextPending() {
+                return BackgroundDownloadStore.nextPending(getApplicationContext());
             }
-            settled = false;
-            Result outcome = runJob(pending.jobId, pending.job);
-            if (outcome != null) return outcome;
-        }
+
+            @Override public Result run(BackgroundDownloadStore.PendingJob pending) {
+                return runJob(pending.jobId, pending.job);
+            }
+
+            @Override public boolean isStopped() {
+                return OfflineDownloadWorker.this.isStopped();
+            }
+
+            @Override public void awaitMore() throws InterruptedException {
+                Thread.sleep(1_000);
+            }
+        }, Result.success(), Result.retry());
     }
 
     @Nullable

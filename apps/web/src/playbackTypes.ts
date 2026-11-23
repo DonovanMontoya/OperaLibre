@@ -16,4 +16,6 @@ export type QueuedProgressSave = {
   intentionalRegression: boolean;
   /** Queued by a page hide or close, which may be the last chance to send it. */
   keepalive?: boolean;
+  /** Runs when the server answers this save or one that replaced it. */
+  onServerResponse?: (saved: Progress) => void;
 };
