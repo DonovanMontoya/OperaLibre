@@ -12,6 +12,10 @@ pub(crate) struct UpdateTrial {
     token: Option<String>,
     committed: tokio::sync::watch::Sender<bool>,
     commit: Mutex<()>,
+    /// Fails the commit record's write after it is published, as a failed
+    /// permission change or directory sync would.
+    #[cfg(test)]
+    pub(crate) fail_after_record: std::sync::atomic::AtomicBool,
 }
 
 impl UpdateTrial {
@@ -34,6 +38,8 @@ impl UpdateTrial {
             token,
             committed,
             commit: Mutex::new(()),
+            #[cfg(test)]
+            fail_after_record: Default::default(),
         }
     }
 
@@ -98,12 +104,46 @@ pub(crate) async fn commit_update_trial(
         return Ok(StatusCode::NO_CONTENT);
     }
     sync::restore_queue(&state).await?;
+    record_commit(&state).await?;
+    trial.committed.send_replace(true);
+    tracing::info!("the updater committed this build");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn record_commit(state: &AppState) -> Result<(), ApiError> {
+    let trial = &state.update_trial;
     let token = trial.token.as_deref().unwrap_or_default();
     let record = state
         .database_path
         .with_file_name(UPDATE_TRIAL_COMMITTED_FILE);
-    write_bytes_atomic(&record, token.as_bytes()).await?;
-    trial.committed.send_replace(true);
-    tracing::info!("the updater committed this build");
-    Ok(StatusCode::NO_CONTENT)
+    let written = write_bytes_atomic(&record, token.as_bytes()).await;
+    #[cfg(test)]
+    let written = written.and_then(|()| {
+        if trial
+            .fail_after_record
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            Err(ApiError::internal(
+                "injected failure after the record was published",
+            ))
+        } else {
+            Ok(())
+        }
+    });
+    if let Err(error) = written {
+        // The write can fail after its rename has published the record. A
+        // record that stays would tell the updater this trial may have
+        // accepted changes, so withdraw it; the updater treats a refusal
+        // that still left a record as unknown and restores nothing.
+        if let Err(remove_error) = tokio::fs::remove_file(&record).await
+            && remove_error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                "could not withdraw the update commit record {}: {remove_error}",
+                record.display()
+            );
+        }
+        return Err(error);
+    }
+    Ok(())
 }

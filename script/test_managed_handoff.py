@@ -50,7 +50,14 @@ fn main() {
                 None => "404 Not Found",
                 Some(token) if request.contains(&format!("X-OperaLibre-Update-Trial: {token}\r\n")) => {
                     // The real server records its commit before opening routes.
-                    fs::write("data/update-trial-committed", token).unwrap();
+                    // Faults: a damaged record, or a refusal that left one.
+                    let fault = env::var("TEST_COMMIT_RECORD_FAULT").ok();
+                    let recorded = if fault.as_deref() == Some("damaged") { "damaged" } else { token.as_str() };
+                    fs::write("data/update-trial-committed", recorded).unwrap();
+                    if fault.as_deref() == Some("refused") {
+                        let _ = write!(stream, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        continue;
+                    }
                     fs::write("data/trial-committed", version.trim()).unwrap();
                     committed = true;
                     match lose.as_deref() {
@@ -160,8 +167,10 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
     binary = scratch / "fake-server"
     subprocess.run(["rustc", "--edition=2024", str(source), "-o", str(binary)], check=True)
     for scenario in ("success", "prune-failure", "legacy-target", "startup-failure", "upgraded-data-rollback", "staging-failure", "stop-handoff",
-            "lost-commit-reply", "lost-commit-crash"):
-        fails = scenario in ("startup-failure", "upgraded-data-rollback")
+            "lost-commit-reply", "lost-commit-crash", "damaged-commit-record", "refused-after-record"):
+        # The updater cannot tell whether these trials accepted changes.
+        uncertain = scenario in ("damaged-commit-record", "refused-after-record")
+        fails = scenario in ("startup-failure", "upgraded-data-rollback", "damaged-commit-record", "refused-after-record")
         root = scratch / scenario
         package = root / "package"
         for directory in (root / "data", root / "web", package / "web"):
@@ -216,6 +225,13 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             # the snapshot and lose the checkpoint taken after the commit.
             env["TEST_LOSE_COMMIT_REPLY"] = "crash"
             env["TEST_UPGRADE_DATA"] = "1"
+        if scenario == "damaged-commit-record":
+            env["TEST_LOSE_COMMIT_REPLY"] = "crash"
+            env["TEST_COMMIT_RECORD_FAULT"] = "damaged"
+            env["TEST_UPGRADE_DATA"] = "1"
+        if scenario == "refused-after-record":
+            env["TEST_COMMIT_RECORD_FAULT"] = "refused"
+            env["TEST_UPGRADE_DATA"] = "1"
         old = subprocess.Popen([str(root / "operalibre-server")], cwd=root, env=env)
         (root / "data/operalibre-server.pid").write_text(str(old.pid))
         updater = starter = None
@@ -249,7 +265,7 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             # Deliberately request takeover before readiness, reproducing the
             # old VERSION watcher timing. The shared lock must defer it.
             starter = subprocess.Popen([str(root / "operalibre-service"), "--service-start"], env=env)
-            if scenario == "lost-commit-crash":
+            if scenario in ("lost-commit-crash", "damaged-commit-record"):
                 # A client saves progress once routes open; the trial then
                 # exits before the updater hears that its commit took effect.
                 until(lambda: (root / "data/update-trial-committed").exists())
@@ -261,7 +277,8 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             assert result.startswith("Failed:" if fails else "Succeeded:"), result
             until(lambda: (root / "data/operalibre-server.pid").read_text() == str(starter.pid))
             until(lambda: os.readlink(f"/proc/{starter.pid}/exe") == str(root / "operalibre-server"))
-            assert (root / "VERSION.txt").read_text().strip() == ("1.0.0" if fails else "2.0.0")
+            # An uncertain outcome keeps the new build, which can read its data.
+            assert (root / "VERSION.txt").read_text().strip() == ("1.0.0" if fails and not uncertain else "2.0.0")
             until(lambda: healthy(port))
             # Data the old build can read is kept, with what the new build
             # saved; data the new build upgraded goes back to the snapshot.
@@ -272,6 +289,14 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                 assert len(kept) == 1, kept
                 assert read_data(kept[0]) == (5, 2, ["before-update", "new-build"]), read_data(kept[0])
                 assert not list((root / "data/update-backups").glob("*/restore-required"))
+            elif uncertain:
+                books = ["before-update", "new-build"] if scenario == "refused-after-record" else ["after-commit", "before-update", "new-build"]
+                assert read_data(root / "data") == (5, 2, books), read_data(root / "data")
+                assert "could not tell whether the new build had accepted changes" in result, result
+                # Nothing was restored, and the copy taken before the update stays.
+                assert not list((root / "data/update-backups").glob("*/failed-data"))
+                snapshots = [path for path in (root / "data/update-backups").glob("*/data") if path.parent.name != "3"]
+                assert len(snapshots) == 1 and (snapshots[0] / "operalibre.db").is_file(), snapshots
             elif scenario == "lost-commit-crash":
                 assert read_data(root / "data") == (5, 2, ["after-commit", "before-update", "new-build"]), read_data(root / "data")
                 assert "its answer was lost" in (root / "data/server.log").read_text()
@@ -279,9 +304,9 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
                 assert read_data(root / "data") == (4, 1, ["before-update", "new-build"]), read_data(root / "data")
             # Only an update to a build with trials is committed; a failed one never is.
             committed = root / "data/trial-committed"
-            assert committed.exists() == (scenario in ("success", "prune-failure", "lost-commit-reply", "lost-commit-crash")), scenario
-            assert not (root / "data/update-trial-committed").exists(), "the commit record was kept"
-            assert not [path for path in (root / "data/update-backups").glob("*/data") if path.parent.name != "3"], "the data snapshot was kept"
+            assert committed.exists() == (scenario in ("success", "prune-failure", "lost-commit-reply", "lost-commit-crash", "damaged-commit-record")), scenario
+            assert (root / "data/update-trial-committed").exists() == uncertain, "commit record"
+            assert uncertain or not [path for path in (root / "data/update-backups").glob("*/data") if path.parent.name != "3"], "the data snapshot was kept"
             if fails:
                 assert not list((root / "data/update-backups").glob("*/.completed")), "failed update marked complete"
             if scenario == "prune-failure":
