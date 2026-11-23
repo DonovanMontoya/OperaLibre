@@ -68,7 +68,7 @@ jobs:
         with:
           workspaces: apps/server
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg espeak-ng
-      - run: npm ci --prefix addons/readalong-sync
+      - run: ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm ci --prefix addons/readalong-sync
       - run: python3 script/follow-along/audio_faults.py --output output/follow-along/audio --cli addons/readalong-sync/node_modules/.bin/echogarden
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
