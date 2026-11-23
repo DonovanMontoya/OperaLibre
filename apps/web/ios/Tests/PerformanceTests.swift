@@ -561,6 +561,95 @@ final class PerformanceTests: XCTestCase {
         XCTAssertEqual(observer.errors.last, "The audio track could not be loaded.")
     }
 
+    @MainActor
+    func testCarGapStopSavesTheRetriedEndOfTrack() throws {
+        try exerciseCarGapStop(retrySucceeds: true)
+    }
+
+    @MainActor
+    func testCarGapStopKeepsTheLastSavedPositionWhenEveryWriteFails() throws {
+        try exerciseCarGapStop(retrySucceeds: false)
+    }
+
+    /// CarPlay reaches the end of the last playable track before a missing
+    /// one while the checkpoint folder refuses writes. The session handed to
+    /// the app must hold the newest position on disk, never a reset or a
+    /// finished book.
+    @MainActor
+    private func exerciseCarGapStop(retrySucceeds: Bool) throws {
+        let checkpointDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let engine = AudiobookPlayer(checkpointStore: NativeAudioCheckpointStore(directory: checkpointDirectory))
+        let coordinator = CarPlayCoordinator(engine: engine)
+        let monitor = GapStopMonitor(coordinator: coordinator)
+        engine.monitor = monitor
+        let store = CarLibraryStore.shared
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        var wav = Data()
+        func u16(_ value: UInt16) { var v = value.littleEndian; withUnsafeBytes(of: &v) { wav.append(contentsOf: $0) } }
+        func u32(_ value: UInt32) { var v = value.littleEndian; withUnsafeBytes(of: &v) { wav.append(contentsOf: $0) } }
+        wav.append(Data("RIFF".utf8)); u32(96_036); wav.append(Data("WAVEfmt ".utf8)); u32(16)
+        u16(1); u16(1); u32(8000); u32(16000); u16(2); u16(16)
+        wav.append(Data("data".utf8)); u32(96_000); wav.append(Data(repeating: 0, count: 96_000))
+        try wav.write(to: url)
+        func setWritable(_ writable: Bool) throws {
+            try FileManager.default.setAttributes([.posixPermissions: writable ? 0o755 : 0o555],
+                                                  ofItemAtPath: checkpointDirectory.path)
+        }
+        defer {
+            try? setWritable(true)
+            engine.stopOnMainThread(releaseSession: true)
+            store.clear()
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: checkpointDirectory)
+        }
+
+        func until(_ name: String, _ predicate: @escaping () -> Bool) {
+            let done = expectation(description: name)
+            let timer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { timer in
+                MainActor.assumeIsolated {
+                    if predicate() { timer.invalidate(); done.fulfill() }
+                }
+            }
+            defer { timer.invalidate() }
+            wait(for: [done], timeout: 15)
+        }
+
+        store.clear()
+        let book = CarLibraryBook(
+            id: "gap-book", title: "Gap Book", author: nil, artworkUrl: nil, durationSeconds: 18,
+            positionSeconds: 1, status: "inProgress", downloaded: true, volumeGain: nil,
+            tracks: [
+                CarLibraryTrack(id: "one", title: "One", url: url.absoluteString, durationSeconds: 6, bookOffsetSeconds: 0),
+                CarLibraryTrack(id: "two", title: "Two", url: "", durationSeconds: 6, bookOffsetSeconds: 6),
+                CarLibraryTrack(id: "three", title: "Three", url: url.absoluteString, durationSeconds: 6, bookOffsetSeconds: 12)
+            ],
+            chapters: []
+        )
+        store.save(CarLibrarySnapshot(scopePrefix: "gap-test", playbackRate: 1.5, updatedAt: 0, books: [book]))
+        XCTAssertTrue(coordinator.play(book: book, atBookPosition: nil, restorePendingSession: false))
+
+        let scope = "gap-test:gap-book"
+        until("a checkpoint past the resume point is saved") {
+            engine.status.isPlaying && (engine.recoveryState(forScope: scope)?.positionSeconds ?? 0) >= 1
+        }
+        try setWritable(false)
+        let durable = try XCTUnwrap(engine.recoveryState(forScope: scope))
+        monitor.beforeFinish = { if retrySucceeds { try? setWritable(true) } }
+        until("the car stops before the missing track") { monitor.finished && !engine.status.isLoaded }
+
+        XCTAssertNil(coordinator.carOwnedBookId)
+        let session = try XCTUnwrap(store.pendingSessions().first { $0.bookId == "gap-book" })
+        XCTAssertFalse(session.finished)
+        XCTAssertEqual(session.trackId, "one")
+        if retrySucceeds {
+            XCTAssertEqual(session.positionSeconds, 6, accuracy: 0.25)
+            XCTAssertEqual(session.bookPositionSeconds, 6, accuracy: 0.25)
+        } else {
+            XCTAssertEqual(session.positionSeconds, durable.positionSeconds, accuracy: 0.001)
+            XCTAssertGreaterThanOrEqual(session.positionSeconds, 1)
+        }
+    }
+
     func testMissingDownloadStatusPerformance() throws {
         let key = "operalibre.background-download-jobs"
         defer { UserDefaults.standard.removeObject(forKey: key) }
@@ -585,6 +674,33 @@ final class PerformanceTests: XCTestCase {
         let stored = try XCTUnwrap(UserDefaults.standard.data(forKey: key))
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: stored) as? [String: Any])
         XCTAssertTrue(NSDictionary(dictionary: decoded).isEqual(to: jobs), "Status reads must preserve stored jobs")
+    }
+}
+
+/// Lets a test act between the player's end-of-queue write and the car's
+/// response to it, then forwards everything to the coordinator.
+private final class GapStopMonitor: AudiobookPlayerMonitor {
+    let coordinator: CarPlayCoordinator
+    var beforeFinish: (() -> Void)?
+    private(set) var finished = false
+    init(coordinator: CarPlayCoordinator) { self.coordinator = coordinator }
+
+    func audiobookPlayer(_ player: AudiobookPlayer, didPersist checkpoint: NativeAudioCheckpoint) {
+        coordinator.audiobookPlayer(player, didPersist: checkpoint)
+    }
+    func audiobookPlayerDidChangePlaybackState(_ player: AudiobookPlayer) {
+        coordinator.audiobookPlayerDidChangePlaybackState(player)
+    }
+    func audiobookPlayerDidFinishPlayback(_ player: AudiobookPlayer) {
+        beforeFinish?()
+        coordinator.audiobookPlayerDidFinishPlayback(player)
+        finished = true
+    }
+    func audiobookPlayer(_ player: AudiobookPlayer, didFail message: String) {
+        coordinator.audiobookPlayer(player, didFail: message)
+    }
+    func audiobookPlayerDidSeekDeliberately(_ player: AudiobookPlayer) {
+        coordinator.audiobookPlayerDidSeekDeliberately(player)
     }
 }
 

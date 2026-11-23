@@ -22,7 +22,7 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     private var listedPlayback: ListedPlayback?
 
     private let store = CarLibraryStore.shared
-    private let engine = AudiobookPlayer.shared
+    private let engine: AudiobookPlayer
     private var lastSessionWrite = 0.0
     // The track a car queue ends before because it could not be opened.
     // Reaching the end of that queue is a stop, not the end of the book.
@@ -36,7 +36,9 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     private var widgetArtwork: UIImage?
     private var widgetRefreshTime = Date.distantPast
 
-    private init() {
+    /// Tests pass an engine with its own checkpoint store.
+    init(engine: AudiobookPlayer = .shared) {
+        self.engine = engine
         store.onArtworkChange = { [weak self] in self?.libraryDidChange() }
     }
 
@@ -402,11 +404,12 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     func audiobookPlayerDidFinishPlayback(_ player: AudiobookPlayer) {
         if !engine.isClipPreview, let stop = queueStopsBefore, stop.bookId == carOwnedBookId {
             queueStopsBefore = nil
-            // Keep the position at the end of the last track that played and
-            // release the player, so choosing the book again explains the gap
-            // instead of resuming a queue that has nothing left.
-            recordSession(force: true)
+            // Release the player, so choosing the book again explains the gap
+            // instead of resuming a queue that has nothing left. Teardown
+            // retries an end-of-track checkpoint that failed to save, so the
+            // session is recorded after it, while the car still owns the book.
             engine.stopOnMainThread(releaseSession: true)
+            recordSession(force: true)
             carOwnedBookId = nil
             redrawCarLists()
             notifyWeb("carPlaybackEnded", data: ["bookId": stop.bookId])
