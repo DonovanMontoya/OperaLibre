@@ -146,9 +146,12 @@ public class BackgroundDownloadPlugin extends Plugin {
             .setConstraints(constraints)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
             .build();
+        // Callers hold the store lock, so a worker either sees this job or has already retired.
         WorkManager.getInstance(getContext()).enqueueUniqueWork(
             DOWNLOAD_QUEUE,
-            ExistingWorkPolicy.KEEP,
+            OfflineDownloadWorker.HANDOFF.takeSuccessorRequest()
+                ? ExistingWorkPolicy.APPEND_OR_REPLACE
+                : ExistingWorkPolicy.KEEP,
             request
         );
     }
