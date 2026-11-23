@@ -20,9 +20,12 @@ final class TabsOverlayView: UIView {
     var hostViews: () -> [UIView] = { [] }
     /// The area the page leaves to the tabs, in this view's coordinates.
     var controlRegion: () -> CGRect? = { nil }
+    /// The rail the page has drawn, which stays the page's until it moves.
+    var pageRail: () -> CGRect? = { nil }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard let region = controlRegion(), region.contains(point),
+              pageRail()?.contains(point) != true,
               let hit = super.hitTest(point, with: event), hit !== self else { return nil }
         for host in hostViews() where host === hit || hit.isDescendant(of: host) || host.isDescendant(of: hit) {
             return nil
@@ -117,6 +120,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     private var platterInset: CGFloat = 0
     private var presentation = TabsPresentation.none
     private var sideControls: CGRect?
+    private var appliedRail: CGRect?
     private static let minimumRailHeight: CGFloat = 60
     private var chrome: UIColor?
     private var barTint: UIColor?
@@ -170,6 +174,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         tabsOverlay.backgroundColor = .clear
         tabsOverlay.hostViews = { [weak self] in self?.hosts.values.compactMap(\.viewIfLoaded) ?? [] }
         tabsOverlay.controlRegion = { [weak self] in self?.tabControlRegion() }
+        tabsOverlay.pageRail = { [weak self] in self?.appliedRail }
         tabsOverlay.addGestureRecognizer(barTouch)
         view.addSubview(tabsOverlay)
         layoutContent(in: self)
@@ -515,7 +520,13 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             } else {
                 script = "document.documentElement.classList.remove('side-rail'); delete document.documentElement.dataset.railControls"
             }
-            webView.evaluateJavaScript(script)
+            // The page applies a new rail later. Until it does, touches in the
+            // rail it still shows go to the page, not to tabs that moved there.
+            webView.evaluateJavaScript(script) { [weak self] _, error in
+                guard let self, self.sentRail == .some(rail) else { return }
+                let origin = self.content.view.frame.origin
+                self.appliedRail = error == nil ? rail?.offsetBy(dx: origin.x, dy: origin.y) : nil
+            }
         }
         if !sideBar {
             frame.origin.x = view.bounds.minX

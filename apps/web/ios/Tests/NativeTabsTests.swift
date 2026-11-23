@@ -323,12 +323,15 @@ final class NativeTabsTests: XCTestCase {
         let shownRail = try await rail()
         XCTAssertEqual(shownRail, "300px")
 
-        // The platter then settles higher, into what was the rail.
+        // The platter then settles higher, into the rail the page still shows.
+        // That first touch stays with the page until the page moves its rail.
         platter.frame.origin.y = 150
-        let onTab = controller.view.hitTest(CGPoint(x: 42, y: 200), with: nil)
-        XCTAssertTrue(onTab?.isDescendant(of: platter) ?? false)
+        let firstTouch = controller.view.hitTest(CGPoint(x: 42, y: 200), with: nil)
+        XCTAssertTrue(firstTouch?.isDescendant(of: webView) ?? false)
+        XCTAssertFalse(firstTouch?.isDescendant(of: platter) ?? false)
         let movedRail = try await rail()
         XCTAssertEqual(movedRail, "150px")
+        XCTAssertTrue(controller.view.hitTest(CGPoint(x: 42, y: 200), with: nil)?.isDescendant(of: platter) ?? false)
         XCTAssertTrue(controller.view.hitTest(CGPoint(x: 42, y: 100), with: nil)?.isDescendant(of: webView) ?? false)
         _ = observer
     }
