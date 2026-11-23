@@ -975,7 +975,7 @@ for (const scenario of ["automatic", "replayed seek", "new seek"] as const) {
     f.write(rejected);
     const session = { bookId: "book", trackId: "track", positionSeconds: 3600, bookPositionSeconds: 3600,
       durationSeconds: 7200, finished: false, intentionalRegression: scenario !== "automatic",
-      updatedAt: Date.parse(scenario === "replayed seek" ? "2026-09-30T12:00:00Z" : "2026-09-30T12:02:00Z") };
+      updatedAt: Date.parse(scenario === "replayed seek" ? "2026-09-30T12:01:00Z" : "2026-09-30T12:02:00Z") };
     const sync = loadHook("useProgressSync", f.dependencies)(f.options);
     const car = loadHook("useCarPlay", {
       ...f.dependencies,
@@ -1838,4 +1838,380 @@ test("a cold Resume reconciles a newer listening position from another device", 
   assert.equal(f.seeks.at(-1)?.positionSeconds, 2100);
   assert.equal(f.options.resumeAutoplayPendingRef.current, true);
   assert.equal(f.writes.length, 0);
+});
+
+function carCheckpointFixture(session: { bookPositionSeconds: number; updatedAt: number;
+  intentionalRegression?: boolean; baseUpdatedAt?: string }, { unplayed = false } = {}) {
+  const f = fixture();
+  // An unplayed book has no local copy and is listed without progress.
+  if (!unplayed) f.write(reliability.syncedProgress(f.server, "2026-09-30T11:55:00Z"));
+  // Native keeps a session until an acknowledgement at least as new arrives,
+  // stamped with the revision its library snapshot carried.
+  let native = [{ bookId: "book", trackId: "track", positionSeconds: session.bookPositionSeconds,
+    durationSeconds: 7200, finished: false, intentionalRegression: false,
+    baseUpdatedAt: f.server.updatedAt, ...session }];
+  const acknowledged: number[] = [];
+  // localStorageWrites fails writes only, as a full disk does, leaving the
+  // older checkpoint readable.
+  const down = { localStorage: false, localStorageWrites: false, indexedDB: false, server: false };
+  const { getItem, setItem } = f.storage;
+  f.storage.setItem = (key: string, value: string) => {
+    if (down.localStorage || down.localStorageWrites) throw new Error("QuotaExceededError");
+    setItem(key, value);
+  };
+  f.storage.getItem = (key: string) => {
+    if (down.localStorage) throw new Error("SecurityError");
+    return getItem(key);
+  };
+  const indexedDB = new Map<string, Progress>();
+  f.dependencies["./offline"].cacheProgress = async (_user: string, progress: Progress) => {
+    if (down.indexedDB) throw new Error("IndexedDB unavailable");
+    indexedDB.set(progress.bookId, progress);
+  };
+  f.dependencies["./offline"].getCachedProgress = async (_user: string, bookId: string) => {
+    if (down.indexedDB) throw new Error("IndexedDB unavailable");
+    return indexedDB.get(bookId) ?? null;
+  };
+  const saveProgress = f.dependencies["./api"].saveProgress;
+  f.dependencies["./api"].saveProgress = async (...args: Parameters<typeof saveProgress>) => {
+    if (down.server) throw new TypeError("Failed to fetch");
+    return saveProgress(...args);
+  };
+  const carPlay = { supportsCarPlay: () => true, setCarPlaybackOwner: () => {},
+    getCarPlayState: async () => ({ carOwnedBookId: null, sessions: native.map(entry => ({ ...entry })) }),
+    stopCarPlayback: async () => ({ carOwnedBookId: null, sessions: native.map(entry => ({ ...entry })) }),
+    acknowledgeCarSessions: async (sessions: Array<{ bookId: string; updatedAt: number }>) => {
+      for (const { bookId, updatedAt } of sessions) {
+        acknowledged.push(updatedAt);
+        native = native.filter(entry => entry.bookId !== bookId || entry.updatedAt > updatedAt);
+      }
+    } };
+  // Opening the web player starts from the server's copy, with fresh hook state.
+  function open() {
+    f.book.progress = unplayed ? undefined : { ...f.server, status: "inProgress" };
+    f.options.queuedProgressSaves.current = new Map();
+    const booksRef = { current: [f.book] };
+    const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+    const car = loadHook("useCarPlay", {
+      ...f.dependencies,
+      react: { ...f.dependencies.react, useMemo: (fn: () => unknown) => fn(), useState: (value: unknown) => [value, () => {}] },
+      "./carLibrary.ts": carLibrary, "./bookVolume": { BOOK_GAIN_DEFAULT: 1 }, "./carPlay": carPlay
+    })({ ...f.options, booksRef, downloadedBookIds: new Set(), bookGains: {},
+      flushProgressSaveQueue: sync.flushProgressSaveQueue,
+      updateBookProgress: (_id: string, progress: Progress) => {
+        f.book.progress = { ...progress, status: "inProgress" };
+      } });
+    return { car, sync };
+  }
+  return { f, down, acknowledged, open, indexedDB, native: () => native };
+}
+
+const carSession = { bookPositionSeconds: 1800, updatedAt: Date.parse("2026-09-30T12:05:00Z") };
+
+for (const restored of ["localStorage", "indexedDB", "server"] as const) {
+  test(`CarPlay keeps an unsaved checkpoint native across syncs and a reopen, then releases it once ${restored} works`, async () => {
+    const c = carCheckpointFixture(carSession);
+    Object.assign(c.down, { localStorage: true, indexedDB: true, server: true });
+    const first = c.open();
+    await first.car.adoptCarPlaybackState();
+    assert.equal(c.f.book.progress.bookPositionSeconds, 1800, "the shelf shows the car position");
+    // The next sync sees the shelf at the car position but nothing durable yet.
+    await first.car.adoptCarPlaybackState();
+    assert.deepEqual(c.acknowledged, []);
+    assert.equal(c.native().length, 1);
+
+    const reopened = c.open();
+    await reopened.car.adoptCarPlaybackState();
+    assert.deepEqual(c.acknowledged, [], "the in-memory queue did not survive the close");
+    c.down[restored] = false;
+    await reopened.car.adoptCarPlaybackState();
+    assert.deepEqual(c.acknowledged, [carSession.updatedAt]);
+    assert.equal(c.native().length, 0);
+    if (restored === "localStorage") assert.equal(c.f.checkpoint().bookPositionSeconds, 1800);
+    if (restored === "server") assert.equal(c.f.writes.at(-1)!.progress.bookPositionSeconds, 1800);
+  });
+}
+
+test("CarPlay waits for a pending IndexedDB write before acknowledging", async () => {
+  const c = carCheckpointFixture(carSession);
+  Object.assign(c.down, { localStorage: true, server: true });
+  let commit!: () => void;
+  const committed = new Promise<void>(resolve => { commit = resolve; });
+  c.f.dependencies["./offline"].cacheProgress = () => committed;
+  const { car } = c.open();
+  const adopting = car.adoptCarPlaybackState();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(c.acknowledged, []);
+  commit();
+  await adopting;
+  assert.deepEqual(c.acknowledged, [carSession.updatedAt]);
+});
+
+test("CarPlay still acknowledges an unchanged position with every store down", async () => {
+  const c = carCheckpointFixture({ bookPositionSeconds: 1000.4, updatedAt: carSession.updatedAt });
+  Object.assign(c.down, { localStorage: true, indexedDB: true, server: true });
+  const { car } = c.open();
+  await car.adoptCarPlaybackState();
+  assert.deepEqual(c.acknowledged, [carSession.updatedAt]);
+  assert.equal(c.f.writes.length, 0);
+});
+
+test("CarPlay counts a server answer to the web save that replaced its queued checkpoint", async () => {
+  const c = carCheckpointFixture(carSession);
+  Object.assign(c.down, { localStorage: true, indexedDB: true });
+  c.f.options.restoredProgressBookId.current = "book";
+  c.f.options.playbackTouchedRef.current = true;
+  c.f.options.audioRef.current.currentTime = 1900;
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const saveProgress = c.f.dependencies["./api"].saveProgress;
+  c.f.dependencies["./api"].saveProgress = async (bookId: string, ...rest: any[]) => {
+    if (bookId === "blocker") { await blocked; return { ...c.f.server, bookId, accepted: true }; }
+    return saveProgress(bookId, ...rest);
+  };
+  const { car, sync } = c.open();
+  c.f.options.queuedProgressSaves.current.set("blocker", { bookId: "blocker",
+    progress: { ...c.f.server, bookId: "blocker" }, intentionalSeekGeneration: 0, intentionalRegression: false });
+  const draining = sync.flushProgressSaveQueue();
+  const adopting = car.adoptCarPlaybackState();
+  await new Promise(resolve => setImmediate(resolve));
+  const persisting = sync.persistProgress();
+  assert.equal(c.f.options.queuedProgressSaves.current.get("book").progress.bookPositionSeconds, 1900);
+  release();
+  await Promise.all([draining, adopting, persisting]);
+  assert.equal(c.f.writes.at(-1)!.progress.bookPositionSeconds, 1900);
+  assert.deepEqual(c.acknowledged, [carSession.updatedAt]);
+});
+
+test("CarPlay download removal leaves an unsaved checkpoint native", async () => {
+  const c = carCheckpointFixture(carSession);
+  Object.assign(c.down, { localStorage: true, indexedDB: true, server: true });
+  const { car } = c.open();
+  await car.stopCarPlaybackForRemoval("book");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(c.acknowledged, []);
+  assert.equal(c.native().length, 1);
+});
+
+for (const released of ["localStorage", "server"] as const) {
+  test(`CarPlay does not wait for a stalled IndexedDB write once ${released} holds the checkpoint`, async () => {
+    const c = carCheckpointFixture(carSession);
+    if (released === "server") c.down.localStorage = true;
+    c.f.dependencies["./offline"].cacheProgress = () => new Promise<void>(() => {});
+    const { car } = c.open();
+    void car.adoptCarPlaybackState();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(c.acknowledged, [carSession.updatedAt]);
+  });
+}
+
+test("overlapping CarPlay syncs send a healthy checkpoint once", async () => {
+  const c = carCheckpointFixture(carSession);
+  let reply!: () => void;
+  const replied = new Promise<void>(resolve => { reply = resolve; });
+  const saveProgress = c.f.dependencies["./api"].saveProgress;
+  c.f.dependencies["./api"].saveProgress = async (...args: Parameters<typeof saveProgress>) => {
+    await replied;
+    return saveProgress(...args);
+  };
+  const { car } = c.open();
+  const first = car.adoptCarPlaybackState();
+  await new Promise(resolve => setImmediate(resolve));
+  const second = car.adoptCarPlaybackState();
+  reply();
+  await Promise.all([first, second]);
+  assert.equal(c.f.writes.length, 1);
+  assert.equal(c.native().length, 0);
+});
+
+test("a server rejection with both local stores down keeps a CarPlay checkpoint even when the server clock runs ahead", async () => {
+  const c = carCheckpointFixture(carSession);
+  Object.assign(c.down, { localStorage: true, indexedDB: true });
+  // An hour of server clock skew makes the kept copy look later than the car.
+  const kept = { ...c.f.server, positionSeconds: 2500, bookPositionSeconds: 2500,
+    updatedAt: String(carSession.updatedAt + 3_600_000) };
+  c.f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+    c.f.writes.push({ progress, options });
+    return { ...kept, accepted: false };
+  };
+  const { car } = c.open();
+  await car.adoptCarPlaybackState();
+  assert.deepEqual(c.acknowledged, []);
+  c.f.book.progress = { ...kept, status: "inProgress", serverUpdatedAt: kept.updatedAt };
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.length, 1, "a rejected session must not be resent on the server's new revision");
+  assert.deepEqual(c.acknowledged, []);
+  assert.equal(c.native().length, 1);
+});
+
+test("a retained CarPlay checkpoint does not replace later phone playback saved on this device", async () => {
+  const c = carCheckpointFixture(carSession);
+  Object.assign(c.down, { localStorage: true, indexedDB: true, server: true });
+  const { car, sync } = c.open();
+  await car.adoptCarPlaybackState();
+  assert.equal(c.native().length, 1);
+  // The phone plays on once storage recovers; the server is still offline.
+  c.down.localStorage = false;
+  c.f.options.restoredProgressBookId.current = "book";
+  c.f.options.playbackTouchedRef.current = true;
+  c.f.options.audioRef.current.currentTime = 2400;
+  await sync.persistProgress();
+  assert.equal(c.f.checkpoint().bookPositionSeconds, 2400);
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.checkpoint().bookPositionSeconds, 2400);
+  assert.deepEqual(c.acknowledged, [carSession.updatedAt]);
+});
+
+test("a reopened player does not replay a retained CarPlay checkpoint over later phone progress in IndexedDB", async () => {
+  const c = carCheckpointFixture(carSession);
+  Object.assign(c.down, { localStorage: true, indexedDB: true, server: true });
+  await c.open().car.adoptCarPlaybackState();
+  c.indexedDB.set("book", reliability.pendingProgress({ ...c.f.server, positionSeconds: 2400, bookPositionSeconds: 2400,
+    updatedAt: new Date(carSession.updatedAt + 60_000).toISOString() }, null, c.f.server.updatedAt));
+  c.down.indexedDB = false;
+  const { car } = c.open();
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.length, 0, "the older car position must not be sent");
+  assert.notEqual(c.f.book.progress.bookPositionSeconds, 1800, "the shelf keeps the later copy");
+  assert.deepEqual(c.acknowledged, [carSession.updatedAt]);
+});
+
+test("a server revision that only looks later through clock skew does not discard a CarPlay checkpoint", async () => {
+  const c = carCheckpointFixture(carSession);
+  Object.assign(c.down, { localStorage: true, indexedDB: true, server: true });
+  await c.open().car.adoptCarPlaybackState();
+  c.f.server = { ...c.f.server, positionSeconds: 900, bookPositionSeconds: 900,
+    updatedAt: String(carSession.updatedAt + 3_600_000) };
+  const { car } = c.open();
+  await car.adoptCarPlaybackState();
+  assert.deepEqual(c.acknowledged, [], "nothing durable holds the car position yet");
+  assert.equal(c.native().length, 1);
+  assert.equal(c.f.book.progress.bookPositionSeconds, 1800);
+  c.down.server = false;
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.at(-1)!.progress.bookPositionSeconds, 1800);
+  assert.deepEqual(c.acknowledged, [carSession.updatedAt], "released only by the accepted save");
+});
+
+for (const [seek, storage] of [[false, "unavailable"], [true, "unavailable"], [false, "read-only"], [true, "read-only"]] as const) {
+  test(`a reopened player replays a rejected ${seek ? "CarPlay seek" : "CarPlay checkpoint"} on its original base with ${storage} localStorage, not a later summary`, async () => {
+    const c = carCheckpointFixture({ ...carSession, intentionalRegression: seek });
+    Object.assign(c.down, { indexedDB: true, [storage === "read-only" ? "localStorageWrites" : "localStorage"]: true });
+    // Another device saved after the car's library snapshot was taken.
+    const original = c.f.server.updatedAt;
+    let server: Progress = { ...c.f.server, positionSeconds: 2500, bookPositionSeconds: 2500, updatedAt: "1790769700000" };
+    c.f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+      c.f.writes.push({ progress, options });
+      if (progress.baseUpdatedAt !== server.updatedAt) return { ...server, accepted: false };
+      server = { ...server, ...progress, updatedAt: String(Number(server.updatedAt) + 1), accepted: true };
+      return server;
+    };
+    await c.open().car.adoptCarPlaybackState();
+    assert.deepEqual(c.acknowledged, []);
+    c.f.server = server;
+    await c.open().car.adoptCarPlaybackState();
+    assert.equal(c.f.writes.length, 2);
+    assert.equal(c.f.writes[1].progress.baseUpdatedAt, original);
+    assert.equal(server.bookPositionSeconds, 2500, "the copy the server kept survives the replay");
+    assert.deepEqual(c.acknowledged, []);
+    assert.equal(c.native().length, 1);
+  });
+}
+
+// Native stamps each session with the serverRevision its library snapshot
+// carried for the book (CarPlayCoordinator.recordSession).
+async function stampFromSnapshot(c: ReturnType<typeof carCheckpointFixture>) {
+  const snapshot = await carLibrary.buildCarLibrarySnapshot({ scopePrefix: "server:reader", playbackRate: 1,
+    downloadedBookIds: new Set(), bookGains: {}, coverUrl: async () => null,
+    resolveTrackUrl: async () => "https://server/track", books: [{ chapters: [], ...c.f.book } as any] });
+  for (const entry of c.native()) entry.baseUpdatedAt = snapshot.books[0].serverRevision;
+}
+
+// A server that has no copy until one is saved, and keeps any other copy.
+function unplayedServer(c: ReturnType<typeof carCheckpointFixture>, stored: Progress | null = null) {
+  c.f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+    c.f.writes.push({ progress, options });
+    if (stored && progress.baseUpdatedAt !== stored.updatedAt) return { ...stored, accepted: false };
+    stored = { ...progress, updatedAt: "1790769700000", accepted: true };
+    return stored;
+  };
+  return () => stored;
+}
+
+test("a first CarPlay listen on a book the server has no progress for is saved to the server", async () => {
+  const c = carCheckpointFixture(carSession, { unplayed: true });
+  const stored = unplayedServer(c);
+  const { car } = c.open();
+  await stampFromSnapshot(c);
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.length, 1, "saved now, not only on this phone");
+  assert.equal(c.f.writes[0].progress.baseUpdatedAt, "");
+  assert.equal(stored()?.bookPositionSeconds, 1800);
+  assert.deepEqual(c.acknowledged, [carSession.updatedAt]);
+  assert.equal(c.native().length, 0);
+});
+
+test("a first CarPlay listen from a stale shelf does not replace progress another device saved", async () => {
+  const c = carCheckpointFixture(carSession, { unplayed: true });
+  // The cached shelf predates another device's first save.
+  const stored = unplayedServer(c, { ...c.f.server, bookPositionSeconds: 2500, positionSeconds: 2500 });
+  Object.assign(c.down, { localStorage: true, indexedDB: true });
+  const { car } = c.open();
+  await stampFromSnapshot(c);
+  await car.adoptCarPlaybackState();
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.length, 1, "a refused checkpoint is not resent");
+  assert.equal(c.f.writes[0].progress.baseUpdatedAt, "");
+  assert.equal(stored()?.bookPositionSeconds, 2500);
+  assert.deepEqual(c.acknowledged, [], "nothing durable holds the car position");
+  assert.equal(c.native().length, 1);
+});
+
+test("an empty snapshot base does not replace the revision a readable local copy holds", async () => {
+  const c = carCheckpointFixture(carSession, { unplayed: true });
+  // The shelf lists no progress, but this phone saved a copy the server still holds.
+  c.f.write(reliability.syncedProgress(c.f.server, "2026-09-30T11:55:00Z"));
+  const stored = unplayedServer(c, c.f.server);
+  const { car } = c.open();
+  await stampFromSnapshot(c);
+  assert.equal(c.native()[0].baseUpdatedAt, "");
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.length, 1);
+  assert.equal(c.f.writes[0].progress.baseUpdatedAt, c.f.server.updatedAt);
+  assert.equal(stored()?.bookPositionSeconds, 1800);
+});
+
+test("a legacy local copy without a base keeps the empty snapshot base", async () => {
+  const c = carCheckpointFixture(carSession, { unplayed: true });
+  // An older app cached progress with no sync state or revision.
+  c.indexedDB.set("book", { ...c.f.server, positionSeconds: 1200, bookPositionSeconds: 1200,
+    updatedAt: "2026-09-30T11:50:00.000Z" });
+  // Another device has saved since; a write without a base falls back to
+  // timestamp ordering, which the newer car checkpoint would win.
+  let stored: Progress = { ...c.f.server, positionSeconds: 2500, bookPositionSeconds: 2500 };
+  c.f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+    c.f.writes.push({ progress, options });
+    if (progress.baseUpdatedAt !== undefined && progress.baseUpdatedAt !== stored.updatedAt) {
+      return { ...stored, accepted: false };
+    }
+    stored = { ...progress, updatedAt: "1790769700000", accepted: true };
+    return stored;
+  };
+  const { car } = c.open();
+  await stampFromSnapshot(c);
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.length, 1);
+  assert.equal(c.f.writes[0].progress.baseUpdatedAt, "");
+  assert.equal(stored.bookPositionSeconds, 2500, "the unseen server copy survives");
+});
+
+test("a CarPlay checkpoint with no local copy and no recorded base stays on the phone", async () => {
+  const c = carCheckpointFixture({ ...carSession, baseUpdatedAt: undefined });
+  Object.assign(c.down, { localStorage: true, indexedDB: true });
+  const { car } = c.open();
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.length, 0, "no causal base, so no remote replay");
+  assert.equal(c.f.book.progress.bookPositionSeconds, 1800);
+  assert.deepEqual(c.acknowledged, []);
+  assert.equal(c.native().length, 1);
 });

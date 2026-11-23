@@ -13,6 +13,8 @@ export class CarLibraryAccess {
 type CarLibraryTrack = {
   id: string;
   title: string;
+  // Empty when this phone cannot play the track. The track stays in the
+  // snapshot so the car stops before it instead of skipping ahead.
   url: string;
   durationSeconds?: number;
   bookOffsetSeconds: number;
@@ -37,6 +39,7 @@ type CarLibraryBook = {
   volumeGain?: number;
   tracks: CarLibraryTrack[];
   chapters: CarLibraryChapter[];
+  serverRevision?: string;
 };
 
 export type CarLibrarySnapshot = {
@@ -55,6 +58,8 @@ export type CarPlaybackSession = {
   updatedAt: number;
   finished: boolean;
   intentionalRegression: boolean;
+  /** The server revision native recorded the session against. */
+  baseUpdatedAt?: string;
 };
 
 export function parseCarSessions(raw: unknown): CarPlaybackSession[] {
@@ -106,13 +111,13 @@ async function carBook(
   }
 ): Promise<CarLibraryBook | null> {
   const downloaded = options.downloadedBookIds.has(book.id) || book.source === "device";
-  const resolved = await Promise.all(
+  const tracks = await Promise.all(
     book.tracks.map(async (track, index) => {
       const url = await options.resolveTrackUrl(book, track).catch(() => null);
-      return url === null ? null : {
+      return {
         id: track.id,
         title: track.title,
-        url,
+        url: url ?? "",
         ...(Number.isFinite(track.durationSeconds ?? NaN)
           ? { durationSeconds: track.durationSeconds as number }
           : {}),
@@ -120,8 +125,7 @@ async function carBook(
       } satisfies CarLibraryTrack;
     })
   );
-  const tracks = resolved.filter((track): track is CarLibraryTrack => track !== null);
-  if (tracks.length === 0) return null;
+  if (!tracks.some((track) => track.url !== "")) return null;
 
   const durationSeconds = book.durationSeconds
     ?? book.progress?.durationSeconds
@@ -133,6 +137,15 @@ async function carBook(
     trackId: chapter.trackId
   }));
   const status = book.progress?.status;
+  // A summary built on the phone keeps its revision in serverUpdatedAt; one
+  // from the server has none, and its updatedAt is the revision. A server book
+  // listed without progress has none yet: the empty base lets the server take
+  // a first save and refuse it once any other copy exists. A phone summary
+  // without a revision leaves the server's state unknown.
+  const summary = book.progress;
+  const serverRevision = book.source === "device" ? undefined
+    : !summary ? ""
+    : "serverUpdatedAt" in summary ? summary.serverUpdatedAt ?? undefined : summary.updatedAt;
   const artworkUrl = await options.coverUrl(book).catch(() => null);
   return {
     id: book.id,
@@ -147,7 +160,8 @@ async function carBook(
       ? { volumeGain: options.bookGains[book.id] }
       : {}),
     tracks,
-    chapters
+    chapters,
+    ...(serverRevision !== undefined ? { serverRevision } : {})
   };
 }
 
