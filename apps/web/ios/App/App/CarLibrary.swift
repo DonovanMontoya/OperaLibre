@@ -91,6 +91,22 @@ struct CarLibraryBook: Codable {
         return (0, position)
     }
 
+    /// The tracks that play back to back from `trackIndex`. The run ends at
+    /// the first track `resolve` rejects, which is returned so playback can
+    /// stop there instead of skipping audio and jumping ahead in the book.
+    func playableRun<Item>(
+        from trackIndex: Int,
+        resolve: (CarLibraryTrack) -> Item?
+    ) -> (items: [Item], stopsBefore: CarLibraryTrack?) {
+        guard tracks.indices.contains(trackIndex) else { return ([], nil) }
+        var items: [Item] = []
+        for track in tracks[trackIndex...] {
+            guard let item = resolve(track) else { return (items, track) }
+            items.append(item)
+        }
+        return (items, nil)
+    }
+
     var percentComplete: Double? {
         guard let durationSeconds, durationSeconds > 0 else { return nil }
         return min(1, max(0, positionSeconds / durationSeconds))
@@ -103,6 +119,10 @@ struct CarLibraryTrack: Codable {
     var url: String
     var durationSeconds: Double?
     var bookOffsetSeconds: Double
+
+    /// The web layer sends an empty address for a track this phone cannot
+    /// play, keeping its place in the book.
+    var isAvailable: Bool { !url.isEmpty }
 }
 
 struct CarLibraryChapter: Codable {

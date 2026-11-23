@@ -13,6 +13,8 @@ export class CarLibraryAccess {
 type CarLibraryTrack = {
   id: string;
   title: string;
+  // Empty when this phone cannot play the track. The track stays in the
+  // snapshot so the car stops before it instead of skipping ahead.
   url: string;
   durationSeconds?: number;
   bookOffsetSeconds: number;
@@ -109,13 +111,13 @@ async function carBook(
   }
 ): Promise<CarLibraryBook | null> {
   const downloaded = options.downloadedBookIds.has(book.id) || book.source === "device";
-  const resolved = await Promise.all(
+  const tracks = await Promise.all(
     book.tracks.map(async (track, index) => {
       const url = await options.resolveTrackUrl(book, track).catch(() => null);
-      return url === null ? null : {
+      return {
         id: track.id,
         title: track.title,
-        url,
+        url: url ?? "",
         ...(Number.isFinite(track.durationSeconds ?? NaN)
           ? { durationSeconds: track.durationSeconds as number }
           : {}),
@@ -123,8 +125,7 @@ async function carBook(
       } satisfies CarLibraryTrack;
     })
   );
-  const tracks = resolved.filter((track): track is CarLibraryTrack => track !== null);
-  if (tracks.length === 0) return null;
+  if (!tracks.some((track) => track.url !== "")) return null;
 
   const durationSeconds = book.durationSeconds
     ?? book.progress?.durationSeconds

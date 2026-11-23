@@ -219,6 +219,46 @@ struct CarLibraryTests {
         precondition(carDurationLabel(seconds: 3_660) == "1h 1m", "hours and minutes read together")
         precondition(carDurationLabel(seconds: 59) == "under a minute", "a sliver is not 0m")
 
+        // The car queue never skips a track it cannot open: it plays up to
+        // the gap and says which track it stopped before.
+        let threeTracks = book(positionSeconds: 0)
+        let resolveAll = { (track: CarLibraryTrack) -> String? in track.id }
+        let complete = threeTracks.playableRun(from: 0, resolve: resolveAll)
+        precondition(complete.items == ["one", "two", "three"], "a fully playable book queues every track")
+        precondition(complete.stopsBefore == nil, "a fully playable book has no stopping point")
+
+        let missingMiddle = threeTracks.playableRun(from: 0) { $0.id == "two" ? nil : $0.id }
+        precondition(missingMiddle.items == ["one"], "the third track is not queued after a missing second")
+        precondition(missingMiddle.stopsBefore?.id == "two", "playback stops before the missing track")
+
+        let missingStart = threeTracks.playableRun(from: 1) { $0.id == "two" ? nil : $0.id }
+        precondition(missingStart.items.isEmpty, "an unusable starting track queues nothing")
+        precondition(missingStart.stopsBefore?.id == "two", "the unusable starting track is named")
+
+        let fromMiddle = threeTracks.playableRun(from: 1, resolve: resolveAll)
+        precondition(fromMiddle.items == ["two", "three"], "the queue starts at the requested track")
+        precondition(threeTracks.playableRun(from: 3, resolve: resolveAll).items.isEmpty, "no track past the end")
+
+        // The web snapshot keeps a track it could not resolve, with an empty
+        // address, at its place in the book. The same file is checked against
+        // the web builder in apps/web/test/carLibrary.test.ts.
+        let fixture = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("fixtures/car-library-gap.json")
+        guard let data = try? Data(contentsOf: fixture),
+              let snapshot = try? JSONDecoder().decode(CarLibrarySnapshot.self, from: data),
+              let gapBook = snapshot.book(withId: "book-1") else {
+            preconditionFailure("the web snapshot with a missing track decodes")
+        }
+        precondition(gapBook.tracks.map(\.isAvailable) == [true, false, true], "the missing track is marked, not dropped")
+        precondition(gapBook.tracks[2].bookOffsetSeconds == 1_200, "later tracks keep their place in the book")
+        precondition(gapBook.serverRevision == "", "an unplayed server book keeps its empty revision through the snapshot")
+        let gapRun = gapBook.playableRun(from: 0) { $0.isAvailable ? $0.id : nil }
+        precondition(gapRun.items == ["track-1"], "playback stops before the missing track")
+        precondition(gapRun.stopsBefore?.title == "Track Two", "the listener is told which track is missing")
+        let gapStart = gapBook.target(atBookPosition: 700)
+        precondition(gapStart?.trackIndex == 1, "a position inside the missing track lands on it, not the next one")
+
         // Sessions stored before they carried a base still decode, and the
         // base round-trips to the web player.
         let legacy = #"{"bookId":"book","trackId":"one","positionSeconds":5,"bookPositionSeconds":5,"updatedAt":1,"finished":false,"intentionalRegression":false}"#
