@@ -1,0 +1,7 @@
+paths:
+  .github/workflows/**/*.{yml,yaml}:
+    ignore:
+      # Single-quoted backticks and $(inherited) are literal on purpose.
+      - 'SC2016:'
+      # The checksum step globs a folder of release assets we name ourselves.
+      - 'SC2035:'
