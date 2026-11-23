@@ -1840,18 +1840,25 @@ test("a cold Resume reconciles a newer listening position from another device", 
   assert.equal(f.writes.length, 0);
 });
 
-function carCheckpointFixture(session: { bookPositionSeconds: number; updatedAt: number }) {
+function carCheckpointFixture(session: { bookPositionSeconds: number; updatedAt: number;
+  intentionalRegression?: boolean; baseUpdatedAt?: string }) {
   const f = fixture();
   f.write(reliability.syncedProgress(f.server, "2026-09-30T11:55:00Z"));
-  // Native keeps a session until an acknowledgement at least as new arrives.
+  // Native keeps a session until an acknowledgement at least as new arrives,
+  // stamped with the revision its library snapshot carried.
   let native = [{ bookId: "book", trackId: "track", positionSeconds: session.bookPositionSeconds,
-    durationSeconds: 7200, finished: false, intentionalRegression: false, ...session }];
+    durationSeconds: 7200, finished: false, intentionalRegression: false,
+    baseUpdatedAt: f.server.updatedAt, ...session }];
   const acknowledged: number[] = [];
   const down = { localStorage: false, indexedDB: false, server: false };
-  const setItem = f.storage.setItem;
+  const { getItem, setItem } = f.storage;
   f.storage.setItem = (key: string, value: string) => {
     if (down.localStorage) throw new Error("QuotaExceededError");
     setItem(key, value);
+  };
+  f.storage.getItem = (key: string) => {
+    if (down.localStorage) throw new Error("SecurityError");
+    return getItem(key);
   };
   const indexedDB = new Map<string, Progress>();
   f.dependencies["./offline"].cacheProgress = async (_user: string, progress: Progress) => {
@@ -2081,4 +2088,40 @@ test("a server revision that only looks later through clock skew does not discar
   await car.adoptCarPlaybackState();
   assert.equal(c.f.writes.at(-1)!.progress.bookPositionSeconds, 1800);
   assert.deepEqual(c.acknowledged, [carSession.updatedAt], "released only by the accepted save");
+});
+
+for (const seek of [false, true]) {
+  test(`a reopened player replays a rejected ${seek ? "CarPlay seek" : "CarPlay checkpoint"} on its original base, not a later summary`, async () => {
+    const c = carCheckpointFixture({ ...carSession, intentionalRegression: seek });
+    Object.assign(c.down, { localStorage: true, indexedDB: true });
+    // Another device saved after the car's library snapshot was taken.
+    const original = c.f.server.updatedAt;
+    let server: Progress = { ...c.f.server, positionSeconds: 2500, bookPositionSeconds: 2500, updatedAt: "1790769700000" };
+    c.f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+      c.f.writes.push({ progress, options });
+      if (progress.baseUpdatedAt !== server.updatedAt) return { ...server, accepted: false };
+      server = { ...server, ...progress, updatedAt: String(Number(server.updatedAt) + 1), accepted: true };
+      return server;
+    };
+    await c.open().car.adoptCarPlaybackState();
+    assert.deepEqual(c.acknowledged, []);
+    c.f.server = server;
+    await c.open().car.adoptCarPlaybackState();
+    assert.equal(c.f.writes.length, 2);
+    assert.equal(c.f.writes[1].progress.baseUpdatedAt, original);
+    assert.equal(server.bookPositionSeconds, 2500, "the copy the server kept survives the replay");
+    assert.deepEqual(c.acknowledged, []);
+    assert.equal(c.native().length, 1);
+  });
+}
+
+test("a CarPlay checkpoint with no local copy and no recorded base stays on the phone", async () => {
+  const c = carCheckpointFixture({ ...carSession, baseUpdatedAt: undefined });
+  Object.assign(c.down, { localStorage: true, indexedDB: true });
+  const { car } = c.open();
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.length, 0, "no causal base, so no remote replay");
+  assert.equal(c.f.book.progress.bookPositionSeconds, 1800);
+  assert.deepEqual(c.acknowledged, []);
+  assert.equal(c.native().length, 1);
 });

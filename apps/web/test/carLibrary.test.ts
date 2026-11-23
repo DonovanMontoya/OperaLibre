@@ -163,6 +163,20 @@ test("progress becomes the position and status the car resumes from", async () =
   assert.equal(snapshot.books[0].status, "inProgress");
 });
 
+test("snapshot books carry the server revision native stamps on car sessions", async () => {
+  const progress = { status: "inProgress" as const, bookPositionSeconds: 742, durationSeconds: 1200,
+    remainingSeconds: 458, percentComplete: 61, updatedAt: "1790769600000" };
+  const fromServer = await buildCarLibrarySnapshot({ ...defaults, books: [book({ progress })] });
+  assert.equal(fromServer.books[0].serverRevision, "1790769600000");
+  // A summary built on the phone keeps its revision apart from its device time.
+  const local = await buildCarLibrarySnapshot({ ...defaults, books: [book({ progress: {
+    ...progress, updatedAt: "2026-09-30T12:05:00.000Z", serverUpdatedAt: "1790769600000" } })] });
+  assert.equal(local.books[0].serverRevision, "1790769600000");
+  const unsynced = await buildCarLibrarySnapshot({ ...defaults, books: [book({ progress: {
+    ...progress, updatedAt: "2026-09-30T12:05:00.000Z", serverUpdatedAt: null } })] });
+  assert.equal(unsynced.books[0].serverRevision, undefined);
+});
+
 test("a book that was never opened is not started", async () => {
   const snapshot = await buildCarLibrarySnapshot({ ...defaults, books: [book()] });
   assert.equal(snapshot.books[0].positionSeconds, 0);

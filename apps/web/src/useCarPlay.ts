@@ -223,8 +223,14 @@ export function useCarPlay({
         queued.push({ session, journaled: true, cached: Promise.resolve(true), answered: () => true });
         continue;
       }
+      // A retained session can outlive the copy it continued from. Its base
+      // comes from a local copy or the revision native recorded, never from a
+      // later summary; with neither it is kept on this phone only.
+      const local = checkpoint ?? cachedProgress.get(book.id) ?? null;
+      const nativeBase = typeof session.baseUpdatedAt === "string" ? session.baseUpdatedAt : undefined;
+      const remote = book.source !== "device" && (local !== null || nativeBase !== undefined);
       const newIntentionalSeek = session.intentionalRegression
-        && (!checkpoint?.localUpdatedAt || session.updatedAt > progressTimestamp(checkpoint.localUpdatedAt));
+        && (!local?.localUpdatedAt || session.updatedAt > progressTimestamp(local.localUpdatedAt));
       const progress: Progress = pendingProgress({
         bookId: book.id,
         trackId: session.trackId,
@@ -233,8 +239,8 @@ export function useCarPlay({
         durationSeconds: session.durationSeconds ?? book.durationSeconds ?? null,
         updatedAt: new Date(session.updatedAt).toISOString(),
         finishedOverride: book.progress?.finishedOverride ?? null
-      }, checkpoint, serverRevisionFromSummary(book.progress), newIntentionalSeek);
-      const seekIntent = newIntentionalSeek && book.source !== "device"
+      }, local, local ? serverRevisionFromSummary(book.progress) : nativeBase, newIntentionalSeek);
+      const seekIntent = newIntentionalSeek && remote
         ? recordProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id,
           progress.bookPositionSeconds, session.updatedAt)
         : undefined;
@@ -249,7 +255,7 @@ export function useCarPlay({
       updateBookProgress(book.id, progress);
       let answered = false;
       queued.push({ session, journaled, cached, answered: () => answered });
-      if (book.source === "device") continue;
+      if (!remote) continue;
       const previousResponse = queuedProgressSaves.current.get(book.id)?.onServerResponse;
       queuedProgressSaves.current.set(book.id, {
         bookId: book.id,
