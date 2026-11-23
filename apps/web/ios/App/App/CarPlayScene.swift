@@ -141,15 +141,13 @@ final class CarPlayLibraryController: NSObject, CPNowPlayingTemplateObserver, CP
     // MARK: - Selection
 
     private func select(book: CarLibraryBook) {
-        if coordinator.currentBook()?.id == book.id {
+        if coordinator.isLoaded, coordinator.currentBook()?.id == book.id {
             coordinator.resume()
             showNowPlaying()
             return
         }
-        guard coordinator.play(book: book, atBookPosition: nil) else {
-            presentFailure("This book has no playable files on this phone.")
-            return
-        }
+        // The coordinator reports why a book cannot play.
+        guard coordinator.play(book: book, atBookPosition: nil) else { return }
         showNowPlaying()
     }
 
@@ -209,8 +207,11 @@ final class CarPlayLibraryController: NSObject, CPNowPlayingTemplateObserver, CP
         let items = book.chapters.prefix(CPListTemplate.maximumItemCount).map { chapter -> CPListItem in
             let item = CPListItem(text: chapter.title, detailText: carTimestampLabel(seconds: chapter.startSeconds))
             item.handler = { [weak self] _, completion in
-                self?.coordinator.seek(book, toBookPosition: chapter.startSeconds)
-                self?.interfaceController.popTemplate(animated: true) { _, _ in }
+                // Stay on the list when the chapter cannot play, so the alert
+                // explaining why is not lost in the pop.
+                if self?.coordinator.seek(book, toBookPosition: chapter.startSeconds) == true {
+                    self?.interfaceController.popTemplate(animated: true) { _, _ in }
+                }
                 completion()
             }
             return item

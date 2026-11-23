@@ -219,6 +219,26 @@ struct CarLibraryTests {
         precondition(carDurationLabel(seconds: 3_660) == "1h 1m", "hours and minutes read together")
         precondition(carDurationLabel(seconds: 59) == "under a minute", "a sliver is not 0m")
 
+        // The car queue never skips a track it cannot open: it plays up to
+        // the gap and says which track it stopped before.
+        let threeTracks = book(positionSeconds: 0)
+        let resolveAll = { (track: CarLibraryTrack) -> String? in track.id }
+        let complete = threeTracks.playableRun(from: 0, resolve: resolveAll)
+        precondition(complete.items == ["one", "two", "three"], "a fully playable book queues every track")
+        precondition(complete.stopsBefore == nil, "a fully playable book has no stopping point")
+
+        let missingMiddle = threeTracks.playableRun(from: 0) { $0.id == "two" ? nil : $0.id }
+        precondition(missingMiddle.items == ["one"], "the third track is not queued after a missing second")
+        precondition(missingMiddle.stopsBefore?.id == "two", "playback stops before the missing track")
+
+        let missingStart = threeTracks.playableRun(from: 1) { $0.id == "two" ? nil : $0.id }
+        precondition(missingStart.items.isEmpty, "an unusable starting track queues nothing")
+        precondition(missingStart.stopsBefore?.id == "two", "the unusable starting track is named")
+
+        let fromMiddle = threeTracks.playableRun(from: 1, resolve: resolveAll)
+        precondition(fromMiddle.items == ["two", "three"], "the queue starts at the requested track")
+        precondition(threeTracks.playableRun(from: 3, resolve: resolveAll).items.isEmpty, "no track past the end")
+
         print("CarLibraryTests passed")
     }
 }

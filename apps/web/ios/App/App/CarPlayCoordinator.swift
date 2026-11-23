@@ -24,6 +24,9 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     private let store = CarLibraryStore.shared
     private let engine = AudiobookPlayer.shared
     private var lastSessionWrite = 0.0
+    // The track a car queue ends before because it could not be opened.
+    // Reaching the end of that queue is a stop, not the end of the book.
+    private var queueStopsBefore: (bookId: String, track: CarLibraryTrack)?
     private var deliberateRegression = false
     private var deliberateRegressionSince: Double?
     private var deliberateRegressionGeneration = 0
@@ -63,6 +66,10 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         store.snapshot()
     }
 
+    var isLoaded: Bool {
+        engine.status.isLoaded
+    }
+
     func currentBook() -> CarLibraryBook? {
         let snapshot = store.snapshot()
         guard
@@ -79,8 +86,11 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         let snapshot = store.snapshot()
         let book = restorePendingSession ? snapshot.resuming(book, sessions: store.pendingSessions()) : book
         let position = requested ?? book.resumePositionSeconds
-        guard let target = book.target(atBookPosition: position) else { return false }
-        let queue = book.tracks[target.trackIndex...].compactMap { track -> NativeAudioQueuedTrack? in
+        guard let target = book.target(atBookPosition: position) else {
+            onPlaybackFailure?("This book has no playable files on this phone.")
+            return false
+        }
+        let run = book.playableRun(from: target.trackIndex) { track -> NativeAudioQueuedTrack? in
             guard let url = resolveNativeAudioSourceURL(track.url) else { return nil }
             return NativeAudioQueuedTrack(
                 url: url,
@@ -92,12 +102,16 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
                 chapters: chapters(of: book, inTrack: track)
             )
         }
-        guard let first = queue.first, first.trackId == book.tracks[target.trackIndex].id else {
+        let queue = run.items
+        guard let first = queue.first else {
+            let track = run.stopsBefore?.title ?? "This part of the book"
+            onPlaybackFailure?("\(track) is not available on this phone, so playback cannot start here.")
             return false
         }
 
         recordSession(force: true)
         carOwnedBookId = book.id
+        queueStopsBefore = run.stopsBefore.map { (book.id, $0) }
         let isRegression = requested != nil || book.isFinished
         if !isRegression { clearDeliberateRegression() }
 
@@ -131,7 +145,8 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         return true
     }
 
-    func seek(_ book: CarLibraryBook, toBookPosition position: Double) {
+    @discardableResult
+    func seek(_ book: CarLibraryBook, toBookPosition position: Double) -> Bool {
         let status = engine.status
         if status.isLoaded,
            currentBook()?.id == book.id,
@@ -143,9 +158,9 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
             engine.seek(toPositionSeconds: position - track.bookOffsetSeconds)
             flagDeliberateRegression()
             DispatchQueue.main.async { [weak self] in self?.recordSession(force: true) }
-            return
+            return true
         }
-        play(book: book, atBookPosition: position)
+        return play(book: book, atBookPosition: position)
     }
 
     func resume() {
@@ -383,6 +398,19 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     }
 
     func audiobookPlayerDidFinishPlayback(_ player: AudiobookPlayer) {
+        if !engine.isClipPreview, let stop = queueStopsBefore, stop.bookId == carOwnedBookId {
+            queueStopsBefore = nil
+            // Keep the position at the end of the last track that played and
+            // release the player, so choosing the book again explains the gap
+            // instead of resuming a queue that has nothing left.
+            recordSession(force: true)
+            engine.stopOnMainThread(releaseSession: true)
+            carOwnedBookId = nil
+            redrawCarLists()
+            notifyWeb("carPlaybackEnded", data: ["bookId": stop.bookId])
+            onPlaybackFailure?("Playback stopped before \(stop.track.title), which is not available on this phone.")
+            return
+        }
         recordSession(force: true, finished: true)
         let finishedBookId = carOwnedBookId
         carOwnedBookId = nil
