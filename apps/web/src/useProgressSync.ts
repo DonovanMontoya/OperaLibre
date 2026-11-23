@@ -203,7 +203,8 @@ export function useProgressSync({
       intentionalSeekGeneration,
       seekIntentId: persistedIntent.intentionalSeek ? seekIntent?.id : undefined,
       intentionalRegression,
-      keepalive: (existingQueued?.keepalive ?? false) || options?.keepalive === true
+      keepalive: (existingQueued?.keepalive ?? false) || options?.keepalive === true,
+      onServerResponse: existingQueued?.onServerResponse
     });
     return flushProgressSaveQueue();
   }
@@ -245,6 +246,7 @@ export function useProgressSync({
               keepalive: entry.keepalive === true
             }
           );
+          entry.onServerResponse?.();
           acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, entry.bookId, entry.seekIntentId);
           acknowledgedServerPositionRef.current.set(entry.bookId, saved.bookPositionSeconds);
           acknowledgedSeekGenerationRef.current.set(

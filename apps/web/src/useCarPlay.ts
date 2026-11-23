@@ -20,6 +20,13 @@ import { pendingProgress, progressTimestamp, readProgressCheckpoint, serverRevis
 import type { QueuedProgressSave } from "./playbackTypes";
 import { progressSeekStorage, recordProgressSeekIntent } from "./progressSeekIntent";
 
+type QueuedCarSession = {
+  session: CarPlaybackSession;
+  journaled: boolean;
+  cached: Promise<boolean>;
+  answered: () => boolean;
+};
+
 export function useCarPlay({
   acknowledgedSeekGenerationRef,
   acknowledgedServerPositionRef,
@@ -51,6 +58,8 @@ export function useCarPlay({
 }) {
   const [carPlaybackBookId, setCarPlaybackBookId] = useState<string | null>(null);
   const carTakeoverAtRef = useRef(0);
+  // Book id to the newest native session applied without a durable copy yet.
+  const unsavedCarSessionsRef = useRef(new Map<string, number>());
 
   const carLibrarySignature = useMemo(() => {
     if (!supportsCarPlay()) return "";
@@ -169,12 +178,18 @@ export function useCarPlay({
   }
 
   function queueCarPlaybackSessions(sessions: CarPlaybackSession[]) {
-    const handled: CarPlaybackSession[] = [];
+    const queued: QueuedCarSession[] = [];
     for (const session of sessions) {
       const book = booksRef.current.find((candidate) => candidate.id === session.bookId);
       if (!book) continue;
-      handled.push(session);
-      if (!carSessionIsWorthSaving(session, book)) continue;
+      // An applied session shows on the shelf before any copy of it is
+      // durable, so it would otherwise look unchanged on the next sync.
+      const unsavedAt = unsavedCarSessionsRef.current.get(book.id);
+      const unsaved = unsavedAt !== undefined && session.updatedAt >= unsavedAt;
+      if (!unsaved && !carSessionIsWorthSaving(session, book)) {
+        queued.push({ session, journaled: true, cached: Promise.resolve(true), answered: () => true });
+        continue;
+      }
       const checkpoint = readProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, book.id);
       const newIntentionalSeek = session.intentionalRegression
         && (!checkpoint?.localUpdatedAt || session.updatedAt > progressTimestamp(checkpoint.localUpdatedAt));
@@ -192,10 +207,18 @@ export function useCarPlay({
           progress.bookPositionSeconds, session.updatedAt)
         : undefined;
       progressMutationVersion.current += 1;
-      writeProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, progress);
-      void cacheProgress(currentUser.id, progress).catch(warnCacheFailure("cache listening progress"));
+      const journaled = writeProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, progress);
+      if (journaled) unsavedCarSessionsRef.current.delete(book.id);
+      else unsavedCarSessionsRef.current.set(book.id, Math.max(unsavedAt ?? 0, session.updatedAt));
+      const cached = cacheProgress(currentUser.id, progress).then(() => true, (error: unknown) => {
+        warnCacheFailure("cache listening progress")(error);
+        return false;
+      });
       updateBookProgress(book.id, progress);
+      let answered = false;
+      queued.push({ session, journaled, cached, answered: () => answered });
       if (book.source === "device") continue;
+      const previousResponse = queuedProgressSaves.current.get(book.id)?.onServerResponse;
       queuedProgressSaves.current.set(book.id, {
         bookId: book.id,
         progress,
@@ -205,15 +228,37 @@ export function useCarPlay({
           : 0,
         intentionalRegression: newIntentionalSeek && shouldFlagIntentionalRegression(
           session.bookPositionSeconds, acknowledgedServerPositionRef.current.get(book.id)
-        )
+        ),
+        onServerResponse: () => {
+          previousResponse?.();
+          answered = true;
+        }
       });
     }
-    return handled;
+    return queued;
   }
 
-  async function flushCarPlaybackSessions(handled: CarPlaybackSession[]) {
+  /**
+   * Native keeps each checkpoint until it is acknowledged, so a changed
+   * position is acknowledged only once localStorage, IndexedDB, or the server
+   * holds it. Anything else stays native for the next sync or launch.
+   */
+  async function flushCarPlaybackSessions(queued: QueuedCarSession[]) {
     if (queuedProgressSaves.current.size > 0) await flushProgressSaveQueue();
-    await acknowledgeCarSessions(handled).catch(() => undefined);
+    const released = queued.filter((entry) => entry.journaled || entry.answered());
+    await acknowledgeSavedCarSessions(released);
+    // Only a session nothing else holds waits for IndexedDB, which can stall.
+    await Promise.all(queued.filter((entry) => !released.includes(entry)).map(async (entry) => {
+      if (await entry.cached) await acknowledgeSavedCarSessions([entry]);
+    }));
+  }
+
+  async function acknowledgeSavedCarSessions(saved: QueuedCarSession[]) {
+    for (const { session } of saved) {
+      const unsavedAt = unsavedCarSessionsRef.current.get(session.bookId);
+      if (unsavedAt !== undefined && unsavedAt <= session.updatedAt) unsavedCarSessionsRef.current.delete(session.bookId);
+    }
+    await acknowledgeCarSessions(saved.map((entry) => entry.session)).catch(() => undefined);
   }
 
   async function saveCarPlaybackSessions(sessions: CarPlaybackSession[]) {
@@ -225,8 +270,7 @@ export function useCarPlay({
     const state = await stopCarPlayback(bookId);
     setCarPlaybackOwner(state.carOwnedBookId);
     setCarPlaybackBookId(state.carOwnedBookId);
-    const handled = queueCarPlaybackSessions(state.sessions);
-    void flushCarPlaybackSessions(handled).catch(() => undefined);
+    void flushCarPlaybackSessions(queueCarPlaybackSessions(state.sessions)).catch(() => undefined);
   }
 
   function takeOverFromCar() {
