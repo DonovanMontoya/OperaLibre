@@ -134,6 +134,16 @@ final class PerformanceTests: XCTestCase {
 
     @MainActor
     func testStartupResumeControlsAndBookSwitch() throws {
+        try exerciseStartupControls(failPauseWrite: false)
+    }
+
+    @MainActor
+    func testCheckpointWriteFailureLeavesPlaybackPaused() throws {
+        try exerciseStartupControls(failPauseWrite: true)
+    }
+
+    @MainActor
+    private func exerciseStartupControls(failPauseWrite: Bool) throws {
         let checkpointDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = NativeAudioCheckpointStore(directory: checkpointDirectory)
         let engine = AudiobookPlayer(checkpointStore: store)
@@ -177,7 +187,23 @@ final class PerformanceTests: XCTestCase {
         XCTAssertEqual(engine.status.durationSeconds ?? 0, 10, accuracy: 0.05)
         until("clock advanced beyond initial checkpoint") { engine.status.positionSeconds >= 4 }
         let paused = expectation(description: "native pause completes after checkpoint")
-        engine.pause {
+        if failPauseWrite {
+            // A directory at the atomic replacement destination makes the write fail.
+            let destination = checkpointDirectory.appendingPathComponent("checkpoint.json")
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            engine.pause { error in
+                XCTAssertNotNil(error)
+                XCTAssertFalse(engine.status.isPlaying)
+                paused.fulfill()
+            }
+            wait(for: [paused], timeout: 10)
+            return
+        }
+        engine.pause { error in
+            XCTAssertNil(error)
             let relaunched = AudiobookPlayer(checkpointStore: store)
             let recovered = relaunched.recoveryState(forScope: "startup-test")
             XCTAssertFalse(engine.status.isPlaying)

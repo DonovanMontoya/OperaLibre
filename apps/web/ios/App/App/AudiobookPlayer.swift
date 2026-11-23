@@ -405,21 +405,17 @@ public final class AudiobookPlayer {
         }
     }
 
-    func pause(completion: (() -> Void)? = nil) {
-        let pause = { [weak self] in
-            self?.pauseAndCheckpoint()
-            completion?()
+    func pause(completion: ((Error?) -> Void)? = nil) {
+        let pause = {
+            self.shouldAutoplay = false
+            let position = self.stablePlayerPosition()
+            self.player?.pause()
+            let error = self.persistCheckpoint(force: true, positionSeconds: position)
+            self.updateNowPlayingInfo()
+            completion?(error)
         }
         if Thread.isMainThread { pause() }
         else { DispatchQueue.main.async(execute: pause) }
-    }
-
-    private func pauseAndCheckpoint() {
-        shouldAutoplay = false
-        let position = stablePlayerPosition()
-        player?.pause()
-        persistCheckpoint(force: true, positionSeconds: position)
-        updateNowPlayingInfo()
     }
 
     func setSleepTimer(seconds: Double, atChapterEnd: Bool = false) {
@@ -1418,19 +1414,20 @@ public final class AudiobookPlayer {
         }
     }
 
+    @discardableResult
     private func persistCheckpoint(
         force: Bool,
         positionSeconds: Double? = nil,
         durationSeconds: Double? = nil
-    ) {
+    ) -> Error? {
         guard
             !isClipPreview,
             player != nil,
             let scopeKey = recoveryScopeKey,
             let trackId = recoveryTrackId
-        else { return }
+        else { return nil }
         let now = Date().timeIntervalSince1970 * 1000
-        if !force && now - lastCheckpointWrite < 2_000 { return }
+        if !force && now - lastCheckpointWrite < 2_000 { return nil }
         let position = positionSeconds ?? stablePlayerPosition()
         lastKnownPosition = position
         let item = queuedItems.indices.contains(activeQueueIndex) ? queuedItems[activeQueueIndex] : nil
@@ -1447,9 +1444,11 @@ public final class AudiobookPlayer {
             try checkpointStore.write(checkpoint)
             lastCheckpointWrite = now
             monitor?.audiobookPlayer(self, didPersist: checkpoint)
+            return nil
         } catch {
             // Keep the previous atomic snapshot intact and retry on the next checkpoint.
             NSLog("Unable to save the native playback checkpoint (code %ld)", (error as NSError).code)
+            return error
         }
     }
 
