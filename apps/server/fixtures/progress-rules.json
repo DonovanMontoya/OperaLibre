@@ -1,0 +1,38 @@
+{
+  "summary": [
+    { "name": "mid-book", "bookDuration": 3600, "tracks": [1800, 1800], "bookPosition": 1200,
+      "expect": { "status": "inProgress", "bookPosition": 1200, "duration": 3600, "remaining": 2400, "percent": 33.33333333333333 } },
+    { "name": "30 seconds left counts as finished", "bookDuration": 3600, "tracks": [1800, 1800], "bookPosition": 3570,
+      "expect": { "status": "finished", "bookPosition": 3570, "duration": 3600, "remaining": 30, "percent": 99.16666666666667 } },
+    { "name": "31 seconds left on a short book is still in progress", "bookDuration": 3600, "tracks": [1800, 1800], "bookPosition": 3569,
+      "expect": { "status": "inProgress", "bookPosition": 3569, "duration": 3600, "remaining": 31, "percent": 99.13888888888889 } },
+    { "name": "99.5 percent of a long book counts as finished", "bookDuration": 36000, "tracks": [36000], "bookPosition": 35820,
+      "expect": { "status": "finished", "bookPosition": 35820, "duration": 36000, "remaining": 180, "percent": 99.5 } },
+    { "name": "just under 99.5 percent of a long book is in progress", "bookDuration": 36000, "tracks": [36000], "bookPosition": 35819,
+      "expect": { "status": "inProgress", "bookPosition": 35819, "duration": 36000, "remaining": 181, "percent": 99.49722222222222 } },
+    { "name": "one unknown track duration leaves the book duration unknown", "bookDuration": null, "tracks": [1800, null], "bookPosition": 1790,
+      "expect": { "status": "inProgress", "bookPosition": 1790, "duration": null, "remaining": null, "percent": null } },
+    { "name": "a zero book duration falls back to known track durations", "bookDuration": 0, "tracks": [100, 200], "bookPosition": 150,
+      "expect": { "status": "inProgress", "bookPosition": 150, "duration": 300, "remaining": 150, "percent": 50 } },
+    { "name": "a position past the end clamps to the duration", "bookDuration": 3600, "tracks": [3600], "bookPosition": 4000,
+      "expect": { "status": "finished", "bookPosition": 3600, "duration": 3600, "remaining": 0, "percent": 100 } },
+    { "name": "a negative position is not started", "bookDuration": 3600, "tracks": [3600], "bookPosition": -5,
+      "expect": { "status": "notStarted", "bookPosition": 0, "duration": 3600, "remaining": 3600, "percent": 0 } },
+    { "name": "no tracks and no duration", "bookDuration": null, "tracks": [], "bookPosition": 50,
+      "expect": { "status": "inProgress", "bookPosition": 50, "duration": null, "remaining": null, "percent": null } },
+    { "name": "marked finished at the start", "bookDuration": 3600, "tracks": [3600], "bookPosition": 0, "finishedOverride": true,
+      "expect": { "status": "finished", "bookPosition": 0, "duration": 3600, "remaining": 3600, "percent": 0 } },
+    { "name": "marked unfinished near the end stays in progress", "bookDuration": 3600, "tracks": [3600], "bookPosition": 3590, "finishedOverride": false,
+      "expect": { "status": "inProgress", "bookPosition": 3590, "duration": 3600, "remaining": 10, "percent": 99.72222222222223 } },
+    { "name": "marked unfinished at the start is not started", "bookDuration": 3600, "tracks": [3600], "bookPosition": 0, "finishedOverride": false,
+      "expect": { "status": "notStarted", "bookPosition": 0, "duration": 3600, "remaining": 3600, "percent": 0 } }
+  ],
+  "suspectReset": [
+    { "name": "an hour in, a write at zero", "previous": 3600, "incoming": 0, "expect": true },
+    { "name": "an hour in, a write just under a minute", "previous": 3600, "incoming": 59.9, "expect": true },
+    { "name": "a write at one minute is not near zero", "previous": 3600, "incoming": 60, "expect": false },
+    { "name": "a five minute drop is not suspect", "previous": 300, "incoming": 0, "expect": false },
+    { "name": "just over a five minute drop is suspect", "previous": 300.5, "incoming": 0, "expect": true },
+    { "name": "moving forward is never suspect", "previous": 10, "incoming": 20, "expect": false }
+  ]
+}
