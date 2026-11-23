@@ -62,8 +62,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
     }
 
     @objc public func pause(_ call: CAPPluginCall) {
-        engine.pause()
-        call.resolve()
+        engine.pause { call.resolve() }
     }
 
     @objc public func setSleepTimer(_ call: CAPPluginCall) {
