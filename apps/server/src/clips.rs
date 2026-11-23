@@ -153,7 +153,6 @@ fn find_clip(
         .optional()
 }
 
-/// Forget every clip one listener saved.
 pub(crate) async fn remove_user_clips(database: &Database, user_id: &str) -> Result<(), ApiError> {
     let user_id = user_id.to_string();
     database

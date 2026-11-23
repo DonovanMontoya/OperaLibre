@@ -1465,8 +1465,6 @@ pub(crate) async fn update_avatar(
     Ok(Json(public))
 }
 
-/// An authenticated administrator.
-///
 /// Handlers that take this instead of `Extension<AuthUser>` cannot be reached
 /// without the check: forgetting the guard becomes a compile error rather than
 /// a review miss. The `auth_middleware` has already resolved the session and

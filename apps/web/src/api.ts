@@ -529,7 +529,6 @@ export function setStoredMediaToken(token: string | null) {
   credentialVault().update(getServerUrl(), { mediaToken: token });
 }
 
-/** Whether the user has signed in at this address. */
 export function hasSignInAt(url: string): boolean {
   return credentialVault().has(url);
 }

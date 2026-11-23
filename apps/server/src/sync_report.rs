@@ -457,7 +457,6 @@ impl MapIdentity {
 pub(crate) struct ChapterReport {
     pub(crate) index: usize,
     pub(crate) label: String,
-    /// Book time.
     pub(crate) start_seconds: f64,
     pub(crate) end_seconds: f64,
     pub(crate) text_coverage: f64,
