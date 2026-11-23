@@ -1,5 +1,7 @@
 package com.operalibre.mobile;
 
+import androidx.work.ExistingWorkPolicy;
+
 import org.junit.Test;
 
 import java.util.ArrayDeque;
@@ -24,23 +26,33 @@ public class DownloadQueueHandoffTest {
     private boolean stopAfterRun;
 
     /** WorkManager unique work: KEEP drops a request while earlier work is unfinished; append queues it. */
-    private static final class UniqueWork {
+    private static final class UniqueWork implements DownloadQueueHandoff.Scheduler {
         boolean unfinished;
         int successors;
         int dropped;
         int workersRun;
+        int rejections;
 
-        void enqueue(boolean append) {
+        @Override public void enqueue(ExistingWorkPolicy policy) throws Exception {
+            if (rejections > 0) {
+                rejections--;
+                throw new IllegalStateException("WorkManager rejected the request.");
+            }
             if (!unfinished) unfinished = true;
-            else if (append) successors++;
-            else dropped++;
+            else if (policy == ExistingWorkPolicy.APPEND_OR_REPLACE) successors++;
+            else if (policy == ExistingWorkPolicy.KEEP) dropped++;
+            else throw new AssertionError("Unexpected policy " + policy);
         }
     }
 
     private void enqueueBook(String jobId) {
         synchronized (storeLock) {
-            store.add(jobId);
-            work.enqueue(handoff.takeSuccessorRequest());
+            if (!store.contains(jobId)) store.add(jobId);
+            try {
+                handoff.schedule(work);
+            } catch (Exception rejected) {
+                throw new IllegalStateException(rejected);
+            }
         }
     }
 
@@ -114,8 +126,23 @@ public class DownloadQueueHandoffTest {
         enqueueBook("first");
         enqueueBook("second");
         assertEquals("retry", handoff.drain(queue, "success", "retry"));
-        assertFalse(handoff.takeSuccessorRequest());
+        work.unfinished = true;
+        enqueueBook("third");
+        assertEquals(0, work.successors);
         assertEquals(Arrays.asList("first"), ran);
-        assertEquals(Arrays.asList("second"), new ArrayList<>(store));
+        assertEquals(Arrays.asList("second", "third"), new ArrayList<>(store));
+    }
+
+    @Test public void rejectedSuccessorIsRequestedAgainByNextEnqueue() {
+        enqueueBook("first");
+        afterReturn = () -> {
+            work.rejections = 1;
+            assertThrows(IllegalStateException.class, () -> enqueueBook("second"));
+            enqueueBook("second");
+        };
+        runWorkers();
+        assertEquals(Arrays.asList("first", "second"), ran);
+        assertEquals(0, work.dropped);
+        assertEquals(2, work.workersRun);
     }
 }

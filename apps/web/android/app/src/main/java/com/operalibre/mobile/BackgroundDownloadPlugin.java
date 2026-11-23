@@ -2,7 +2,6 @@ package com.operalibre.mobile;
 
 import androidx.work.BackoffPolicy;
 import androidx.work.Constraints;
-import androidx.work.ExistingWorkPolicy;
 import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.WorkManager;
@@ -88,6 +87,9 @@ public class BackgroundDownloadPlugin extends Plugin {
             }
         } catch (JSONException error) {
             call.reject("The background download could not be prepared.", error);
+        } catch (Exception error) {
+            // The job stays queued; enqueueing it again schedules the worker again.
+            call.reject("The background download could not be scheduled.", error);
         }
     }
 
@@ -138,7 +140,7 @@ public class BackgroundDownloadPlugin extends Plugin {
         call.resolve();
     }
 
-    private void ensureQueueWorker() {
+    private void ensureQueueWorker() throws Exception {
         Constraints constraints = new Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build();
@@ -147,12 +149,9 @@ public class BackgroundDownloadPlugin extends Plugin {
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
             .build();
         // Callers hold the store lock, so a worker either sees this job or has already retired.
-        WorkManager.getInstance(getContext()).enqueueUniqueWork(
-            DOWNLOAD_QUEUE,
-            OfflineDownloadWorker.HANDOFF.takeSuccessorRequest()
-                ? ExistingWorkPolicy.APPEND_OR_REPLACE
-                : ExistingWorkPolicy.KEEP,
-            request
-        );
+        OfflineDownloadWorker.HANDOFF.schedule(policy -> WorkManager.getInstance(getContext())
+            .enqueueUniqueWork(DOWNLOAD_QUEUE, policy, request)
+            .getResult()
+            .get());
     }
 }

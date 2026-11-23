@@ -1,5 +1,7 @@
 package com.operalibre.mobile;
 
+import androidx.work.ExistingWorkPolicy;
+
 /**
  * Drains the download queue in one unique worker and hands off to a successor when a job lands after
  * the worker's final empty read. WorkManager's KEEP policy still sees that worker as running and
@@ -7,6 +9,11 @@ package com.operalibre.mobile;
  * successor instead.
  */
 final class DownloadQueueHandoff {
+    interface Scheduler {
+        /** Enqueues the unique worker and returns only after WorkManager accepts the request. */
+        void enqueue(ExistingWorkPolicy policy) throws Exception;
+    }
+
     interface Queue<J, R> {
         J nextPending();
 
@@ -57,14 +64,15 @@ final class DownloadQueueHandoff {
     }
 
     /**
-     * Call while holding the lock after persisting a job. True means the worker has retired, so the
-     * caller must append a successor rather than keep the existing unique work.
+     * Call while holding the lock after persisting a job. A retired worker needs an appended
+     * successor; the handoff stays pending until WorkManager accepts it, so a rejected request is
+     * retried by the next enqueue.
      */
-    boolean takeSuccessorRequest() {
+    void schedule(Scheduler scheduler) throws Exception {
         synchronized (lock) {
-            boolean needed = retired;
-            retired = false;
-            return needed;
+            boolean successor = retired;
+            scheduler.enqueue(successor ? ExistingWorkPolicy.APPEND_OR_REPLACE : ExistingWorkPolicy.KEEP);
+            if (successor) retired = false;
         }
     }
 }
