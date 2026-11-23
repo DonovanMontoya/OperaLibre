@@ -809,8 +809,8 @@ for (const nativeAudio of [false, true]) {
 // The library's reconnect replay and the restore both send the offline
 // checkpoint. Whichever answer lands first heals the journal; the second
 // response must still move the player to the server's position.
-for (const competingEdit of [false, true]) {
-  test(`restore ${competingEdit ? "keeps a pending edit made" : "adopts the server after the journal was healed"} while its replay was rejected`, async () => {
+for (const [competingEdit, resendFails] of [[false, false], [true, false], [false, true], [true, true]]) {
+  test(`restore ${competingEdit ? "keeps a pending edit made" : "adopts the server after the journal was healed"} while its replay was ${resendFails ? "lost" : "rejected"}`, async () => {
     const f = fixture();
     f.write(f.local);
     const rejected = { ...f.server, positionSeconds: 1800, bookPositionSeconds: 1800,
@@ -825,6 +825,7 @@ for (const competingEdit of [false, true]) {
       } else {
         sync.storeCanonicalServerProgress(f.book, rejected, f.local);
       }
+      if (resendFails) throw new TypeError("Failed to fetch");
       return rejected;
     };
     await f.restore();

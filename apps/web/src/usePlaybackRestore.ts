@@ -282,16 +282,16 @@ export function usePlaybackRestore({
             seekOptions ?? undefined
           ).catch(() => null);
           if (cancelled || playbackActionVersionRef.current !== restoreActionVersion) return;
+          const currentCheckpoint = readProgressCheckpoint(
+            window.localStorage,
+            getServerStorageKey(),
+            currentUser.id,
+            playbackBook.id
+          );
           if (saved) {
             if (seekOptions?.intentionalSeek) {
               acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, playbackBook.id, seekIntent?.id);
             }
-            const currentCheckpoint = readProgressCheckpoint(
-              window.localStorage,
-              getServerStorageKey(),
-              currentUser.id,
-              playbackBook.id
-            );
             const originalJournalUnchanged = progressAfterSave(currentCheckpoint, checkpoint, saved) === saved;
             const journalHealed = !originalJournalUnchanged
               && currentCheckpoint?.syncStatus === "synced"
@@ -312,6 +312,13 @@ export function usePlaybackRestore({
             } else {
               storeCanonicalServerProgress(playbackBook, saved, freshestLocal);
             }
+          } else if (currentCheckpoint?.syncStatus === "synced"
+            && (checkpoint?.syncStatus !== "synced" || currentCheckpoint.updatedAt !== checkpoint.updatedAt)) {
+            // The library reconnect's refusal healed the journal while this
+            // resend was lost, so no reply will arrive to adopt the healed copy.
+            serverCorrectedLocal = true;
+            target = currentCheckpoint;
+            targetIsCanonical = true;
           }
         }
       }
