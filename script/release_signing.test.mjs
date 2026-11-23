@@ -395,7 +395,18 @@ test("the installer trusts the current update root", async () => {
   assert.deepEqual({ keys, threshold: Number(declared[2]) }, root);
 });
 
-const ed25519OpenSsl = spawnSync("openssl", ["genpkey", "-algorithm", "ed25519"]).status === 0;
+// Ask the installer's own self-check, which verifies a known-good signature
+// with the same openssl command it uses for the manifest.
+const ed25519OpenSsl = await (async () => {
+  const work = await mkdtemp(path.join(os.tmpdir(), "operalibre-installer-openssl-"));
+  try {
+    return spawnSync("sh", ["-c", [installerFunction("need"), installerFunction("ed25519_verify"),
+      installerFunction("find_ed25519_openssl"), "find_ed25519_openssl >/dev/null"].join("\n")],
+    { env: { ...process.env, WORK_DIR: work } }).status === 0;
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
+})();
 
 test("the installer accepts only an archive its signed manifest lists", { skip: !ed25519OpenSsl && "openssl cannot verify Ed25519" }, async () => {
   const fixture = await mkdtemp(path.join(os.tmpdir(), "operalibre-installer-manifest-"));

@@ -13,7 +13,7 @@ https://github.com/DonovanMontoya/OperaLibre/releases/latest/download/operalibre
 
 GitHub redirects that address to the newest release's copy, and it does not count against the GitHub API rate limit. Nothing else about a release is built into the updaters: the manifest says which packages exist, where they are, how large they are, and their SHA-256. So file names, how many files a release has, and where they are hosted can all change without an updater change.
 
-The signer is `script/release_signing.mjs` and the manifest builder is `script/release_manifest.mjs`. The verifiers are `apps/server/src/update_manifest.rs` and `apps/macos/Sources/OperaLibre/ReleaseSignature.swift`. All of them are tested against `script/fixtures/update-manifest.json`, so a format change that reaches only one side fails CI. The one-line installer, `script/install.sh`, also checks the package it installs against the release's manifest, and refuses to install when it has no OpenSSL 1.1.1 or later to check the signature with.
+The signer is `script/release_signing.mjs` and the manifest builder is `script/release_manifest.mjs`. The verifiers are `apps/server/src/update_manifest.rs` and `apps/macos/Sources/OperaLibre/ReleaseSignature.swift`. All of them are tested against `script/fixtures/update-manifest.json`, so a format change that reaches only one side fails CI. The one-line installer, `script/install.sh`, also checks the package it installs against the release's manifest, and refuses to install when it has no OpenSSL 3 that can verify the Ed25519 signature.
 
 ## The signed file
 

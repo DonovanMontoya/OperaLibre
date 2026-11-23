@@ -8,9 +8,9 @@
 #   curl -fsSL .../install.sh | sh -s -- --dir ~/OperaLibre --library ~/Audiobooks --yes
 #
 # The script downloads the newest combined release package for this computer,
-# verifies it against the release's signed update manifest (which needs OpenSSL
-# 1.1.1 or later) and its published SHA256SUMS.txt, installs it, and starts
-# OperaLibre in the background.
+# verifies it against the release's signed update manifest (which needs OpenSSL 3
+# with working Ed25519 verification) and its published SHA256SUMS.txt, installs
+# it, and starts OperaLibre in the background.
 
 set -eu
 
@@ -302,13 +302,13 @@ manifest_package() {
 }
 
 missing_verifier() {
-  say "This computer has no OpenSSL 1.1.1 or later, which the installer needs to check" >&2
-  say "the release signature before installing anything." >&2
+  say "This computer has no OpenSSL 3 that can verify Ed25519 signatures, which the" >&2
+  say "installer needs to check the release signature before installing anything." >&2
   if [ "${os:-}" = macos ]; then
     say "The openssl built into macOS cannot check it. Install Homebrew's OpenSSL" >&2
     say "(brew install openssl@3) and run the installer again." >&2
   else
-    say "Install or update OpenSSL to 1.1.1 or later with your package manager" >&2
+    say "Install or update OpenSSL to version 3 or later with your package manager" >&2
     say "(for example: sudo apt install openssl) and run the installer again." >&2
   fi
   fail "The release signature could not be checked. Nothing was installed."
