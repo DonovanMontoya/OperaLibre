@@ -239,6 +239,25 @@ struct CarLibraryTests {
         precondition(fromMiddle.items == ["two", "three"], "the queue starts at the requested track")
         precondition(threeTracks.playableRun(from: 3, resolve: resolveAll).items.isEmpty, "no track past the end")
 
+        // The web snapshot keeps a track it could not resolve, with an empty
+        // address, at its place in the book. The same file is checked against
+        // the web builder in apps/web/test/carLibrary.test.ts.
+        let fixture = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("fixtures/car-library-gap.json")
+        guard let data = try? Data(contentsOf: fixture),
+              let snapshot = try? JSONDecoder().decode(CarLibrarySnapshot.self, from: data),
+              let gapBook = snapshot.book(withId: "book-1") else {
+            preconditionFailure("the web snapshot with a missing track decodes")
+        }
+        precondition(gapBook.tracks.map(\.isAvailable) == [true, false, true], "the missing track is marked, not dropped")
+        precondition(gapBook.tracks[2].bookOffsetSeconds == 1_200, "later tracks keep their place in the book")
+        let gapRun = gapBook.playableRun(from: 0) { $0.isAvailable ? $0.id : nil }
+        precondition(gapRun.items == ["track-1"], "playback stops before the missing track")
+        precondition(gapRun.stopsBefore?.title == "Track Two", "the listener is told which track is missing")
+        let gapStart = gapBook.target(atBookPosition: 700)
+        precondition(gapStart?.trackIndex == 1, "a position inside the missing track lands on it, not the next one")
+
         print("CarLibraryTests passed")
     }
 }

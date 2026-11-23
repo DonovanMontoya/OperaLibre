@@ -1,0 +1,40 @@
+{
+  "scopePrefix": "server:user-1",
+  "playbackRate": 1.5,
+  "updatedAt": 1700000000000,
+  "books": [
+    {
+      "id": "book-1",
+      "title": "A Book",
+      "author": "An Author",
+      "durationSeconds": 1800,
+      "positionSeconds": 0,
+      "status": "notStarted",
+      "downloaded": false,
+      "tracks": [
+        {
+          "id": "track-1",
+          "title": "Track One",
+          "url": "https://server/api/books/book-1/tracks/track-1/stream",
+          "durationSeconds": 600,
+          "bookOffsetSeconds": 0
+        },
+        {
+          "id": "track-2",
+          "title": "Track Two",
+          "url": "",
+          "durationSeconds": 600,
+          "bookOffsetSeconds": 600
+        },
+        {
+          "id": "track-3",
+          "title": "Track Three",
+          "url": "https://server/api/books/book-1/tracks/track-3/stream",
+          "durationSeconds": 600,
+          "bookOffsetSeconds": 1200
+        }
+      ],
+      "chapters": []
+    }
+  ]
+}

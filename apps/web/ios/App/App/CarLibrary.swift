@@ -117,6 +117,10 @@ struct CarLibraryTrack: Codable {
     var url: String
     var durationSeconds: Double?
     var bookOffsetSeconds: Double
+
+    /// The web layer sends an empty address for a track this phone cannot
+    /// play, keeping its place in the book.
+    var isAvailable: Bool { !url.isEmpty }
 }
 
 struct CarLibraryChapter: Codable {

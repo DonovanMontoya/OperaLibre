@@ -91,7 +91,7 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
             return false
         }
         let run = book.playableRun(from: target.trackIndex) { track -> NativeAudioQueuedTrack? in
-            guard let url = resolveNativeAudioSourceURL(track.url) else { return nil }
+            guard track.isAvailable, let url = resolveNativeAudioSourceURL(track.url) else { return nil }
             return NativeAudioQueuedTrack(
                 url: url,
                 trackId: track.id,
