@@ -607,6 +607,10 @@ fn publish(
         !destination.exists(),
         "A library folder with this name already exists."
     );
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "moves a staged book folder to a destination checked to be free"
+    )]
     std::fs::rename(staging.path(), &destination)?;
     Ok(receipt)
 }

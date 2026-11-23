@@ -989,6 +989,10 @@ async fn acquire_book_with_api(
                 "A library folder appeared during import. Nothing was overwritten.",
             ));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "moves a staged book folder to a destination checked to be free"
+        )]
         fs::rename(staging.path(), &destination).await?;
     }
     update_job_progress(
