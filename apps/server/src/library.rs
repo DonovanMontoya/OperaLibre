@@ -3208,6 +3208,7 @@ pub(crate) fn write_covers<T: CoverSource + Send>(
                     .map(|since_epoch| since_epoch.as_nanos())
                     .unwrap_or(0);
                 let temp_path = covers_dir.join(format!(".{file_name}.{nanos}.tmp"));
+                #[expect(clippy::disallowed_methods, reason = "writes a temp file that replace_file_blocking publishes")]
                 std::fs::write(&temp_path, &image.data)?;
                 replace_file_blocking(&temp_path, &path).map_err(|error| {
                     anyhow::anyhow!("could not publish cover {file_name}: {error}")

@@ -445,6 +445,10 @@ pub(crate) async fn restore_queue(state: &AppState) -> Result<(), ApiError> {
                 kept = %kept.display(),
                 "the read-along queue could not be read; starting with an empty queue"
             );
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "sets an unreadable queue aside under a unique name"
+            )]
             fs::rename(&path, &kept).await?;
             return Ok(());
         }
@@ -3774,6 +3778,10 @@ impl<'a> Aligner<'a> {
         let transcript_path = self
             .temp_dir
             .join(format!("transcript-{scope_number}-{window}.txt"));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a scratch file in the job's temp dir"
+        )]
         fs::write(&transcript_path, &transcript.text).await?;
         let output_path = self
             .temp_dir

@@ -1,0 +1,6 @@
+disallowed-methods = [
+  { path = "std::fs::write", reason = "data-dir stores must survive a crash mid-write: use storage::write_bytes_atomic or storage::write_json_atomic" },
+  { path = "tokio::fs::write", reason = "data-dir stores must survive a crash mid-write: use storage::write_bytes_atomic or storage::write_json_atomic" },
+  { path = "std::fs::rename", reason = "rename does not replace an existing file on Windows and is not synced: use storage::write_bytes_atomic, or storage::replace_file_blocking for a staged file" },
+  { path = "tokio::fs::rename", reason = "rename does not replace an existing file on Windows and is not synced: use storage::write_bytes_atomic, or storage::replace_file_blocking for a staged file" },
+]
