@@ -36,6 +36,47 @@ struct NativeAudioCheckpoint: Codable {
     let updatedAt: Double
 }
 
+struct NativeAudioCheckpointStore {
+    private static let legacyKey = "operalibre.native-audio-checkpoint.v1"
+    let directory: URL
+    var defaults: UserDefaults = .standard
+
+    static var appStore: NativeAudioCheckpointStore {
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("PlaybackRecovery", isDirectory: true)
+        return NativeAudioCheckpointStore(directory: directory)
+    }
+
+    private var file: URL {
+        directory.appendingPathComponent("checkpoint.json")
+    }
+
+    func write(_ checkpoint: NativeAudioCheckpoint) throws {
+        let data = try JSONEncoder().encode(checkpoint)
+        if !FileManager.default.fileExists(atPath: directory.path) {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            var excludedDirectory = directory
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? excludedDirectory.setResourceValues(values)
+        }
+        try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+
+    func read() -> NativeAudioCheckpoint? {
+        let data: Data
+        do {
+            data = try Data(contentsOf: file)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            guard let legacy = defaults.data(forKey: Self.legacyKey) else { return nil }
+            data = legacy
+        } catch {
+            return nil
+        }
+        return try? JSONDecoder().decode(NativeAudioCheckpoint.self, from: data)
+    }
+}
+
 struct NativeNowPlayingChapter {
     let title: String
     let startSeconds: Double
@@ -134,8 +175,13 @@ public final class AudiobookPlayer {
     weak var monitor: AudiobookPlayerMonitor?
 
     private let makeQueuePlayer: ([AVPlayerItem]) -> AVQueuePlayer
+    private let checkpointStore: NativeAudioCheckpointStore
 
-    init(makeQueuePlayer: @escaping ([AVPlayerItem]) -> AVQueuePlayer = { AVQueuePlayer(items: $0) }) {
+    init(
+        checkpointStore: NativeAudioCheckpointStore = .appStore,
+        makeQueuePlayer: @escaping ([AVPlayerItem]) -> AVQueuePlayer = { AVQueuePlayer(items: $0) }
+    ) {
+        self.checkpointStore = checkpointStore
         self.makeQueuePlayer = makeQueuePlayer
     }
 
@@ -174,7 +220,6 @@ public final class AudiobookPlayer {
     private var activeNowPlayingChapterIndex: Int?
     private var nowPlayingArtwork: MPMediaItemArtwork?
     private var artworkGeneration = 0
-    private let checkpointKey = "operalibre.native-audio-checkpoint.v1"
     private var recoveryScopeKey: String?
     private var recoveryTrackId: String?
     private var recoveryBookOffset: Double = 0
@@ -360,13 +405,17 @@ public final class AudiobookPlayer {
         }
     }
 
-    func pause() {
-        DispatchQueue.main.async { [weak self] in
-            self?.shouldAutoplay = false
-            self?.player?.pause()
-            self?.persistCheckpoint(force: true)
-            self?.updateNowPlayingInfo()
+    func pause(completion: ((Error?) -> Void)? = nil) {
+        let pause = {
+            self.shouldAutoplay = false
+            let position = self.stablePlayerPosition()
+            self.player?.pause()
+            let error = self.persistCheckpoint(force: true, positionSeconds: position)
+            self.updateNowPlayingInfo()
+            completion?(error)
         }
+        if Thread.isMainThread { pause() }
+        else { DispatchQueue.main.async(execute: pause) }
     }
 
     func setSleepTimer(seconds: Double, atChapterEnd: Bool = false) {
@@ -936,23 +985,17 @@ public final class AudiobookPlayer {
             return .success
         })
         remoteCommandTargets.append(commands.pauseCommand.addTarget { [weak self] _ in
-            guard let self, let player = self.player else { return .commandFailed }
-            self.shouldAutoplay = false
-            player.pause()
-            self.persistCheckpoint(force: true)
-            self.updateNowPlayingInfo()
+            guard let self, self.player != nil else { return .commandFailed }
+            self.pause()
             return .success
         })
         remoteCommandTargets.append(commands.togglePlayPauseCommand.addTarget { [weak self] _ in
             guard let self, let player = self.player else { return .commandFailed }
-            if player.timeControlStatus == .playing {
-                self.shouldAutoplay = false
-                player.pause()
-                self.persistCheckpoint(force: true)
+            if player.timeControlStatus == .playing || self.shouldAutoplay {
+                self.pause()
             } else {
                 self.play()
             }
-            self.updateNowPlayingInfo()
             return .success
         })
         remoteCommandTargets.append(commands.skipBackwardCommand.addTarget { [weak self] _ in
@@ -1371,19 +1414,20 @@ public final class AudiobookPlayer {
         }
     }
 
+    @discardableResult
     private func persistCheckpoint(
         force: Bool,
         positionSeconds: Double? = nil,
         durationSeconds: Double? = nil
-    ) {
+    ) -> Error? {
         guard
             !isClipPreview,
             player != nil,
             let scopeKey = recoveryScopeKey,
             let trackId = recoveryTrackId
-        else { return }
+        else { return nil }
         let now = Date().timeIntervalSince1970 * 1000
-        if !force && now - lastCheckpointWrite < 2_000 { return }
+        if !force && now - lastCheckpointWrite < 2_000 { return nil }
         let position = positionSeconds ?? stablePlayerPosition()
         lastKnownPosition = position
         let item = queuedItems.indices.contains(activeQueueIndex) ? queuedItems[activeQueueIndex] : nil
@@ -1396,15 +1440,20 @@ public final class AudiobookPlayer {
             durationSeconds: duration > 0 ? duration : nil,
             updatedAt: now
         )
-        guard let data = try? JSONEncoder().encode(checkpoint) else { return }
-        UserDefaults.standard.set(data, forKey: checkpointKey)
-        lastCheckpointWrite = now
-        monitor?.audiobookPlayer(self, didPersist: checkpoint)
+        do {
+            try checkpointStore.write(checkpoint)
+            lastCheckpointWrite = now
+            monitor?.audiobookPlayer(self, didPersist: checkpoint)
+            return nil
+        } catch {
+            // Keep the previous atomic snapshot intact and retry on the next checkpoint.
+            NSLog("Unable to save the native playback checkpoint (code %ld)", (error as NSError).code)
+            return error
+        }
     }
 
     func loadCheckpoint() -> NativeAudioCheckpoint? {
-        guard let data = UserDefaults.standard.data(forKey: checkpointKey) else { return nil }
-        return try? JSONDecoder().decode(NativeAudioCheckpoint.self, from: data)
+        checkpointStore.read()
     }
 
     private func updateNowPlayingInfo() {

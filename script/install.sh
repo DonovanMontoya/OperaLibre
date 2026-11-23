@@ -8,9 +8,9 @@
 #   curl -fsSL .../install.sh | sh -s -- --dir ~/OperaLibre --library ~/Audiobooks --yes
 #
 # The script downloads the newest combined release package for this computer,
-# verifies it against the release's signed update manifest (when OpenSSL 1.1.1
-# or later is available) and its published SHA256SUMS.txt, installs it, and
-# starts OperaLibre in the background.
+# verifies it against the release's signed update manifest (which needs OpenSSL 3
+# with working Ed25519 verification) and its published SHA256SUMS.txt, installs
+# it, and starts OperaLibre in the background.
 
 set -eu
 
@@ -301,8 +301,21 @@ manifest_package() {
   ' "$1"
 }
 
+missing_verifier() {
+  say "This computer has no OpenSSL 3 that can verify Ed25519 signatures, which the" >&2
+  say "installer needs to check the release signature before installing anything." >&2
+  if [ "${os:-}" = macos ]; then
+    say "The openssl built into macOS cannot check it. Install Homebrew's OpenSSL" >&2
+    say "(brew install openssl@3) and run the installer again." >&2
+  else
+    say "Install or update OpenSSL to version 3 or later with your package manager" >&2
+    say "(for example: sudo apt install openssl) and run the installer again." >&2
+  fi
+  fail "The release signature could not be checked. Nothing was installed."
+}
+
 verify_manifest() {
-  verifier=$(find_ed25519_openssl) || return 2
+  verifier=$(find_ed25519_openssl) || missing_verifier
   fetch "${BASE_URL}/operalibre-manifest-v1.json" "${WORK_DIR}/manifest.json" ||
     fail "Could not download the signed manifest for release ${VERSION} (releases before 0.4.6 have none). Nothing was installed."
   manifest_message "${WORK_DIR}/manifest.json" >"${WORK_DIR}/manifest.message" ||
@@ -464,17 +477,8 @@ actual=$(digest_of "${WORK_DIR}/${ARCHIVE}")
 [ "$expected" = "$actual" ] ||
   fail "The download does not match its published SHA-256 digest. Nothing was installed."
 
-if verify_manifest; then
-  say "Release signature and digest verified."
-else
-  [ "$?" -eq 2 ] || fail "The release signature could not be verified. Nothing was installed."
-  say "Digest verified."
-  say "Warning: the release signature was not checked, because this computer has no" >&2
-  say "OpenSSL 1.1.1 or later to check it with (the openssl built into macOS cannot)." >&2
-  say "SHA256SUMS.txt comes from the same release page as the download, so it catches" >&2
-  say "a damaged download but not a replaced one. To check the signature as well," >&2
-  say "install OpenSSL (on macOS: brew install openssl@3) and run the installer again." >&2
-fi
+verify_manifest
+say "Release signature and digest verified."
 
 mkdir -p "${WORK_DIR}/extract"
 tar -xzf "${WORK_DIR}/${ARCHIVE}" -C "${WORK_DIR}/extract" ||

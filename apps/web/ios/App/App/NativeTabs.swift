@@ -16,17 +16,26 @@ private final class NativeTabContentHost: UIViewController {
     }
 }
 
-private final class TabsOverlayView: UIView {
+final class TabsOverlayView: UIView {
     var hostViews: () -> [UIView] = { [] }
+    /// The area the page leaves to the tabs, in this view's coordinates.
+    var controlRegion: () -> CGRect? = { nil }
+    /// The rail the page has drawn, which stays the page's until it moves.
+    var pageRail: () -> CGRect? = { nil }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard let hit = super.hitTest(point, with: event), hit !== self else { return nil }
+        guard let region = controlRegion(), region.contains(point),
+              pageRail()?.contains(point) != true,
+              let hit = super.hitTest(point, with: event), hit !== self else { return nil }
         for host in hostViews() where host === hit || hit.isDescendant(of: host) || host.isDescendant(of: hit) {
             return nil
         }
+        // UIKit's passthrough containers, and the empty UITabBar it leaves
+        // behind a vertical bar, reach past the region; they are not controls.
         let frame = hit.convert(hit.bounds, to: self)
-        if frame.width >= bounds.width * 0.9 && frame.height >= bounds.height * 0.9 { return nil }
-        if hit is UITabBar && frame.height > frame.width { return nil }
+        if frame.contains(region) && (frame.width > region.width + 1 || frame.height > region.height + 1) {
+            return nil
+        }
         return hit
     }
 }
@@ -82,6 +91,15 @@ private func isDarkChrome(_ color: UIColor) -> Bool {
 }
 
 final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
+    /// Where the visible tabs are, as decided by the last layout pass.
+    private enum TabsPresentation {
+        case none
+        /// A bottom bar or iPad's floating bar: the area the page reserves for it.
+        case reserved(CGRect)
+        /// A vertical bar in a side column the page stays out of unless a rail is shown.
+        case side(column: CGRect)
+    }
+
     let content: ViewController
     private let navigation = UITabBarController()
     private let tabsOverlay = TabsOverlayView()
@@ -100,6 +118,11 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     private var sentFloatingTopBar: Bool?
     private var sentRail: CGRect??
     private var platterInset: CGFloat = 0
+    private var presentation = TabsPresentation.none
+    private var sideControls: CGRect?
+    private var appliedRail: CGRect?
+    private var railGeneration = 0
+    private var appliedRailGeneration = 0
     private static let minimumRailHeight: CGFloat = 60
     private var chrome: UIColor?
     private var barTint: UIColor?
@@ -152,6 +175,8 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         tabsOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         tabsOverlay.backgroundColor = .clear
         tabsOverlay.hostViews = { [weak self] in self?.hosts.values.compactMap(\.viewIfLoaded) ?? [] }
+        tabsOverlay.controlRegion = { [weak self] in self?.tabControlRegion() }
+        tabsOverlay.pageRail = { [weak self] in self?.appliedRail }
         tabsOverlay.addGestureRecognizer(barTouch)
         view.addSubview(tabsOverlay)
         layoutContent(in: self)
@@ -383,6 +408,8 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             frame = host.view.convert(host.view.safeAreaLayoutGuide.layoutFrame, to: view)
         }
         let hostSafeTop = frame.minY
+        presentation = .none
+        sideControls = nil
         frame.origin.y = view.bounds.minY
         frame.size.height = view.bounds.height
         var usesFloatingTopBar = false
@@ -399,7 +426,11 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                 let bar = navigation.tabBar.convert(navigation.tabBar.bounds, to: view)
                 if bar.intersects(view.bounds), bar.width >= view.bounds.width / 2, bar.midY >= view.bounds.midY {
                     clearance = view.bounds.maxY - bar.minY
+                    presentation = .reserved(bar.intersection(view.bounds))
                 }
+            } else {
+                presentation = .reserved(CGRect(x: view.bounds.minX, y: view.bounds.minY,
+                                                width: view.bounds.width, height: hostSafeTop - view.bounds.minY))
             }
         }
         let reserved = max(0, clearance - view.safeAreaInsets.bottom)
@@ -431,7 +462,14 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                 : CGRect(x: frame.maxX, y: 0, width: view.bounds.maxX - frame.maxX, height: view.bounds.height)
             sideBar = bar.height >= view.bounds.height / 2 && bar.width < view.bounds.width / 4
                 && (barOnLeading || barOnTrailing)
-            if sideBar, let items = itemsPlatter(in: column) {
+            if sideBar {
+                presentation = .side(column: column)
+                sideControls = sideTabControls(in: column)
+                DispatchQueue.main.async { [weak self] in
+                    if self?.sideControlsMoved() == true { self?.view.setNeedsLayout() }
+                }
+            }
+            if sideBar, let items = sideControls {
                 let top = railTop(in: column, above: items.minY)
                 if items.minY - top >= Self.minimumRailHeight {
                     rail = CGRect(x: items.midX - column.width / 2 - view.bounds.minX, y: top,
@@ -460,6 +498,12 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             }
             #endif
         }
+        if case .none = presentation, navigationVisible, navigation.parent != nil, !navigation.view.isHidden,
+           navigation.tabBar.isDescendant(of: navigation.view) {
+            // An unrecognized presentation keeps the tabs usable where UIKit put the bar.
+            let bar = navigation.tabBar.convert(navigation.tabBar.bounds, to: view)
+            if bar.intersects(view.bounds) { presentation = .reserved(bar.intersection(view.bounds)) }
+        }
         for (edge, reserve) in [(\UIEdgeInsets.left, columnReserve.left), (\.right, columnReserve.right)]
         where abs(content.additionalSafeAreaInsets[keyPath: edge] - reserve) > 0.5 {
             content.additionalSafeAreaInsets[keyPath: edge] = reserve
@@ -478,7 +522,16 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             } else {
                 script = "document.documentElement.classList.remove('side-rail'); delete document.documentElement.dataset.railControls"
             }
-            webView.evaluateJavaScript(script)
+            // The page applies a new rail later. Until it does, touches in the
+            // rail it still shows go to the page, not to tabs that moved there.
+            railGeneration += 1
+            let generation = railGeneration
+            webView.evaluateJavaScript(script) { [weak self] _, error in
+                guard let self, error == nil, generation > self.appliedRailGeneration else { return }
+                self.appliedRailGeneration = generation
+                let origin = self.content.view.frame.origin
+                self.appliedRail = rail?.offsetBy(dx: origin.x, dy: origin.y)
+            }
         }
         if !sideBar {
             frame.origin.x = view.bounds.minX
@@ -527,17 +580,67 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         return top
     }
 
-    private func itemsPlatter(in column: CGRect) -> CGRect? {
-        var queue: [UIView] = navigation.view.subviews
-        while !queue.isEmpty {
-            let candidate = queue.removeFirst()
-            guard !candidate.isHidden, candidate.alpha > 0 else { continue }
-            let frame = candidate.convert(candidate.bounds, to: view)
-            if frame.height >= 60, frame.height < column.height * 0.8, frame.width >= 30,
-               frame.minX >= column.minX - 1, frame.maxX <= column.maxX + 1 { return frame }
-            queue.append(contentsOf: candidate.subviews)
+    /// The one region both the page layout and touch handling give to the tabs.
+    /// A side column without a verified set of tab controls stays whole, so the
+    /// tabs keep working there and the page gets no rail.
+    private func tabControlRegion() -> CGRect? {
+        // The vertical bar is hosted apart from this controller's layout and
+        // can settle after it. Lay out first, so the rail the page shows and
+        // the region touches use come from the same tab frame.
+        if sideControlsMoved() {
+            view.setNeedsLayout()
+            view.layoutIfNeeded()
+            // The pass above updates the page's constraints; apply them too.
+            view.layoutIfNeeded()
         }
-        return nil
+        switch presentation {
+        case .none:
+            return nil
+        case .reserved(let area):
+            return area
+        case .side(let column):
+            return sideControls ?? column
+        }
+    }
+
+    private func sideControlsMoved() -> Bool {
+        guard case .side(let column) = presentation else { return false }
+        return sideTabControls(in: column) != sideControls
+    }
+
+    private func sideTabControls(in column: CGRect) -> CGRect? {
+        Self.tabControlsFrame(in: navigation.view, excluding: hosts.values.compactMap(\.viewIfLoaded),
+                              tabCount: identifiers.count, within: column, in: view)
+    }
+
+    /// The frame of the view that holds every visible tab control under `root`,
+    /// or nil unless each tab has the same number of controls and that view
+    /// lies within `limit`. UIKit exposes no frame for its tab items, but
+    /// each one is a UIControl under the tab bar controller this one owns.
+    static func tabControlsFrame(in root: UIView, excluding excluded: [UIView], tabCount: Int,
+                                 within limit: CGRect, in space: UIView) -> CGRect? {
+        var controls: [UIView] = []
+        var queue = root.subviews
+        while let candidate = queue.popLast() {
+            guard !candidate.isHidden, candidate.alpha > 0.01,
+                  !excluded.contains(where: { $0 === candidate }) else { continue }
+            if candidate is UIControl {
+                controls.append(candidate)
+            } else {
+                queue.append(contentsOf: candidate.subviews)
+            }
+        }
+        // Liquid Glass draws each tab twice, once beneath the selection lens,
+        // and the copies part while a selection animates.
+        guard tabCount > 0, !controls.isEmpty, controls.count % tabCount == 0,
+              var container = controls.first?.superview else { return nil }
+        while !controls.allSatisfy({ $0.isDescendant(of: container) }) {
+            guard container !== root, let parent = container.superview else { return nil }
+            container = parent
+        }
+        guard container !== root else { return nil }
+        let frame = container.convert(container.bounds, to: space)
+        return limit.insetBy(dx: -1, dy: -1).contains(frame) ? frame : nil
     }
 
     private func showSelectedContent() {

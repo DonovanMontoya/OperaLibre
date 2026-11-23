@@ -26,7 +26,8 @@ def quote(value): return json.dumps(str(value))
 # Exercise the real UIKit controller without booting Capacitor's web app and
 # unrelated plugins inside a hostless XCTest bundle.
 (OUT / 'ViewController.swift').write_text(
-    'import UIKit\nimport WebKit\nclass ViewController: UIViewController { var webView: WKWebView? }\n')
+    'import UIKit\nimport WebKit\nclass ViewController: UIViewController { var webView: WKWebView? }\n'
+    'extension UIView { func frozenSnapshot() -> UIImageView { UIImageView() } }\n')
 files = [ROOT / 'apps/web/ios/App/App/NativeTabs.swift',
          ROOT / 'apps/web/ios/App/App/DeviceFold.swift',
          ROOT / 'apps/web/ios/Tests/NativeTabsTests.swift',
