@@ -35,7 +35,6 @@ body:
         - Playback progress or sync
         - Read-along or companion files
         - Audible or Libro.fm import
-        - Jellyfin connection
         - Third-party client (Audiobookshelf-compatible or OPDS)
         - Docs
         - Not sure

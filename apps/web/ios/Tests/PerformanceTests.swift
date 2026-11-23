@@ -110,9 +110,43 @@ final class PerformanceTests: XCTestCase {
 
     }
 
+    func testCheckpointReadKeepsLegacyUntilFirstAtomicWriteAndScopesRecovery() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let key = "operalibre.native-audio-checkpoint.v1"
+        let legacy = NativeAudioCheckpoint(scopeKey: "account:book", trackId: "track",
+            positionSeconds: 12, bookPositionSeconds: 112, durationSeconds: 90, updatedAt: 1)
+        defaults.set(try JSONEncoder().encode(legacy), forKey: key)
+        let store = NativeAudioCheckpointStore(directory: directory, defaults: defaults)
+        XCTAssertEqual(store.read()?.positionSeconds, 12)
+        let latest = NativeAudioCheckpoint(scopeKey: "account:book", trackId: "track",
+            positionSeconds: 53, bookPositionSeconds: 153, durationSeconds: 90, updatedAt: 2)
+        try store.write(latest)
+        let relaunched = AudiobookPlayer(checkpointStore: store)
+        XCTAssertEqual(relaunched.recoveryState(forScope: "account:book")?.bookPositionSeconds, 153)
+        XCTAssertNil(relaunched.recoveryState(forScope: "another-account:book"))
+    }
+
     @MainActor
     func testStartupResumeControlsAndBookSwitch() throws {
-        let engine = AudiobookPlayer()
+        try exerciseStartupControls(failPauseWrite: false)
+    }
+
+    @MainActor
+    func testCheckpointWriteFailureLeavesPlaybackPaused() throws {
+        try exerciseStartupControls(failPauseWrite: true)
+    }
+
+    @MainActor
+    private func exerciseStartupControls(failPauseWrite: Bool) throws {
+        let checkpointDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = NativeAudioCheckpointStore(directory: checkpointDirectory)
+        let engine = AudiobookPlayer(checkpointStore: store)
         let observer = StartupStateObserver()
         engine.observer = observer
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
@@ -123,7 +157,11 @@ final class PerformanceTests: XCTestCase {
         u16(1); u16(1); u32(8000); u32(16000); u16(2); u16(16)
         wav.append(Data("data".utf8)); u32(160_000); wav.append(Data(repeating: 0, count: 160_000))
         try wav.write(to: url)
-        defer { engine.stop(releaseSession: true); try? FileManager.default.removeItem(at: url) }
+        defer {
+            engine.stopOnMainThread(releaseSession: true)
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: checkpointDirectory)
+        }
 
         func until(_ name: String, _ predicate: @escaping () -> Bool) {
             let done = expectation(description: name)
@@ -147,8 +185,34 @@ final class PerformanceTests: XCTestCase {
         XCTAssertLessThan(engine.status.positionSeconds, 4)
         XCTAssertEqual(engine.playbackRate, 1.75)
         XCTAssertEqual(engine.status.durationSeconds ?? 0, 10, accuracy: 0.05)
-        engine.pause()
-        until("pause") { !engine.status.isPlaying }
+        until("clock advanced beyond initial checkpoint") { engine.status.positionSeconds >= 4 }
+        let paused = expectation(description: "native pause completes after checkpoint")
+        if failPauseWrite {
+            // A directory at the atomic replacement destination makes the write fail.
+            let destination = checkpointDirectory.appendingPathComponent("checkpoint.json")
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            engine.pause { error in
+                XCTAssertNotNil(error)
+                XCTAssertFalse(engine.status.isPlaying)
+                paused.fulfill()
+            }
+            wait(for: [paused], timeout: 10)
+            return
+        }
+        engine.pause { error in
+            XCTAssertNil(error)
+            let relaunched = AudiobookPlayer(checkpointStore: store)
+            let recovered = relaunched.recoveryState(forScope: "startup-test")
+            XCTAssertFalse(engine.status.isPlaying)
+            XCTAssertEqual(recovered?.trackId, "first")
+            XCTAssertGreaterThanOrEqual(recovered?.positionSeconds ?? 0, 4)
+            XCTAssertEqual(recovered?.positionSeconds ?? 0, engine.status.positionSeconds, accuracy: 0.1)
+            paused.fulfill()
+        }
+        wait(for: [paused], timeout: 10)
         engine.seek(toPositionSeconds: 5)
         until("paused seek") { abs(engine.status.positionSeconds - 5) < 0.1 }
         XCTAssertFalse(engine.status.isPlaying)
@@ -318,13 +382,18 @@ final class PerformanceTests: XCTestCase {
             let replacement = SeekControlledQueuePlayer()
             replacement.holdNextSeek = true
             var loads = 0
-            let engine = AudiobookPlayer(makeQueuePlayer: { items in
+            let checkpointDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let store = NativeAudioCheckpointStore(directory: checkpointDirectory)
+            let engine = AudiobookPlayer(checkpointStore: store, makeQueuePlayer: { items in
                 let player = loads == 0 ? original : replacement
                 loads += 1
                 for item in items { player.insert(item, after: nil) }
                 return player
             })
-            defer { engine.stopOnMainThread(releaseSession: true) }
+            defer {
+                engine.stopOnMainThread(releaseSession: true)
+                try? FileManager.default.removeItem(at: checkpointDirectory)
+            }
             let scope = "item-retry-" + UUID().uuidString
             let tracks = ["retry-first", "retry-next"].enumerated().map { index, id in
                 NativeAudioQueuedTrack(url: index == 0 ? url : nextURL, trackId: id, bookOffsetSeconds: Double(index) * 10,
@@ -354,8 +423,7 @@ final class PerformanceTests: XCTestCase {
             XCTAssertFalse(original.currentItem === failedItem)
             XCTAssertTrue(engine.retryInitialItem(failedItem))
             XCTAssertEqual(loads, 2)
-            let saved = try XCTUnwrap(UserDefaults.standard.data(forKey: "operalibre.native-audio-checkpoint.v1"))
-            let checkpoint = try JSONDecoder().decode(NativeAudioCheckpoint.self, from: saved)
+            let checkpoint = try XCTUnwrap(AudiobookPlayer(checkpointStore: store).recoveryState(forScope: scope))
             XCTAssertEqual(checkpoint.scopeKey, scope)
             XCTAssertEqual(checkpoint.trackId, "retry-first")
             XCTAssertEqual(checkpoint.durationSeconds ?? -1, 10, accuracy: 0.01)
