@@ -13,7 +13,7 @@ import {
 import { BOOK_GAIN_DEFAULT } from "./bookVolume";
 import { getServerStorageKey, mediaUrl } from "./api";
 import { buildCarLibrarySnapshot, type CarPlaybackSession, carSessionIsWorthSaving } from "./carLibrary.ts";
-import { cacheProgress, getOfflineCoverUrl, getOfflineTrackUrl, warnCacheFailure } from "./offline";
+import { cacheProgress, getCachedProgress, getOfflineCoverUrl, getOfflineTrackUrl, warnCacheFailure } from "./offline";
 import type { PluginListenerHandle } from "@capacitor/core";
 import type { AuthUser, Book, Progress } from "./types";
 import { pendingProgress, progressTimestamp, readProgressCheckpoint, serverRevisionFromSummary, shouldFlagIntentionalRegression, writeProgressCheckpoint } from "./reliability";
@@ -26,6 +26,37 @@ type QueuedCarSession = {
   cached: Promise<boolean>;
   answered: () => boolean;
 };
+
+/** The device time a stored copy was recorded, comparable with native session times. */
+function localRecordedAt(progress: Progress | null | undefined): number {
+  const recordedAt = progress?.localUpdatedAt ?? (progress?.syncStatus === "synced" ? undefined : progress?.updatedAt);
+  return recordedAt ? progressTimestamp(recordedAt) : 0;
+}
+
+function acknowledgedRevision(progress: Progress | null | undefined): number {
+  const revision = progress?.acknowledgedUpdatedAt ?? (progress?.syncStatus === "synced" ? progress.updatedAt : undefined);
+  return revision ? progressTimestamp(revision) : 0;
+}
+
+/**
+ * Whether a durable copy recorded after this native session already exists.
+ * Local copies carry device times, comparable with the session's. The
+ * server's revision uses the server's clock, so it is compared with the
+ * session only when it is newer than every revision the local copies have
+ * seen, that is, when the server holds a copy this phone never stored. A
+ * summary built on the phone always has a serverUpdatedAt key; one from the
+ * server does not, and its updatedAt is the server revision.
+ */
+function carSessionIsSuperseded(
+  session: CarPlaybackSession, book: Pick<Book, "progress">, local: Array<Progress | null | undefined>
+): boolean {
+  if (Math.max(0, ...local.map(localRecordedAt)) > session.updatedAt) return true;
+  const summary = book.progress;
+  const revision = summary && ("serverUpdatedAt" in summary ? summary.serverUpdatedAt : summary.updatedAt);
+  if (!revision) return false;
+  const serverAt = progressTimestamp(revision);
+  return serverAt > Math.max(0, ...local.map(acknowledgedRevision)) && serverAt > session.updatedAt;
+}
 
 export function useCarPlay({
   acknowledgedSeekGenerationRef,
@@ -177,11 +208,23 @@ export function useCarPlay({
     if (state.sessions.length > 0) await saveCarPlaybackSessions(state.sessions);
   }
 
-  function queueCarPlaybackSessions(sessions: CarPlaybackSession[]) {
+  async function readCachedCarProgress(sessions: CarPlaybackSession[]) {
+    return new Map(await Promise.all(sessions.map(async ({ bookId }) =>
+      [bookId, await getCachedProgress(currentUser.id, bookId).catch(() => null)] as const)));
+  }
+
+  function queueCarPlaybackSessions(sessions: CarPlaybackSession[], cachedProgress: Map<string, Progress | null>) {
     const queued: QueuedCarSession[] = [];
     for (const session of sessions) {
       const book = booksRef.current.find((candidate) => candidate.id === session.bookId);
       if (!book) continue;
+      const checkpoint = readProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, book.id);
+      // Native retains a session until it is saved, so it can come back after
+      // the phone has recorded and saved a later position.
+      if (carSessionIsSuperseded(session, book, [checkpoint, cachedProgress.get(book.id)])) {
+        queued.push({ session, journaled: true, cached: Promise.resolve(true), answered: () => true });
+        continue;
+      }
       // An applied session shows on the shelf before any copy of it is
       // durable, so it would otherwise look unchanged on the next sync.
       const unsavedAt = unsavedCarSessionsRef.current.get(book.id);
@@ -190,7 +233,6 @@ export function useCarPlay({
         queued.push({ session, journaled: true, cached: Promise.resolve(true), answered: () => true });
         continue;
       }
-      const checkpoint = readProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, book.id);
       const newIntentionalSeek = session.intentionalRegression
         && (!checkpoint?.localUpdatedAt || session.updatedAt > progressTimestamp(checkpoint.localUpdatedAt));
       const progress: Progress = pendingProgress({
@@ -229,9 +271,11 @@ export function useCarPlay({
         intentionalRegression: newIntentionalSeek && shouldFlagIntentionalRegression(
           session.bookPositionSeconds, acknowledgedServerPositionRef.current.get(book.id)
         ),
-        onServerResponse: () => {
-          previousResponse?.();
-          answered = true;
+        // A rejection holds the server's own copy, which only releases the
+        // session when that copy is newer.
+        onServerResponse: (saved) => {
+          previousResponse?.(saved);
+          if (saved.accepted !== false || progressTimestamp(saved.updatedAt) > session.updatedAt) answered = true;
         }
       });
     }
@@ -262,7 +306,7 @@ export function useCarPlay({
   }
 
   async function saveCarPlaybackSessions(sessions: CarPlaybackSession[]) {
-    await flushCarPlaybackSessions(queueCarPlaybackSessions(sessions));
+    await flushCarPlaybackSessions(queueCarPlaybackSessions(sessions, await readCachedCarProgress(sessions)));
   }
 
   async function stopCarPlaybackForRemoval(bookId: string) {
@@ -270,7 +314,8 @@ export function useCarPlay({
     const state = await stopCarPlayback(bookId);
     setCarPlaybackOwner(state.carOwnedBookId);
     setCarPlaybackBookId(state.carOwnedBookId);
-    void flushCarPlaybackSessions(queueCarPlaybackSessions(state.sessions)).catch(() => undefined);
+    const cachedProgress = await readCachedCarProgress(state.sessions);
+    void flushCarPlaybackSessions(queueCarPlaybackSessions(state.sessions, cachedProgress)).catch(() => undefined);
   }
 
   function takeOverFromCar() {

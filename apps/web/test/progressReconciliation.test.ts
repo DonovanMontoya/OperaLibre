@@ -975,7 +975,7 @@ for (const scenario of ["automatic", "replayed seek", "new seek"] as const) {
     f.write(rejected);
     const session = { bookId: "book", trackId: "track", positionSeconds: 3600, bookPositionSeconds: 3600,
       durationSeconds: 7200, finished: false, intentionalRegression: scenario !== "automatic",
-      updatedAt: Date.parse(scenario === "replayed seek" ? "2026-09-30T12:00:00Z" : "2026-09-30T12:02:00Z") };
+      updatedAt: Date.parse(scenario === "replayed seek" ? "2026-09-30T12:01:00Z" : "2026-09-30T12:02:00Z") };
     const sync = loadHook("useProgressSync", f.dependencies)(f.options);
     const car = loadHook("useCarPlay", {
       ...f.dependencies,
@@ -1853,8 +1853,14 @@ function carCheckpointFixture(session: { bookPositionSeconds: number; updatedAt:
     if (down.localStorage) throw new Error("QuotaExceededError");
     setItem(key, value);
   };
-  f.dependencies["./offline"].cacheProgress = async () => {
+  const indexedDB = new Map<string, Progress>();
+  f.dependencies["./offline"].cacheProgress = async (_user: string, progress: Progress) => {
     if (down.indexedDB) throw new Error("IndexedDB unavailable");
+    indexedDB.set(progress.bookId, progress);
+  };
+  f.dependencies["./offline"].getCachedProgress = async (_user: string, bookId: string) => {
+    if (down.indexedDB) throw new Error("IndexedDB unavailable");
+    return indexedDB.get(bookId) ?? null;
   };
   const saveProgress = f.dependencies["./api"].saveProgress;
   f.dependencies["./api"].saveProgress = async (...args: Parameters<typeof saveProgress>) => {
@@ -1887,7 +1893,7 @@ function carCheckpointFixture(session: { bookPositionSeconds: number; updatedAt:
       } });
     return { car, sync };
   }
-  return { f, down, acknowledged, open, native: () => native };
+  return { f, down, acknowledged, open, indexedDB, native: () => native };
 }
 
 const carSession = { bookPositionSeconds: 1800, updatedAt: Date.parse("2026-09-30T12:05:00Z") };
@@ -2008,17 +2014,56 @@ test("overlapping CarPlay syncs send a healthy checkpoint once", async () => {
   assert.equal(c.native().length, 0);
 });
 
-test("a server rejection settles a CarPlay checkpoint without a later overwrite", async () => {
+for (const winner of ["older", "newer"] as const) {
+  test(`a server rejection with both local stores down releases a CarPlay checkpoint only for a ${winner} server copy`, async () => {
+    const c = carCheckpointFixture(carSession);
+    Object.assign(c.down, { localStorage: true, indexedDB: true });
+    const kept = { ...c.f.server, positionSeconds: 2500, bookPositionSeconds: 2500,
+      updatedAt: String(carSession.updatedAt + (winner === "newer" ? 60_000 : -60_000)) };
+    c.f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+      c.f.writes.push({ progress, options });
+      return { ...kept, accepted: false };
+    };
+    const { car } = c.open();
+    await car.adoptCarPlaybackState();
+    assert.deepEqual(c.acknowledged, winner === "newer" ? [carSession.updatedAt] : []);
+    assert.equal(c.native().length, winner === "newer" ? 0 : 1);
+  });
+}
+
+test("a retained CarPlay checkpoint does not replace later phone playback saved on this device", async () => {
   const c = carCheckpointFixture(carSession);
-  Object.assign(c.down, { localStorage: true, indexedDB: true });
-  const winner = { ...c.f.server, positionSeconds: 2500, bookPositionSeconds: 2500, updatedAt: "1790769700000" };
-  c.f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
-    c.f.writes.push({ progress, options });
-    return { ...winner, accepted: false };
-  };
-  const { car } = c.open();
+  Object.assign(c.down, { localStorage: true, indexedDB: true, server: true });
+  const { car, sync } = c.open();
   await car.adoptCarPlaybackState();
+  assert.equal(c.native().length, 1);
+  // The phone plays on once storage recovers; the server is still offline.
+  c.down.localStorage = false;
+  c.f.options.restoredProgressBookId.current = "book";
+  c.f.options.playbackTouchedRef.current = true;
+  c.f.options.audioRef.current.currentTime = 2400;
+  await sync.persistProgress();
+  assert.equal(c.f.checkpoint().bookPositionSeconds, 2400);
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.checkpoint().bookPositionSeconds, 2400);
   assert.deepEqual(c.acknowledged, [carSession.updatedAt]);
-  await c.open().car.adoptCarPlaybackState();
-  assert.equal(c.f.writes.length, 1, "a reopened player must not resend the losing position");
 });
+
+for (const store of ["indexedDB", "server"] as const) {
+  test(`a reopened player does not replay a retained CarPlay checkpoint over later phone progress in ${store}`, async () => {
+    const c = carCheckpointFixture(carSession);
+    Object.assign(c.down, { localStorage: true, indexedDB: true, server: true });
+    await c.open().car.adoptCarPlaybackState();
+    const later = reliability.pendingProgress({ ...c.f.server, positionSeconds: 2400, bookPositionSeconds: 2400,
+      updatedAt: new Date(carSession.updatedAt + 60_000).toISOString() }, null, c.f.server.updatedAt);
+    if (store === "indexedDB") c.indexedDB.set("book", later);
+    else c.f.server = { ...c.f.server, bookPositionSeconds: 2400, positionSeconds: 2400,
+      updatedAt: String(carSession.updatedAt + 60_000) };
+    c.down[store] = false;
+    const { car } = c.open();
+    await car.adoptCarPlaybackState();
+    assert.equal(c.f.writes.length, 0, "the older car position must not be sent");
+    assert.notEqual(c.f.book.progress.bookPositionSeconds, 1800, "the shelf keeps the later copy");
+    assert.deepEqual(c.acknowledged, [carSession.updatedAt]);
+  });
+}

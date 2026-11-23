@@ -246,7 +246,7 @@ export function useProgressSync({
               keepalive: entry.keepalive === true
             }
           );
-          entry.onServerResponse?.();
+          entry.onServerResponse?.(saved);
           acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, entry.bookId, entry.seekIntentId);
           acknowledgedServerPositionRef.current.set(entry.bookId, saved.bookPositionSeconds);
           acknowledgedSeekGenerationRef.current.set(

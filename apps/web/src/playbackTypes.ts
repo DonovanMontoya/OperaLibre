@@ -17,5 +17,5 @@ export type QueuedProgressSave = {
   /** Queued by a page hide or close, which may be the last chance to send it. */
   keepalive?: boolean;
   /** Runs when the server answers this save or one that replaced it. */
-  onServerResponse?: () => void;
+  onServerResponse?: (saved: Progress) => void;
 };
