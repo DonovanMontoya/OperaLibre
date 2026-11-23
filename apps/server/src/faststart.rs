@@ -343,6 +343,10 @@ impl Original {
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "swaps the remuxed audio over the original and restores the hard-linked backup"
+)]
 fn remux_and_swap(
     tools: &Tools,
     path: &Path,

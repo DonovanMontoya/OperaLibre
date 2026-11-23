@@ -813,6 +813,10 @@ impl UpdateManager {
         .await?;
         let package_root = extract_dir.join(&package.root);
         validate_frontend_package(&package_root, &package.version).await?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "stamps the version into an extracted package before it is installed"
+        )]
         fs::write(
             package_root.join("web/VERSION.txt"),
             format!("{}\n", package.version),
@@ -1292,6 +1296,7 @@ fn ensure_install_root_is_writable(root: &Path) -> anyhow::Result<()> {
     let probe = root.join(format!(".operalibre-update-probe-{}", std::process::id()));
     // The hardened systemd unit mounts the install folder read-only, so the
     // message names the setting that lets in-app updates through.
+    #[expect(clippy::disallowed_methods, reason = "a probe file that is removed straight away")]
     std::fs::write(&probe, []).with_context(|| {
         format!(
             "{} is not writable by this server. If OperaLibre runs under the hardened systemd unit, add the install folder to ReadWritePaths to allow in-app updates.",
@@ -1411,6 +1416,10 @@ async fn install_frontend_files(
 /// existing `destination` is first copied to `backup`, then moved aside and
 /// moved back if the new copy cannot be renamed in. `name` words the errors
 /// and `prefix` names the temporary sibling folders.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "moves install directories aside and back"
+)]
 fn swap_in_directory(
     source: &Path,
     destination: &Path,
@@ -1471,6 +1480,10 @@ fn swap_in_directory(
 
 /// Both renames stay on their own volume; the backup is verified before
 /// the live runtime is detached.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "moves sync runtime directories into a backup"
+)]
 fn remove_sync_addon_files(source: &Path, backup_root: &Path) -> anyhow::Result<()> {
     crate::update_backups::create_generation(backup_root)?;
     let backup_parent = backup_root;
