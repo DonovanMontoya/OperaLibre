@@ -4,8 +4,8 @@ import test from "node:test";
 import { isSuspectProgressReset, summarizeBookProgress } from "../src/reliability.ts";
 import type { Progress } from "../src/types.ts";
 
-// The server applies the same cases in progress_rules_tests.rs, so the two
-// copies of these rules cannot drift apart.
+// The server's progress_rules_match_the_shared_fixture test applies the same
+// cases, so the two copies of these rules cannot drift apart.
 const rules = JSON.parse(
   readFileSync(new URL("../../server/fixtures/progress-rules.json", import.meta.url), "utf8")
 );
