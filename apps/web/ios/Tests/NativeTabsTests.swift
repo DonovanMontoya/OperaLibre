@@ -141,6 +141,12 @@ final class NativeTabsTests: XCTestCase {
                 ? controller.view.bounds.maxY - bar.minY : 0
             XCTAssertEqual(content.additionalSafeAreaInsets.bottom,
                            max(0, bottom - controller.view.safeAreaInsets.bottom), accuracy: 0.5)
+            if top > 0 {
+                // Touches below the floating bar's reserved band belong to the page.
+                let below = controller.view.hitTest(CGPoint(x: controller.view.bounds.midX, y: frame.minY + 40),
+                                                    with: nil)
+                XCTAssertFalse(below?.isDescendant(of: navigation.view) ?? false)
+            }
         }
         XCTAssertEqual(presentations, [true, false, true])
         _ = observer
@@ -156,6 +162,201 @@ final class NativeTabsTests: XCTestCase {
         // Cover screen: the clock's column is already outside the safe area.
         let cover = UIEdgeInsets(top: 0, left: 0, bottom: 21, right: 84)
         XCTAssertEqual(NativeTabsController.sideColumnReserve(width: 84, onLeft: false, safeArea: cover), .zero)
+    }
+
+    /// Shaped like UIKit's cover-screen bar: an empty UITabBar spanning the
+    /// column, and a separately hosted platter drawing each tab twice.
+    private func coverScreenTabs(tabs: Int = 5, platterX: CGFloat = 24) -> (root: UIView, platter: UIView) {
+        let root = UIView(frame: CGRect(x: 0, y: 0, width: 678, height: 466))
+        let passthrough = UIView(frame: root.bounds)
+        passthrough.addSubview(UITabBar(frame: CGRect(x: 0, y: 0, width: 132, height: 466)))
+        root.addSubview(passthrough)
+        let hosting = UIView(frame: root.bounds)
+        let glass = UIView(frame: CGRect(x: platterX, y: 180, width: 48, height: 262))
+        let platter = UIView(frame: glass.bounds)
+        for _ in 0..<2 {
+            let copy = UIView(frame: platter.bounds)
+            for index in 0..<tabs {
+                copy.addSubview(UIControl(frame: CGRect(x: 2, y: 2 + CGFloat(index) * 50, width: 44, height: 58)))
+            }
+            platter.addSubview(copy)
+        }
+        let pocket = UIView(frame: CGRect(x: 0, y: 0, width: 79, height: 466))
+        pocket.isHidden = true
+        pocket.addSubview(UIControl(frame: CGRect(x: 0, y: 0, width: 40, height: 40)))
+        hosting.addSubview(pocket)
+        glass.addSubview(platter)
+        hosting.addSubview(glass)
+        root.addSubview(hosting)
+        return (root, platter)
+    }
+
+    func testSideTabControlsAreTheViewHoldingEveryTab() throws {
+        let (root, platter) = coverScreenTabs()
+        let column = CGRect(x: 0, y: 0, width: 84, height: 466)
+        let host = UIView(frame: root.bounds)
+        host.addSubview(UIControl(frame: CGRect(x: 0, y: 0, width: 60, height: 60)))
+        root.insertSubview(host, at: 0)
+        let frame = try XCTUnwrap(NativeTabsController.tabControlsFrame(
+            in: root, excluding: [host], tabCount: 5, within: column, in: root))
+        XCTAssertEqual(frame, platter.convert(platter.bounds, to: root))
+        XCTAssertEqual(frame, CGRect(x: 24, y: 180, width: 48, height: 262))
+    }
+
+    func testAmbiguousSideTabControlsLeaveNoRegion() {
+        let column = CGRect(x: 0, y: 0, width: 84, height: 466)
+        // Fewer distinct controls than configured tabs.
+        let missing = coverScreenTabs(tabs: 4).root
+        XCTAssertNil(NativeTabsController.tabControlsFrame(
+            in: missing, excluding: [], tabCount: 5, within: column, in: missing))
+        // The controls sit outside the column the page would give up.
+        let outside = coverScreenTabs(platterX: 300).root
+        XCTAssertNil(NativeTabsController.tabControlsFrame(
+            in: outside, excluding: [], tabCount: 5, within: column, in: outside))
+        // Controls with no container below the bar's root.
+        let scattered = UIView(frame: CGRect(x: 0, y: 0, width: 678, height: 466))
+        scattered.addSubview(UIControl(frame: CGRect(x: 10, y: 10, width: 44, height: 44)))
+        scattered.addSubview(UIControl(frame: CGRect(x: 10, y: 80, width: 44, height: 44)))
+        XCTAssertNil(NativeTabsController.tabControlsFrame(
+            in: scattered, excluding: [], tabCount: 2, within: column, in: scattered))
+        let empty = UIView(frame: scattered.bounds)
+        XCTAssertNil(NativeTabsController.tabControlsFrame(
+            in: empty, excluding: [], tabCount: 5, within: column, in: empty))
+    }
+
+    func testFreeRailTouchesPassToThePageAndTabTouchesReachTheTabs() throws {
+        let overlay = TabsOverlayView(frame: CGRect(x: 0, y: 0, width: 678, height: 466))
+        let (root, platter) = coverScreenTabs()
+        overlay.addSubview(root)
+        overlay.controlRegion = { platter.convert(platter.bounds, to: overlay) }
+        // Above the platter, in the rail the page draws its controls into.
+        XCTAssertNil(overlay.hitTest(CGPoint(x: 40, y: 100), with: nil))
+        // Beside the column, where only the empty UITabBar reaches.
+        XCTAssertNil(overlay.hitTest(CGPoint(x: 110, y: 300), with: nil))
+        let tab = try XCTUnwrap(overlay.hitTest(CGPoint(x: 48, y: 210), with: nil))
+        XCTAssertTrue(tab is UIControl)
+        XCTAssertTrue(tab.isDescendant(of: platter))
+        // Without a verified platter the whole column stays with the tabs.
+        overlay.controlRegion = { CGRect(x: 0, y: 0, width: 84, height: 466) }
+        XCTAssertNotNil(overlay.hitTest(CGPoint(x: 48, y: 210), with: nil))
+        XCTAssertNil(overlay.hitTest(CGPoint(x: 110, y: 300), with: nil))
+        overlay.controlRegion = { nil }
+        XCTAssertNil(overlay.hitTest(CGPoint(x: 48, y: 210), with: nil))
+    }
+
+    func testBottomTabsTakeTheirTouchesAndLeaveThePageItsOwn() throws {
+        let content = ViewController()
+        let page = UIView()
+        content.view = page
+        let controller = NativeTabsController(content: content)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 466, height: 678))
+        window.rootViewController = controller
+        window.isHidden = false
+        defer { window.isHidden = true }
+        try XCTSkipIf(UIDevice.current.userInterfaceIdiom == .pad, "iPad shows floating tabs instead")
+        configure(controller)
+        let navigation = try XCTUnwrap(controller.children.compactMap { $0 as? UITabBarController }.first)
+        window.layoutIfNeeded()
+        navigation.view.layoutIfNeeded()
+        controller.view.setNeedsLayout()
+        controller.view.layoutIfNeeded()
+        let bar = navigation.tabBar.convert(navigation.tabBar.bounds, to: controller.view)
+        let onTab = try XCTUnwrap(controller.view.hitTest(CGPoint(x: bar.midX, y: bar.midY), with: nil))
+        XCTAssertTrue(onTab.isDescendant(of: navigation.tabBar))
+        let onPage = try XCTUnwrap(controller.view.hitTest(CGPoint(x: bar.midX, y: bar.minY / 2), with: nil))
+        XCTAssertTrue(onPage === page || onPage.isDescendant(of: page))
+        controller.hide()
+        let hidden = try XCTUnwrap(controller.view.hitTest(CGPoint(x: bar.midX, y: bar.midY), with: nil))
+        XCTAssertTrue(hidden === page || hidden.isDescendant(of: page))
+    }
+
+    func testLateTabPlatterMovesTheRailAndTouchesTogether() async throws {
+        let webView = WKWebView()
+        let loaded = expectation(description: "Rail document loaded")
+        let observer = ViewportPageLoad(loaded)
+        webView.navigationDelegate = observer
+        webView.loadHTMLString("<meta name='viewport' content='width=device-width,initial-scale=1'>", baseURL: nil)
+        await fulfillment(of: [loaded], timeout: 10)
+        let content = ViewController()
+        content.view = webView
+        content.webView = webView
+        let controller = NativeTabsController(content: content)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 678, height: 466))
+        window.rootViewController = controller
+        window.isHidden = false
+        defer { window.isHidden = true }
+        try XCTSkipIf(UIDevice.current.userInterfaceIdiom == .pad, "iPad shows floating tabs instead")
+        configure(controller)
+        let navigation = try XCTUnwrap(controller.children.compactMap { $0 as? UITabBarController }.first)
+        let host = try XCTUnwrap(navigation.selectedViewController)
+        // The hostless bundle cannot show the cover-screen bar. Recreate its
+        // shape: a side column, the empty UITabBar, and a separate platter.
+        host.additionalSafeAreaInsets.left = 84
+        window.layoutIfNeeded()
+        navigation.tabBar.frame = CGRect(x: 0, y: 0, width: 80, height: 466)
+        navigation.tabBar.subviews.forEach { $0.isHidden = true }
+        host.view.layoutIfNeeded()
+        controller.viewDidLayoutSubviews()
+        controller.view.layoutIfNeeded()
+        let rail = { () async throws -> String? in
+            try await webView.evaluateJavaScript("""
+                document.documentElement.classList.contains('side-rail')
+                    ? document.documentElement.style.getPropertyValue('--rail-bottom') : 'none'
+                """) as? String
+        }
+        let noRail = try await rail()
+        XCTAssertEqual(noRail, "none")
+
+        // The platter appears after layout. The first touch lays out again,
+        // so the rail the page shows matches the region the touch used.
+        let platter = UIView(frame: CGRect(x: 18, y: 300, width: 48, height: 120))
+        for _ in 0..<2 {
+            let copy = UIView(frame: platter.bounds)
+            for index in 0..<2 {
+                copy.addSubview(UIControl(frame: CGRect(x: 2, y: 2 + CGFloat(index) * 58, width: 44, height: 58)))
+            }
+            platter.addSubview(copy)
+        }
+        navigation.view.addSubview(platter)
+        let inRail = controller.view.hitTest(CGPoint(x: 42, y: 200), with: nil)
+        XCTAssertTrue(inRail?.isDescendant(of: webView) ?? false)
+        let shownRail = try await rail()
+        XCTAssertEqual(shownRail, "300px")
+
+        // The platter then settles higher, into the rail the page still shows.
+        // That first touch stays with the page until the page moves its rail.
+        platter.frame.origin.y = 150
+        let firstTouch = controller.view.hitTest(CGPoint(x: 42, y: 200), with: nil)
+        XCTAssertTrue(firstTouch?.isDescendant(of: webView) ?? false)
+        XCTAssertFalse(firstTouch?.isDescendant(of: platter) ?? false)
+        let movedRail = try await rail()
+        XCTAssertEqual(movedRail, "150px")
+        XCTAssertTrue(controller.view.hitTest(CGPoint(x: 42, y: 200), with: nil)?.isDescendant(of: platter) ?? false)
+        XCTAssertTrue(controller.view.hitTest(CGPoint(x: 42, y: 100), with: nil)?.isDescendant(of: webView) ?? false)
+
+        // Overlapping updates: rail B is drawn while rail C still waits behind
+        // a busy page. Touches follow B, not the rail before it.
+        let relayout = {
+            controller.view.setNeedsLayout()
+            controller.view.layoutIfNeeded()
+            controller.view.layoutIfNeeded()
+        }
+        platter.frame.origin.y = 300
+        relayout()
+        let railB = expectation(description: "Rail B applied")
+        webView.evaluateJavaScript("0") { _, _ in railB.fulfill() }
+        webView.evaluateJavaScript("const start = Date.now(); while (Date.now() - start < 500) {}") { _, _ in }
+        platter.frame.origin.y = 200
+        relayout()
+        await fulfillment(of: [railB], timeout: 5)
+        let duringC = controller.view.hitTest(CGPoint(x: 42, y: 250), with: nil)
+        XCTAssertTrue(duringC?.isDescendant(of: webView) ?? false)
+        XCTAssertFalse(duringC?.isDescendant(of: platter) ?? false)
+        let railC = try await rail()
+        XCTAssertEqual(railC, "200px")
+        XCTAssertTrue(controller.view.hitTest(CGPoint(x: 42, y: 250), with: nil)?.isDescendant(of: platter) ?? false)
+        XCTAssertTrue(controller.view.hitTest(CGPoint(x: 42, y: 100), with: nil)?.isDescendant(of: webView) ?? false)
+        _ = observer
     }
 
     #if compiler(>=6.4)
