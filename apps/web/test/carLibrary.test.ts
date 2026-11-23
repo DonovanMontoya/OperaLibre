@@ -163,6 +163,25 @@ test("progress becomes the position and status the car resumes from", async () =
   assert.equal(snapshot.books[0].status, "inProgress");
 });
 
+test("snapshot books carry the server revision native stamps on car sessions", async () => {
+  const progress = { status: "inProgress" as const, bookPositionSeconds: 742, durationSeconds: 1200,
+    remainingSeconds: 458, percentComplete: 61, updatedAt: "1790769600000" };
+  const fromServer = await buildCarLibrarySnapshot({ ...defaults, books: [book({ progress })] });
+  assert.equal(fromServer.books[0].serverRevision, "1790769600000");
+  // A summary built on the phone keeps its revision apart from its device time.
+  const local = await buildCarLibrarySnapshot({ ...defaults, books: [book({ progress: {
+    ...progress, updatedAt: "2026-09-30T12:05:00.000Z", serverUpdatedAt: "1790769600000" } })] });
+  assert.equal(local.books[0].serverRevision, "1790769600000");
+  const unsynced = await buildCarLibrarySnapshot({ ...defaults, books: [book({ progress: {
+    ...progress, updatedAt: "2026-09-30T12:05:00.000Z", serverUpdatedAt: null } })] });
+  assert.equal(unsynced.books[0].serverRevision, undefined, "a phone summary leaves the server unknown");
+  // A server listing with no progress for the book knows there is no copy yet.
+  const unplayed = await buildCarLibrarySnapshot({ ...defaults, books: [book({ progress: undefined })] });
+  assert.equal(unplayed.books[0].serverRevision, "");
+  const deviceOnly = await buildCarLibrarySnapshot({ ...defaults, books: [book({ progress: undefined, source: "device" })] });
+  assert.equal("serverRevision" in deviceOnly.books[0], false);
+});
+
 test("a book that was never opened is not started", async () => {
   const snapshot = await buildCarLibrarySnapshot({ ...defaults, books: [book()] });
   assert.equal(snapshot.books[0].positionSeconds, 0);
@@ -222,6 +241,8 @@ function session(overrides: Partial<CarPlaybackSession> = {}): CarPlaybackSessio
 
 test("sessions survive the trip across the bridge", () => {
   assert.deepEqual(parseCarSessions(JSON.stringify([session()])), [session()]);
+  const unplayed = session({ baseUpdatedAt: "" });
+  assert.deepEqual(parseCarSessions(JSON.stringify([unplayed])), [unplayed], "an empty base is not dropped");
 });
 
 test("nothing the bridge could hand back loses a whole drive", () => {

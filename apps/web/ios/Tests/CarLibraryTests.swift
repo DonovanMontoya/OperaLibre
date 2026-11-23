@@ -219,6 +219,28 @@ struct CarLibraryTests {
         precondition(carDurationLabel(seconds: 3_660) == "1h 1m", "hours and minutes read together")
         precondition(carDurationLabel(seconds: 59) == "under a minute", "a sliver is not 0m")
 
+        // Sessions stored before they carried a base still decode, and the
+        // base round-trips to the web player.
+        let legacy = #"{"bookId":"book","trackId":"one","positionSeconds":5,"bookPositionSeconds":5,"updatedAt":1,"finished":false,"intentionalRegression":false}"#
+        let decoded = try? JSONDecoder().decode(CarPlaybackSession.self, from: Data(legacy.utf8))
+        precondition(decoded != nil && decoded?.baseUpdatedAt == nil, "a stored session without a base still loads")
+        var based = decoded!
+        based.baseUpdatedAt = "1790769600000"
+        let encoded = try! JSONEncoder().encode(based)
+        let reread = try! JSONDecoder().decode(CarPlaybackSession.self, from: encoded)
+        precondition(reread.baseUpdatedAt == "1790769600000", "the recorded base reaches the web player")
+        let snapshotBook = #"{"id":"book","title":"A Book","positionSeconds":0,"status":"notStarted","downloaded":true,"tracks":[],"chapters":[],"serverRevision":"1790769600000"}"#
+        precondition((try? JSONDecoder().decode(CarLibraryBook.self, from: Data(snapshotBook.utf8)))?.serverRevision
+            == "1790769600000", "the snapshot carries the revision native stamps on sessions")
+        // A server book with no progress yet carries the empty base, which
+        // must stay distinct from a missing one on both legs.
+        let unplayedBook = snapshotBook.replacingOccurrences(of: #""serverRevision":"1790769600000""#, with: #""serverRevision":"""#)
+        precondition((try? JSONDecoder().decode(CarLibraryBook.self, from: Data(unplayedBook.utf8)))?.serverRevision
+            == "", "an unplayed book keeps its empty revision")
+        based.baseUpdatedAt = ""
+        let emptyBase = try! JSONDecoder().decode(CarPlaybackSession.self, from: try! JSONEncoder().encode(based))
+        precondition(emptyBase.baseUpdatedAt == "", "an empty base reaches the web player")
+
         print("CarLibraryTests passed")
     }
 }

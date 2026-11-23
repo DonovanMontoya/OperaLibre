@@ -37,6 +37,7 @@ type CarLibraryBook = {
   volumeGain?: number;
   tracks: CarLibraryTrack[];
   chapters: CarLibraryChapter[];
+  serverRevision?: string;
 };
 
 export type CarLibrarySnapshot = {
@@ -55,6 +56,8 @@ export type CarPlaybackSession = {
   updatedAt: number;
   finished: boolean;
   intentionalRegression: boolean;
+  /** The server revision native recorded the session against. */
+  baseUpdatedAt?: string;
 };
 
 export function parseCarSessions(raw: unknown): CarPlaybackSession[] {
@@ -133,6 +136,15 @@ async function carBook(
     trackId: chapter.trackId
   }));
   const status = book.progress?.status;
+  // A summary built on the phone keeps its revision in serverUpdatedAt; one
+  // from the server has none, and its updatedAt is the revision. A server book
+  // listed without progress has none yet: the empty base lets the server take
+  // a first save and refuse it once any other copy exists. A phone summary
+  // without a revision leaves the server's state unknown.
+  const summary = book.progress;
+  const serverRevision = book.source === "device" ? undefined
+    : !summary ? ""
+    : "serverUpdatedAt" in summary ? summary.serverUpdatedAt ?? undefined : summary.updatedAt;
   const artworkUrl = await options.coverUrl(book).catch(() => null);
   return {
     id: book.id,
@@ -147,7 +159,8 @@ async function carBook(
       ? { volumeGain: options.bookGains[book.id] }
       : {}),
     tracks,
-    chapters
+    chapters,
+    ...(serverRevision !== undefined ? { serverRevision } : {})
   };
 }
 
