@@ -226,9 +226,16 @@ export function useCarPlay({
       // A retained session can outlive the copy it continued from, and the
       // shelf can show a later revision after a restart. The session is sent
       // on the revision native recorded it against, or else on a local copy's
-      // base, never on the shelf's; with neither it stays on this phone.
+      // base, never on the shelf's; with neither it stays on this phone. An
+      // empty base only says the shelf listed no progress, so a local copy's
+      // own base wins over it; a legacy copy has none and must not demote the
+      // save to timestamp ordering.
       const local = checkpoint ?? cachedProgress.get(book.id) ?? null;
-      const nativeBase = typeof session.baseUpdatedAt === "string" ? session.baseUpdatedAt : undefined;
+      const localBase = local?.syncStatus
+        ? local.baseUpdatedAt ?? (local.syncStatus === "synced" ? local.updatedAt : undefined)
+        : undefined;
+      const nativeBase = typeof session.baseUpdatedAt === "string"
+        && (session.baseUpdatedAt !== "" || localBase === undefined) ? session.baseUpdatedAt : undefined;
       const remote = book.source !== "device" && (local !== null || nativeBase !== undefined);
       const newIntentionalSeek = session.intentionalRegression
         && (!local?.localUpdatedAt || session.updatedAt > progressTimestamp(local.localUpdatedAt));

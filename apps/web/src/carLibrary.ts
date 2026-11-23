@@ -137,9 +137,13 @@ async function carBook(
   }));
   const status = book.progress?.status;
   // A summary built on the phone keeps its revision in serverUpdatedAt; one
-  // from the server has none, and its updatedAt is the revision.
+  // from the server has none, and its updatedAt is the revision. A server book
+  // listed without progress has none yet: the empty base lets the server take
+  // a first save and refuse it once any other copy exists. A phone summary
+  // without a revision leaves the server's state unknown.
   const summary = book.progress;
-  const serverRevision = book.source === "device" || !summary ? undefined
+  const serverRevision = book.source === "device" ? undefined
+    : !summary ? ""
     : "serverUpdatedAt" in summary ? summary.serverUpdatedAt ?? undefined : summary.updatedAt;
   const artworkUrl = await options.coverUrl(book).catch(() => null);
   return {
@@ -156,7 +160,7 @@ async function carBook(
       : {}),
     tracks,
     chapters,
-    ...(serverRevision ? { serverRevision } : {})
+    ...(serverRevision !== undefined ? { serverRevision } : {})
   };
 }
 

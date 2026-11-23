@@ -232,6 +232,14 @@ struct CarLibraryTests {
         let snapshotBook = #"{"id":"book","title":"A Book","positionSeconds":0,"status":"notStarted","downloaded":true,"tracks":[],"chapters":[],"serverRevision":"1790769600000"}"#
         precondition((try? JSONDecoder().decode(CarLibraryBook.self, from: Data(snapshotBook.utf8)))?.serverRevision
             == "1790769600000", "the snapshot carries the revision native stamps on sessions")
+        // A server book with no progress yet carries the empty base, which
+        // must stay distinct from a missing one on both legs.
+        let unplayedBook = snapshotBook.replacingOccurrences(of: #""serverRevision":"1790769600000""#, with: #""serverRevision":"""#)
+        precondition((try? JSONDecoder().decode(CarLibraryBook.self, from: Data(unplayedBook.utf8)))?.serverRevision
+            == "", "an unplayed book keeps its empty revision")
+        based.baseUpdatedAt = ""
+        let emptyBase = try! JSONDecoder().decode(CarPlaybackSession.self, from: try! JSONEncoder().encode(based))
+        precondition(emptyBase.baseUpdatedAt == "", "an empty base reaches the web player")
 
         print("CarLibraryTests passed")
     }

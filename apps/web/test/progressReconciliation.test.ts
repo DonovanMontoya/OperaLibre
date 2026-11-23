@@ -1841,9 +1841,10 @@ test("a cold Resume reconciles a newer listening position from another device", 
 });
 
 function carCheckpointFixture(session: { bookPositionSeconds: number; updatedAt: number;
-  intentionalRegression?: boolean; baseUpdatedAt?: string }) {
+  intentionalRegression?: boolean; baseUpdatedAt?: string }, { unplayed = false } = {}) {
   const f = fixture();
-  f.write(reliability.syncedProgress(f.server, "2026-09-30T11:55:00Z"));
+  // An unplayed book has no local copy and is listed without progress.
+  if (!unplayed) f.write(reliability.syncedProgress(f.server, "2026-09-30T11:55:00Z"));
   // Native keeps a session until an acknowledgement at least as new arrives,
   // stamped with the revision its library snapshot carried.
   let native = [{ bookId: "book", trackId: "track", positionSeconds: session.bookPositionSeconds,
@@ -1887,7 +1888,7 @@ function carCheckpointFixture(session: { bookPositionSeconds: number; updatedAt:
     } };
   // Opening the web player starts from the server's copy, with fresh hook state.
   function open() {
-    f.book.progress = { ...f.server, status: "inProgress" };
+    f.book.progress = unplayed ? undefined : { ...f.server, status: "inProgress" };
     f.options.queuedProgressSaves.current = new Map();
     const booksRef = { current: [f.book] };
     const sync = loadHook("useProgressSync", f.dependencies)(f.options);
@@ -2116,6 +2117,93 @@ for (const [seek, storage] of [[false, "unavailable"], [true, "unavailable"], [f
     assert.equal(c.native().length, 1);
   });
 }
+
+// Native stamps each session with the serverRevision its library snapshot
+// carried for the book (CarPlayCoordinator.recordSession).
+async function stampFromSnapshot(c: ReturnType<typeof carCheckpointFixture>) {
+  const snapshot = await carLibrary.buildCarLibrarySnapshot({ scopePrefix: "server:reader", playbackRate: 1,
+    downloadedBookIds: new Set(), bookGains: {}, coverUrl: async () => null,
+    resolveTrackUrl: async () => "https://server/track", books: [{ chapters: [], ...c.f.book } as any] });
+  for (const entry of c.native()) entry.baseUpdatedAt = snapshot.books[0].serverRevision;
+}
+
+// A server that has no copy until one is saved, and keeps any other copy.
+function unplayedServer(c: ReturnType<typeof carCheckpointFixture>, stored: Progress | null = null) {
+  c.f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+    c.f.writes.push({ progress, options });
+    if (stored && progress.baseUpdatedAt !== stored.updatedAt) return { ...stored, accepted: false };
+    stored = { ...progress, updatedAt: "1790769700000", accepted: true };
+    return stored;
+  };
+  return () => stored;
+}
+
+test("a first CarPlay listen on a book the server has no progress for is saved to the server", async () => {
+  const c = carCheckpointFixture(carSession, { unplayed: true });
+  const stored = unplayedServer(c);
+  const { car } = c.open();
+  await stampFromSnapshot(c);
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.length, 1, "saved now, not only on this phone");
+  assert.equal(c.f.writes[0].progress.baseUpdatedAt, "");
+  assert.equal(stored()?.bookPositionSeconds, 1800);
+  assert.deepEqual(c.acknowledged, [carSession.updatedAt]);
+  assert.equal(c.native().length, 0);
+});
+
+test("a first CarPlay listen from a stale shelf does not replace progress another device saved", async () => {
+  const c = carCheckpointFixture(carSession, { unplayed: true });
+  // The cached shelf predates another device's first save.
+  const stored = unplayedServer(c, { ...c.f.server, bookPositionSeconds: 2500, positionSeconds: 2500 });
+  Object.assign(c.down, { localStorage: true, indexedDB: true });
+  const { car } = c.open();
+  await stampFromSnapshot(c);
+  await car.adoptCarPlaybackState();
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.length, 1, "a refused checkpoint is not resent");
+  assert.equal(c.f.writes[0].progress.baseUpdatedAt, "");
+  assert.equal(stored()?.bookPositionSeconds, 2500);
+  assert.deepEqual(c.acknowledged, [], "nothing durable holds the car position");
+  assert.equal(c.native().length, 1);
+});
+
+test("an empty snapshot base does not replace the revision a readable local copy holds", async () => {
+  const c = carCheckpointFixture(carSession, { unplayed: true });
+  // The shelf lists no progress, but this phone saved a copy the server still holds.
+  c.f.write(reliability.syncedProgress(c.f.server, "2026-09-30T11:55:00Z"));
+  const stored = unplayedServer(c, c.f.server);
+  const { car } = c.open();
+  await stampFromSnapshot(c);
+  assert.equal(c.native()[0].baseUpdatedAt, "");
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.length, 1);
+  assert.equal(c.f.writes[0].progress.baseUpdatedAt, c.f.server.updatedAt);
+  assert.equal(stored()?.bookPositionSeconds, 1800);
+});
+
+test("a legacy local copy without a base keeps the empty snapshot base", async () => {
+  const c = carCheckpointFixture(carSession, { unplayed: true });
+  // An older app cached progress with no sync state or revision.
+  c.indexedDB.set("book", { ...c.f.server, positionSeconds: 1200, bookPositionSeconds: 1200,
+    updatedAt: "2026-09-30T11:50:00.000Z" });
+  // Another device has saved since; a write without a base falls back to
+  // timestamp ordering, which the newer car checkpoint would win.
+  let stored: Progress = { ...c.f.server, positionSeconds: 2500, bookPositionSeconds: 2500 };
+  c.f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+    c.f.writes.push({ progress, options });
+    if (progress.baseUpdatedAt !== undefined && progress.baseUpdatedAt !== stored.updatedAt) {
+      return { ...stored, accepted: false };
+    }
+    stored = { ...progress, updatedAt: "1790769700000", accepted: true };
+    return stored;
+  };
+  const { car } = c.open();
+  await stampFromSnapshot(c);
+  await car.adoptCarPlaybackState();
+  assert.equal(c.f.writes.length, 1);
+  assert.equal(c.f.writes[0].progress.baseUpdatedAt, "");
+  assert.equal(stored.bookPositionSeconds, 2500, "the unseen server copy survives");
+});
 
 test("a CarPlay checkpoint with no local copy and no recorded base stays on the phone", async () => {
   const c = carCheckpointFixture({ ...carSession, baseUpdatedAt: undefined });
