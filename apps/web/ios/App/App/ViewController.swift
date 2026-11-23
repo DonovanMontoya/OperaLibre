@@ -11,19 +11,22 @@ extension UIView {
 }
 
 class ViewController: CAPBridgeViewController {
+    private var layoutScreen: CGSize?
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        if let screen = view.window?.windowScene?.screen.bounds.size { layoutScreen = screen }
         (parent as? NativeTabsController)?.contentDidLayout()
     }
 
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
         let old = view.bounds.size
-        let rotation = coordinator.targetTransform != .identity
-            && ((abs(size.width - old.height) < 1 && abs(size.height - old.width) < 1)
-                || (abs(size.width - old.width) < 1 && abs(size.height - old.height) < 1))
-        let coverSized = { (size: CGSize) in min(size.width, size.height) < 500 }
-        let otherScreen = !rotation && coverSized(size) != coverSized(old)
+        let rotation = DisplayTransition.isRotation(
+            from: old, to: size, transformed: coordinator.targetTransform != .identity)
+        let otherScreen = DisplayTransition.isScreenChange(
+            from: old, to: size, rotating: rotation,
+            screenBefore: layoutScreen, screenNow: view.window?.windowScene?.screen.bounds.size)
         guard rotation || otherScreen, let webView, let host = view.superview, !webView.bounds.isEmpty else { return }
         let still = rotation ? webView.frozenSnapshot() : nil
         if let still {
