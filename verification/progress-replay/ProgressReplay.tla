@@ -27,6 +27,9 @@ CONSTANTS
     \* 4c7bd6f6: usePlaybackRestore.ts adopts the reply when the journal was
     \* already healed to it (journalHealed). FALSE is the restore before it.
     AdoptHealedJournal,
+    \* 85fadfd4: usePlaybackRestore.ts adopts a journal healed while its own
+    \* resend was lost. FALSE is the restore before it.
+    AdoptHealedOnLostResend,
     \* useProgressSync.ts persistProgress returns early until restore has
     \* applied a position (restoredProgressBookId). FALSE removes that guard.
     GuardUnrestoredSave,
@@ -526,11 +529,13 @@ RstLost ==
     /\ resp' = [resp EXCEPT !["rst"] = Idle]
     /\ IF rstCancelled
        THEN RstEnd("cancelled") /\ UNCHANGED player
-       ELSE LET again == Reapply(rstLocal, FALSE)
-                finalPos == IF again THEN rstLocal.pos ELSE player.pos
+       ELSE LET healed == AdoptHealedOnLostResend /\ jr.st = "synced"
+                    /\ (rstCp.st # "synced" \/ jr.upd # rstCp.upd)
+                target == IF healed THEN jr ELSE rstLocal
+                again == Reapply(target, healed)
+                finalPos == IF again THEN target.pos ELSE player.pos
             IN /\ player' = [pos |-> finalPos, restored |-> TRUE]
-               /\ LET check == SettleCheck(finalPos, jr, libPc = "idle" /\ qPc = "idle")
-                  IN RstEnd(IF check = "stale" THEN "staleAfterLostResend" ELSE check)
+               /\ RstEnd(SettleCheck(finalPos, jr, libPc = "idle" /\ qPc = "idle"))
     /\ UNCHANGED <<srv, clock, otherAt, committedEid, nextRid, jr, edits, losses,
                    req, libPc, libGen, libActive, libQueued, libPrev, libCp, libAtt,
                    libRes, rstCancelled, rstWait, rstCp, rstLocal, rstOpt, rstNewer,
@@ -631,15 +636,11 @@ NoOrphanedEdit == ~srvOrphan /\ ~jrOrphan
 
 \* When restore settles, the player shows the newest position the server
 \* holds from any device.
-PlayerShowsNewest == rstCheck \notin {"stale", "staleAfterLostResend"}
+PlayerShowsNewest == rstCheck # "stale"
 
 \* NoOrphanedEdit limited to 0af3ac8c's own story: restore finished after a
 \* message was lost, and later listening was refused.
 NoOrphanAfterLostReply == ~(srvOrphan /\ losses = 1 /\ rstPc = "done" /\ ~rstCancelled)
-
-\* The same rule for every restore whose own resend was not lost, so a new
-\* stale-player path cannot hide behind finding 1 in the verify skill.
-PlayerShowsNewestUnlessResendLost == rstCheck # "stale"
 
 \* No copy of the position falls to the start of the book: the listener never
 \* seeks there in this model, so any such write is a reset.
@@ -651,5 +652,5 @@ TypeOK ==
     /\ libPc \in {"idle", "read", "send", "wait"}
     /\ rstPc \in {"closed", "optimistic", "awaitLib", "fetch", "wait", "done"}
     /\ qPc \in {"idle", "wait"}
-    /\ rstCheck \in {"none", "ok", "stale", "staleAfterLostResend", "unsettled", "cancelled"}
+    /\ rstCheck \in {"none", "ok", "stale", "unsettled", "cancelled"}
 =============================================================================

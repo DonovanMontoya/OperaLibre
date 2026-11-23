@@ -15,14 +15,14 @@ java=${JAVA:-${JAVA_HOME:+$JAVA_HOME/bin/java}}
 java=${java:-java}
 
 # spec|config|expectation. "pass" must hold every invariant; "violate X" must
-# break X. "finding X" is a known bug in the current code: X must break, and
-# the config with X removed must pass, so no other rule breaks.
+# break X.
 checks=(
-  "progress-replay/ProgressReplay.tla|current.cfg|finding PlayerShowsNewest"
+  "progress-replay/ProgressReplay.tla|current.cfg|pass"
   "progress-replay/ProgressReplay.tla|reliable-network.cfg|pass"
   "progress-replay/ProgressReplay.tla|prefix-0af3ac8c.cfg|violate NoOrphanedEdit"
   "progress-replay/ProgressReplay.tla|prefix-0af3ac8c-lost-reply.cfg|violate NoOrphanAfterLostReply"
   "progress-replay/ProgressReplay.tla|prefix-4c7bd6f6.cfg|violate PlayerShowsNewest"
+  "progress-replay/ProgressReplay.tla|prefix-85fadfd4.cfg|violate PlayerShowsNewest"
   "progress-replay/ProgressReplay.tla|unrestored-save.cfg|violate NoResetToStart"
 )
 
@@ -89,11 +89,6 @@ for entry in "${checks[@]}"; do
   case $kind in
     pass) check "$name" "$dir" "$(basename "$spec")" "$config" pass ;;
     violate) check "$name" "$dir" "$(basename "$spec")" "$config" violate "$invariant" ;;
-    finding)
-      check "$name" "$dir" "$(basename "$spec")" "$config" violate "$invariant"
-      without="$work/without-$invariant-$config"
-      grep -v "^[[:space:]]*$invariant[[:space:]]*$" "$dir/$config" >"$without"
-      check "$name without $invariant" "$dir" "$(basename "$spec")" "$without" pass ;;
     *) echo "unknown expectation: $expectation" >&2; exit 2 ;;
   esac
 done

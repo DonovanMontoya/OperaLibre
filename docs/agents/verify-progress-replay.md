@@ -17,7 +17,6 @@ small bounds. Tests check the orders someone thought of; this checks the rest.
 | --- | --- | --- |
 | `NoOrphanedEdit` | A position this device recorded is never refused by the server or overwritten in the journal unless another device saved after the revision it was recorded on. | Listening is silently lost; the listener lands back where they were. |
 | `PlayerShowsNewest` | When restore finishes with nothing pending and the journal at the server's newest revision, the player shows that revision's position. | The player sits on a stale position and the next listening is built on it. |
-| `PlayerShowsNewestUnlessResendLost` | The same rule for every restore whose own resend was not lost. It holds today, so a new stale-player path cannot hide behind finding 1. | As above. |
 | `NoOrphanAfterLostReply` | `NoOrphanedEdit` limited to 0af3ac8c's story: a restore whose save committed but whose reply was lost, followed by refused listening. Checked only on the pre-fix switch. | As for `NoOrphanedEdit`. |
 | `NoResetToStart` | Neither the server nor a pending journal copy falls to the start of the book, since the listener never seeks there in the model. | A 0:00 write replaces real progress. |
 
@@ -37,11 +36,12 @@ script in the `formal` job whenever a file in the coverage record or under
 
 | Config | Switches | Expected |
 | --- | --- | --- |
-| `current.cfg` | the code at the sync commit | only `PlayerShowsNewest` breaks (finding 1, below) |
+| `current.cfg` | the code at the sync commit | passes |
 | `reliable-network.cfg` | current code, no lost messages | passes |
 | `prefix-0af3ac8c.cfg` | `RecordingLineage = FALSE` | breaks `NoOrphanedEdit` (shortest path: reply still in flight) |
 | `prefix-0af3ac8c-lost-reply.cfg` | `RecordingLineage = FALSE` | breaks `NoOrphanAfterLostReply` (the reply is lost) |
 | `prefix-4c7bd6f6.cfg` | `AdoptHealedJournal = FALSE`, no lost messages | breaks `PlayerShowsNewest` |
+| `prefix-85fadfd4.cfg` | `AdoptHealedOnLostResend = FALSE` | breaks `PlayerShowsNewest` (the restore's resend is lost) |
 | `unrestored-save.cfg` | `GuardUnrestoredSave = FALSE` | breaks `NoResetToStart` |
 
 The runner fails when a config that must break a rule passes, when a passing
@@ -93,22 +93,8 @@ coverage changes, update `FORMAL_INPUTS` in `script/ci/select_checks.py`.
    code's `await`s. A new `await` is a new step.
 3. Run `verification/run.sh`. A newly broken rule is a bug until a replay in the
    test harness shows the model is wrong.
-4. If the change fixes finding 1, set `current.cfg`'s expectation in
-   `verification/run.sh` to `pass`.
-5. Move the sync commit above forward only after you have confirmed that the
+4. Move the sync commit above forward only after you have confirmed that the
    model describes the code at the new commit.
-
-## Findings
-
-1. **Restore keeps a stale player when its own resend is lost.** The library
-   reconnect sends the offline position, another device has saved further on,
-   so the server refuses it and `storeCanonicalServerProgress` heals the journal
-   to the other device's position. Restore, which staged the offline position
-   before that reply, sees no accepted receipt to rebase on and resends. That
-   request fails. With no reply, the `journalHealed` adoption never runs, so the
-   player stays on the offline position while the journal holds the newer one.
-   `overruledSaveRef` is set, so a later paused foreground return adopts it.
-   Reproduced in the hook harness at the sync commit.
 
 ## Left out
 
