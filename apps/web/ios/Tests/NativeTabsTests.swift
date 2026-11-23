@@ -333,6 +333,29 @@ final class NativeTabsTests: XCTestCase {
         XCTAssertEqual(movedRail, "150px")
         XCTAssertTrue(controller.view.hitTest(CGPoint(x: 42, y: 200), with: nil)?.isDescendant(of: platter) ?? false)
         XCTAssertTrue(controller.view.hitTest(CGPoint(x: 42, y: 100), with: nil)?.isDescendant(of: webView) ?? false)
+
+        // Overlapping updates: rail B is drawn while rail C still waits behind
+        // a busy page. Touches follow B, not the rail before it.
+        let relayout = {
+            controller.view.setNeedsLayout()
+            controller.view.layoutIfNeeded()
+            controller.view.layoutIfNeeded()
+        }
+        platter.frame.origin.y = 300
+        relayout()
+        let railB = expectation(description: "Rail B applied")
+        webView.evaluateJavaScript("0") { _, _ in railB.fulfill() }
+        webView.evaluateJavaScript("const start = Date.now(); while (Date.now() - start < 500) {}") { _, _ in }
+        platter.frame.origin.y = 200
+        relayout()
+        await fulfillment(of: [railB], timeout: 5)
+        let duringC = controller.view.hitTest(CGPoint(x: 42, y: 250), with: nil)
+        XCTAssertTrue(duringC?.isDescendant(of: webView) ?? false)
+        XCTAssertFalse(duringC?.isDescendant(of: platter) ?? false)
+        let railC = try await rail()
+        XCTAssertEqual(railC, "200px")
+        XCTAssertTrue(controller.view.hitTest(CGPoint(x: 42, y: 250), with: nil)?.isDescendant(of: platter) ?? false)
+        XCTAssertTrue(controller.view.hitTest(CGPoint(x: 42, y: 100), with: nil)?.isDescendant(of: webView) ?? false)
         _ = observer
     }
 

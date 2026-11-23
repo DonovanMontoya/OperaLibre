@@ -121,6 +121,8 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     private var presentation = TabsPresentation.none
     private var sideControls: CGRect?
     private var appliedRail: CGRect?
+    private var railGeneration = 0
+    private var appliedRailGeneration = 0
     private static let minimumRailHeight: CGFloat = 60
     private var chrome: UIColor?
     private var barTint: UIColor?
@@ -522,10 +524,13 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             }
             // The page applies a new rail later. Until it does, touches in the
             // rail it still shows go to the page, not to tabs that moved there.
+            railGeneration += 1
+            let generation = railGeneration
             webView.evaluateJavaScript(script) { [weak self] _, error in
-                guard let self, self.sentRail == .some(rail) else { return }
+                guard let self, error == nil, generation > self.appliedRailGeneration else { return }
+                self.appliedRailGeneration = generation
                 let origin = self.content.view.frame.origin
-                self.appliedRail = error == nil ? rail?.offsetBy(dx: origin.x, dy: origin.y) : nil
+                self.appliedRail = rail?.offsetBy(dx: origin.x, dy: origin.y)
             }
         }
         if !sideBar {
