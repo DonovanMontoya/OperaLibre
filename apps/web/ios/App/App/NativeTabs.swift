@@ -458,6 +458,9 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             if sideBar {
                 presentation = .side(column: column)
                 sideControls = sideTabControls(in: column)
+                DispatchQueue.main.async { [weak self] in
+                    if self?.sideControlsMoved() == true { self?.view.setNeedsLayout() }
+                }
             }
             if sideBar, let items = sideControls {
                 let top = railTop(in: column, above: items.minY)
@@ -565,18 +568,28 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     /// A side column without a verified set of tab controls stays whole, so the
     /// tabs keep working there and the page gets no rail.
     private func tabControlRegion() -> CGRect? {
+        // The vertical bar is hosted apart from this controller's layout and
+        // can settle after it. Lay out first, so the rail the page shows and
+        // the region touches use come from the same tab frame.
+        if sideControlsMoved() {
+            view.setNeedsLayout()
+            view.layoutIfNeeded()
+            // The pass above updates the page's constraints; apply them too.
+            view.layoutIfNeeded()
+        }
         switch presentation {
         case .none:
             return nil
         case .reserved(let area):
             return area
         case .side(let column):
-            let controls = sideTabControls(in: column)
-            // The vertical bar is hosted apart from this controller's layout
-            // and can settle after it; lay out again so the rail follows.
-            if controls != sideControls { view.setNeedsLayout() }
-            return controls ?? column
+            return sideControls ?? column
         }
+    }
+
+    private func sideControlsMoved() -> Bool {
+        guard case .side(let column) = presentation else { return false }
+        return sideTabControls(in: column) != sideControls
     }
 
     private func sideTabControls(in column: CGRect) -> CGRect? {
@@ -585,8 +598,8 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     }
 
     /// The frame of the view that holds every visible tab control under `root`,
-    /// or nil unless there is exactly one control position per tab and that
-    /// view lies within `limit`. UIKit exposes no frame for its tab items, but
+    /// or nil unless each tab has the same number of controls and that view
+    /// lies within `limit`. UIKit exposes no frame for its tab items, but
     /// each one is a UIControl under the tab bar controller this one owns.
     static func tabControlsFrame(in root: UIView, excluding excluded: [UIView], tabCount: Int,
                                  within limit: CGRect, in space: UIView) -> CGRect? {
@@ -601,15 +614,10 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                 queue.append(contentsOf: candidate.subviews)
             }
         }
-        // Liquid Glass draws each tab twice, once beneath the selection lens.
-        var positions: [CGPoint] = []
-        for control in controls {
-            let origin = control.convert(control.bounds, to: space).origin
-            if !positions.contains(where: { abs($0.x - origin.x) < 1 && abs($0.y - origin.y) < 1 }) {
-                positions.append(origin)
-            }
-        }
-        guard tabCount > 0, positions.count == tabCount, var container = controls.first?.superview else { return nil }
+        // Liquid Glass draws each tab twice, once beneath the selection lens,
+        // and the copies part while a selection animates.
+        guard tabCount > 0, !controls.isEmpty, controls.count % tabCount == 0,
+              var container = controls.first?.superview else { return nil }
         while !controls.allSatisfy({ $0.isDescendant(of: container) }) {
             guard container !== root, let parent = container.superview else { return nil }
             container = parent

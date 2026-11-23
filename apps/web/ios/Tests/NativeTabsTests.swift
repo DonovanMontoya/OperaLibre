@@ -270,6 +270,69 @@ final class NativeTabsTests: XCTestCase {
         XCTAssertTrue(hidden === page || hidden.isDescendant(of: page))
     }
 
+    func testLateTabPlatterMovesTheRailAndTouchesTogether() async throws {
+        let webView = WKWebView()
+        let loaded = expectation(description: "Rail document loaded")
+        let observer = ViewportPageLoad(loaded)
+        webView.navigationDelegate = observer
+        webView.loadHTMLString("<meta name='viewport' content='width=device-width,initial-scale=1'>", baseURL: nil)
+        await fulfillment(of: [loaded], timeout: 10)
+        let content = ViewController()
+        content.view = webView
+        content.webView = webView
+        let controller = NativeTabsController(content: content)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 678, height: 466))
+        window.rootViewController = controller
+        window.isHidden = false
+        defer { window.isHidden = true }
+        try XCTSkipIf(UIDevice.current.userInterfaceIdiom == .pad, "iPad shows floating tabs instead")
+        configure(controller)
+        let navigation = try XCTUnwrap(controller.children.compactMap { $0 as? UITabBarController }.first)
+        let host = try XCTUnwrap(navigation.selectedViewController)
+        // The hostless bundle cannot show the cover-screen bar. Recreate its
+        // shape: a side column, the empty UITabBar, and a separate platter.
+        host.additionalSafeAreaInsets.left = 84
+        window.layoutIfNeeded()
+        navigation.tabBar.frame = CGRect(x: 0, y: 0, width: 80, height: 466)
+        navigation.tabBar.subviews.forEach { $0.isHidden = true }
+        host.view.layoutIfNeeded()
+        controller.viewDidLayoutSubviews()
+        controller.view.layoutIfNeeded()
+        let rail = { () async throws -> String? in
+            try await webView.evaluateJavaScript("""
+                document.documentElement.classList.contains('side-rail')
+                    ? document.documentElement.style.getPropertyValue('--rail-bottom') : 'none'
+                """) as? String
+        }
+        let noRail = try await rail()
+        XCTAssertEqual(noRail, "none")
+
+        // The platter appears after layout. The first touch lays out again,
+        // so the rail the page shows matches the region the touch used.
+        let platter = UIView(frame: CGRect(x: 18, y: 300, width: 48, height: 120))
+        for _ in 0..<2 {
+            let copy = UIView(frame: platter.bounds)
+            for index in 0..<2 {
+                copy.addSubview(UIControl(frame: CGRect(x: 2, y: 2 + CGFloat(index) * 58, width: 44, height: 58)))
+            }
+            platter.addSubview(copy)
+        }
+        navigation.view.addSubview(platter)
+        let inRail = controller.view.hitTest(CGPoint(x: 42, y: 200), with: nil)
+        XCTAssertTrue(inRail?.isDescendant(of: webView) ?? false)
+        let shownRail = try await rail()
+        XCTAssertEqual(shownRail, "300px")
+
+        // The platter then settles higher, into what was the rail.
+        platter.frame.origin.y = 150
+        let onTab = controller.view.hitTest(CGPoint(x: 42, y: 200), with: nil)
+        XCTAssertTrue(onTab?.isDescendant(of: platter) ?? false)
+        let movedRail = try await rail()
+        XCTAssertEqual(movedRail, "150px")
+        XCTAssertTrue(controller.view.hitTest(CGPoint(x: 42, y: 100), with: nil)?.isDescendant(of: webView) ?? false)
+        _ = observer
+    }
+
     #if compiler(>=6.4)
     @available(iOS 27.1, *)
     func testHiddenReaderRailFollowsPhysicalEdgeAndLayoutDirection() {
