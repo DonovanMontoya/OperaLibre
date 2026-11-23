@@ -70,6 +70,8 @@ struct CarLibraryBook: Codable {
     var volumeGain: Double?
     var tracks: [CarLibraryTrack]
     var chapters: [CarLibraryChapter]
+    /// The server revision the web player last knew for this book.
+    var serverRevision: String? = nil
 
     var isFinished: Bool { status == "finished" }
     var isInProgress: Bool { status == "inProgress" }
@@ -139,6 +141,9 @@ struct CarPlaybackSession: Codable {
     var updatedAt: Double
     var finished: Bool
     var intentionalRegression: Bool
+    /// The server revision this listening continued from, so a session kept
+    /// across a restart is not saved on top of a later revision.
+    var baseUpdatedAt: String? = nil
 
     static func remainingAfterAcknowledgement(
         _ sessions: [CarPlaybackSession],

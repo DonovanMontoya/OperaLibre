@@ -395,7 +395,18 @@ test("the installer trusts the current update root", async () => {
   assert.deepEqual({ keys, threshold: Number(declared[2]) }, root);
 });
 
-const ed25519OpenSsl = spawnSync("openssl", ["genpkey", "-algorithm", "ed25519"]).status === 0;
+// Ask the installer's own self-check, which verifies a known-good signature
+// with the same openssl command it uses for the manifest.
+const ed25519OpenSsl = await (async () => {
+  const work = await mkdtemp(path.join(os.tmpdir(), "operalibre-installer-openssl-"));
+  try {
+    return spawnSync("sh", ["-c", [installerFunction("need"), installerFunction("ed25519_verify"),
+      installerFunction("find_ed25519_openssl"), "find_ed25519_openssl >/dev/null"].join("\n")],
+    { env: { ...process.env, WORK_DIR: work } }).status === 0;
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
+})();
 
 test("the installer accepts only an archive its signed manifest lists", { skip: !ed25519OpenSsl && "openssl cannot verify Ed25519" }, async () => {
   const fixture = await mkdtemp(path.join(os.tmpdir(), "operalibre-installer-manifest-"));
@@ -427,6 +438,7 @@ test("the installer accepts only an archive its signed manifest lists", { skip: 
     const testKey = Buffer.concat([SPKI_PREFIX, Buffer.from(TEST_PUBLIC_KEY, "base64")]).toString("base64");
     const script = [
       "set -eu",
+      "say() { printf '%s\\n' \"$*\"; }",
       "fail() { printf 'Error: %s\\n' \"$*\" >&2; exit 1; }",
       `MANIFEST_KEYS="${testKey}"`,
       "MANIFEST_THRESHOLD=1",
@@ -434,7 +446,7 @@ test("the installer accepts only an archive its signed manifest lists", { skip: 
       // Serve the release from a folder; a missing asset fails like a 404.
       'fetch() { cp "$RELEASE/${1##*/}" "$2"; }',
       ...["need", "digest_of", "ed25519_verify", "find_ed25519_openssl", "manifest_message",
-        "manifest_package", "verify_manifest"].map(installerFunction),
+        "manifest_package", "missing_verifier", "verify_manifest"].map(installerFunction),
       'if verify_manifest; then echo VERIFIED; else echo "UNVERIFIED $?"; fi'
     ].join("\n");
     const run = async ({ manifest, download = contents, searchPath = process.env.PATH }) => {
@@ -475,16 +487,114 @@ test("the installer accepts only an archive its signed manifest lists", { skip: 
       assert.match(result.stderr, new RegExp(message), label);
     }
 
-    // Without an Ed25519-capable openssl the caller warns instead of failing.
-    // Homebrew's OpenSSL on a developer's Mac would still verify.
+    // An openssl that cannot check Ed25519 stops the install. Homebrew's
+    // OpenSSL on a developer's Mac would still verify.
     const homebrew = await Promise.any(["/opt/homebrew/opt/openssl@3/bin/openssl", "/usr/local/opt/openssl@3/bin/openssl"]
       .map((file) => access(file))).then(() => true, () => false);
     if (!homebrew) {
       await writeFile(path.join(bin, "openssl"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
       const unverified = await run({ manifest: good, searchPath: `${bin}${path.delimiter}${process.env.PATH}` });
-      assert.equal(unverified.stdout, "UNVERIFIED 2\n", unverified.stderr);
+      assert.notEqual(unverified.status, 0);
+      assert.doesNotMatch(unverified.stdout, /VERIFIED/);
+      assert.match(unverified.stderr, /signature could not be checked\. Nothing was installed/);
     }
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
 });
+
+// Runs the installer from its download through extraction, with the release
+// served from a folder.
+function runInstallerFlow({ release, work, manifestKey, noVerifier = false, platform = "linux" }) {
+  const flow = INSTALLER.slice(INSTALLER.indexOf('say "Downloading ${ARCHIVE}..."'),
+    INSTALLER.indexOf('STAGED="${WORK_DIR}/extract/${PACKAGE}"'));
+  assert.ok(flow.includes("verify_manifest") && flow.includes("tar -xzf"));
+  const script = [
+    "set -eu",
+    "say() { printf '%s\\n' \"$*\"; }",
+    "fail() { printf 'Error: %s\\n' \"$*\" >&2; exit 1; }",
+    `MANIFEST_KEYS="${manifestKey}"`,
+    "MANIFEST_THRESHOLD=1",
+    "if command -v sha256sum >/dev/null 2>&1; then SHA_TOOL=sha256sum; else SHA_TOOL=shasum; fi",
+    'fetch() { cp "$RELEASE/${1##*/}" "$2"; }',
+    ...["need", "digest_of", "ed25519_verify", "find_ed25519_openssl", "manifest_message",
+      "manifest_package", "missing_verifier", "verify_manifest"].map(installerFunction),
+    ...(noVerifier ? ["find_ed25519_openssl() { return 1; }"] : []),
+    flow,
+    "echo EXTRACTED"
+  ].join("\n");
+  return spawnSync("sh", ["-c", script], {
+    encoding: "utf8",
+    env: { ...process.env, RELEASE: release, WORK_DIR: work, os: platform,
+      BASE_URL: "https://github.com/DonovanMontoya/OperaLibre/releases/download/1.2.3",
+      VERSION: "1.2.3", ARCHIVE: "operalibre-1.2.3-combined-linux-x64.tar.gz" }
+  });
+}
+
+async function installerFlowFixture(test) {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "operalibre-installer-flow-"));
+  try {
+    const archive = "operalibre-1.2.3-combined-linux-x64.tar.gz";
+    const release = path.join(fixture, "release");
+    const source = path.join(fixture, "source", "operalibre-1.2.3-combined-linux-x64");
+    await mkdir(source, { recursive: true });
+    await mkdir(release);
+    await writeFile(path.join(source, "VERSION.txt"), "1.2.3\n");
+    const tar = spawnSync("tar", ["-czf", path.join(release, archive), "-C", path.dirname(source), path.basename(source)]);
+    assert.equal(tar.status, 0, String(tar.stderr));
+    const contents = await readFile(path.join(release, archive));
+    const sha256 = createHash("sha256").update(contents).digest("hex");
+    await writeFile(path.join(release, "SHA256SUMS.txt"), `${sha256}  ${archive}\n`);
+    const manifest = (seed) => {
+      const payload = `${JSON.stringify(manifestPayload({
+        version: "1.2.3", tag: "1.2.3", repository: "DonovanMontoya/OperaLibre", notes: "",
+        packages: [{ component: "server", platform: "linux-x64", version: "1.2.3",
+          url: `https://github.com/DonovanMontoya/OperaLibre/releases/download/1.2.3/${archive}`,
+          sha256, size: contents.length, format: "tar.gz", root: archive.replace(/\.tar\.gz$/, "") }],
+        policy: { bridges: [] }, published: "2026-01-01T00:00:00.000Z"
+      }), null, 2)}\n`;
+      const envelope = addSignature({ payload, signatures: [] },
+        signEnvelope(privateKeyFromSeed(seed), "manifest", payload));
+      return `${JSON.stringify({ ...envelope, roots: [] }, null, 2)}\n`;
+    };
+    const run = async ({ seed = TEST_SEED, ...options } = {}) => {
+      const work = path.join(fixture, "work");
+      await rm(work, { recursive: true, force: true });
+      await mkdir(work);
+      await writeFile(path.join(release, "operalibre-manifest-v1.json"), manifest(seed));
+      const manifestKey = Buffer.concat([SPKI_PREFIX, Buffer.from(TEST_PUBLIC_KEY, "base64")]).toString("base64");
+      const result = runInstallerFlow({ release, work, manifestKey, ...options });
+      const extracted = await access(path.join(work, "extract")).then(() => true, () => false);
+      return { ...result, extracted };
+    };
+    await test(run);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+}
+
+test("the installer extracts nothing without an Ed25519 verifier", () => installerFlowFixture(async (run) => {
+  // Needs no openssl, so it also covers hosts where the tests above are skipped.
+  for (const [platform, advice] of [["macos", /brew install openssl@3/], ["linux", /package manager/]]) {
+    const result = await run({ noVerifier: true, platform });
+    assert.notEqual(result.status, 0, platform);
+    assert.doesNotMatch(result.stdout, /verified|EXTRACTED/, platform);
+    assert.match(result.stderr, advice, platform);
+    assert.match(result.stderr, /signature could not be checked\. Nothing was installed/, platform);
+    assert.equal(result.extracted, false, platform);
+  }
+}));
+
+test("the installer extracts only a release with a valid signature", { skip: !ed25519OpenSsl && "openssl cannot verify Ed25519" },
+  () => installerFlowFixture(async (run) => {
+    const rejected = await run({ seed: OTHER_SEED });
+    assert.notEqual(rejected.status, 0);
+    assert.doesNotMatch(rejected.stdout, /EXTRACTED/);
+    assert.match(rejected.stderr, /not signed by an OperaLibre release key/);
+    assert.equal(rejected.extracted, false);
+
+    const accepted = await run();
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.match(accepted.stdout, /Release signature and digest verified\.\nEXTRACTED\n$/);
+    assert.equal(accepted.extracted, true);
+  }));

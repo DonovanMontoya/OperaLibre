@@ -356,7 +356,8 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         guard let bookId = carOwnedBookId else { return }
         let now = Date().timeIntervalSince1970 * 1000
         if !force && now - lastSessionWrite < Self.sessionWriteIntervalSeconds * 1000 { return }
-        let scopeKey = store.snapshot().recoveryScopeKey(forBookId: bookId)
+        let snapshot = store.snapshot()
+        let scopeKey = snapshot.recoveryScopeKey(forBookId: bookId)
         guard let checkpoint = engine.recoveryState(forScope: scopeKey) else { return }
         lastSessionWrite = now
         store.recordSession(CarPlaybackSession(
@@ -367,7 +368,8 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
             durationSeconds: checkpoint.durationSeconds,
             updatedAt: checkpoint.updatedAt,
             finished: finished,
-            intentionalRegression: deliberateRegression
+            intentionalRegression: deliberateRegression,
+            baseUpdatedAt: snapshot.book(withId: bookId)?.serverRevision
         ))
     }
 

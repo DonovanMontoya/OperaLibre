@@ -436,7 +436,9 @@ test('an offline CarPlay restart survives native acknowledgement and reload', as
     (window as unknown as { carSessions: unknown[] }).carSessions = [session];
     document.dispatchEvent(new Event('visibilitychange'));
   }, { bookId: book.id, trackId: book.tracks[0].id, positionSeconds: 0, bookPositionSeconds: 0,
-    durationSeconds: 240, updatedAt: Date.now() - 1_000, intentionalRegression: true });
+    durationSeconds: 240, updatedAt: Date.now() - 1_000, intentionalRegression: true,
+    // Native stamps the revision its library snapshot carried.
+    baseUpdatedAt: book.progress!.updatedAt });
   await expect.poll(() => page.evaluate(() => (window as unknown as { carAcknowledgements: number }).carAcknowledgements)).toBeGreaterThan(0);
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('operalibre.progressSeekIntent.v1.')).length)).toBe(1);
   disconnected = false;

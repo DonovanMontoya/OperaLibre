@@ -394,7 +394,12 @@ export function usePlaybackControls({
     }
     nativePlaybackPlayingRef.current = false;
     setIsPlaying(false);
-    void pauseNativeAudio().catch((error) => {
+    void pauseNativeAudio().catch((error: unknown) => {
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "CHECKPOINT_WRITE_FAILED") {
+        // Native playback already paused. Keep the native session so a later pause can retry the save.
+        setPlaybackError(errorMessage(error, "Playback paused, but the listening position could not be saved."));
+        return;
+      }
       audio.muted = false;
       stageWebAudioFallback(audio, false);
       setPlaybackError(errorMessage(error, "Native audio playback could not be paused."));

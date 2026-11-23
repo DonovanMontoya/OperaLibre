@@ -2,7 +2,7 @@
 
 ### The easy way (macOS and Linux)
 
-One command downloads the right package for your computer, verifies its SHA-256 digest, walks you through setup, and starts the server — and updates an existing installation in place when run again:
+One command downloads the right package for your computer, verifies its release signature and SHA-256 digest, walks you through setup, and starts the server — and updates an existing installation in place when run again:
 
 ```
 curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/script/install.sh | sh

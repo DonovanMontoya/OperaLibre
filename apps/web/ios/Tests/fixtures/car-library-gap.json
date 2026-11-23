@@ -34,7 +34,8 @@
           "bookOffsetSeconds": 1200
         }
       ],
-      "chapters": []
+      "chapters": [],
+      "serverRevision": ""
     }
   ]
 }
