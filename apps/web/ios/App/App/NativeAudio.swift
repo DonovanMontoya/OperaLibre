@@ -62,8 +62,13 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
     }
 
     @objc public func pause(_ call: CAPPluginCall) {
-        engine.pause()
-        call.resolve()
+        engine.pause { error in
+            if error != nil {
+                call.reject("Playback paused, but the listening position could not be saved.", "CHECKPOINT_WRITE_FAILED")
+            } else {
+                call.resolve()
+            }
+        }
     }
 
     @objc public func setSleepTimer(_ call: CAPPluginCall) {

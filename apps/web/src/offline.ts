@@ -76,6 +76,8 @@ async function write(storeName: string, value: unknown, key?: string): Promise<v
     key === undefined ? store.put(value) : store.put(value, key);
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error);
+    // A failed commit, such as a full disk, aborts without an error event.
+    transaction.onabort = () => reject(transaction.error ?? new Error("IndexedDB write aborted"));
   });
 }
 

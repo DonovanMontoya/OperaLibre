@@ -71,3 +71,38 @@ test("known exact-end seeks still retain the final track's full duration", () =>
   f.controls.seekBookPositionInBook(f.book, 3600);
   assert.deepEqual(f.seeks, [{ trackId: "second", positionSeconds: 1800 }]);
 });
+
+for (const checkpointOnly of [true, false]) {
+  test(checkpointOnly ? "pause save failure leaves the native transport selected" :
+    "a generic native pause failure still falls back without autoplay", async () => {
+    const messages: string[] = [];
+    const fallbacks: boolean[] = [];
+    const playing: boolean[] = [];
+    const nativePlaybackPlayingRef = { current: true };
+    const playWhenTrackLoads = { current: true };
+    const audio = { muted: true };
+    const controls = loadHook("usePlaybackControls", {
+      "./carPlay": { carPlaybackOwnsEngine: () => false },
+      "./nativeAudio": { pauseNativeAudio: async () => {
+        throw Object.assign(new Error("pause error"), { code: checkpointOnly ? "CHECKPOINT_WRITE_FAILED" : "OTHER" });
+      } },
+      "./formatting": { errorMessage: (error: Error) => error.message },
+      "./reliability": {}, "./progressSeekIntent": {}, "./api": {}, "./offlinePlayback": {},
+      "./playbackGain": {}, "./bookVolume": {}, "./playbackPending": {}, "./native": {},
+      "./nativeAudioStartup": {}, "./playbackSpeed": {}, "./appStorage": {}
+    })({
+      nativeAudio: true, nativePlaybackPlayingRef, playWhenTrackLoads,
+      setPlayPending: () => {}, setIsPlaying: (value: boolean) => playing.push(value),
+      setNativeAudioFailed: (value: boolean) => fallbacks.push(value),
+      setPlaybackError: (message: string) => messages.push(message)
+    });
+    controls.pausePlayback(audio);
+    await Promise.resolve();
+    assert.equal(nativePlaybackPlayingRef.current, false);
+    assert.deepEqual(playing, [false]);
+    assert.deepEqual(messages, ["pause error"]);
+    assert.deepEqual(fallbacks, checkpointOnly ? [] : [true]);
+    assert.equal(audio.muted, checkpointOnly);
+    assert.equal(playWhenTrackLoads.current, checkpointOnly);
+  });
+}
