@@ -10631,3 +10631,87 @@ fn epub_archives_open_with_or_without_bytes_before_them() {
     std::fs::write(&not_zip, b"plain text").unwrap();
     assert!(crate::util::open_zip_file(std::fs::File::open(&not_zip).unwrap()).is_err());
 }
+
+// apps/web/test/progressRules.test.ts applies the same cases, so the server
+// and the clients cannot disagree on when a book is finished or a write is a
+// suspect reset.
+#[test]
+fn progress_rules_match_the_shared_fixture() {
+    let rules: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/progress-rules.json")).unwrap();
+    let number = |value: &serde_json::Value| value.as_f64();
+    let close = |actual: Option<f64>, expected: &serde_json::Value, label: &str, name: &str| match (
+        actual,
+        number(expected),
+    ) {
+        (None, None) => {}
+        (Some(actual), Some(expected)) if (actual - expected).abs() < 1e-9 => {}
+        (actual, expected) => panic!("{name}: {label} was {actual:?}, expected {expected:?}"),
+    };
+    for rule in rules["summary"].as_array().unwrap() {
+        let name = rule["name"].as_str().unwrap();
+        let tracks = rule["tracks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(index, duration)| {
+                track_with_duration(&format!("t{index}"), index, number(duration))
+            })
+            .collect();
+        let book = book_with_tracks(number(&rule["bookDuration"]), tracks);
+        let position = number(&rule["bookPosition"]).unwrap();
+        let progress = super::Progress {
+            book_id: "book".into(),
+            track_id: "t0".into(),
+            position_seconds: position,
+            book_position_seconds: position,
+            duration_seconds: None,
+            updated_at: "1".into(),
+            finished_override: rule["finishedOverride"].as_bool(),
+            recording: None,
+        };
+        let summary = super::summarize_book_progress(&book, &progress);
+        let status = serde_json::to_value(summary.status).unwrap();
+        assert_eq!(status, rule["expect"]["status"], "{name}: status");
+        let expect = &rule["expect"];
+        close(
+            Some(summary.book_position_seconds),
+            &expect["bookPosition"],
+            "position",
+            name,
+        );
+        close(
+            summary.duration_seconds,
+            &expect["duration"],
+            "duration",
+            name,
+        );
+        close(
+            summary.remaining_seconds,
+            &expect["remaining"],
+            "remaining",
+            name,
+        );
+        close(
+            summary.percent_complete,
+            &expect["percent"],
+            "percent",
+            name,
+        );
+    }
+    for rule in rules["suspectReset"].as_array().unwrap() {
+        let name = rule["name"].as_str().unwrap();
+        let previous = number(&rule["previous"]).unwrap();
+        let incoming = number(&rule["incoming"]).unwrap();
+        assert_eq!(
+            progress_write_is_suspect_reset(previous, incoming, false),
+            rule["expect"].as_bool().unwrap(),
+            "{name}"
+        );
+        assert!(
+            !progress_write_is_suspect_reset(previous, incoming, true),
+            "{name}: a write the listener made on purpose is never a suspect reset"
+        );
+    }
+}
