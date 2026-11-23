@@ -16,7 +16,7 @@ import { buildCarLibrarySnapshot, type CarPlaybackSession, carSessionIsWorthSavi
 import { cacheProgress, getCachedProgress, getOfflineCoverUrl, getOfflineTrackUrl, warnCacheFailure } from "./offline";
 import type { PluginListenerHandle } from "@capacitor/core";
 import type { AuthUser, Book, Progress } from "./types";
-import { pendingProgress, progressTimestamp, readProgressCheckpoint, serverRevisionFromSummary, shouldFlagIntentionalRegression, writeProgressCheckpoint } from "./reliability";
+import { pendingProgress, progressTimestamp, readProgressCheckpoint, shouldFlagIntentionalRegression, writeProgressCheckpoint } from "./reliability";
 import type { QueuedProgressSave } from "./playbackTypes";
 import { progressSeekStorage, recordProgressSeekIntent } from "./progressSeekIntent";
 
@@ -223,15 +223,16 @@ export function useCarPlay({
         queued.push({ session, journaled: true, cached: Promise.resolve(true), answered: () => true });
         continue;
       }
-      // A retained session can outlive the copy it continued from. Its base
-      // comes from a local copy or the revision native recorded, never from a
-      // later summary; with neither it is kept on this phone only.
+      // A retained session can outlive the copy it continued from, and the
+      // shelf can show a later revision after a restart. The session is sent
+      // on the revision native recorded it against, or else on a local copy's
+      // base, never on the shelf's; with neither it stays on this phone.
       const local = checkpoint ?? cachedProgress.get(book.id) ?? null;
       const nativeBase = typeof session.baseUpdatedAt === "string" ? session.baseUpdatedAt : undefined;
       const remote = book.source !== "device" && (local !== null || nativeBase !== undefined);
       const newIntentionalSeek = session.intentionalRegression
         && (!local?.localUpdatedAt || session.updatedAt > progressTimestamp(local.localUpdatedAt));
-      const progress: Progress = pendingProgress({
+      const pending = pendingProgress({
         bookId: book.id,
         trackId: session.trackId,
         positionSeconds: Math.max(0, session.positionSeconds),
@@ -239,7 +240,8 @@ export function useCarPlay({
         durationSeconds: session.durationSeconds ?? book.durationSeconds ?? null,
         updatedAt: new Date(session.updatedAt).toISOString(),
         finishedOverride: book.progress?.finishedOverride ?? null
-      }, local, local ? serverRevisionFromSummary(book.progress) : nativeBase, newIntentionalSeek);
+      }, local, nativeBase, newIntentionalSeek);
+      const progress: Progress = nativeBase === undefined ? pending : { ...pending, baseUpdatedAt: nativeBase };
       const seekIntent = newIntentionalSeek && remote
         ? recordProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id,
           progress.bookPositionSeconds, session.updatedAt)

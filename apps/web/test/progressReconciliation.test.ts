@@ -1850,10 +1850,12 @@ function carCheckpointFixture(session: { bookPositionSeconds: number; updatedAt:
     durationSeconds: 7200, finished: false, intentionalRegression: false,
     baseUpdatedAt: f.server.updatedAt, ...session }];
   const acknowledged: number[] = [];
-  const down = { localStorage: false, indexedDB: false, server: false };
+  // localStorageWrites fails writes only, as a full disk does, leaving the
+  // older checkpoint readable.
+  const down = { localStorage: false, localStorageWrites: false, indexedDB: false, server: false };
   const { getItem, setItem } = f.storage;
   f.storage.setItem = (key: string, value: string) => {
-    if (down.localStorage) throw new Error("QuotaExceededError");
+    if (down.localStorage || down.localStorageWrites) throw new Error("QuotaExceededError");
     setItem(key, value);
   };
   f.storage.getItem = (key: string) => {
@@ -2090,10 +2092,10 @@ test("a server revision that only looks later through clock skew does not discar
   assert.deepEqual(c.acknowledged, [carSession.updatedAt], "released only by the accepted save");
 });
 
-for (const seek of [false, true]) {
-  test(`a reopened player replays a rejected ${seek ? "CarPlay seek" : "CarPlay checkpoint"} on its original base, not a later summary`, async () => {
+for (const [seek, storage] of [[false, "unavailable"], [true, "unavailable"], [false, "read-only"], [true, "read-only"]] as const) {
+  test(`a reopened player replays a rejected ${seek ? "CarPlay seek" : "CarPlay checkpoint"} on its original base with ${storage} localStorage, not a later summary`, async () => {
     const c = carCheckpointFixture({ ...carSession, intentionalRegression: seek });
-    Object.assign(c.down, { localStorage: true, indexedDB: true });
+    Object.assign(c.down, { indexedDB: true, [storage === "read-only" ? "localStorageWrites" : "localStorage"]: true });
     // Another device saved after the car's library snapshot was taken.
     const original = c.f.server.updatedAt;
     let server: Progress = { ...c.f.server, positionSeconds: 2500, bookPositionSeconds: 2500, updatedAt: "1790769700000" };
