@@ -34,7 +34,7 @@ These are experimental and off by default. Only the server owner can turn them o
 
 ## Install
 
-On macOS and Linux, one command downloads the newest release for your computer, verifies its published SHA-256 digest, sets up your audiobook folder, and starts the server:
+On macOS and Linux, one command downloads the newest release for your computer, verifies its release signature and SHA-256 digest, sets up your audiobook folder, and starts the server. Checking the signature needs OpenSSL 1.1.1 or later; on a Mac, install Homebrew's first with `brew install openssl@3`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/script/install.sh | sh
