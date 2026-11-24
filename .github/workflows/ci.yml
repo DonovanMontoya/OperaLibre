@@ -402,6 +402,11 @@ jobs:
           swiftc apps/web/ios/App/App/LibroDeviceResponse.swift apps/web/ios/Tests/LibroDeviceResponseTests.swift -o "$RUNNER_TEMP/libro-response-tests"
           "$RUNNER_TEMP/libro-response-tests"
 
+      - name: Test iOS display transitions
+        run: |
+          swiftc apps/web/ios/App/App/DisplayTransition.swift apps/web/ios/Tests/DisplayTransitionTests.swift -o "$RUNNER_TEMP/display-transition-tests"
+          "$RUNNER_TEMP/display-transition-tests"
+
       - name: Test iOS CarPlay resume position
         run: |
           swiftc apps/web/ios/App/App/CarLibrary.swift apps/web/ios/App/App/StoredRecords.swift apps/web/ios/App/App/ResumeWidgetBook.swift apps/web/ios/Tests/CarLibraryTests.swift -o "$RUNNER_TEMP/car-library-tests"

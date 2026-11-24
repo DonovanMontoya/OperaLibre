@@ -41,6 +41,7 @@
 		C91700012E32000100B6D001 /* GiftArchiveExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C91700022E32000100B6D001 /* GiftArchiveExtractor.swift */; };
 		CBE579FC7E9D981C5C46012E /* Alice.png in Resources */ = {isa = PBXBuildFile; fileRef = ACF3338BFFEE44D8E2F20539 /* Alice.png */; };
 		D0F01D012F10000100A1B2C3 /* DeviceFold.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F01D022F10000100A1B2C3 /* DeviceFold.swift */; };
+		D15B1A012F20000100A1B2C3 /* DisplayTransition.swift in Sources */ = {isa = PBXBuildFile; fileRef = D15B1A022F20000100A1B2C3 /* DisplayTransition.swift */; };
 		DF4AA47D9F114099AB356078 /* PacketAudioAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBDDC1F5C59A4D29B6C175BF /* PacketAudioAsset.swift */; };
 		F727D0D355020DA51E85EAB4 /* ResumeWidgetBook.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEBEE84942E9E3A30E8758E6 /* ResumeWidgetBook.swift */; };
 /* End PBXBuildFile section */
@@ -106,6 +107,7 @@
 		C7F64E48D5AA0F9F092254FB /* ReadingStreakWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ReadingStreakWidget.swift; sourceTree = "<group>"; };
 		C91700022E32000100B6D001 /* GiftArchiveExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GiftArchiveExtractor.swift; sourceTree = "<group>"; };
 		D0F01D022F10000100A1B2C3 /* DeviceFold.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceFold.swift; sourceTree = "<group>"; };
+		D15B1A022F20000100A1B2C3 /* DisplayTransition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayTransition.swift; sourceTree = "<group>"; };
 		F734D8DE704C26B94F9A8552 /* ResumeWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ResumeWidget.swift; sourceTree = "<group>"; };
 		FBDDC1F5C59A4D29B6C175BF /* PacketAudioAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketAudioAsset.swift; sourceTree = "<group>"; };
 		FEBEE84942E9E3A30E8758E6 /* ResumeWidgetBook.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ResumeWidgetBook.swift; sourceTree = "<group>"; };
@@ -161,6 +163,7 @@
 				B17000022E32000100B6D001 /* LibroDevice.swift */,
 				C91700022E32000100B6D001 /* GiftArchiveExtractor.swift */,
 				D0F01D022F10000100A1B2C3 /* DeviceFold.swift */,
+				D15B1A022F20000100A1B2C3 /* DisplayTransition.swift */,
 				B17100022E32000100B6D001 /* LibroDeviceResponse.swift */,
 				A17B00162E32000100B6D001 /* BackgroundDownloadPolicy.swift */,
 				A17B00502E32000100B6D001 /* StoredRecords.swift */,
@@ -356,6 +359,7 @@
 				B17000012E32000100B6D001 /* LibroDevice.swift in Sources */,
 				C91700012E32000100B6D001 /* GiftArchiveExtractor.swift in Sources */,
 				D0F01D012F10000100A1B2C3 /* DeviceFold.swift in Sources */,
+				D15B1A012F20000100A1B2C3 /* DisplayTransition.swift in Sources */,
 				B17100012E32000100B6D001 /* LibroDeviceResponse.swift in Sources */,
 				A17B00172E32000100B6D001 /* BackgroundDownloadPolicy.swift in Sources */,
 				A17B00512E32000100B6D001 /* StoredRecords.swift in Sources */,
