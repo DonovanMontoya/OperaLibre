@@ -16,7 +16,7 @@ small bounds. Tests check the orders someone thought of; this checks the rest.
 | Invariant | Plain rule | Harm when broken |
 | --- | --- | --- |
 | `NoOrphanedEdit` | A position this device recorded is never refused by the server or overwritten in the journal unless another device saved after the revision it was recorded on. | Listening is silently lost; the listener lands back where they were. |
-| `PlayerShowsNewest` | When restore finishes with nothing pending and the journal at the server's newest revision, the player shows that revision's position. | The player sits on a stale position and the next listening is built on it. |
+| `PlayerShowsNewest` | When restore settles with the journal at the server's newest revision, the player shows that position. If the resend is lost after the journal is healed, the player and journal use the newest revision restore saw. | The player sits on a stale position and the next listening is built on it. |
 | `NoOrphanAfterLostReply` | `NoOrphanedEdit` limited to 0af3ac8c's story: a restore whose save committed but whose reply was lost, followed by refused listening. Checked only on the pre-fix switch. | As for `NoOrphanedEdit`. |
 | `NoResetToStart` | Neither the server nor a pending journal copy falls to the start of the book, since the listener never seeks there in the model. | A 0:00 write replaces real progress. |
 
@@ -30,7 +30,7 @@ verification/run.sh
 
 It downloads `tla2tools.jar` 1.7.4 once, checks its sha256, and runs every
 config. It needs Java 11 or later; set `JAVA` to a java binary when the one on
-`PATH` does not run. The whole check takes about 15 seconds. CI runs the same
+`PATH` does not run. The whole check takes under a minute. CI runs the same
 script in the `formal` job whenever a file in the coverage record or under
 `verification/` changes.
 
@@ -42,12 +42,13 @@ script in the `formal` job whenever a file in the coverage record or under
 | `prefix-0af3ac8c-lost-reply.cfg` | `RecordingLineage = FALSE` | breaks `NoOrphanAfterLostReply` (the reply is lost) |
 | `prefix-4c7bd6f6.cfg` | `AdoptHealedJournal = FALSE`, no lost messages | breaks `PlayerShowsNewest` |
 | `prefix-85fadfd4.cfg` | `AdoptHealedOnLostResend = FALSE` | breaks `PlayerShowsNewest` (the restore's resend is lost) |
+| `prefix-b151c503.cfg` | `PreferNewestOnLostResend = FALSE` | breaks `PlayerShowsNewest` (the healed journal is older than the restore fetch) |
 | `unrestored-save.cfg` | `GuardUnrestoredSave = FALSE` | breaks `NoResetToStart` |
 
 The runner fails when a config that must break a rule passes, when a passing
-config breaks one, and on any other TLC error such as a deadlock. Bounds: two
-library loads, two listener edits, one lost request or reply, one save from the
-other device, one restore.
+config breaks one, and on any other TLC error such as a deadlock. The current configuration allows
+two library loads, two listener edits, one lost request or reply, two saves
+from the other device, and one restore.
 
 ## Read a result
 
@@ -68,7 +69,7 @@ code does not repeat the path, the model is wrong: fix the model, not the rule.
 
 ## Coverage record
 
-Synced with the code at `4fa16b2805f9cd50d2f76470b27c1a9c75c7eec1`.
+Synced with the code at `617dcbf5a10d72eb6d510fef8e9315f3878a7141`.
 
 | Model action or operator | Code |
 | --- | --- |

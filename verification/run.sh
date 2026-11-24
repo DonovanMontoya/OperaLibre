@@ -23,6 +23,7 @@ checks=(
   "progress-replay/ProgressReplay.tla|prefix-0af3ac8c-lost-reply.cfg|violate NoOrphanAfterLostReply"
   "progress-replay/ProgressReplay.tla|prefix-4c7bd6f6.cfg|violate PlayerShowsNewest"
   "progress-replay/ProgressReplay.tla|prefix-85fadfd4.cfg|violate PlayerShowsNewest"
+  "progress-replay/ProgressReplay.tla|prefix-b151c503.cfg|violate PlayerShowsNewest"
   "progress-replay/ProgressReplay.tla|unrestored-save.cfg|violate NoResetToStart"
 )
 

@@ -30,12 +30,14 @@ CONSTANTS
     \* 85fadfd4: usePlaybackRestore.ts adopts a journal healed while its own
     \* resend was lost. FALSE is the restore before it.
     AdoptHealedOnLostResend,
+    PreferNewestOnLostResend, \* also compare the preceding GET with the healed journal
     \* useProgressSync.ts persistProgress returns early until restore has
     \* applied a position (restoredProgressBookId). FALSE removes that guard.
     GuardUnrestoredSave,
     MaxLoads,   \* loadBooks calls that reach the replay
     MaxEdits,   \* positions the listener records on this device
-    MaxLosses   \* requests or replies the network drops
+    MaxLosses,  \* requests or replies the network drops
+    MaxOtherSaves
 
 \* Positions. The server starts at Start; the journal holds Offline, recorded
 \* while the device had no connection; the other device saves Other.
@@ -62,7 +64,7 @@ NoResult == [ok |-> FALSE, att |-> None, saved |-> None, acks |-> <<>>, n |-> 0]
 VARIABLES
     srv,        \* the stored progress row: at, pos, rid, seq, eid
     clock,
-    otherAt,    \* when the other device saved (0 = not yet); it saves once
+    otherSave,  \* latest revision and count of the other device's saves
     committedEid, \* ghost: the newest listener edit the server ever stored
     nextRid,    \* reliability.ts newProgressRecording: a fresh recording id
     jr,         \* the journal
@@ -70,14 +72,14 @@ VARIABLES
     edits, losses,
     req, resp,  \* per sender: request on the wire, reply on the wire
     libPc, libGen, libActive, libQueued, libPrev, libCp, libAtt, libRes,
-    rstPc, rstOwns, rstCancelled, rstWait, rstCp, rstLocal, rstOpt, rstNewer,
+    rstPc, rstOwns, rstCancelled, rstWait, rstCp, rstLocal, rstOpt, rstNewer, rstFetched,
     queue, qPc, qAtt,
     srvOrphan, jrOrphan, rstCheck
 
-vars == <<srv, clock, otherAt, committedEid, nextRid, jr, player, edits, losses,
+vars == <<srv, clock, otherSave, committedEid, nextRid, jr, player, edits, losses,
           req, resp, libPc, libGen, libActive, libQueued, libPrev, libCp, libAtt,
           libRes, rstPc, rstOwns, rstCancelled, rstWait, rstCp, rstLocal, rstOpt,
-          rstNewer, queue, qPc, qAtt, srvOrphan, jrOrphan, rstCheck>>
+          rstNewer, rstFetched, queue, qPc, qAtt, srvOrphan, jrOrphan, rstCheck>>
 
 -----------------------------------------------------------------------------
 (* reliability.ts helpers, one operator each. *)
@@ -172,14 +174,14 @@ Reply(row, acc) ==
 \* server never stored, although no other device saved after its base.
 DropsEdit(old, new) ==
     old.st = "pending" /\ new.eid < old.eid /\ committedEid < old.eid
-    /\ ~(otherAt > old.base)
+    /\ ~(otherSave.at > old.base)
 TrackJournal == jrOrphan' = (jrOrphan \/ DropsEdit(jr, jr'))
 
 -----------------------------------------------------------------------------
 Init ==
     /\ srv = [at |-> 1, pos |-> Start, rid |-> 0, seq |-> 0, eid |-> 0]
     /\ clock = 2
-    /\ otherAt = 0
+    /\ otherSave = [at |-> 0, count |-> 0]
     /\ committedEid = 0
     /\ nextRid = 2
     \* Listening recorded offline on top of revision 1, then the app closed.
@@ -194,7 +196,7 @@ Init ==
     /\ libPrev = NoResult /\ libCp = None /\ libAtt = None
     /\ libRes = [i \in 1..MaxLoads |-> [done |-> FALSE, res |-> NoResult]]
     /\ rstPc = "closed" /\ rstOwns = FALSE /\ rstCancelled = FALSE /\ rstWait = 0
-    /\ rstCp = None /\ rstLocal = None /\ rstOpt = None /\ rstNewer = FALSE
+    /\ rstCp = None /\ rstLocal = None /\ rstOpt = None /\ rstNewer = FALSE /\ rstFetched = None
     /\ queue = None /\ qPc = "idle" /\ qAtt = None
     /\ srvOrphan = FALSE /\ jrOrphan = FALSE /\ rstCheck = "none"
 
@@ -231,8 +233,8 @@ ServerHandles(s) ==
        \* This device's newest listening refused although no other device
        \* saved after the revision it was recorded on.
        /\ srvOrphan' = (srvOrphan \/
-            (d.keep /\ req[s].eid > committedEid /\ ~(otherAt > req[s].base)))
-    /\ UNCHANGED <<otherAt, nextRid, jr, player, edits, losses, libPc, libGen,
+            (d.keep /\ req[s].eid > committedEid /\ ~(otherSave.at > req[s].base)))
+    /\ UNCHANGED <<otherSave, rstFetched, nextRid, jr, player, edits, losses, libPc, libGen,
                    libActive, libQueued, libPrev, libCp, libAtt, libRes, rstPc,
                    rstOwns, rstCancelled, rstWait, rstCp, rstLocal, rstOpt,
                    rstNewer, queue, qPc, qAtt, rstCheck>>
@@ -247,22 +249,23 @@ NetworkDrops(s) ==
           /\ req' = req
     /\ resp' = [resp EXCEPT ![s] = [k |-> "lost", r |-> None]]
     /\ losses' = losses + 1
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, nextRid, jr, player, edits,
+    /\ UNCHANGED <<srv, clock, otherSave, committedEid, nextRid, jr, player, edits,
                    libPc, libGen, libActive, libQueued, libPrev, libCp, libAtt,
                    libRes, rstPc, rstOwns, rstCancelled, rstWait, rstCp, rstLocal,
-                   rstOpt, rstNewer, queue, qPc, qAtt, srvOrphan, rstCheck>>
+                   rstOpt, rstNewer, rstFetched, queue, qPc, qAtt, srvOrphan, rstCheck>>
     /\ TrackJournal
 
 \* Another device listened further and saved against the current revision.
 OtherDeviceSaves ==
-    /\ otherAt = 0
-    /\ srv' = [at |-> clock + 1, pos |-> Other, rid |-> 0, seq |-> 0, eid |-> 0]
-    /\ otherAt' = clock + 1
+    /\ otherSave.count < MaxOtherSaves
+    /\ srv' = [at |-> clock + 1, pos |-> Other + otherSave.count * 10,
+                rid |-> 0, seq |-> 0, eid |-> 0]
+    /\ otherSave' = [at |-> clock + 1, count |-> otherSave.count + 1]
     /\ clock' = clock + 1
     /\ UNCHANGED <<committedEid, nextRid, jr, player, edits, losses, req, resp,
                    libPc, libGen, libActive, libQueued, libPrev, libCp, libAtt,
                    libRes, rstPc, rstOwns, rstCancelled, rstWait, rstCp, rstLocal,
-                   rstOpt, rstNewer, queue, qPc, qAtt, srvOrphan, rstCheck>>
+                   rstOpt, rstNewer, rstFetched, queue, qPc, qAtt, srvOrphan, rstCheck>>
     /\ TrackJournal
 
 -----------------------------------------------------------------------------
@@ -281,9 +284,9 @@ LibLoad ==
                  /\ UNCHANGED libQueued
             ELSE /\ libQueued' = TRUE
                  /\ UNCHANGED <<libPc, libActive, libPrev>>
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, nextRid, jr, player, edits,
+    /\ UNCHANGED <<srv, clock, otherSave, committedEid, nextRid, jr, player, edits,
                    losses, req, resp, libCp, libAtt, libRes, rstPc, rstOwns,
-                   rstCancelled, rstWait, rstCp, rstLocal, rstOpt, rstNewer, queue,
+                   rstCancelled, rstWait, rstCp, rstLocal, rstOpt, rstNewer, rstFetched, queue,
                    qPc, qAtt, srvOrphan, rstCheck>>
     /\ TrackJournal
 
@@ -305,9 +308,9 @@ LibRead ==
        THEN LibFinish(libPrev) /\ UNCHANGED libCp
        ELSE /\ libCp' = jr /\ libPc' = "send"
             /\ UNCHANGED <<libActive, libQueued, libPrev, libRes>>
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, nextRid, jr, player, edits,
+    /\ UNCHANGED <<srv, clock, otherSave, committedEid, nextRid, jr, player, edits,
                    losses, req, resp, libGen, libAtt, rstPc, rstOwns, rstCancelled,
-                   rstWait, rstCp, rstLocal, rstOpt, rstNewer, queue, qPc, qAtt,
+                   rstWait, rstCp, rstLocal, rstOpt, rstNewer, rstFetched, queue, qPc, qAtt,
                    srvOrphan, rstCheck>>
     /\ TrackJournal
 
@@ -337,9 +340,9 @@ LibSend ==
             /\ req' = [req EXCEPT !["lib"] = attempted]
             /\ libPc' = "wait"
             /\ UNCHANGED <<libActive, libQueued, libPrev, libRes, queue>>
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, player, edits, losses, resp,
+    /\ UNCHANGED <<srv, clock, otherSave, committedEid, player, edits, losses, resp,
                    libGen, rstPc, rstOwns, rstCancelled, rstWait, rstCp, rstLocal,
-                   rstOpt, rstNewer, qPc, qAtt, srvOrphan, rstCheck>>
+                   rstOpt, rstNewer, rstFetched, qPc, qAtt, srvOrphan, rstCheck>>
     /\ TrackJournal
 
 LibReply ==
@@ -355,9 +358,9 @@ LibReply ==
                                     IF i <= libPrev.n THEN libPrev.acks[i]
                                     ELSE [att |-> libAtt, saved |-> saved]]])
     /\ resp' = [resp EXCEPT !["lib"] = Idle]
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, nextRid, player, edits,
+    /\ UNCHANGED <<srv, clock, otherSave, committedEid, nextRid, player, edits,
                    losses, req, libGen, libCp, libAtt, rstPc, rstOwns, rstCancelled,
-                   rstWait, rstCp, rstLocal, rstOpt, rstNewer, qPc, qAtt, srvOrphan,
+                   rstWait, rstCp, rstLocal, rstOpt, rstNewer, rstFetched, qPc, qAtt, srvOrphan,
                    rstCheck>>
     /\ TrackJournal
 
@@ -366,9 +369,9 @@ LibLost ==
     /\ resp["lib"].k = "lost"
     /\ LibFinish(libPrev)
     /\ resp' = [resp EXCEPT !["lib"] = Idle]
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, nextRid, jr, player, edits,
+    /\ UNCHANGED <<srv, clock, otherSave, committedEid, nextRid, jr, player, edits,
                    losses, req, libGen, libCp, libAtt, rstPc, rstOwns, rstCancelled,
-                   rstWait, rstCp, rstLocal, rstOpt, rstNewer, queue, qPc, qAtt,
+                   rstWait, rstCp, rstLocal, rstOpt, rstNewer, rstFetched, queue, qPc, qAtt,
                    srvOrphan, rstCheck>>
     /\ TrackJournal
 
@@ -382,7 +385,7 @@ RstOpen ==
     /\ rstOwns' = TRUE
     /\ rstWait' = IF libPc = "idle" THEN 0
                   ELSE IF libQueued THEN libActive + 1 ELSE libActive
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, nextRid, jr, player, edits,
+    /\ UNCHANGED <<srv, clock, otherSave, rstFetched, committedEid, nextRid, jr, player, edits,
                    losses, req, resp, libPc, libGen, libActive, libQueued, libPrev,
                    libCp, libAtt, libRes, rstCancelled, rstCp, rstLocal, rstOpt,
                    rstNewer, queue, qPc, qAtt, srvOrphan, rstCheck>>
@@ -400,7 +403,7 @@ RstOptimistic ==
     /\ rstCp' = jr /\ rstLocal' = jr /\ rstOpt' = jr
     /\ Apply(jr, jr.st = "synced")
     /\ rstPc' = IF rstWait # 0 THEN "awaitLib" ELSE "fetch"
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, nextRid, edits, losses, req,
+    /\ UNCHANGED <<srv, clock, otherSave, rstFetched, committedEid, nextRid, edits, losses, req,
                    resp, libPc, libGen, libActive, libQueued, libPrev, libCp, libAtt,
                    libRes, rstOwns, rstCancelled, rstWait, rstNewer, queue, qPc, qAtt,
                    srvOrphan, rstCheck>>
@@ -432,9 +435,9 @@ RstAfterLibrary ==
                            THEN jr ELSE rstCp
                /\ rstPc' = "fetch"
                /\ UNCHANGED <<rstOwns, rstCheck>>
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, nextRid, jr, player, edits,
+    /\ UNCHANGED <<srv, clock, otherSave, committedEid, nextRid, jr, player, edits,
                    losses, req, resp, libPc, libGen, libActive, libQueued, libPrev,
-                   libCp, libAtt, libRes, rstCancelled, rstWait, rstOpt, rstNewer,
+                   libCp, libAtt, libRes, rstCancelled, rstWait, rstOpt, rstNewer, rstFetched,
                    queue, qPc, qAtt, srvOrphan>>
     /\ TrackJournal
 
@@ -448,7 +451,7 @@ RstFetch ==
     /\ rstPc = "fetch"
     /\ IF rstCancelled
        THEN /\ RstEnd("cancelled")
-            /\ UNCHANGED <<jr, player, nextRid, req, rstCp, rstLocal, rstNewer, queue>>
+            /\ UNCHANGED <<jr, player, nextRid, req, rstCp, rstLocal, rstNewer, rstFetched, queue>>
        ELSE LET server == Reply(srv, "undef")
                 newer == rstLocal.st = "pending"   \* progressNeedsSync
                 sending == Identify(rstLocal)
@@ -466,6 +469,7 @@ RstFetch ==
                                              libPc = "idle" /\ qPc = "idle"))
                        /\ UNCHANGED <<nextRid, req, rstCp, rstLocal>>
                        /\ rstNewer' = FALSE
+                       /\ UNCHANGED rstFetched
                ELSE /\ nextRid' = IF Owned(rstLocal) THEN nextRid ELSE nextRid + 1
                     /\ rstLocal' = sending
                     /\ IF JournalAttempt(sending, rstCp)
@@ -473,9 +477,10 @@ RstFetch ==
                        ELSE UNCHANGED <<jr, rstCp>>
                     /\ req' = [req EXCEPT !["rst"] = sending]
                     /\ rstNewer' = TRUE
+                    /\ rstFetched' = server
                     /\ rstPc' = "wait"
                     /\ UNCHANGED <<player, queue, rstOwns, rstCheck>>
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, edits, losses, resp, libPc,
+    /\ UNCHANGED <<srv, clock, otherSave, committedEid, edits, losses, resp, libPc,
                    libGen, libActive, libQueued, libPrev, libCp, libAtt, libRes,
                    rstCancelled, rstWait, rstOpt, qPc, qAtt, srvOrphan>>
     /\ TrackJournal
@@ -517,9 +522,9 @@ RstReply ==
                /\ queue' = queueAfter
                /\ RstEnd(SettleCheck(finalPos, finalJr,
                                      libPc = "idle" /\ qPc = "idle"))
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, nextRid, edits, losses, req,
+    /\ UNCHANGED <<srv, clock, otherSave, committedEid, nextRid, edits, losses, req,
                    libPc, libGen, libActive, libQueued, libPrev, libCp, libAtt,
-                   libRes, rstCancelled, rstWait, rstCp, rstLocal, rstOpt, rstNewer,
+                   libRes, rstCancelled, rstWait, rstCp, rstLocal, rstOpt, rstNewer, rstFetched,
                    qPc, qAtt, srvOrphan>>
     /\ TrackJournal
 
@@ -528,17 +533,25 @@ RstLost ==
     /\ resp["rst"].k = "lost"
     /\ resp' = [resp EXCEPT !["rst"] = Idle]
     /\ IF rstCancelled
-       THEN RstEnd("cancelled") /\ UNCHANGED player
+       THEN RstEnd("cancelled") /\ UNCHANGED <<jr, player>>
        ELSE LET healed == AdoptHealedOnLostResend /\ jr.st = "synced"
                     /\ (rstCp.st # "synced" \/ jr.upd # rstCp.upd)
-                target == IF healed THEN jr ELSE rstLocal
+                observed == IF rstFetched.upd > jr.upd THEN rstFetched ELSE jr
+                target == IF ~healed THEN rstLocal
+                          ELSE IF PreferNewestOnLostResend THEN observed ELSE jr
                 again == Reapply(target, healed)
                 finalPos == IF again THEN target.pos ELSE player.pos
-            IN /\ player' = [pos |-> finalPos, restored |-> TRUE]
-               /\ RstEnd(SettleCheck(finalPos, jr, libPc = "idle" /\ qPc = "idle"))
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, nextRid, jr, edits, losses,
+                finalJr == IF again /\ healed
+                           THEN StoreCanonical([target EXCEPT !.acc = "undef"], FALSE, None, None)
+                           ELSE jr
+            IN /\ jr' = finalJr
+               /\ player' = [pos |-> finalPos, restored |-> TRUE]
+               /\ RstEnd(IF healed /\ (finalPos # observed.pos \/ finalJr.upd # observed.upd)
+                        THEN "stale"
+                        ELSE SettleCheck(finalPos, finalJr, libPc = "idle" /\ qPc = "idle"))
+    /\ UNCHANGED <<srv, clock, otherSave, committedEid, nextRid, edits, losses,
                    req, libPc, libGen, libActive, libQueued, libPrev, libCp, libAtt,
-                   libRes, rstCancelled, rstWait, rstCp, rstLocal, rstOpt, rstNewer,
+                   libRes, rstCancelled, rstWait, rstCp, rstLocal, rstOpt, rstNewer, rstFetched,
                    queue, qPc, qAtt, srvOrphan>>
     /\ TrackJournal
 
@@ -560,9 +573,9 @@ ListenerRecords ==
     /\ IF rstPc \in {"optimistic", "awaitLib", "fetch", "wait"}
        THEN rstCancelled' = TRUE /\ rstOwns' = FALSE
        ELSE UNCHANGED <<rstCancelled, rstOwns>>
-    /\ UNCHANGED <<srv, otherAt, committedEid, losses, req, resp, libPc, libGen,
+    /\ UNCHANGED <<srv, otherSave, committedEid, losses, req, resp, libPc, libGen,
                    libActive, libQueued, libPrev, libCp, libAtt, libRes, rstPc,
-                   rstWait, rstCp, rstLocal, rstOpt, rstNewer, qPc, qAtt, srvOrphan,
+                   rstWait, rstCp, rstLocal, rstOpt, rstNewer, rstFetched, qPc, qAtt, srvOrphan,
                    rstCheck>>
     /\ TrackJournal
 
@@ -574,10 +587,10 @@ QueueSend ==
     /\ qAtt' = queue
     /\ queue' = None
     /\ qPc' = "wait"
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, nextRid, jr, player, edits,
+    /\ UNCHANGED <<srv, clock, otherSave, committedEid, nextRid, jr, player, edits,
                    losses, resp, libPc, libGen, libActive, libQueued, libPrev, libCp,
                    libAtt, libRes, rstPc, rstOwns, rstCancelled, rstWait, rstCp,
-                   rstLocal, rstOpt, rstNewer, srvOrphan, rstCheck>>
+                   rstLocal, rstOpt, rstNewer, rstFetched, srvOrphan, rstCheck>>
     /\ TrackJournal
 
 QueueReply ==
@@ -592,10 +605,10 @@ QueueReply ==
                /\ queue' = QueueAfterCanonical(saved, TRUE, qAtt, qAtt)
     /\ resp' = [resp EXCEPT !["queue"] = Idle]
     /\ qPc' = "idle"
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, nextRid, player, edits,
+    /\ UNCHANGED <<srv, clock, otherSave, committedEid, nextRid, player, edits,
                    losses, req, libPc, libGen, libActive, libQueued, libPrev, libCp,
                    libAtt, libRes, rstPc, rstOwns, rstCancelled, rstWait, rstCp,
-                   rstLocal, rstOpt, rstNewer, qAtt, srvOrphan, rstCheck>>
+                   rstLocal, rstOpt, rstNewer, rstFetched, qAtt, srvOrphan, rstCheck>>
     /\ TrackJournal
 
 \* The drain's catch drops the entry; the journal keeps the edit.
@@ -604,10 +617,10 @@ QueueLost ==
     /\ resp["queue"].k = "lost"
     /\ resp' = [resp EXCEPT !["queue"] = Idle]
     /\ qPc' = "idle"
-    /\ UNCHANGED <<srv, clock, otherAt, committedEid, nextRid, jr, player, edits,
+    /\ UNCHANGED <<srv, clock, otherSave, committedEid, nextRid, jr, player, edits,
                    losses, req, libPc, libGen, libActive, libQueued, libPrev, libCp,
                    libAtt, libRes, rstPc, rstOwns, rstCancelled, rstWait, rstCp,
-                   rstLocal, rstOpt, rstNewer, queue, qAtt, srvOrphan, rstCheck>>
+                   rstLocal, rstOpt, rstNewer, rstFetched, queue, qAtt, srvOrphan, rstCheck>>
     /\ TrackJournal
 
 -----------------------------------------------------------------------------
@@ -635,7 +648,8 @@ Spec == Init /\ [][Next]_vars
 NoOrphanedEdit == ~srvOrphan /\ ~jrOrphan
 
 \* When restore settles, the player shows the newest position the server
-\* holds from any device.
+\* holds from any device. If the resend is lost after the journal was
+\* healed, both the player and journal use the newest observed revision.
 PlayerShowsNewest == rstCheck # "stale"
 
 \* NoOrphanedEdit limited to 0af3ac8c's own story: restore finished after a
