@@ -11,7 +11,7 @@ on:
       channel:
         description: Release channel (nightly publishes only web/server packages)
         type: choice
-        options: [stable, nightly]
+        options: [stable, nightly, follow-along]
         default: stable
       source_nightly:
         description: Optional immutable nightly tag to promote to stable
@@ -40,7 +40,8 @@ jobs:
     name: Requested release
     uses: ./.github/workflows/build-release.yml
     with:
-      channel: ${{ github.event_name == 'repository_dispatch' && 'nightly' || inputs.channel || 'stable' }}
+      channel: ${{ (github.event_name == 'repository_dispatch' || inputs.channel == 'follow-along') && 'nightly' || inputs.channel || 'stable' }}
+      sync_only: ${{ inputs.channel == 'follow-along' }}
       tag: ${{ github.event_name == 'push' && github.ref_name || inputs.tag || '' }}
       source_nightly: ${{ inputs.source_nightly || '' }}
       release_notes: ${{ inputs.release_notes || '' }}

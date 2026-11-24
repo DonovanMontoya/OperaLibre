@@ -6,6 +6,9 @@ on:
       channel:
         type: string
         required: true
+      sync_only:
+        type: boolean
+        default: false
       tag:
         type: string
         default: ""
@@ -60,7 +63,12 @@ jobs:
           SOURCE_NIGHTLY: ${{ inputs.source_nightly }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_EVENT: ${{ inputs.release_event }}
-        run: node script/resolve_release.mjs
+          SYNC_ONLY: ${{ inputs.sync_only }}
+        run: |
+          if [[ "${SYNC_ONLY}" == "true" ]]; then
+            export SOURCE_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+          fi
+          node script/resolve_release.mjs
 
       - name: Checkout release source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -68,7 +76,7 @@ jobs:
           ref: ${{ steps.release-ref.outputs.ref }}
 
       - name: Check nightly compatibility baseline
-        if: steps.release-ref.outputs.channel == 'nightly' && steps.release-ref.outputs.publish == 'true'
+        if: inputs.sync_only != true && steps.release-ref.outputs.channel == 'nightly' && steps.release-ref.outputs.publish == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -89,7 +97,7 @@ jobs:
           JS
 
       - name: Check sync add-on release
-        if: steps.release-ref.outputs.channel == 'stable' && steps.release-ref.outputs.publish == 'true'
+        if: (inputs.sync_only == true || steps.release-ref.outputs.channel == 'stable') && steps.release-ref.outputs.publish == 'true'
         id: sync-addon
         shell: bash
         env:
@@ -205,6 +213,7 @@ jobs:
 
   frontend:
     name: Frontend package
+    if: inputs.sync_only != true
     needs:
       - prepare
       - verify
@@ -678,7 +687,7 @@ jobs:
       - android
       - native
       - publish-sync-addon
-    if: ${{ !cancelled() && !failure() && needs.prepare.outputs.publish == 'true' }}
+    if: ${{ !cancelled() && !failure() && inputs.sync_only != true && needs.prepare.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
