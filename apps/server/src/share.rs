@@ -91,6 +91,14 @@ struct ActiveSender {
 static INVITATION_GATE: LazyLock<Mutex<HashMap<String, Vec<ActiveSender>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[cfg(test)]
+tokio::task_local! {
+    /// Lets a test that runs a revocation inside this scope learn when that
+    /// revocation holds INVITATION_GATE and has detached its work, which a
+    /// global `try_lock` cannot tell apart from parallel tests holding the gate.
+    static REVOCATION_ADMITTED: Arc<tokio::sync::Notify>;
+}
+
 fn invitation_key(state: &AppState, digest: &str) -> String {
     format!("{}:{digest}", state.server_id)
 }
@@ -1569,7 +1577,10 @@ pub(crate) async fn revoke_share(
     // Admit before detaching: an abandoned HTTP waiter cannot leave a committed
     // database revocation without cancellation, or queue unbounded workers.
     let gate = INVITATION_GATE.lock().await;
-    tokio::spawn(async move { revoke_owned(state, auth, token, gate).await })
+    let worker = tokio::spawn(async move { revoke_owned(state, auth, token, gate).await });
+    #[cfg(test)]
+    let _ = REVOCATION_ADMITTED.try_with(|admitted| admitted.notify_one());
+    worker
         .await
         .map_err(|_| ApiError::internal("Share revocation worker failed."))?
 }
