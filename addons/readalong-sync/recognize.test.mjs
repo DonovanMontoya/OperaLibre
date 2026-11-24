@@ -274,8 +274,8 @@ test('a download is kept only when it matches its pinned size and checksum', asy
 
   await assert.rejects(download(`${url}/model`, file, { size: body.length, sha256: 'a'.repeat(64) }), /SHA-256/);
   await assert.rejects(download(`${url}/model`, file, { size: body.length - 1, sha256 }), /larger than/);
-  await assert.rejects(download(`${url}/model`, file, { size: body.length + 1, sha256 }), /expected/);
-  await assert.rejects(download(`${url}/missing`, file, { size: body.length, sha256 }), /404/);
+  await assert.rejects(download(`${url}/model`, file, { size: body.length + 1, sha256 }), /is not the pinned/);
+  await assert.rejects(download(`${url}/missing`, file, { size: body.length, sha256 }), /was not found/);
   assert.deepEqual(await readdir(directory), []);
 
   await download(`${url}/model`, file, { size: body.length, sha256 });

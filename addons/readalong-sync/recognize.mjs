@@ -195,13 +195,22 @@ async function verified(file, { size, sha256 }, what) {
   if (digest !== sha256) throw new Error(`${what} does not match its pinned SHA-256.`);
 }
 
+/// Why a download was not served, in words of our own: a plan's notes are
+/// shown to the owner, and nothing a remote server sent belongs in them.
+function refusal(status) {
+  if (status === 404) return 'was not found';
+  if (status === 401 || status === 403) return 'was refused';
+  if (status === 429) return 'was refused for asking too often';
+  return status >= 500 ? 'failed on its server' : 'was not served';
+}
+
 /// Streams `url` to `destination` and keeps it only if it has the pinned size
 /// and SHA-256, so an interrupted or altered download is never used.
 export async function download(url, destination, expected) {
   const partial = `${destination}.part`;
   try {
     const response = await fetch(url, { redirect: 'follow' });
-    if (!response.ok || !response.body) throw new Error(`${url} answered ${response.status}.`);
+    if (!response.ok || !response.body) throw new Error(`${url} ${refusal(response.status)}.`);
     const hash = createHash('sha256');
     let size = 0;
     await pipeline(
@@ -215,7 +224,7 @@ export async function download(url, destination, expected) {
       }),
       createWriteStream(partial)
     );
-    if (size !== expected.size) throw new Error(`${url} is ${size} bytes; expected ${expected.size}.`);
+    if (size !== expected.size) throw new Error(`${url} is not the pinned ${expected.size} bytes.`);
     if (hash.digest('hex') !== expected.sha256) throw new Error(`${url} does not match its pinned SHA-256.`);
     await rename(partial, destination);
   } catch (error) {
@@ -248,7 +257,7 @@ export async function fetchModel(id, root) {
   try {
     const archive = path.join(scratch, 'model.tar.bz2');
     const response = await fetch(model.archive, { redirect: 'follow' });
-    if (!response.ok || !response.body) throw new Error(`${model.archive} answered ${response.status}.`);
+    if (!response.ok || !response.body) throw new Error(`${model.archive} ${refusal(response.status)}.`);
     await pipeline(Readable.fromWeb(response.body), createWriteStream(archive));
     unpack(scratch, 'model.tar.bz2', model.archive);
     for (const [name, expected] of Object.entries(model.files)) {
@@ -288,7 +297,11 @@ function gpuRuntimeDir() {
 async function installGpuRuntime() {
   const directory = gpuRuntimeDir();
   const marker = path.join(directory, 'installed.json');
-  if (existsSync(marker)) return false;
+  try {
+    if (JSON.parse(await readFile(marker, 'utf8')).version === GPU_RUNTIME.version) return false;
+  } catch {
+    // Not installed, or not completely.
+  }
   await rm(directory, { recursive: true, force: true });
   await mkdir(directory, { recursive: true });
   const scratch = await mkdtemp(path.join(directory, '.fetch-'));
