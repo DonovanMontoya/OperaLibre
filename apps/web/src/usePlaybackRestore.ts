@@ -314,10 +314,11 @@ export function usePlaybackRestore({
             }
           } else if (currentCheckpoint?.syncStatus === "synced"
             && (checkpoint?.syncStatus !== "synced" || currentCheckpoint.updatedAt !== checkpoint.updatedAt)) {
-            // The library reconnect's refusal healed the journal while this
-            // resend was lost, so no reply will arrive to adopt the healed copy.
+            // A reconnect reply can heal the journal before the restore's
+            // GET sees a later server revision. Keep the newest observed copy.
             serverCorrectedLocal = true;
-            target = currentCheckpoint;
+            target = server && progressTimestamp(server.updatedAt) > progressTimestamp(currentCheckpoint.updatedAt)
+              ? server : currentCheckpoint;
             targetIsCanonical = true;
           }
         }

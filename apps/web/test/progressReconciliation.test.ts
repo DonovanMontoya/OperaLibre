@@ -844,6 +844,46 @@ for (const [competingEdit, resendFails] of [[false, false], [true, false], [fals
   });
 }
 
+test("lost restore resend keeps the newer server revision fetched after library replay", async () => {
+  const f = fixture();
+  f.write(f.local);
+  const libraryRevision = { ...f.server, positionSeconds: 1800, bookPositionSeconds: 1800,
+    updatedAt: "1790769660000", accepted: false };
+  const fetchedRevision = { ...f.server, positionSeconds: 2100, bookPositionSeconds: 2100,
+    updatedAt: "1790769720000" };
+  const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+  f.options.storeCanonicalServerProgress = sync.storeCanonicalServerProgress;
+  let respondToLibrary!: (progress: Progress) => void;
+  const libraryReply = new Promise<Progress>(resolve => { respondToLibrary = resolve; });
+  let markLibrarySent!: () => void;
+  const librarySent = new Promise<void>(resolve => { markLibrarySent = resolve; });
+  let markOptimisticSeek!: () => void;
+  const optimisticSeek = new Promise<void>(resolve => { markOptimisticSeek = resolve; });
+  f.options.setPendingSeek = (location: typeof f.seeks[number]) => {
+    f.seeks.push(location);
+    markOptimisticSeek();
+  };
+  f.dependencies["./api"].getProgress = async () => fetchedRevision;
+  f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+    f.writes.push({ progress, options });
+    if (f.writes.length === 1) {
+      markLibrarySent();
+      return libraryReply;
+    }
+    throw new TypeError("Failed to fetch");
+  };
+  const library = loadHook("useLibrary", f.dependencies)(f.options);
+  await library.loadBooks();
+  await librarySent;
+  const restoring = f.restore();
+  await optimisticSeek;
+  respondToLibrary(libraryRevision);
+  await restoring;
+  assert.equal(f.writes.length, 2);
+  assert.equal(f.seeks.at(-1)?.positionSeconds, 2100);
+  assert.equal(f.checkpoint().bookPositionSeconds, 2100);
+});
+
 // The usual reconnect: the library replay is accepted and heals the journal
 // to the new revision at the same position, then the restore's duplicate
 // replay is refused for its stale base. Nothing was overruled, so no marker
