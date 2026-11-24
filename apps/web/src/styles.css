@@ -26324,3 +26324,39 @@ html:not(.native-app) .book-heading .book-quick-start .book-quick-return {
 .chapter-notes-head .quiet-button {
   font-size: 0.74rem;
 }
+
+.chapter-notes-chapters > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  font-size: 0.8rem;
+  color: var(--ink-faded);
+  cursor: pointer;
+  list-style: none;
+}
+
+.chapter-notes-chapters > summary::-webkit-details-marker {
+  display: none;
+}
+
+.chapter-notes-chapters > summary svg {
+  flex: none;
+  transform: rotate(-90deg);
+  transition: transform 160ms ease;
+}
+
+.chapter-notes-chapters[open] > summary svg {
+  transform: none;
+}
+
+.chapter-notes-chapters > summary em {
+  font-style: normal;
+  color: var(--ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chapter-notes-chapters > summary svg {
+    transition: none;
+  }
+}
