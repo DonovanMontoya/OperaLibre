@@ -2239,6 +2239,28 @@ const RECOVERY_OVERLAP_SECONDS: f64 = 15.0;
 const PREFETCH_PIECE_SECONDS: f64 = 240.0;
 const PREFETCH_OVERLAP_SECONDS: f64 = 15.0;
 const PREFETCH_AHEAD: usize = 6;
+/// The add-on's recognizer keeps one core free for playback and uses up to
+/// four of the rest. Hearing the next window while the aligner places the
+/// current one needs a core beyond those.
+const HEAR_AHEAD_MIN_CORES: usize = 6;
+
+/// The first window the walk asks for from `position`.
+fn opening_window(position: f64, scope_end: f64) -> (f64, f64) {
+    if scope_end - position <= MAX_SINGLE_PASS_SECONDS {
+        (position, scope_end)
+    } else {
+        (position, (position + WINDOW_SECONDS).min(scope_end))
+    }
+}
+
+/// A window the add-on's recognizer heard while the window before it was
+/// being aligned. It holds what the walk's own first pass over that audio
+/// would have returned, and the audio for any retry.
+struct HeardAhead {
+    range: (f64, f64),
+    audio: PathBuf,
+    words: Vec<alignment::RecognizedWord>,
+}
 
 struct CloudPrefetch {
     state: AppState,
@@ -2654,6 +2676,8 @@ struct Aligner<'a> {
     recognition: &'a RecognitionSettings,
     heard: std::sync::Mutex<Heard>,
     prefetch: Option<&'a tokio::sync::Mutex<BookPrefetch>>,
+    /// Whether this server has the cores to hear one window ahead.
+    hear_ahead: bool,
 }
 
 #[derive(Default)]
@@ -2690,6 +2714,8 @@ impl<'a> Aligner<'a> {
             recognition,
             heard: Default::default(),
             prefetch: None,
+            hear_ahead: std::thread::available_parallelism()
+                .is_ok_and(|cores| cores.get() >= HEAR_AHEAD_MIN_CORES),
         }
     }
 
@@ -2708,6 +2734,7 @@ impl<'a> Aligner<'a> {
             recognition,
             heard: Default::default(),
             prefetch: None,
+            hear_ahead: self.hear_ahead,
         }
     }
 
@@ -2898,6 +2925,11 @@ impl<'a> Aligner<'a> {
             })),
             (None, _) => None,
         };
+        let hears_ahead = self.hear_ahead
+            && prefetch.is_none()
+            && self.recognizer.is_some()
+            && parakeet_model(self.recognition.model).is_some();
+        let mut ahead: Option<HeardAhead> = None;
 
         while position < scope_end - 0.5 && cursor < text_len {
             windows += 1;
@@ -3068,6 +3100,7 @@ impl<'a> Aligner<'a> {
                     let recognized = self
                         .window_words(
                             prefetch.as_deref_mut(),
+                            &mut ahead,
                             ffmpeg,
                             track,
                             (position, scope_end),
@@ -3119,6 +3152,7 @@ impl<'a> Aligner<'a> {
                         let recognized = self
                             .window_words(
                                 prefetch.as_deref_mut(),
+                                &mut ahead,
                                 ffmpeg,
                                 track,
                                 (position, window_end),
@@ -3207,18 +3241,37 @@ impl<'a> Aligner<'a> {
                         word
                     })
                     .collect::<Vec<_>>();
-                let segment_fragments = self
-                    .align(
-                        &audio,
-                        &window_transcript,
-                        book_offset + segment_start,
-                        scope_number,
-                        windows,
-                        &scope.label,
-                        &segment_recognition,
-                        segment_end - segment_start,
-                    )
-                    .await;
+                let aligning = self.align(
+                    &audio,
+                    &window_transcript,
+                    book_offset + segment_start,
+                    scope_number,
+                    windows,
+                    &scope.label,
+                    &segment_recognition,
+                    segment_end - segment_start,
+                );
+                // Where the next window starts is settled, so its speech is
+                // recognized while this one is aligned. The two finish in
+                // about the time the slower one takes.
+                let next_cursor = alignment::skip_whitespace_utf16(&transcript.text, text_end);
+                let segment_fragments =
+                    if hears_ahead && segment_end < scope_end - 0.5 && next_cursor < text_len {
+                        let (aligned, heard) = tokio::join!(
+                            aligning,
+                            self.hear_ahead(
+                                ffmpeg,
+                                track,
+                                opening_window(segment_end, scope_end),
+                                scope_number,
+                                windows + 1,
+                            )
+                        );
+                        ahead = heard;
+                        aligned
+                    } else {
+                        aligning.await
+                    };
                 let _ = fs::remove_file(audio).await;
                 let aligned = segment_fragments?;
                 fragments.extend(aligned.fragments);
@@ -3279,6 +3332,7 @@ impl<'a> Aligner<'a> {
     async fn window_words(
         &self,
         prefetch: Option<&mut BookPrefetch>,
+        ahead: &mut Option<HeardAhead>,
         ffmpeg: &FsPath,
         track: &SyncTrackInput,
         (start, end): (f64, f64),
@@ -3286,6 +3340,27 @@ impl<'a> Aligner<'a> {
         window: usize,
         text: &str,
     ) -> anyhow::Result<Vec<alignment::RecognizedWord>> {
+        if let Some(ahead) = ahead.take() {
+            let recognized = if ahead.range == (start, end) {
+                Some(
+                    self.check_window(
+                        WindowAudio::Sliced(&ahead.audio),
+                        Some(ahead.words),
+                        scope_number,
+                        window,
+                        text,
+                        end - start,
+                    )
+                    .await,
+                )
+            } else {
+                None
+            };
+            let _ = fs::remove_file(&ahead.audio).await;
+            if let Some(recognized) = recognized {
+                return recognized;
+            }
+        }
         if let Some(prefetch) = prefetch {
             let heard = prefetch.words(scope_number, start, end).await?;
             return self
@@ -3318,6 +3393,49 @@ impl<'a> Aligner<'a> {
             .await;
         let _ = fs::remove_file(audio).await;
         recognized
+    }
+
+    /// Recognizes a window before the walk reaches it. A failure is left for
+    /// the walk to meet and report when it recognizes the window itself.
+    async fn hear_ahead(
+        &self,
+        ffmpeg: &FsPath,
+        track: &SyncTrackInput,
+        range: (f64, f64),
+        scope_number: usize,
+        window: usize,
+    ) -> Option<HeardAhead> {
+        let audio = self
+            .slice(
+                ffmpeg,
+                &track.path,
+                range.0,
+                range.1,
+                scope_number,
+                window,
+                "ahead",
+            )
+            .await
+            .ok()?;
+        let heard = self
+            .transcribe(
+                &audio,
+                scope_number,
+                &format!("{window}-ahead"),
+                self.recognition.model,
+            )
+            .await;
+        match heard {
+            Ok(words) => Some(HeardAhead {
+                range,
+                audio,
+                words,
+            }),
+            Err(_) => {
+                let _ = fs::remove_file(audio).await;
+                None
+            }
+        }
     }
 
     async fn transcribe_checked(
@@ -4693,6 +4811,7 @@ printf '[{"type":"sentence","text":"Kaladin ran.","startTime":0,"endTime":2}]' >
             recognition: &recognition,
             heard: Default::default(),
             prefetch: None,
+            hear_ahead: false,
         };
         let fragments = aligner
             .align_pass(&audio, &transcript, 0.0, 0, 0, "Chapter 55", &[])
@@ -4832,6 +4951,7 @@ printf '[{"type":"word","text":"heard","startTime":0.5,"endTime":0.9}]' > "$3"
             recognition: &recognition,
             heard: Default::default(),
             prefetch: None,
+            hear_ahead: false,
         };
         for model in [recognition.model, recognition.retry_model] {
             let words = aligner.transcribe(&audio, 0, "1", model).await.unwrap();
@@ -5263,6 +5383,7 @@ printf '[{"type":"word","text":"heard","startTime":0.5,"endTime":0.9}]' > "$3"
             recognition: &recognition,
             heard: Default::default(),
             prefetch: None,
+            hear_ahead: false,
         };
         for (index, scope) in scopes.iter().enumerate() {
             if selected
@@ -5445,6 +5566,7 @@ esac
                 None,
                 false,
                 None,
+                None,
             )
             .await
         }
@@ -5461,6 +5583,10 @@ esac
             // Recognize with a stand-in for OpenAI at this address instead
             // of the fake on-device recognizer, which then refuses to run.
             cloud_endpoint: Option<&str>,
+            // Recognize with a stand-in for the add-on's recognizer on a
+            // server with cores to hear one window ahead. It lists the audio
+            // files it was given in this file.
+            heard_ahead: Option<&FsPath>,
         ) -> (Vec<alignment::SyncFragment>, String) {
             let root = tempfile::tempdir().unwrap();
             let (state, _) = crate::unit_tests::fake_libation_state(root.path());
@@ -5526,6 +5652,17 @@ esac
             } else {
                 script
             };
+            let script = if let Some(calls) = heard_ahead {
+                script.replace(
+                    "command=\"$1\"",
+                    &format!(
+                        "case \"$1\" in *recognize.mjs) shift; printf '%s\\n' \"$2\" >> \"{}\";; esac\ncommand=\"$1\"",
+                        calls.display()
+                    ),
+                )
+            } else {
+                script
+            };
             write_executable(&cli, &script);
 
             let book_sentence = |index| {
@@ -5585,6 +5722,16 @@ esac
                 cloud_recognition::enable_for_test(&state).await;
             }
             let recognition = RecognitionSettings::for_language(Some("en")).with_cloud(cloud);
+            let recognition = if heard_ahead.is_some() {
+                recognition.with_plan(&RecognizerPlan {
+                    model: Some(PARAKEET_FAST.into()),
+                    retry_model: None,
+                    note: None,
+                })
+            } else {
+                recognition
+            };
+            let recognizer = root.path().join("recognize.mjs");
             let temp_dir = tempfile::tempdir().unwrap();
             let aligner = Aligner {
                 state: &state,
@@ -5592,11 +5739,12 @@ esac
                 cli_path: &cli,
                 cli_args: &[],
                 ffmpeg_path: Some(&ffmpeg),
-                recognizer: None,
+                recognizer: heard_ahead.map(|_| recognizer.as_path()),
                 temp_dir: temp_dir.path(),
                 recognition: &recognition,
                 heard: Default::default(),
                 prefetch: None,
+                hear_ahead: heard_ahead.is_some(),
             };
 
             let progress = ScopeProgress {
@@ -5708,6 +5856,37 @@ esac
                 .and_then(|value| value.parse().ok())
                 .unwrap();
             assert!(windows >= 3, "{output}");
+        }
+
+        #[tokio::test]
+        async fn the_next_window_is_heard_while_the_current_one_is_aligned() {
+            let count = 200;
+            let (expected, _) = align_fake_book(count, 0..0, None, None).await;
+            let directory = tempfile::tempdir().unwrap();
+            let calls = directory.path().join("calls");
+            let (fragments, output) = align_fake_book_with_settings(
+                count,
+                &[],
+                None,
+                None,
+                0.0,
+                None,
+                false,
+                None,
+                Some(&calls),
+            )
+            .await;
+
+            assert_eq!(
+                serde_json::to_value(&fragments).unwrap(),
+                serde_json::to_value(&expected).unwrap(),
+                "{output}"
+            );
+            let calls = std::fs::read_to_string(&calls).unwrap();
+            let heard = |kind: &str| calls.lines().filter(|audio| audio.ends_with(kind)).count();
+            // The walk recognizes only its first window itself.
+            assert_eq!(heard("-window.wav"), 1, "{calls}");
+            assert!(heard("-ahead.wav") >= 2, "{calls}");
         }
 
         #[tokio::test]
@@ -5833,6 +6012,7 @@ esac
                 None,
                 false,
                 Some(&endpoint),
+                None,
             )
             .await;
             assert_eq!(fragments.len(), count, "{output}");
@@ -6000,6 +6180,7 @@ esac
                 None,
                 false,
                 Some(&endpoint),
+                None,
             )
             .await;
             assert!(!output.contains("local recognizer used"), "{output}");
@@ -6027,6 +6208,7 @@ esac
                 0.0,
                 None,
                 true,
+                None,
                 None,
             )
             .await;
@@ -6095,6 +6277,7 @@ esac
                 1000.0,
                 Some(15),
                 false,
+                None,
                 None,
             )
             .await;
@@ -6189,6 +6372,7 @@ esac
                 recognition: &recognition,
                 heard: Default::default(),
                 prefetch: None,
+                hear_ahead: false,
             };
             let text = (0..120)
                 .map(|index| format!("word{index}"))
