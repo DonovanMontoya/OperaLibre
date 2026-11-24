@@ -1,11 +1,14 @@
 // On-device speech recognition for follow-along sync, using NVIDIA Parakeet
 // models through sherpa-onnx. The server runs `plan` once per book to learn
-// which models suit this machine, then `transcribe` for each recognition
-// window. `transcribe` writes the word timeline shape Echogarden writes, so
-// the server reads either recognizer the same way. Echogarden still does
-// forced alignment, language detection, and recognition in other languages.
+// which models suit this machine, then keeps one `serve` process per model
+// and sends it each recognition window, so the model is loaded once for the
+// book. `transcribe` does one file by hand. Both write the word timeline
+// shape Echogarden writes, so the server reads either recognizer the same
+// way. Echogarden still does forced alignment, language detection, and
+// recognition in other languages.
 //
 //   node recognize.mjs plan <output.json> [--language=en] [--gpu]
+//   node recognize.mjs serve --model=<id>
 //   node recognize.mjs transcribe <audio> <output.json> --model=<id>
 //   node recognize.mjs fetch <id> <directory>
 //   node recognize.mjs probe <id> [--provider=cuda]
@@ -17,6 +20,7 @@ import { copyFile, cp, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -609,15 +613,57 @@ async function plan(language, gpu) {
   };
 }
 
-async function transcribe(audio, output, id) {
+/// Loads a model and returns the function that recognizes one audio file
+/// with it and writes the timeline.
+async function openModel(id) {
   if (!MODELS[id]) throw new Error(`Unknown speech model: ${id}`);
   if (MODELS[id].provider === 'cuda') await installGpuRuntime();
   const sherpa = loadSherpa(MODELS[id].provider);
   const settings = runtimeSettings(machine());
   const recognizer = createRecognizer(sherpa, id, await ensureModel(id), settings.threads);
-  const wave = await readAudio(sherpa, audio);
-  const segments = recognize(recognizer, wave.samples, wave.sampleRate, settings.chunkSeconds, MODELS[id].clockOffset);
-  await writeFile(output, JSON.stringify(timelineFrom(segments)));
+  return async (audio, output) => {
+    const wave = await readAudio(sherpa, audio);
+    const segments = recognize(recognizer, wave.samples, wave.sampleRate, settings.chunkSeconds, MODELS[id].clockOffset);
+    await writeFile(output, JSON.stringify(timelineFrom(segments)));
+  };
+}
+
+async function transcribe(audio, output, id) {
+  await (await openModel(id))(audio, output);
+}
+
+// The speech runtime prints to stdout as well, so a reply is a line of its
+// own that starts with this.
+export const REPLY = '@operalibre-recognizer ';
+// A model used only for retries can go a long time without work. It leaves
+// after this long so it does not stay in memory, or on the graphics card, for
+// the rest of the book. A slow server can take a minute between windows.
+const SERVE_IDLE_MS = 3 * 60_000;
+
+/// Answers one request per line of `input`: `{"audio": ..., "output": ...}`
+/// is handed to `work`, and the reply says whether the timeline was written.
+/// A request that fails is answered and the next one is still served. Ends
+/// when the input closes, or calls `leave` after `idleMs` without a request.
+export async function serveRequests(input, output, work, { idleMs = SERVE_IDLE_MS, leave = () => process.exit(0) } = {}) {
+  let idle = setTimeout(leave, idleMs);
+  try {
+    for await (const line of createInterface({ input })) {
+      if (line.trim() === '') continue;
+      clearTimeout(idle);
+      let reply;
+      try {
+        const request = JSON.parse(line);
+        await work(request.audio, request.output);
+        reply = { ok: true };
+      } catch (error) {
+        reply = { ok: false, error: String(error?.message ?? error) };
+      }
+      output.write(`\n${REPLY}${JSON.stringify(reply)}\n`);
+      idle = setTimeout(leave, idleMs);
+    }
+  } finally {
+    clearTimeout(idle);
+  }
 }
 
 /// Fails unless the small model loads and runs here. Packaging runs this so
@@ -643,6 +689,8 @@ async function main(argv) {
   const option = (name) => rest.find((argument) => argument.startsWith(`--${name}=`))?.slice(name.length + 3);
   if (command === 'plan' && positional.length === 1) {
     await writeFile(positional[0], JSON.stringify(await plan(option('language'), rest.includes('--gpu'))));
+  } else if (command === 'serve' && positional.length === 0 && option('model')) {
+    await serveRequests(process.stdin, process.stdout, await openModel(option('model')));
   } else if (command === 'transcribe' && positional.length === 2 && option('model')) {
     await transcribe(positional[0], positional[1], option('model'));
   } else if (command === 'fetch' && positional.length === 2) {
@@ -652,7 +700,7 @@ async function main(argv) {
   } else if (command === 'check') {
     await check();
   } else {
-    throw new Error('Usage: recognize.mjs plan <output.json> [--language=en] [--gpu] | transcribe <audio> <output.json> --model=<id> | fetch <id> <directory> | probe <id> [--provider=cuda] | check');
+    throw new Error('Usage: recognize.mjs plan <output.json> [--language=en] [--gpu] | serve --model=<id> | transcribe <audio> <output.json> --model=<id> | fetch <id> <directory> | probe <id> [--provider=cuda] | check');
   }
 }
 

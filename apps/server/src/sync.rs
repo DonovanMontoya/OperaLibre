@@ -2677,7 +2677,8 @@ struct Aligner<'a> {
     heard: std::sync::Mutex<Heard>,
     prefetch: Option<&'a tokio::sync::Mutex<BookPrefetch>>,
     /// Whether this server has the cores to hear one window ahead.
-    hear_ahead: bool,
+    can_hear_ahead: bool,
+    workers: Arc<RecognizerWorkers>,
 }
 
 #[derive(Default)]
@@ -2714,8 +2715,9 @@ impl<'a> Aligner<'a> {
             recognition,
             heard: Default::default(),
             prefetch: None,
-            hear_ahead: std::thread::available_parallelism()
+            can_hear_ahead: std::thread::available_parallelism()
                 .is_ok_and(|cores| cores.get() >= HEAR_AHEAD_MIN_CORES),
+            workers: Arc::default(),
         }
     }
 
@@ -2734,7 +2736,8 @@ impl<'a> Aligner<'a> {
             recognition,
             heard: Default::default(),
             prefetch: None,
-            hear_ahead: self.hear_ahead,
+            can_hear_ahead: self.can_hear_ahead,
+            workers: self.workers.clone(),
         }
     }
 
@@ -2925,7 +2928,7 @@ impl<'a> Aligner<'a> {
             })),
             (None, _) => None,
         };
-        let hears_ahead = self.hear_ahead
+        let hears_ahead = self.can_hear_ahead
             && prefetch.is_none()
             && self.recognizer.is_some()
             && parakeet_model(self.recognition.model).is_some();
@@ -3273,7 +3276,15 @@ impl<'a> Aligner<'a> {
                         aligning.await
                     };
                 let _ = fs::remove_file(audio).await;
-                let aligned = segment_fragments?;
+                let aligned = match segment_fragments {
+                    Ok(aligned) => aligned,
+                    Err(error) => {
+                        if let Some(ahead) = ahead.take() {
+                            let _ = fs::remove_file(ahead.audio).await;
+                        }
+                        return Err(error);
+                    }
+                };
                 fragments.extend(aligned.fragments);
                 recovery_gaps.extend(aligned.recovery_gaps);
             }
@@ -3704,33 +3715,29 @@ impl<'a> Aligner<'a> {
             .join(format!("recognition-{scope_number}-{window}.json"));
         // A Parakeet model runs in the add-on's recognizer, which writes the
         // same timeline the aligner's whisper does.
-        let script = parakeet_model(model)
-            .and(self.recognizer)
-            .map(|recognizer| [recognizer.to_string_lossy().into_owned()]);
-        let mut args: Vec<std::ffi::OsString> = vec![
-            "transcribe".into(),
-            audio_path.into(),
-            output_path.as_os_str().into(),
-        ];
-        if script.is_some() {
-            args.push(format!("--model={model}").into());
+        if let Some((model, recognizer)) = parakeet_model(model).zip(self.recognizer) {
+            self.recognize_served(recognizer, model, audio_path, &output_path)
+                .await?;
         } else {
-            args.push("--engine=whisper".into());
-            args.push(format!("--whisper.model={model}").into());
+            let mut args: Vec<std::ffi::OsString> = vec![
+                "transcribe".into(),
+                audio_path.into(),
+                output_path.as_os_str().into(),
+                "--engine=whisper".into(),
+                format!("--whisper.model={model}").into(),
+            ];
+            if let Some(language) = &self.recognition.language {
+                args.push(format!("--language={language}").into());
+            }
+            run_alignment_cli(
+                self.cli_path,
+                self.cli_args,
+                self.ffmpeg_path,
+                &args,
+                "Speech recognition",
+            )
+            .await?;
         }
-        if let Some(language) = &self.recognition.language {
-            args.push(format!("--language={language}").into());
-        }
-        run_alignment_cli(
-            self.cli_path,
-            script
-                .as_ref()
-                .map_or(self.cli_args, |script| script.as_slice()),
-            self.ffmpeg_path,
-            &args,
-            "Speech recognition",
-        )
-        .await?;
         let timeline_json = read_cli_output(&output_path, "Speech recognition").await?;
         #[cfg(test)]
         if let Some(directory) = std::env::var_os("OPERALIBRE_PROBE_OUTPUT") {
@@ -3743,6 +3750,53 @@ impl<'a> Aligner<'a> {
         let _ = fs::remove_file(&output_path).await;
         let entries = alignment::parse_timeline(&timeline_json)?;
         Ok(alignment::recognized_words(&entries))
+    }
+
+    /// Recognizes `audio` with the book's recognizer for `model`, starting
+    /// it when this is the model's first window or it has left since its last.
+    async fn recognize_served(
+        &self,
+        recognizer: &FsPath,
+        model: &'static str,
+        audio: &FsPath,
+        output: &FsPath,
+    ) -> anyhow::Result<()> {
+        const WHAT: &str = "Speech recognition";
+        // A recognizer that leaves just as a request reaches it ends cleanly
+        // without answering. The request goes to a new one, once.
+        for _ in 0..2 {
+            let mut worker = match self.workers.take(model) {
+                Some(worker) => worker,
+                None => RecognizerWorker::start(
+                    self.cli_path,
+                    recognizer,
+                    self.ffmpeg_path,
+                    self.temp_dir,
+                    model,
+                )?,
+            };
+            // Past the timeout the recognizer is dropped, which stops it.
+            let answer =
+                tokio::time::timeout(ALIGNMENT_COMMAND_TIMEOUT, worker.recognize(audio, output))
+                    .await
+                    .map_err(|_| cli_timed_out(WHAT))?;
+            match answer {
+                Ok(()) => {
+                    self.workers.keep(worker);
+                    return Ok(());
+                }
+                Err(RecognizerFailure::Refused(error)) => {
+                    self.workers.keep(worker);
+                    anyhow::bail!("{WHAT} failed:\n{error}");
+                }
+                Err(RecognizerFailure::Gone(status)) if status.success() => {}
+                Err(RecognizerFailure::Gone(status)) => {
+                    let stderr = fs::read(&worker.stderr).await.unwrap_or_default();
+                    return Err(cli_failed(WHAT, status, &stderr));
+                }
+            }
+        }
+        Err(cli_wrote_nothing(WHAT))
     }
 
     async fn mask_unspoken_sentences(
@@ -4097,16 +4151,52 @@ impl<'a> Aligner<'a> {
     }
 }
 
+// `sync_report::classify_error` reads these messages, so the aligner's
+// commands and the add-on's recognizer word a failure the same way.
+fn cli_wrote_nothing(what: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{what} stopped without writing a result. The alignment runtime may have crashed."
+    )
+}
+
+fn cli_timed_out(what: &str) -> anyhow::Error {
+    anyhow::anyhow!("{what} exceeded the two-hour command timeout.")
+}
+
+fn cli_not_started(error: std::io::Error) -> anyhow::Error {
+    anyhow::anyhow!("Failed to run alignment CLI: {error}")
+}
+
+fn cli_failed(what: &str, status: std::process::ExitStatus, stderr: &[u8]) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{what} failed with status {status}:\n{}",
+        stderr_tail(stderr)
+    )
+}
+
 pub(crate) async fn read_cli_output(path: &FsPath, what: &str) -> anyhow::Result<String> {
     fs::read_to_string(path).await.map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            anyhow::anyhow!(
-                "{what} stopped without writing a result. The alignment runtime may have crashed."
-            )
+            cli_wrote_nothing(what)
         } else {
             error.into()
         }
     })
+}
+
+/// A command for the alignment runtime that finds the add-on's ffmpeg first
+/// and does not outlive the sync that started it.
+fn alignment_command(cli_path: &FsPath, ffmpeg_path: Option<&FsPath>) -> anyhow::Result<Command> {
+    let mut command = Command::new(cli_path);
+    command.kill_on_drop(true);
+    if let Some(ffmpeg_dir) = ffmpeg_path.and_then(FsPath::parent) {
+        let mut paths = vec![ffmpeg_dir.to_path_buf()];
+        if let Some(existing) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&existing));
+        }
+        command.env("PATH", std::env::join_paths(paths)?);
+    }
+    Ok(command)
 }
 
 pub(crate) async fn run_alignment_cli(
@@ -4116,34 +4206,143 @@ pub(crate) async fn run_alignment_cli(
     args: &[std::ffi::OsString],
     what: &str,
 ) -> anyhow::Result<()> {
-    let mut command = Command::new(cli_path);
-    command.kill_on_drop(true);
+    let mut command = alignment_command(cli_path, ffmpeg_path)?;
     command.args(cli_args).args(args).arg("--overwrite");
-    if let Some(ffmpeg_dir) = ffmpeg_path.and_then(FsPath::parent) {
-        let mut paths = vec![ffmpeg_dir.to_path_buf()];
-        if let Some(existing) = std::env::var_os("PATH") {
-            paths.extend(std::env::split_paths(&existing));
-        }
-        command.env("PATH", std::env::join_paths(paths)?);
-    }
     let output = tokio::time::timeout(ALIGNMENT_COMMAND_TIMEOUT, command.output())
         .await
-        .map_err(|_| anyhow::anyhow!("{what} exceeded the two-hour command timeout."))?
-        .map_err(|error| anyhow::anyhow!("Failed to run alignment CLI: {error}"))?;
+        .map_err(|_| cli_timed_out(what))?
+        .map_err(cli_not_started)?;
     if !output.status.success() {
-        anyhow::bail!(
-            "{what} failed with status {}:\n{}",
-            output.status,
-            stderr_tail(&output)
-        );
+        return Err(cli_failed(what, output.status, &output.stderr));
     }
     Ok(())
 }
 
-fn stderr_tail(output: &std::process::Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr);
+fn stderr_tail(stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
     let lines = stderr.lines().collect::<Vec<_>>();
     lines[lines.len().saturating_sub(12)..].join("\n")
+}
+
+/// What the add-on's recognizer starts each reply with; see `REPLY` in
+/// `addons/readalong-sync/recognize.mjs`.
+const RECOGNIZER_REPLY: &str = "@operalibre-recognizer ";
+
+/// One `recognize.mjs serve` process: a Parakeet model kept loaded, so a book
+/// loads it once and not again for every window.
+struct RecognizerWorker {
+    model: &'static str,
+    child: tokio::process::Child,
+    requests: tokio::process::ChildStdin,
+    replies: tokio::io::BufReader<tokio::process::ChildStdout>,
+    stderr: PathBuf,
+}
+
+enum RecognizerFailure {
+    /// The recognizer could not recognize this audio and is still running.
+    Refused(String),
+    /// The process ended without answering.
+    Gone(std::process::ExitStatus),
+}
+
+impl RecognizerWorker {
+    fn start(
+        cli_path: &FsPath,
+        recognizer: &FsPath,
+        ffmpeg_path: Option<&FsPath>,
+        temp_dir: &FsPath,
+        model: &'static str,
+    ) -> anyhow::Result<Self> {
+        let stderr = temp_dir.join(format!("recognizer-{model}.log"));
+        let mut command = alignment_command(cli_path, ffmpeg_path)?;
+        command
+            .arg(recognizer)
+            .arg("serve")
+            .arg(format!("--model={model}"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::fs::File::create(&stderr)?);
+        let mut child = command.spawn().map_err(cli_not_started)?;
+        let requests = child.stdin.take().expect("the recognizer's input is piped");
+        let replies = child
+            .stdout
+            .take()
+            .expect("the recognizer's output is piped");
+        Ok(Self {
+            model,
+            child,
+            requests,
+            replies: tokio::io::BufReader::new(replies),
+            stderr,
+        })
+    }
+
+    /// Has the recognizer write the timeline of `audio` to `output`. The
+    /// speech runtime prints to the same stream, so other lines are skipped.
+    async fn recognize(
+        &mut self,
+        audio: &FsPath,
+        output: &FsPath,
+    ) -> Result<(), RecognizerFailure> {
+        use tokio::io::AsyncBufReadExt;
+
+        #[derive(Deserialize)]
+        struct Reply {
+            ok: bool,
+            #[serde(default)]
+            error: String,
+        }
+        let request = format!(
+            "{}\n",
+            serde_json::json!({
+                "audio": audio.to_string_lossy(),
+                "output": output.to_string_lossy(),
+            })
+        );
+        let sent = self.requests.write_all(request.as_bytes()).await.is_ok()
+            && self.requests.flush().await.is_ok();
+        let mut line = Vec::new();
+        while sent
+            && matches!(self.replies.read_until(b'\n', &mut line).await, Ok(read) if read > 0)
+        {
+            if let Some(reply) = String::from_utf8_lossy(&line).strip_prefix(RECOGNIZER_REPLY) {
+                return match serde_json::from_str::<Reply>(reply) {
+                    Ok(Reply { ok: true, .. }) => Ok(()),
+                    Ok(reply) => Err(RecognizerFailure::Refused(reply.error)),
+                    Err(error) => Err(RecognizerFailure::Refused(error.to_string())),
+                };
+            }
+            line.clear();
+        }
+        let _ = self.child.start_kill();
+        match self.child.wait().await {
+            Ok(status) => Err(RecognizerFailure::Gone(status)),
+            Err(error) => Err(RecognizerFailure::Refused(error.to_string())),
+        }
+    }
+}
+
+/// The recognizers of one book, one for each model it has used. All are
+/// stopped when the book's sync ends or is paused. One that gets no work for
+/// a while, as a model used only for retries can, leaves by itself and is
+/// started again when it is next needed.
+#[derive(Default)]
+struct RecognizerWorkers(std::sync::Mutex<Vec<RecognizerWorker>>);
+
+impl RecognizerWorkers {
+    fn take(&self, model: &str) -> Option<RecognizerWorker> {
+        let mut resting = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let at = resting.iter().position(|worker| worker.model == model)?;
+        let mut worker = resting.swap_remove(at);
+        matches!(worker.child.try_wait(), Ok(None)).then_some(worker)
+    }
+
+    fn keep(&self, worker: RecognizerWorker) {
+        let mut resting = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if resting.iter().all(|other| other.model != worker.model) {
+            resting.push(worker);
+        }
+    }
 }
 
 pub(crate) async fn extract_alignment_audio(
@@ -4210,7 +4409,7 @@ async fn extract_alignment_audio_with_timeout(
         anyhow::bail!(
             "ffmpeg failed to extract chapter audio with status {}:\n{}",
             output.status,
-            stderr_tail(&output)
+            stderr_tail(&output.stderr)
         );
     }
     Ok(())
@@ -4811,7 +5010,8 @@ printf '[{"type":"sentence","text":"Kaladin ran.","startTime":0,"endTime":2}]' >
             recognition: &recognition,
             heard: Default::default(),
             prefetch: None,
-            hear_ahead: false,
+            can_hear_ahead: false,
+            workers: Default::default(),
         };
         let fragments = aligner
             .align_pass(&audio, &transcript, 0.0, 0, 0, "Chapter 55", &[])
@@ -4917,23 +5117,78 @@ esac
     #[cfg(unix)]
     #[tokio::test]
     async fn parakeet_models_run_in_the_addons_recognizer_and_whisper_models_in_the_aligner() {
+        with_served_recognizer(HEARD, async |aligner, root| {
+            let audio = root.join("window.wav");
+            // The second Parakeet window goes to the recognizer the first started.
+            for model in [
+                PARAKEET_FAST,
+                PARAKEET_FAST,
+                aligner.recognition.retry_model,
+            ] {
+                let words = aligner.transcribe(&audio, 0, "1", model).await.unwrap();
+                assert_eq!(words.len(), 1);
+                assert_eq!(words[0].text, "heard");
+            }
+            let calls = std::fs::read_to_string(root.join("node.calls")).unwrap();
+            let calls = calls.lines().collect::<Vec<_>>();
+            assert_eq!(calls.len(), 2, "{calls:?}");
+            assert_eq!(
+                calls[0],
+                format!(
+                    "{} serve --model=parakeet-tdt-110m",
+                    root.join("recognize.mjs").display()
+                ),
+            );
+            assert!(calls[1].starts_with("transcribe "), "{calls:?}");
+            assert!(
+                calls[1].contains(" --engine=whisper --whisper.model=base.en --language=en"),
+                "{calls:?}"
+            );
+        })
+        .await;
+    }
+
+    /// The part of a stand-in for the add-on's runtime that answers
+    /// `recognize.mjs serve`: for each request it runs `RECOGNIZE` with
+    /// `$audio` and `$output` set, then replies as the recognizer does.
+    #[cfg(unix)]
+    const FAKE_SERVE: &str = r#"if [ "$2" = serve ]; then
+  while IFS= read -r line; do
+    audio=$(printf '%s' "$line" | sed 's/.*"audio":"\([^"]*\)".*/\1/')
+    output=$(printf '%s' "$line" | sed 's/.*"output":"\([^"]*\)".*/\1/')
+    RECOGNIZE
+    printf '\nruntime chatter\n@operalibre-recognizer {"ok":true}\n'
+  done
+  exit 0
+fi
+"#;
+
+    /// What a served stand-in does with a request to recognize one word.
+    #[cfg(unix)]
+    const HEARD: &str =
+        r#"printf '[{"type":"word","text":"heard","startTime":0.5,"endTime":0.9}]' > "$output""#;
+
+    /// An aligner whose add-on runtime is a stand-in. It lists how it was
+    /// started in `node.calls`, serves the recognizer with `recognize` as
+    /// what it does with each request, and started any other way writes one
+    /// recognized word where the aligner's whisper would.
+    #[cfg(unix)]
+    async fn with_served_recognizer<T>(
+        recognize: &str,
+        run: impl AsyncFnOnce(&Aligner<'_>, &FsPath) -> T,
+    ) -> T {
         let root = tempfile::tempdir().unwrap();
         let (state, _) = crate::unit_tests::fake_libation_state(root.path());
         let job_id = create_job(&state, "sync-generate").await;
-        // Stands in for the add-on's runtime: it records how it was called and
-        // writes one recognized word where either recognizer would.
         let cli = root.path().join("node");
         write_executable(
             &cli,
-            r#"#!/bin/sh
-printf '%s\n' "$*" >> "$0.calls"
-[ "$1" = "transcribe" ] || shift
-printf '[{"type":"word","text":"heard","startTime":0.5,"endTime":0.9}]' > "$3"
-"#,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.calls\"\n{}output=\"$3\"\n{HEARD}\n",
+                FAKE_SERVE.replace("RECOGNIZE", recognize)
+            ),
         );
         let recognizer = root.path().join("recognize.mjs");
-        let audio = root.path().join("window.wav");
-        std::fs::write(&audio, "").unwrap();
         let recognition =
             RecognitionSettings::for_language(Some("en")).with_plan(&RecognizerPlan {
                 model: Some(PARAKEET_FAST.into()),
@@ -4951,29 +5206,132 @@ printf '[{"type":"word","text":"heard","startTime":0.5,"endTime":0.9}]' > "$3"
             recognition: &recognition,
             heard: Default::default(),
             prefetch: None,
-            hear_ahead: false,
+            can_hear_ahead: false,
+            workers: Default::default(),
         };
-        for model in [recognition.model, recognition.retry_model] {
-            let words = aligner.transcribe(&audio, 0, "1", model).await.unwrap();
-            assert_eq!(words.len(), 1);
+        run(&aligner, root.path()).await
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_recognizer_that_dies_on_a_window_is_a_crash_and_the_next_window_gets_a_new_one() {
+        // The first window aborts the process, as the speech runtime can.
+        let recognize = format!(
+            r#"if [ ! -e "$0.crashed" ]; then : > "$0.crashed"; echo "audio too short" >&2; kill -ABRT $$; fi
+    {HEARD}"#
+        );
+        with_served_recognizer(&recognize, async |aligner, root| {
+            let audio = root.join("window.wav");
+            let error = aligner
+                .transcribe(&audio, 0, "1", PARAKEET_FAST)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                sync_report::classify_error(&error),
+                sync_report::Cause::RuntimeCrash,
+                "{error}"
+            );
+            assert!(error.contains("audio too short"), "{error}");
+
+            let words = aligner
+                .transcribe(&audio, 0, "2", PARAKEET_FAST)
+                .await
+                .unwrap();
             assert_eq!(words[0].text, "heard");
-        }
-        let calls = std::fs::read_to_string(cli.with_extension("calls")).unwrap();
-        let calls = calls.lines().collect::<Vec<_>>();
-        assert_eq!(calls.len(), 2, "{calls:?}");
-        assert!(
-            calls[0].starts_with(&format!("{} transcribe ", recognizer.display())),
-            "{calls:?}"
+            let starts = std::fs::read_to_string(root.join("node.calls")).unwrap();
+            assert_eq!(starts.lines().count(), 2, "{starts}");
+        })
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_window_that_meets_a_recognizer_leaving_idle_goes_to_a_new_one() {
+        // The first recognizer takes the request and leaves cleanly without
+        // answering, as one whose idle time ran out just then would.
+        let recognize = format!(
+            r#"if [ ! -e "$0.left" ]; then : > "$0.left"; exit 0; fi
+    {HEARD}"#
         );
-        assert!(
-            calls[0].contains(" --model=parakeet-tdt-110m --language=en"),
-            "{calls:?}"
+        with_served_recognizer(&recognize, async |aligner, root| {
+            let words = aligner
+                .transcribe(&root.join("window.wav"), 0, "1", PARAKEET_FAST)
+                .await
+                .unwrap();
+            assert_eq!(words[0].text, "heard");
+            let starts = std::fs::read_to_string(root.join("node.calls")).unwrap();
+            assert_eq!(starts.lines().count(), 2, "{starts}");
+        })
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_window_the_recognizer_cannot_read_fails_without_stopping_it() {
+        let recognize = format!(
+            r#"case "$audio" in *missing.wav) printf '\n@operalibre-recognizer {{"ok":false,"error":"Could not read missing.wav"}}\n'; continue;; esac
+    {HEARD}"#
         );
-        assert!(calls[1].starts_with("transcribe "), "{calls:?}");
-        assert!(
-            calls[1].contains(" --engine=whisper --whisper.model=base.en --language=en"),
-            "{calls:?}"
-        );
+        with_served_recognizer(&recognize, async |aligner, root| {
+            let error = aligner
+                .transcribe(&root.join("missing.wav"), 0, "1", PARAKEET_FAST)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("Could not read missing.wav"), "{error}");
+            aligner
+                .transcribe(&root.join("window.wav"), 0, "2", PARAKEET_FAST)
+                .await
+                .unwrap();
+            let starts = std::fs::read_to_string(root.join("node.calls")).unwrap();
+            assert_eq!(starts.lines().count(), 1, "{starts}");
+        })
+        .await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_cancelled_sync_stops_its_recognizer() {
+        // The recognizer notes its process and then never answers.
+        let pid = with_served_recognizer(
+            r#"echo $$ > "$0.pid"; exec sleep 600"#,
+            async |aligner, root| {
+                let audio = root.join("window.wav");
+                tokio::time::timeout(
+                    Duration::from_secs(30),
+                    async {
+                        tokio::select! {
+                            _ = aligner.transcribe(&audio, 0, "1", PARAKEET_FAST) => unreachable!("the recognizer never answers"),
+                            pid = async {
+                                loop {
+                                    if let Ok(pid) = fs::read_to_string(root.join("node.pid")).await
+                                        && !pid.trim().is_empty()
+                                    {
+                                        break pid.trim().to_string();
+                                    }
+                                    tokio::task::yield_now().await;
+                                }
+                            } => pid,
+                        }
+                    },
+                )
+                .await
+                .expect("the recognizer starts")
+            },
+        )
+        .await;
+        // A stopped process is gone from /proc, or is a zombie until reaped.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                match fs::read_to_string(format!("/proc/{pid}/stat")).await {
+                    Ok(stat) if !stat.contains(") Z ") => tokio::task::yield_now().await,
+                    _ => break,
+                }
+            }
+        })
+        .await
+        .expect("the recognizer is stopped with the sync");
     }
 
     fn chapter(title: &str, start_seconds: f64, end_seconds: Option<f64>) -> SyncChapterInput {
@@ -5383,7 +5741,8 @@ printf '[{"type":"word","text":"heard","startTime":0.5,"endTime":0.9}]' > "$3"
             recognition: &recognition,
             heard: Default::default(),
             prefetch: None,
-            hear_ahead: false,
+            can_hear_ahead: false,
+            workers: Default::default(),
         };
         for (index, scope) in scopes.iter().enumerate() {
             if selected
@@ -5586,7 +5945,7 @@ esac
             // Recognize with a stand-in for the add-on's recognizer on a
             // server with cores to hear one window ahead. It lists the audio
             // files it was given in this file.
-            heard_ahead: Option<&FsPath>,
+            served_calls: Option<&FsPath>,
         ) -> (Vec<alignment::SyncFragment>, String) {
             let root = tempfile::tempdir().unwrap();
             let (state, _) = crate::unit_tests::fake_libation_state(root.path());
@@ -5652,13 +6011,22 @@ esac
             } else {
                 script
             };
-            let script = if let Some(calls) = heard_ahead {
-                script.replace(
+            // The add-on's recognizer is served: each request runs the fake
+            // recognizer above on its audio.
+            let script = if let Some(calls) = served_calls {
+                let calls = calls.display();
+                let serve = FAKE_SERVE.replace(
+                    "RECOGNIZE",
+                    &format!(
+                        r#"printf '%s\n' "$audio" >> "{calls}"; "$0" transcribe "$audio" "$output""#
+                    ),
+                );
+                script.replacen(
                     "command=\"$1\"",
                     &format!(
-                        "case \"$1\" in *recognize.mjs) shift; printf '%s\\n' \"$2\" >> \"{}\";; esac\ncommand=\"$1\"",
-                        calls.display()
+                        "[ \"$2\" = serve ] && echo started >> \"{calls}\"\n{serve}command=\"$1\""
                     ),
+                    1,
                 )
             } else {
                 script
@@ -5722,7 +6090,7 @@ esac
                 cloud_recognition::enable_for_test(&state).await;
             }
             let recognition = RecognitionSettings::for_language(Some("en")).with_cloud(cloud);
-            let recognition = if heard_ahead.is_some() {
+            let recognition = if served_calls.is_some() {
                 recognition.with_plan(&RecognizerPlan {
                     model: Some(PARAKEET_FAST.into()),
                     retry_model: None,
@@ -5739,12 +6107,13 @@ esac
                 cli_path: &cli,
                 cli_args: &[],
                 ffmpeg_path: Some(&ffmpeg),
-                recognizer: heard_ahead.map(|_| recognizer.as_path()),
+                recognizer: served_calls.map(|_| recognizer.as_path()),
                 temp_dir: temp_dir.path(),
                 recognition: &recognition,
                 heard: Default::default(),
                 prefetch: None,
-                hear_ahead: heard_ahead.is_some(),
+                can_hear_ahead: served_calls.is_some(),
+                workers: Default::default(),
             };
 
             let progress = ScopeProgress {
@@ -5887,6 +6256,8 @@ esac
             // The walk recognizes only its first window itself.
             assert_eq!(heard("-window.wav"), 1, "{calls}");
             assert!(heard("-ahead.wav") >= 2, "{calls}");
+            // One recognizer served them all.
+            assert_eq!(heard("started"), 1, "{calls}");
         }
 
         #[tokio::test]
@@ -6372,7 +6743,8 @@ esac
                 recognition: &recognition,
                 heard: Default::default(),
                 prefetch: None,
-                hear_ahead: false,
+                can_hear_ahead: false,
+                workers: Default::default(),
             };
             let text = (0..120)
                 .map(|index| format!("word{index}"))

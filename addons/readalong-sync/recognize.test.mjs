@@ -4,6 +4,7 @@ import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
@@ -13,6 +14,7 @@ import {
   ACCURATE_MIN_MEMORY,
   FAST,
   GPU_RUNTIME,
+  REPLY,
   cacheDir,
   choosePlan,
   chunkBounds,
@@ -20,6 +22,7 @@ import {
   gpuSupported,
   recognize,
   runtimeSettings,
+  serveRequests,
   timelineFrom,
   trialFailure,
   wordsFromTokens
@@ -278,4 +281,54 @@ test('a download is kept only when it matches its pinned size and checksum', asy
   await download(`${url}/model`, file, { size: body.length, sha256 });
   assert.deepEqual(await readFile(file), body);
   assert.deepEqual(await readdir(directory), ['model.onnx']);
+});
+
+function replies(output) {
+  return output
+    .read()
+    .toString()
+    .split('\n')
+    .filter((line) => line.startsWith(REPLY))
+    .map((line) => JSON.parse(line.slice(REPLY.length)));
+}
+
+test('a serving recognizer answers each request and keeps going after one fails', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const seen = [];
+  const serving = serveRequests(
+    input,
+    output,
+    async (audio, timeline) => {
+      seen.push([audio, timeline]);
+      if (audio === 'broken.wav') throw new Error('Could not read broken.wav');
+      // The speech runtime writes to the same stream, without a newline.
+      output.write('runtime chatter');
+    },
+    { leave: () => assert.fail('left while there was work') }
+  );
+  input.write('{"audio":"one.wav","output":"one.json"}\n\n{"audio":"broken.wav","output":"two.json"}\n');
+  input.end('{"audio":"three.wav","output":"three.json"}\n');
+  await serving;
+
+  assert.deepEqual(seen, [['one.wav', 'one.json'], ['broken.wav', 'two.json'], ['three.wav', 'three.json']]);
+  assert.deepEqual(replies(output), [{ ok: true }, { ok: false, error: 'Could not read broken.wav' }, { ok: true }]);
+});
+
+test('a serving recognizer leaves when no request comes', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let left = 0;
+  const serving = serveRequests(input, output, async () => {}, {
+    idleMs: 20,
+    leave: () => {
+      left += 1;
+      input.end();
+    }
+  });
+  input.write('{"audio":"one.wav","output":"one.json"}\n');
+  await serving;
+
+  assert.equal(left, 1);
+  assert.deepEqual(replies(output), [{ ok: true }]);
 });
