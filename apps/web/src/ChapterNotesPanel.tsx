@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Eye, EyeOff, LoaderCircle, NotebookText, Trash2 } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, LoaderCircle, NotebookText, Trash2 } from "lucide-react";
 import {
   deleteBookChapterNotes,
   generateBookChapterNotes,
@@ -33,6 +33,7 @@ export function ChapterNotesPanel({ book }: { book: Book }) {
   const [status, setStatus] = useState<ChapterNotesStatus | null>(null);
   const [notes, setNotes] = useState<BookChapterNotes | null>(null);
   const [spoilers, setSpoilers] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const onServer = book.source !== "device" && !isDemoMode();
@@ -41,6 +42,7 @@ export function ChapterNotesPanel({ book }: { book: Book }) {
     let cancelled = false;
     setNotes(null);
     setSpoilers(false);
+    setExpanded(false);
     setError(null);
     if (!onServer) return;
     void getChapterNotesStatus().then(loaded => {
@@ -92,11 +94,12 @@ export function ChapterNotesPanel({ book }: { book: Book }) {
 
   const generation = notes.generation;
   const summarized = notes.chapters.some(note => note.summary);
+  const currentNote = notes.chapters.find(note => reachedFor(note, book) === "current");
   return (
     <section className="chapter-notes" aria-label="Chapter notes">
       <div className="chapter-notes-head">
         <span className="section-label"><NotebookText size={13} /> Chapter notes</span>
-        {summarized ? (
+        {summarized && expanded ? (
           <button type="button" className="quiet-button" aria-pressed={spoilers} onClick={() => setSpoilers(value => !value)}>
             {spoilers ? <EyeOff size={13} /> : <Eye size={13} />}
             {spoilers ? "Hide spoilers" : "Show spoilers"}
@@ -112,49 +115,58 @@ export function ChapterNotesPanel({ book }: { book: Book }) {
         </p>
       ) : null}
       {summarized ? (
-        <ol className="chapter-notes-list">
-          {notes.chapters.map(note => {
-            const reached = reachedFor(note, book);
-            const hidden = reached !== "heard" && !spoilers;
-            return (
-              <li key={note.index} className={reached}>
-                <details>
-                  <summary>
-                    <strong>{note.title}</strong>
-                    {reached === "current" ? <em>You are here</em> : null}
-                    {note.synopsis ? <span>{note.synopsis}</span> : null}
-                  </summary>
-                  {hidden ? (
-                    <p className="chapter-notes-hidden">
-                      {reached === "current" ? "You are partway through this chapter." : "You have not reached this chapter."} Show spoilers to read its summary.
-                    </p>
-                  ) : (
-                    <>
-                      {note.summary ? <p>{note.summary}</p> : null}
-                      {note.people?.length ? (
-                        <>
-                          <h4>People</h4>
-                          <ul>{note.people.map(person => <li key={person}>{person}</li>)}</ul>
-                        </>
-                      ) : null}
-                      {note.terms?.length ? (
-                        <>
-                          <h4>Places and terms</h4>
-                          <ul>{note.terms.map(term => <li key={term}>{term}</li>)}</ul>
-                        </>
-                      ) : null}
-                      <p className="chapter-notes-source">
-                        {note.source === "transcript" ? "From a transcript of the narration" : "From the book's text"}
-                        {note.model ? ` · ${note.model}` : ""}
-                        {note.textTruncated ? " · written from the first part of a very long chapter" : ""}
+        <details className="chapter-notes-chapters" open={expanded} onToggle={event => setExpanded(event.currentTarget.open)}>
+          <summary>
+            <ChevronDown size={14} aria-hidden="true" />
+            <span>
+              {expanded ? "Hide" : "Show"} notes for {notes.chapters.length} {notes.chapters.length === 1 ? "chapter" : "chapters"}
+              {currentNote ? <em> · You are on {currentNote.title}</em> : null}
+            </span>
+          </summary>
+          <ol className="chapter-notes-list">
+            {notes.chapters.map(note => {
+              const reached = reachedFor(note, book);
+              const hidden = reached !== "heard" && !spoilers;
+              return (
+                <li key={note.index} className={reached}>
+                  <details>
+                    <summary>
+                      <strong>{note.title}</strong>
+                      {reached === "current" ? <em>You are here</em> : null}
+                      {note.synopsis ? <span>{note.synopsis}</span> : null}
+                    </summary>
+                    {hidden ? (
+                      <p className="chapter-notes-hidden">
+                        {reached === "current" ? "You are partway through this chapter." : "You have not reached this chapter."} Show spoilers to read its summary.
                       </p>
-                    </>
-                  )}
-                </details>
-              </li>
-            );
-          })}
-        </ol>
+                    ) : (
+                      <>
+                        {note.summary ? <p>{note.summary}</p> : null}
+                        {note.people?.length ? (
+                          <>
+                            <h4>People</h4>
+                            <ul>{note.people.map(person => <li key={person}>{person}</li>)}</ul>
+                          </>
+                        ) : null}
+                        {note.terms?.length ? (
+                          <>
+                            <h4>Places and terms</h4>
+                            <ul>{note.terms.map(term => <li key={term}>{term}</li>)}</ul>
+                          </>
+                        ) : null}
+                        <p className="chapter-notes-source">
+                          {note.source === "transcript" ? "From a transcript of the narration" : "From the book's text"}
+                          {note.model ? ` · ${note.model}` : ""}
+                          {note.textTruncated ? " · written from the first part of a very long chapter" : ""}
+                        </p>
+                      </>
+                    )}
+                  </details>
+                </li>
+              );
+            })}
+          </ol>
+        </details>
       ) : null}
       {generation ? (
         <p className="chapter-notes-status" role={generation.state === "failed" ? "alert" : "status"}>
