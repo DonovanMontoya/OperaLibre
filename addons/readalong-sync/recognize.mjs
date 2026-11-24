@@ -8,7 +8,7 @@
 // recognition in other languages.
 //
 //   node recognize.mjs plan <output.json> [--language=en] [--gpu]
-//   node recognize.mjs serve --model=<id>
+//   node recognize.mjs serve --model=<id> [--idle=<seconds>]
 //   node recognize.mjs transcribe <audio> <output.json> --model=<id>
 //   node recognize.mjs fetch <id> <directory>
 //   node recognize.mjs probe <id> [--provider=cuda]
@@ -635,9 +635,10 @@ async function transcribe(audio, output, id) {
 // The speech runtime prints to stdout as well, so a reply is a line of its
 // own that starts with this.
 export const REPLY = '@operalibre-recognizer ';
-// A model used only for retries can go a long time without work. It leaves
-// after this long so it does not stay in memory, or on the graphics card, for
-// the rest of the book. A slow server can take a minute between windows.
+// A recognizer with no work leaves after this long, so a model does not stay
+// in memory, or on the graphics card, when the book has stopped needing it.
+// A slow server can take a minute between windows. The server asks for a
+// shorter wait for a model it uses only for retries.
 const SERVE_IDLE_MS = 3 * 60_000;
 
 /// Answers one request per line of `input`: `{"audio": ..., "output": ...}`
@@ -690,7 +691,8 @@ async function main(argv) {
   if (command === 'plan' && positional.length === 1) {
     await writeFile(positional[0], JSON.stringify(await plan(option('language'), rest.includes('--gpu'))));
   } else if (command === 'serve' && positional.length === 0 && option('model')) {
-    await serveRequests(process.stdin, process.stdout, await openModel(option('model')));
+    const idle = Number(option('idle'));
+    await serveRequests(process.stdin, process.stdout, await openModel(option('model')), idle > 0 ? { idleMs: idle * 1000 } : {});
   } else if (command === 'transcribe' && positional.length === 2 && option('model')) {
     await transcribe(positional[0], positional[1], option('model'));
   } else if (command === 'fetch' && positional.length === 2) {
@@ -700,7 +702,7 @@ async function main(argv) {
   } else if (command === 'check') {
     await check();
   } else {
-    throw new Error('Usage: recognize.mjs plan <output.json> [--language=en] [--gpu] | serve --model=<id> | transcribe <audio> <output.json> --model=<id> | fetch <id> <directory> | probe <id> [--provider=cuda] | check');
+    throw new Error('Usage: recognize.mjs plan <output.json> [--language=en] [--gpu] | serve --model=<id> [--idle=<seconds>] | transcribe <audio> <output.json> --model=<id> | fetch <id> <directory> | probe <id> [--provider=cuda] | check');
   }
 }
 

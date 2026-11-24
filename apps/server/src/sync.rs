@@ -3773,6 +3773,7 @@ impl<'a> Aligner<'a> {
                     self.ffmpeg_path,
                     self.temp_dir,
                     model,
+                    model == self.recognition.model,
                 )?,
             };
             // Past the timeout the recognizer is dropped, which stops it.
@@ -4227,6 +4228,9 @@ fn stderr_tail(stderr: &[u8]) -> String {
 /// What the add-on's recognizer starts each reply with; see `REPLY` in
 /// `addons/readalong-sync/recognize.mjs`.
 const RECOGNIZER_REPLY: &str = "@operalibre-recognizer ";
+/// How long the recognizer of a model used only for retries waits for more
+/// work. Retries come in runs, and the larger model holds about 1.5 GB.
+const RETRY_RECOGNIZER_IDLE_SECONDS: u32 = 30;
 
 /// One `recognize.mjs serve` process: a Parakeet model kept loaded, so a book
 /// loads it once and not again for every window.
@@ -4252,13 +4256,18 @@ impl RecognizerWorker {
         ffmpeg_path: Option<&FsPath>,
         temp_dir: &FsPath,
         model: &'static str,
+        leads: bool,
     ) -> anyhow::Result<Self> {
         let stderr = temp_dir.join(format!("recognizer-{model}.log"));
         let mut command = alignment_command(cli_path, ffmpeg_path)?;
         command
             .arg(recognizer)
             .arg("serve")
-            .arg(format!("--model={model}"))
+            .arg(format!("--model={model}"));
+        if !leads {
+            command.arg(format!("--idle={RETRY_RECOGNIZER_IDLE_SECONDS}"));
+        }
+        command
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::fs::File::create(&stderr)?);
@@ -5119,10 +5128,12 @@ esac
     async fn parakeet_models_run_in_the_addons_recognizer_and_whisper_models_in_the_aligner() {
         with_served_recognizer(HEARD, async |aligner, root| {
             let audio = root.join("window.wav");
-            // The second Parakeet window goes to the recognizer the first started.
+            // The second window of the leading model goes to the recognizer
+            // the first started. A model that does not lead waits less long.
             for model in [
                 PARAKEET_FAST,
                 PARAKEET_FAST,
+                PARAKEET_ACCURATE,
                 aligner.recognition.retry_model,
             ] {
                 let words = aligner.transcribe(&audio, 0, "1", model).await.unwrap();
@@ -5131,17 +5142,13 @@ esac
             }
             let calls = std::fs::read_to_string(root.join("node.calls")).unwrap();
             let calls = calls.lines().collect::<Vec<_>>();
-            assert_eq!(calls.len(), 2, "{calls:?}");
-            assert_eq!(
-                calls[0],
-                format!(
-                    "{} serve --model=parakeet-tdt-110m",
-                    root.join("recognize.mjs").display()
-                ),
-            );
-            assert!(calls[1].starts_with("transcribe "), "{calls:?}");
+            assert_eq!(calls.len(), 3, "{calls:?}");
+            let served = format!("{} serve --model=", root.join("recognize.mjs").display());
+            assert_eq!(calls[0], format!("{served}parakeet-tdt-110m"));
+            assert_eq!(calls[1], format!("{served}parakeet-tdt-0.6b-v2 --idle=30"));
+            assert!(calls[2].starts_with("transcribe "), "{calls:?}");
             assert!(
-                calls[1].contains(" --engine=whisper --whisper.model=base.en --language=en"),
+                calls[2].contains(" --engine=whisper --whisper.model=base.en --language=en"),
                 "{calls:?}"
             );
         })
