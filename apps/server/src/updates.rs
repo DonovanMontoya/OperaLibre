@@ -191,6 +191,10 @@ pub struct SyncAddonRuntime {
     pub cli_path: PathBuf,
     pub cli_args: Vec<String>,
     pub ffmpeg_path: Option<PathBuf>,
+    /// The add-on's Parakeet recognizer, a script run with `cli_path`. Add-ons
+    /// from before it existed and an aligner installed by hand have none, and
+    /// recognition stays with the aligner's whisper.
+    pub recognizer: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -201,6 +205,18 @@ struct ExperimentalFeatureSettings {
     // PATH installs were always enabled before this opt-out existed.
     #[serde(default)]
     path_runtime_disabled: bool,
+    /// The owner lets follow-along recognition use the server's graphics card.
+    #[serde(default)]
+    recognition_gpu: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct RecognitionGpuStatus {
+    /// Whether this server looks able to use a card, which decides only
+    /// whether the setting is offered. The add-on tries the card before each
+    /// book, and that trial decides whether the book uses it.
+    pub supported: bool,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -216,6 +232,8 @@ struct SyncAddonPackageMetadata {
     cli_args: Vec<String>,
     #[serde(default)]
     ffmpeg: Option<String>,
+    #[serde(default)]
+    recognizer: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -594,6 +612,45 @@ impl UpdateManager {
         self.check_sync_addon(false, config).await
     }
 
+    /// Whether the owner has turned on recognition on a graphics card.
+    pub async fn recognition_gpu(&self) -> bool {
+        self.read_experimental_settings().await.recognition_gpu
+    }
+
+    pub async fn recognition_gpu_status(&self, config: &AlignmentConfig) -> RecognitionGpuStatus {
+        // An aligner installed by hand or found on PATH is used first, and it
+        // has no recognizer of its own to put on a card.
+        let external = matches!(
+            config,
+            AlignmentConfig::Manual(cli) | AlignmentConfig::Path(cli) if cli.is_file()
+        );
+        RecognitionGpuStatus {
+            supported: !external
+                && nvidia_driver_loaded()
+                && installed_sync_addon().is_ok_and(|addon| addon.recognizer.is_some()),
+            enabled: self.recognition_gpu().await,
+        }
+    }
+
+    /// Takes effect at the next book, and waits for queued and running books
+    /// so they keep the model their checkpoints were made with. A paused book
+    /// holds nothing, and starts over if it resumes under the other model.
+    pub async fn set_recognition_gpu(
+        &self,
+        enabled: bool,
+        config: &AlignmentConfig,
+    ) -> anyhow::Result<RecognitionGpuStatus> {
+        let _lifecycle = self.sync_lifecycle.try_write().map_err(|_| {
+            anyhow!(
+                "Wait for queued and running sync jobs to finish before changing the graphics card setting."
+            )
+        })?;
+        let mut settings = self.read_experimental_settings().await;
+        settings.recognition_gpu = enabled;
+        self.write_experimental_settings(&settings).await?;
+        Ok(self.recognition_gpu_status(config).await)
+    }
+
     pub async fn remove_sync_addon(&self) -> anyhow::Result<SyncAddonStatus> {
         let manager = self.clone();
         tokio::spawn(async move { manager.remove_sync_addon_inner().await }).await?
@@ -642,6 +699,7 @@ impl UpdateManager {
                 cli_path: cli_path.to_path_buf(),
                 cli_args: Vec::new(),
                 ffmpeg_path: None,
+                recognizer: None,
             });
         }
         if !self
@@ -655,6 +713,7 @@ impl UpdateManager {
             cli_path: addon.cli_path,
             cli_args: addon.cli_args,
             ffmpeg_path: addon.ffmpeg_path,
+            recognizer: addon.recognizer,
         })
     }
 
@@ -1110,6 +1169,13 @@ struct InstalledSyncAddon {
     cli_path: PathBuf,
     cli_args: Vec<String>,
     ffmpeg_path: Option<PathBuf>,
+    recognizer: Option<PathBuf>,
+}
+
+/// The add-on's recognizer can use NVIDIA cards on 64-bit Linux only; see
+/// `gpuSupported` in `addons/readalong-sync/recognize.mjs`.
+fn nvidia_driver_loaded() -> bool {
+    platform_key() == Some("linux-x64") && Path::new("/proc/driver/nvidia/version").exists()
 }
 
 fn installed_sync_addon() -> anyhow::Result<InstalledSyncAddon> {
@@ -1156,6 +1222,13 @@ fn validate_installed_sync_addon(
     if ffmpeg_path.as_ref().is_some_and(|path| !path.is_file()) {
         bail!("The installed sync add-on is missing ffmpeg.");
     }
+    // Without its recognizer the add-on still aligns, using whisper.
+    let recognizer = metadata
+        .recognizer
+        .as_deref()
+        .map(|path| safe_addon_member(root, path))
+        .transpose()?
+        .filter(|path| path.is_file());
     Ok(InstalledSyncAddon {
         root: root.to_path_buf(),
         metadata,
@@ -1165,6 +1238,7 @@ fn validate_installed_sync_addon(
             .map(|path| path.to_string_lossy().into_owned())
             .collect(),
         ffmpeg_path,
+        recognizer,
     })
 }
 
@@ -2025,6 +2099,7 @@ mod tests {
             cli: cli.to_string(),
             cli_args,
             ffmpeg: None,
+            recognizer: None,
         };
 
         assert!(
@@ -2034,6 +2109,21 @@ mod tests {
             )
             .is_ok()
         );
+        let with_recognizer = |recognizer: &str| {
+            validate_installed_sync_addon(
+                root.path(),
+                SyncAddonPackageMetadata {
+                    recognizer: Some(recognizer.to_string()),
+                    ..metadata("generator", Vec::new())
+                },
+            )
+        };
+        assert_eq!(
+            with_recognizer("launcher.js").unwrap().recognizer,
+            Some(root.path().join("launcher.js"))
+        );
+        assert_eq!(with_recognizer("absent.mjs").unwrap().recognizer, None);
+        assert!(with_recognizer("../launcher.js").is_err());
         assert!(
             validate_installed_sync_addon(root.path(), metadata("../generator", Vec::new()))
                 .is_err()
@@ -2195,6 +2285,35 @@ mod tests {
                 enabled
             );
         }
+    }
+
+    #[tokio::test]
+    async fn the_graphics_card_switch_is_off_until_saved_and_keeps_the_other_switches() {
+        let root = tempfile::tempdir().unwrap();
+        let cli = root.path().join("echogarden");
+        std::fs::write(&cli, []).unwrap();
+        let config = AlignmentConfig::Path(cli);
+        let settings_path = root.path().join("experimental-features.json");
+        // A settings file from before the switch existed.
+        std::fs::write(&settings_path, r#"{"readalongSyncEnabled":true}"#).unwrap();
+        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+        assert!(!manager.recognition_gpu().await);
+
+        let status = manager.set_recognition_gpu(true, &config).await.unwrap();
+        // An aligner found on PATH has no recognizer to put on a card.
+        assert!(status.enabled);
+        assert!(!status.supported);
+        manager
+            .set_sync_addon_enabled(false, &config)
+            .await
+            .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+        assert_eq!(saved["recognitionGpu"], true);
+        assert_eq!(saved["readalongSyncEnabled"], true);
+        assert_eq!(saved["pathRuntimeDisabled"], true);
+        let restarted = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+        assert!(restarted.recognition_gpu().await);
     }
 
     #[tokio::test]

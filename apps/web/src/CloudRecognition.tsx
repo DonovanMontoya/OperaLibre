@@ -4,19 +4,24 @@ import {
   disableCloudRecognition,
   enableCloudRecognition,
   getCloudRecognitionStatus,
-  type CloudRecognitionStatus
+  getRecognitionGpuStatus,
+  setRecognitionGpu,
+  type CloudRecognitionStatus,
+  type RecognitionGpuStatus
 } from "./api";
 import { errorMessage } from "./formatting";
 
 type Choice = "local" | "openai";
 
 /**
- * Where follow-along speech recognition runs. On this server is the default;
+ * Where follow-along speech recognition runs. On this server is the default,
+ * with its graphics card as an opt-in where it has one the add-on can use;
  * OpenAI is an opt-in for owners who bring their own key.
  */
 export function CloudRecognition({ isOwner, onChange }: { isOwner: boolean; onChange: (enabled: boolean) => void }) {
   const [status, setStatus] = useState<CloudRecognitionStatus | null>(null);
   const [choice, setChoice] = useState<Choice>("local");
+  const [gpu, setGpu] = useState<RecognitionGpuStatus | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,22 +37,36 @@ export function CloudRecognition({ isOwner, onChange }: { isOwner: boolean; onCh
     void getCloudRecognitionStatus()
       .then(loaded => { if (!cancelled) accept(loaded); })
       .catch(() => undefined);
+    // A server from before the setting existed has no such route, and offers no card.
+    void getRecognitionGpuStatus()
+      .then(loaded => { if (!cancelled) setGpu(loaded); })
+      .catch(() => undefined);
     return () => { cancelled = true; };
     // `onChange` is a state setter, so this runs once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function apply(change: () => Promise<CloudRecognitionStatus>, fallback: string) {
+  async function run(change: () => Promise<void>, fallback: string) {
     setBusy(true);
     setError(null);
     try {
-      accept(await change());
-      setApiKey("");
+      await change();
     } catch (failure) {
       setError(errorMessage(failure, fallback));
     } finally {
       setBusy(false);
     }
+  }
+
+  function apply(change: () => Promise<CloudRecognitionStatus>, fallback: string) {
+    return run(async () => {
+      accept(await change());
+      setApiKey("");
+    }, fallback);
+  }
+
+  function saveGraphicsCard(enabled: boolean) {
+    return run(async () => setGpu(await setRecognitionGpu(enabled)), "Could not change the graphics card setting.");
   }
 
   function useOpenAi(event: FormEvent) {
@@ -69,6 +88,21 @@ export function CloudRecognition({ isOwner, onChange }: { isOwner: boolean; onCh
         </span>
         <em>Default</em>
       </label>
+      {gpu?.supported && saved === "local" && !switching ? (
+        <div className="recognition-choice-detail">
+          <label className="recognition-choice-option">
+            <input type="checkbox" checked={gpu.enabled} onChange={event => void saveGraphicsCard(event.currentTarget.checked)} />
+            <span>
+              <strong>Use the graphics card</strong>
+              <small>
+                Runs a larger English model on this server’s NVIDIA card, which places sentences more closely.
+                It needs NVIDIA’s CUDA 12 and cuDNN 9 libraries on the server, and the first sync with it downloads
+                about 3 GB. A sync that cannot use the card says why and runs on the processor.
+              </small>
+            </span>
+          </label>
+        </div>
+      ) : null}
       <label className={choice === "openai" ? "selected" : undefined}>
         <input type="radio" name="recognition" checked={choice === "openai"} onChange={() => setChoice("openai")} />
         <span>

@@ -98,7 +98,7 @@ jobs:
           version="$(node -p 'require("./addons/readalong-sync/package.json").version')"
           tag="readalong-sync-v${version}"
           inputs="$(cat addons/readalong-sync/package.json addons/readalong-sync/package-lock.json \
-            script/package_sync_addon.mjs | sha256sum | cut -d' ' -f1)"
+            addons/readalong-sync/recognize.mjs script/package_sync_addon.mjs | sha256sum | cut -d' ' -f1)"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "inputs=${inputs}" >> "${GITHUB_OUTPUT}"
 
