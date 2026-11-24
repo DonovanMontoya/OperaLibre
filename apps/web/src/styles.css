@@ -26123,26 +26123,30 @@ html:not(.native-app) .book-heading .book-quick-start .book-quick-return {
   background: rgba(var(--ink-rgb), 0.04);
 }
 
-.recognition-choice > label input {
+.recognition-choice > label input,
+.recognition-choice-option input {
   width: 16px;
   height: 16px;
   margin: 2px 0 0;
   accent-color: var(--oxblood);
 }
 
-.recognition-choice > label span {
+.recognition-choice > label span,
+.recognition-choice-option span {
   display: grid;
   gap: 4px;
 }
 
-.admin-experiment-list .recognition-choice > label strong {
+.admin-experiment-list .recognition-choice > label strong,
+.admin-experiment-list .recognition-choice-option strong {
   color: var(--ink);
   font: inherit;
   font-size: 0.84rem;
   font-weight: 500;
 }
 
-.recognition-choice > label small {
+.recognition-choice > label small,
+.recognition-choice-option small {
   color: var(--ink-faded);
   font-size: 0.76rem;
   line-height: 1.4;
@@ -26155,7 +26159,8 @@ html:not(.native-app) .book-heading .book-quick-start .book-quick-return {
   line-height: 1.6;
 }
 
-.recognition-choice:disabled > label { cursor: default; }
+.recognition-choice:disabled > label,
+.recognition-choice:disabled .recognition-choice-option { cursor: default; }
 
 .recognition-choice-detail {
   display: grid;
@@ -26173,6 +26178,14 @@ html:not(.native-app) .book-heading .book-quick-start .book-quick-return {
   gap: 4px;
   max-width: 440px;
   font-size: 0.78rem;
+}
+
+.recognition-choice-detail label.recognition-choice-option {
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  max-width: 64ch;
+  cursor: pointer;
 }
 
 /* Artwork keeps a quiet, solid cover until the complete image is available. */

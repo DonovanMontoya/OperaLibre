@@ -1071,7 +1071,8 @@ export function AdminPanel({
                     </a>
                   ) : null}
                 </div>
-                {syncAddon?.installed ? <CloudRecognition isOwner={currentUser.isOwner} onChange={setCloudRecognition} /> : null}
+                {/* An updated add-on can gain recognition options, so its choices are read again. */}
+                {syncAddon?.installed ? <CloudRecognition key={syncAddon.installedVersion ?? "external"} isOwner={currentUser.isOwner} onChange={setCloudRecognition} /> : null}
                 <ExperimentSection title="Sync books and activity">
                   <SyncJobMonitor books={books} onOpenBook={onOpenBook} syncEnabled={syncAddon?.enabled === true} />
                 </ExperimentSection>

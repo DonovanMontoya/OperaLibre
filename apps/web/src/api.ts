@@ -964,6 +964,22 @@ export async function disableCloudRecognition() {
   return request<CloudRecognitionStatus>(CLOUD_RECOGNITION, { method: "DELETE" });
 }
 
+export type RecognitionGpuStatus = {
+  /** Whether this server has a graphics card the add-on could use. */
+  supported: boolean;
+  enabled: boolean;
+};
+
+const RECOGNITION_GPU = "/api/experimental-features/readalong-sync/gpu";
+
+export async function getRecognitionGpuStatus() {
+  return request<RecognitionGpuStatus>(RECOGNITION_GPU);
+}
+
+export async function setRecognitionGpu(enabled: boolean) {
+  return request<RecognitionGpuStatus>(RECOGNITION_GPU, { method: "PUT", body: JSON.stringify({ enabled }) });
+}
+
 export async function removeSyncAddon() {
   return request<SyncAddonStatus>(
     "/api/experimental-features/readalong-sync",

@@ -10,8 +10,9 @@ windowed aligner tests, including outages, duplicate anchors, revised wording,
 EPUB-only passages, audio-only passages, invalid clocks, and repeated recovery.
 
 Every Monday, and on manual workflow dispatch, the real-audio job synthesizes
-original speech with espeak-ng and sends it through the production recognizer
-and forced aligner. Cases include clean speech, silence, noise, and simultaneous
+original speech with espeak-ng and sends it through the aligner's whisper
+recognizer and forced aligner. The add-on's Parakeet recognizer, which packaged
+installs use for English, is not part of this job yet. Cases include clean speech, silence, noise, and simultaneous
 printed/narrated edition additions. Sentence boundaries come from separately
 synthesized audio segments, not from the recognizer being tested. Its onset
 tolerance is 0.75 seconds for synthetic speech; this is not a claim about natural

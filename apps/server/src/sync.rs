@@ -207,6 +207,7 @@ async fn checkpoint_fingerprint(
                 .filter(|path| path.is_file()),
         )
         .chain(runtime.ffmpeg_path.as_deref())
+        .chain(runtime.recognizer.as_deref())
     {
         let metadata = fs::metadata(path).await?;
         hash.update(format!(
@@ -1252,7 +1253,46 @@ pub(crate) async fn run_sync_generation(
     selected.sort_unstable();
     selected.dedup();
 
-    let recognition = book_recognition(state, book_id, &epub).await;
+    let temp_dir = tempfile::tempdir()?;
+    let mut recognition = book_recognition(state, book_id, &epub).await;
+    if recognition.cloud.is_none()
+        && let Some(recognizer) = runtime.recognizer.as_deref()
+    {
+        update_job_progress(
+            state,
+            job_id,
+            JobProgress::new("Preparing speech recognition").fraction(0.02),
+        )
+        .await;
+        match recognizer_plan(
+            runtime,
+            recognizer,
+            recognition.language.as_deref(),
+            state.update_manager.recognition_gpu().await,
+            temp_dir.path(),
+        )
+        .await
+        {
+            Ok(plan) => {
+                if let Some(note) = &plan.note {
+                    update_job_output(state, job_id, &format!("{note}\n")).await;
+                }
+                recognition = recognition.with_plan(&plan);
+            }
+            Err(error) => {
+                let reason = format!("{error:#}");
+                update_job_output(
+                    state,
+                    job_id,
+                    &format!(
+                        "The add-on's Parakeet recognizer could not start, so this book uses whisper: {}\n",
+                        reason.lines().next().unwrap_or_default()
+                    ),
+                )
+                .await;
+            }
+        }
+    }
     if runtime.ffmpeg_path.is_some() {
         update_job_output(
             state,
@@ -1267,7 +1307,6 @@ pub(crate) async fn run_sync_generation(
         .await;
     }
 
-    let temp_dir = tempfile::tempdir()?;
     let scope_unit = if tracks.len() > 1 {
         "track"
     } else if scopes.len() > 1 {
@@ -1863,8 +1902,8 @@ impl AutomaticFixes<'_> {
                         format!("{label} crashed the aligner; trying it once more.")
                     } else {
                         format!(
-                            "{label} crashed the speech recognizer; trying it once more, led by the whisper {} model.",
-                            recognition.model
+                            "{label} crashed the speech recognizer; trying it once more, led by the {} model.",
+                            model_label(recognition.model)
                         )
                     },
                 )
@@ -1879,8 +1918,8 @@ impl AutomaticFixes<'_> {
                     self.aligner.with_recognition(&recognition),
                     scope.clone(),
                     format!(
-                        "{label} was hard to recognize; trying the larger whisper {} model once.",
-                        recognition.model
+                        "{label} was hard to recognize; trying the larger {} model once.",
+                        model_label(recognition.model)
                     ),
                 )
             }
@@ -2433,6 +2472,74 @@ impl BookPrefetch {
     }
 }
 
+/// The Parakeet models of the add-on's recognizer; see
+/// `addons/readalong-sync/recognize.mjs`. Any other model name is a whisper
+/// model, run by the aligner itself.
+const PARAKEET_FAST: &str = "parakeet-tdt-110m";
+const PARAKEET_ACCURATE: &str = "parakeet-tdt-0.6b-v2";
+/// The larger model on a graphics card, planned only when the owner has turned
+/// the card on in Administration and it passed the add-on's trial run.
+const PARAKEET_ACCURATE_GPU: &str = "parakeet-tdt-0.6b-v2-gpu";
+
+fn parakeet_model(name: &str) -> Option<&'static str> {
+    [PARAKEET_FAST, PARAKEET_ACCURATE, PARAKEET_ACCURATE_GPU]
+        .into_iter()
+        .find(|known| *known == name)
+}
+
+fn model_label(model: &str) -> String {
+    if parakeet_model(model).is_some() {
+        model.to_string()
+    } else {
+        format!("whisper {model}")
+    }
+}
+
+/// The models the add-on's recognizer chose for a book on this machine. No
+/// model means it has none for the book's language, or cannot run here.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecognizerPlan {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    retry_model: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// Asks the add-on's recognizer which of its models suit this machine. The
+/// first book on a machine with room for the larger model downloads it here,
+/// and with `gpu` the first book downloads what the graphics card needs.
+async fn recognizer_plan(
+    runtime: &SyncAddonRuntime,
+    recognizer: &FsPath,
+    language: Option<&str>,
+    gpu: bool,
+    temp_dir: &FsPath,
+) -> anyhow::Result<RecognizerPlan> {
+    let script = [recognizer.to_string_lossy().into_owned()];
+    let output_path = temp_dir.join("recognizer-plan.json");
+    let mut args: Vec<std::ffi::OsString> = vec!["plan".into(), output_path.as_os_str().into()];
+    if let Some(language) = language {
+        args.push(format!("--language={language}").into());
+    }
+    if gpu {
+        args.push("--gpu".into());
+    }
+    run_alignment_cli(
+        &runtime.cli_path,
+        &script,
+        runtime.ffmpeg_path.as_deref(),
+        &args,
+        "Choosing a speech model",
+    )
+    .await?;
+    let json = read_cli_output(&output_path, "Choosing a speech model").await?;
+    let _ = fs::remove_file(&output_path).await;
+    Ok(serde_json::from_str(&json)?)
+}
+
 #[derive(Clone)]
 struct RecognitionSettings {
     model: &'static str,
@@ -2467,15 +2574,32 @@ impl RecognitionSettings {
         }
     }
 
+    /// Leads with the add-on's Parakeet recognizer where it chose a model.
+    /// When it chose only one, whisper's retry model stays the second opinion.
+    fn with_plan(self, plan: &RecognizerPlan) -> Self {
+        let Some(model) = plan.model.as_deref().and_then(parakeet_model) else {
+            return self;
+        };
+        Self {
+            model,
+            retry_model: plan
+                .retry_model
+                .as_deref()
+                .and_then(parakeet_model)
+                .unwrap_or(self.retry_model),
+            ..self
+        }
+    }
+
     fn describe(&self) -> String {
-        let engine = if self.cloud.is_some() {
-            "OpenAI"
+        let model = if self.cloud.is_some() {
+            format!("OpenAI {}", self.model)
         } else {
-            "whisper"
+            model_label(self.model)
         };
         match &self.language {
-            Some(language) => format!("{engine} {}, language {language}", self.model),
-            None => format!("{engine} {}, language detected", self.model),
+            Some(language) => format!("{model}, language {language}"),
+            None => format!("{model}, language detected"),
         }
     }
 
@@ -2495,10 +2619,11 @@ impl RecognitionSettings {
         if self.cloud.is_some() {
             return None;
         }
-        let model = if self.language.as_deref() == Some("en") {
-            "small.en"
-        } else {
-            "small"
+        let model = match parakeet_model(self.model) {
+            Some(PARAKEET_ACCURATE | PARAKEET_ACCURATE_GPU) => return None,
+            Some(_) if self.retry_model == PARAKEET_ACCURATE => PARAKEET_ACCURATE,
+            _ if self.language.as_deref() == Some("en") => "small.en",
+            _ => "small",
         };
         Some(Self {
             model,
@@ -2524,6 +2649,7 @@ struct Aligner<'a> {
     cli_path: &'a FsPath,
     cli_args: &'a [String],
     ffmpeg_path: Option<&'a FsPath>,
+    recognizer: Option<&'a FsPath>,
     temp_dir: &'a FsPath,
     recognition: &'a RecognitionSettings,
     heard: std::sync::Mutex<Heard>,
@@ -2559,6 +2685,7 @@ impl<'a> Aligner<'a> {
             cli_path: &runtime.cli_path,
             cli_args: &runtime.cli_args,
             ffmpeg_path: runtime.ffmpeg_path.as_deref(),
+            recognizer: runtime.recognizer.as_deref(),
             temp_dir,
             recognition,
             heard: Default::default(),
@@ -2576,6 +2703,7 @@ impl<'a> Aligner<'a> {
             cli_path: self.cli_path,
             cli_args: self.cli_args,
             ffmpeg_path: self.ffmpeg_path,
+            recognizer: self.recognizer,
             temp_dir: self.temp_dir,
             recognition,
             heard: Default::default(),
@@ -3279,6 +3407,16 @@ impl<'a> Aligner<'a> {
                 )),
             };
             match retried {
+                // The retry model is not always the stronger one. A retry
+                // that is still uncertain replaces the first pass only when
+                // it places more of the text.
+                Ok(retry)
+                    if alignment::recognition_needs_retry(&retry, text)
+                        && alignment::recognition_anchor_count(&retry, text)
+                            <= alignment::recognition_anchor_count(&recognized, text) =>
+                {
+                    recognized
+                }
                 Ok(retry) => retry,
                 Err(error) => {
                     self.note_failed_retry(&error).await;
@@ -3446,19 +3584,30 @@ impl<'a> Aligner<'a> {
         let output_path = self
             .temp_dir
             .join(format!("recognition-{scope_number}-{window}.json"));
+        // A Parakeet model runs in the add-on's recognizer, which writes the
+        // same timeline the aligner's whisper does.
+        let script = parakeet_model(model)
+            .and(self.recognizer)
+            .map(|recognizer| [recognizer.to_string_lossy().into_owned()]);
         let mut args: Vec<std::ffi::OsString> = vec![
             "transcribe".into(),
             audio_path.into(),
             output_path.as_os_str().into(),
-            "--engine=whisper".into(),
-            format!("--whisper.model={model}").into(),
         ];
+        if script.is_some() {
+            args.push(format!("--model={model}").into());
+        } else {
+            args.push("--engine=whisper".into());
+            args.push(format!("--whisper.model={model}").into());
+        }
         if let Some(language) = &self.recognition.language {
             args.push(format!("--language={language}").into());
         }
         run_alignment_cli(
             self.cli_path,
-            self.cli_args,
+            script
+                .as_ref()
+                .map_or(self.cli_args, |script| script.as_slice()),
             self.ffmpeg_path,
             &args,
             "Speech recognition",
@@ -4063,6 +4212,7 @@ mod tests {
             cli_path: cli,
             cli_args: vec![script.to_string_lossy().into_owned(), "--fixture".into()],
             ffmpeg_path: Some(ffmpeg.clone()),
+            recognizer: None,
         };
         let recognition = RecognitionSettings::for_language(Some("en"));
         let original = checkpoint_fingerprint(&epub, &[], &[], &runtime, &recognition)
@@ -4229,6 +4379,7 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
             cli_path: cli.clone(),
             cli_args: Vec::new(),
             ffmpeg_path: None,
+            recognizer: None,
         };
         let tracks = vec![
             SyncTrackInput {
@@ -4422,6 +4573,7 @@ printf '[{"type":"sentence","text":"%s","startTime":1,"endTime":3}]' "$text" > "
             cli_path: cli.clone(),
             cli_args: Vec::new(),
             ffmpeg_path: None,
+            recognizer: None,
         };
         let tracks = vec![SyncTrackInput {
             path: root.path().join("audio.wav"),
@@ -4536,6 +4688,7 @@ printf '[{"type":"sentence","text":"Kaladin ran.","startTime":0,"endTime":2}]' >
             cli_path: &cli,
             cli_args: &[],
             ffmpeg_path: None,
+            recognizer: None,
             temp_dir: root.path(),
             recognition: &recognition,
             heard: Default::default(),
@@ -4548,6 +4701,159 @@ printf '[{"type":"sentence","text":"Kaladin ran.","startTime":0,"endTime":2}]' >
         assert_eq!(recognition.model, "tiny.en");
         assert_eq!(fragments.len(), 1);
         assert_eq!(fragments[0].text, "Kaladin ran.");
+    }
+
+    #[test]
+    fn the_addons_plan_chooses_the_models_and_whisper_backs_a_lone_one() {
+        let whisper = RecognitionSettings::for_language(Some("en"));
+        let plan = |model: Option<&str>, retry_model: Option<&str>| RecognizerPlan {
+            model: model.map(str::to_string),
+            retry_model: retry_model.map(str::to_string),
+            note: None,
+        };
+
+        let ordinary = whisper
+            .clone()
+            .with_plan(&plan(Some(PARAKEET_FAST), Some(PARAKEET_ACCURATE)));
+        assert_eq!(
+            (ordinary.model, ordinary.retry_model),
+            (PARAKEET_FAST, PARAKEET_ACCURATE)
+        );
+        assert_eq!(ordinary.describe(), "parakeet-tdt-110m, language en");
+        assert_eq!(ordinary.larger().unwrap().model, PARAKEET_ACCURATE);
+
+        let fast = whisper
+            .clone()
+            .with_plan(&plan(Some(PARAKEET_ACCURATE), Some(PARAKEET_FAST)));
+        assert_eq!(fast.swapped().model, PARAKEET_FAST);
+        assert!(fast.larger().is_none());
+
+        let small = whisper.clone().with_plan(&plan(Some(PARAKEET_FAST), None));
+        assert_eq!((small.model, small.retry_model), (PARAKEET_FAST, "base.en"));
+        assert_eq!(small.larger().unwrap().model, "small.en");
+
+        for unusable in [
+            plan(None, None),
+            plan(Some("a-model-from-a-newer-add-on"), None),
+        ] {
+            let kept = whisper.clone().with_plan(&unusable);
+            assert_eq!((kept.model, kept.retry_model), ("tiny.en", "base.en"));
+            assert_eq!(kept.describe(), "whisper tiny.en, language en");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_gpu_setting_reaches_the_addons_plan_and_its_model_has_none_larger() {
+        let root = tempfile::tempdir().unwrap();
+        // Stands in for the add-on's runtime: it records how it was called and
+        // plans the graphics card's model only when asked to use the card.
+        let cli = root.path().join("node");
+        write_executable(
+            &cli,
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$0.calls"
+case "$*" in
+  *--gpu*) printf '{"model":"parakeet-tdt-0.6b-v2-gpu","retryModel":"parakeet-tdt-110m","note":"Downloaded."}' > "$3" ;;
+  *) printf '{"model":"parakeet-tdt-110m","retryModel":null}' > "$3" ;;
+esac
+"#,
+        );
+        let recognizer = root.path().join("recognize.mjs");
+        let runtime = SyncAddonRuntime {
+            cli_path: cli.clone(),
+            cli_args: Vec::new(),
+            ffmpeg_path: None,
+            recognizer: Some(recognizer.clone()),
+        };
+        let whisper = RecognitionSettings::for_language(Some("en"));
+
+        let off = recognizer_plan(&runtime, &recognizer, Some("en"), false, root.path())
+            .await
+            .unwrap();
+        assert_eq!(whisper.clone().with_plan(&off).model, PARAKEET_FAST);
+
+        let on = recognizer_plan(&runtime, &recognizer, Some("en"), true, root.path())
+            .await
+            .unwrap();
+        assert_eq!(on.note.as_deref(), Some("Downloaded."));
+        let recognition = whisper.with_plan(&on);
+        assert_eq!(
+            (recognition.model, recognition.retry_model),
+            (PARAKEET_ACCURATE_GPU, PARAKEET_FAST)
+        );
+        assert_eq!(
+            recognition.describe(),
+            "parakeet-tdt-0.6b-v2-gpu, language en"
+        );
+        assert!(recognition.larger().is_none());
+
+        let calls = std::fs::read_to_string(cli.with_extension("calls")).unwrap();
+        let calls = calls.lines().collect::<Vec<_>>();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(!calls[0].contains(" --gpu"), "{calls:?}");
+        assert!(calls[1].contains(" --language=en --gpu"), "{calls:?}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn parakeet_models_run_in_the_addons_recognizer_and_whisper_models_in_the_aligner() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = crate::unit_tests::fake_libation_state(root.path());
+        let job_id = create_job(&state, "sync-generate").await;
+        // Stands in for the add-on's runtime: it records how it was called and
+        // writes one recognized word where either recognizer would.
+        let cli = root.path().join("node");
+        write_executable(
+            &cli,
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$0.calls"
+[ "$1" = "transcribe" ] || shift
+printf '[{"type":"word","text":"heard","startTime":0.5,"endTime":0.9}]' > "$3"
+"#,
+        );
+        let recognizer = root.path().join("recognize.mjs");
+        let audio = root.path().join("window.wav");
+        std::fs::write(&audio, "").unwrap();
+        let recognition =
+            RecognitionSettings::for_language(Some("en")).with_plan(&RecognizerPlan {
+                model: Some(PARAKEET_FAST.into()),
+                retry_model: None,
+                note: None,
+            });
+        let aligner = Aligner {
+            state: &state,
+            job_id: &job_id,
+            cli_path: &cli,
+            cli_args: &[],
+            ffmpeg_path: None,
+            recognizer: Some(&recognizer),
+            temp_dir: root.path(),
+            recognition: &recognition,
+            heard: Default::default(),
+            prefetch: None,
+        };
+        for model in [recognition.model, recognition.retry_model] {
+            let words = aligner.transcribe(&audio, 0, "1", model).await.unwrap();
+            assert_eq!(words.len(), 1);
+            assert_eq!(words[0].text, "heard");
+        }
+        let calls = std::fs::read_to_string(cli.with_extension("calls")).unwrap();
+        let calls = calls.lines().collect::<Vec<_>>();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(
+            calls[0].starts_with(&format!("{} transcribe ", recognizer.display())),
+            "{calls:?}"
+        );
+        assert!(
+            calls[0].contains(" --model=parakeet-tdt-110m --language=en"),
+            "{calls:?}"
+        );
+        assert!(calls[1].starts_with("transcribe "), "{calls:?}");
+        assert!(
+            calls[1].contains(" --engine=whisper --whisper.model=base.en --language=en"),
+            "{calls:?}"
+        );
     }
 
     fn chapter(title: &str, start_seconds: f64, end_seconds: Option<f64>) -> SyncChapterInput {
@@ -4952,6 +5258,7 @@ printf '[{"type":"sentence","text":"Kaladin ran.","startTime":0,"endTime":2}]' >
             cli_path: &cli,
             cli_args: &[],
             ffmpeg_path: Some(&ffmpeg),
+            recognizer: None,
             temp_dir: root.path(),
             recognition: &recognition,
             heard: Default::default(),
@@ -5285,6 +5592,7 @@ esac
                 cli_path: &cli,
                 cli_args: &[],
                 ffmpeg_path: Some(&ffmpeg),
+                recognizer: None,
                 temp_dir: temp_dir.path(),
                 recognition: &recognition,
                 heard: Default::default(),
@@ -5876,6 +6184,7 @@ esac
                 cli_path: &cli,
                 cli_args: &[],
                 ffmpeg_path: Some(&ffmpeg),
+                recognizer: None,
                 temp_dir: root.path(),
                 recognition: &recognition,
                 heard: Default::default(),
@@ -5991,6 +6300,7 @@ printf '[{"type":"sentence","text":"%s","startTime":%s,"endTime":%s}]' "$(cat "$
                         cli_path: cli,
                         cli_args: Vec::new(),
                         ffmpeg_path: None,
+                        recognizer: None,
                     },
                 }
             }
@@ -6633,6 +6943,7 @@ esac
                         cli_path: cli,
                         cli_args: Vec::new(),
                         ffmpeg_path: Some(ffmpeg),
+                        recognizer: None,
                     },
                 }
             }

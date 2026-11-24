@@ -30,3 +30,4 @@ These records explain the constraints and tradeoffs behind OperaLibre’s implem
 - [0026. Checkpoint read-along jobs before handoff](decisions/0026-checkpoint-readalong-jobs-before-handoff.md)
 - [0027. Publish read-along maps by successful scope](decisions/0027-publish-readalong-maps-by-successful-scope.md)
 - [0028. Bound read-along recognition and prefetch](decisions/0028-bound-readalong-recognition-and-prefetch.md)
+- [0029. Size read-along speech recognition to the server](decisions/0029-size-readalong-recognition-to-the-server.md)

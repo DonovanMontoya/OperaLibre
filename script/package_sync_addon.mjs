@@ -4,6 +4,23 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import { patchEmptyTimeline } from "../addons/readalong-sync/patch-runtime.mjs";
+import { FAST, fetchModel } from "../addons/readalong-sync/recognize.mjs";
+
+// The bundled speech model is CC-BY-4.0, which asks for this attribution.
+const MODEL_NOTICE = `# Speech models
+
+parakeet-tdt-110m is NVIDIA's Parakeet TDT-CTC 110M English speech recognition
+model (https://huggingface.co/nvidia/parakeet-tdt_ctc-110m), licensed under
+Creative Commons Attribution 4.0 International
+(https://creativecommons.org/licenses/by/4.0/). The sherpa-onnx project
+(https://github.com/k2-fsa/sherpa-onnx) converted its transducer decoder to ONNX
+and quantized it to 8 bits. The files here are the ones that project publishes.
+
+Follow-along sync may also download parakeet-tdt-0.6b-v2, NVIDIA's Parakeet TDT
+0.6B v2 (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2), converted by the
+same project and under the same license: quantized for the processor, and
+unquantized for a graphics card.
+`;
 
 function argumentsFrom(argv) {
   const options = {};
@@ -65,6 +82,9 @@ async function main() {
     recursive: true
   });
   await patchEmptyTimeline(path.join(output, "node_modules/echogarden/dist/utilities/Timeline.js"));
+  await copyFile(path.join(runtimeRoot, "recognize.mjs"), path.join(output, "recognize.mjs"));
+  await fetchModel(FAST, path.join(output, "models"));
+  await writeFile(path.join(output, "models/NOTICE.md"), MODEL_NOTICE);
   await copyFile(process.execPath, path.join(output, "runtime", nodeName));
   await copyFile("LICENSE.md", path.join(output, "LICENSE.md"));
   await copyFile(await findNodeLicense(), path.join(output, "NODE-LICENSE.txt"));
@@ -80,6 +100,7 @@ async function main() {
   // Fail the release build if a packaged runtime or its dependencies cannot load.
   execFileSync(path.join(output, cli), [path.join(output, "node_modules/echogarden/dist/cli/CLILauncher.js"), "help"], { stdio: "pipe" });
   execFileSync(path.join(output, ffmpeg), ["-version"], { stdio: "pipe" });
+  execFileSync(path.join(output, cli), [path.join(output, "recognize.mjs"), "check"], { stdio: "pipe" });
 
   await writeFile(
     path.join(output, "ADDON.json"),
@@ -91,7 +112,8 @@ async function main() {
       protocolVersion: 1,
       cli,
       cliArgs: ["node_modules/echogarden/dist/cli/CLILauncher.js"],
-      ffmpeg
+      ffmpeg,
+      recognizer: "recognize.mjs"
     }, null, 2)}\n`
   );
 }

@@ -216,6 +216,10 @@ pub(crate) fn build_router(
             put(set_readalong_sync_addon_enabled),
         )
         .route(
+            "/api/experimental-features/readalong-sync/gpu",
+            get(readalong_recognition_gpu_status).put(set_readalong_recognition_gpu),
+        )
+        .route(
             "/api/experimental-features/readalong-sync/cloud-recognition",
             get(crate::cloud_recognition::cloud_recognition_status)
                 .put(crate::cloud_recognition::set_cloud_recognition)
@@ -913,6 +917,31 @@ pub(crate) async fn set_readalong_sync_addon_enabled(
         .map_err(|error| {
             ApiError::bad_request(format!("Could not change the sync add-on: {error}"))
         })
+}
+
+pub(crate) async fn readalong_recognition_gpu_status(
+    State(state): State<AppState>,
+    _: AdminUser,
+) -> Json<updates::RecognitionGpuStatus> {
+    Json(
+        state
+            .update_manager
+            .recognition_gpu_status(&state.alignment_config)
+            .await,
+    )
+}
+
+pub(crate) async fn set_readalong_recognition_gpu(
+    State(state): State<AppState>,
+    _: OwnerUser,
+    Json(input): Json<ExperimentalFeatureEnabled>,
+) -> Result<Json<updates::RecognitionGpuStatus>, ApiError> {
+    state
+        .update_manager
+        .set_recognition_gpu(input.enabled, &state.alignment_config)
+        .await
+        .map(Json)
+        .map_err(|error| ApiError::bad_request(error.to_string()))
 }
 
 pub(crate) async fn remove_readalong_sync_addon(
