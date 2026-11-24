@@ -387,7 +387,7 @@ Notes start from the book's words. A book with a follow-along map uses its own t
 
 An administrator makes a book's notes from the book's page with **Make notes** (or **Transcribe**). Transcribing takes a while on modest hardware, and one book is worked on at a time. A chapter's text goes to the model you chose only then, and running it again sends only chapters that changed. **Remove** deletes the book's notes and transcripts.
 
-Notes appear on the book's page and in the player's details. Summaries of chapters you have not finished stay hidden until you choose **Show spoilers**. Assistants with **Book text so far** can read them the same way: everything for chapters you have heard, only the synopsis for the chapter you are in, and nothing later unless you ask the assistant to spoil it.
+Notes appear on the book's page and in the player's details, folded into one list you open when you want it. Summaries of chapters you have not finished stay hidden until you choose **Show spoilers**. Assistants with **Book text so far** can read them the same way: everything for chapters you have heard, only the synopsis for the chapter you are in, and nothing later unless you ask the assistant to spoil it.
 
 ## Import Audible books with Libation (optional)
 
