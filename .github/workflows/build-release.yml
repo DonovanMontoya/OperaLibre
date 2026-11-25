@@ -772,6 +772,14 @@ jobs:
             latest_stable="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
             [[ "${latest_stable}" == "${STABLE_TAG}" ]] || { echo "Stable changed during this build; retry nightly." >&2; exit 1; }
             manifest_options+=(--stable-version "${STABLE_TAG#v}")
+            # Nightlies don't build the add-on, but nightly installs still
+            # need to see the published release that matches this source.
+            sync_tag="readalong-sync-v$(node -p 'require("./addons/readalong-sync/package.json").version')"
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${sync_tag}" > "${RUNNER_TEMP}/sync-release.json"; then
+              manifest_options+=(--sync-release "${RUNNER_TEMP}/sync-release.json")
+            else
+              echo "::warning::${sync_tag} is not published; this nightly manifest lists no sync add-on."
+            fi
           fi
           node release-signing-tools/script/release_manifest.mjs \
             --assets release-assets \
