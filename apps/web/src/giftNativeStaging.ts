@@ -1,5 +1,6 @@
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import type { GiftChunkSink } from "./giftChunkReceiver";
+import { toBase64 } from "./base64.ts";
 
 export type GiftStagedPrefix = { offset: number; prefixSha256: string };
 type Verifier = { prepareArchive(input: { giftId: string }): Promise<void>; verifyArchive(input: { giftId: string; size: number; sha256: string }): Promise<void>; inspectArchive(input: { giftId: string; maximumSize: number }): Promise<GiftStagedPrefix> };
@@ -17,12 +18,6 @@ const MAX_ARCHIVE = 25 * 1024 ** 3;
 const MAX_CHUNK = 64 * 1024;
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const validId = (value: string) => /^[A-Za-z0-9_-]{16,128}$/.exec(value)?.[0] === value;
-
-function base64(bytes: Uint8Array) {
-  let result = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) result += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(result);
-}
 
 /** Injection seam for bounded sinks. The application uses the native lease
  * adapter below; the JS context lock alone is insufficient for native staging. */
@@ -116,7 +111,7 @@ export function createNativeGiftStagingManager(backend: NativeGiftStagingBackend
     inspectArchive: ({ giftId, maximumSize }) => acquire(giftId, false, maximumSize),
     async append(giftId, bytes) {
       const held = lease(giftId), expected = held.offset + bytes.length;
-      const result = await backend.appendArchive({ giftId, lease: held.token, offset: held.offset, data: base64(bytes) });
+      const result = await backend.appendArchive({ giftId, lease: held.token, offset: held.offset, data: toBase64(bytes) });
       if (result.offset !== expected) throw new Error("Invalid native gift offset.");
       held.offset = expected;
     },

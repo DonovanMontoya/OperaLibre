@@ -1,17 +1,9 @@
 import { Capacitor } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
+import { toBase64 } from "./base64.ts";
 
 const SHARE_DIRECTORY = "shared-clips";
-
-function toBase64(data: ArrayBuffer) {
-  const bytes = new Uint8Array(data);
-  let binary = "";
-  for (let at = 0; at < bytes.length; at += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
-  }
-  return btoa(binary);
-}
 
 function wasDismissed(error: unknown) {
   return error instanceof Error && (error.name === "AbortError" || /cancel/i.test(error.message));
