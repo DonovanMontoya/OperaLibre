@@ -66,7 +66,8 @@ jobs:
           SYNC_ONLY: ${{ inputs.sync_only }}
         run: |
           if [[ "${SYNC_ONLY}" == "true" ]]; then
-            export SOURCE_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+            SOURCE_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+            export SOURCE_SHA
           fi
           node script/resolve_release.mjs
 
