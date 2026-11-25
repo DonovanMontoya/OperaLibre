@@ -23,6 +23,12 @@ export function countLabel(count: number, singular: string, plural = `${singular
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
+export function formatFileSize(bytes: number) {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+  if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)} MiB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KiB`;
+}
+
 export function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
 }

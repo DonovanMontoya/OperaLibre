@@ -12880,7 +12880,7 @@ html.native-app .profile-back {
   background: rgba(var(--lift-rgb), 0.55);
 }
 
-.admin-nav button {
+.admin-nav > button {
   flex: 1;
   min-width: 0;
   display: flex;
@@ -12900,7 +12900,7 @@ html.native-app .profile-back {
   cursor: pointer;
 }
 
-.admin-nav button.selected {
+.admin-nav > button.selected {
   color: var(--on-oxblood);
   background: var(--oxblood);
   box-shadow: 0 5px 14px rgba(var(--oxblood-shadow-rgb), 0.18);
@@ -13125,32 +13125,7 @@ html.native-app .profile-back {
   background: rgba(var(--cv-success-rgb, 55, 112, 71), 0.1);
 }
 
-.admin-experimental-badge {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  padding: 5px 7px;
-  border-radius: 999px;
-  color: var(--cv-warning, #765315);
-  background: rgba(184, 137, 58, 0.14);
-  font: 600 0.56rem "JetBrains Mono", monospace;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
 .admin-experiment-list { min-width: 0; }
-
-.admin-experiment-list > article {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  min-width: 0;
-  overflow-wrap: anywhere;
-  gap: 12px;
-  padding: 16px;
-  border: 1px solid rgba(var(--ink-rgb), 0.1);
-  border-radius: 10px;
-  background: rgba(var(--oxblood-shadow-rgb), 0.025);
-}
 
 .admin-experiment-list p {
   margin: 0;
@@ -13167,26 +13142,182 @@ html.native-app .profile-back {
   font-size: 0.72rem;
 }
 
-.admin-experiment-section {
-  border-top: 1px solid rgba(var(--ink-rgb), 0.12);
-  padding-top: 12px;
-  min-width: 0;
-}
+/* Experiments: a list of the experiments with their state, and one open at a
+   time. By default the list is the page and choosing one opens it in its
+   place, which suits a phone. Where Administration gives navigation a column
+   of its own, further down, the list moves there and stays beside the open
+   experiment. */
+.admin-experiments { display: grid; gap: 14px; }
+.admin-experiments[data-picked="false"] > .experiment-panel,
+.admin-experiments[data-picked="true"] > .experiment-index { display: none; }
+.experiment-side-slot { display: none; }
 
-.admin-experiment-section > summary {
-  display: flex;
+.experiment-list { display: grid; margin: 14px 0 -8px; padding: 0; list-style: none; }
+.experiment-list li + li { border-top: 1px solid rgba(var(--ink-rgb), 0.1); }
+.admin-shell .experiment-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  gap: 2px 12px;
+  width: 100%;
+  min-height: 60px;
+  padding: 10px 4px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
   cursor: pointer;
-  list-style: none;
-  font-size: 0.85rem;
 }
+.experiment-list-name { font: 400 1.25rem/1.2 "Instrument Serif", serif; overflow-wrap: anywhere; }
+.experiment-list .experiment-state { grid-column: 1; grid-row: 2; }
+.experiment-list svg { grid-column: 2; grid-row: 1 / 3; color: var(--ink-faded); }
 
-.admin-experiment-section > summary::-webkit-details-marker { display: none; }
-.admin-experiment-section > summary svg { transform: rotate(-90deg); }
-.admin-experiment-section[open] > summary svg { transform: rotate(0); }
-.admin-experiment-section > summary:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
-.admin-experiment-section-content { padding-top: 14px; }
+.experiment-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-faded);
+  font: 500 0.74rem "JetBrains Mono", monospace;
+  white-space: nowrap;
+}
+.experiment-state::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(var(--ink-rgb), 0.28);
+}
+.experiment-state-on { color: var(--cv-success, #315b3c); }
+.experiment-state-on::before { background: currentColor; }
+.experiment-state-attention { color: var(--cv-warning, #765315); }
+.experiment-state-attention::before { background: var(--gold); }
+html.dark-mode .experiment-state-on { color: var(--cv-success-light, #9fd3ac); }
+html.dark-mode .experiment-state-attention { color: var(--cv-warning-light, #e0bd7a); }
+
+.experiment-panel { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
+.experiment-panel:focus { outline: none; }
+.admin-card .experiment-back {
+  justify-self: start;
+  min-height: 44px;
+  margin: -8px 0 -6px -8px;
+  padding: 0 12px 0 6px;
+  border-color: transparent;
+  background: none;
+  color: var(--ink-soft);
+}
+.experiment-head { display: flex; align-items: center; justify-content: space-between; gap: 12px 16px; flex-wrap: wrap; }
+.admin-card .experiment-head h2 { margin: 0; font-size: 1.9rem; line-height: 1.05; }
+.experiment-head-control { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.admin-card .experiment-summary { color: var(--ink-soft); font-size: 0.98rem; max-width: 62ch; }
+
+.admin-card .experiment-switch {
+  position: relative;
+  flex: 0 0 auto;
+  justify-content: flex-start;
+  width: 50px;
+  min-height: 0;
+  height: 30px;
+  padding: 3px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(var(--ink-rgb), 0.2);
+}
+.experiment-switch > span {
+  display: block;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--paper);
+  box-shadow: 0 1px 4px rgba(26, 20, 16, 0.26);
+  transition: transform 0.18s ease;
+}
+.admin-card .experiment-switch[aria-checked="true"] { background: var(--oxblood); }
+.experiment-switch[aria-checked="true"] > span { transform: translateX(20px); }
+.experiment-switch:focus-visible { outline: 2px solid var(--oxblood); outline-offset: 3px; }
+/* The switch is small to look at and a full touch target to press. */
+.experiment-switch::after { content: ""; position: absolute; inset: -8px -4px; }
+.admin-card .experiment-primary { border-color: var(--oxblood); background: var(--oxblood); color: var(--on-oxblood); }
+@media (prefers-reduced-motion: reduce) { .experiment-switch > span { transition: none; } }
+
+.experiment-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+  gap: 14px 28px;
+  margin: 0;
+  padding: 16px 0;
+  border-block: 1px solid rgba(var(--ink-rgb), 0.12);
+}
+.experiment-facts > div { display: grid; gap: 3px; align-content: start; min-width: 0; }
+.experiment-facts dt { color: var(--ink-faded); font: 500 0.68rem "JetBrains Mono", monospace; }
+.experiment-facts dd { margin: 0; color: var(--ink-soft); font-size: 0.86rem; line-height: 1.45; overflow-wrap: anywhere; }
+.experiment-facts a { color: inherit; }
+
+.experiment-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.experiment-body:empty { display: none; }
+.experiment-body > [hidden] { display: none; }
+.experiment-tabs {
+  display: flex;
+  gap: 4px 22px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.12);
+}
+.experiment-tabs::-webkit-scrollbar { display: none; }
+.admin-card .experiment-tabs button {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--ink-faded);
+  white-space: nowrap;
+}
+.admin-card .experiment-tabs button.selected { color: var(--ink); border-bottom-color: var(--oxblood); }
+.experiment-block { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.experiment-block-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px 14px; flex-wrap: wrap; }
+.admin-card .experiment-block-head h3 { margin: 0; font: 400 1.25rem/1.2 "Instrument Serif", serif; }
+.experiment-block-head span { color: var(--ink-faded); font: 500 0.72rem "JetBrains Mono", monospace; overflow-wrap: anywhere; }
+/* Inside a tab the recognition choice needs no rule or heading of its own. */
+.experiment-body .recognition-choice { padding-top: 0; border-top: 0; }
+.experiment-body .recognition-choice legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.experiment-body .chapter-notes-provider fieldset { margin-top: 0; padding-top: 0; border-top: 0; min-width: 0; }
+.chapter-notes-provider label { min-width: 0; }
+
+/* Navigation has a column of its own: a wide browser window, and either pane
+   layout of an unfolded phone. The list sits under the sections there, and
+   the open experiment has the content to itself. */
+@media (min-width: 1200px) and (min-height: 640px) {
+  html:not(.native-app) .admin-overlay .experiment-side-slot { display: block; }
+  html:not(.native-app) .admin-overlay .admin-experiments > .experiment-index,
+  html:not(.native-app) .admin-overlay .admin-experiments .experiment-back { display: none; }
+  html:not(.native-app) .admin-overlay .admin-experiments[data-picked="false"] > .experiment-panel { display: grid; }
+}
+/* The unfolded section buttons wrap in rows; the list takes a row of its own. */
+html.native-app[data-fold-active][data-fold-axis] .admin-shell:not(.admin-overlay) .experiment-side-slot { display: block; flex: 1 1 100%; }
+/* A phone on its side has the column but not the height for a longer list in it. */
+@media (orientation: landscape) and (min-width: 700px) and (min-height: 500px) {
+  html.native-app .admin-shell:not(.admin-overlay) .experiment-side-slot { display: block; }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-experiments > .experiment-index,
+  html.native-app .admin-shell:not(.admin-overlay) .admin-experiments .experiment-back { display: none; }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-experiments[data-picked="false"] > .experiment-panel { display: grid; }
+}
+html.native-app[data-fold-active][data-fold-axis] .admin-shell:not(.admin-overlay) .admin-experiments > .experiment-index,
+html.native-app[data-fold-active][data-fold-axis] .admin-shell:not(.admin-overlay) .admin-experiments .experiment-back { display: none; }
+html.native-app[data-fold-active][data-fold-axis] .admin-shell:not(.admin-overlay) .admin-experiments[data-picked="false"] > .experiment-panel { display: grid; }
+.experiment-side .experiment-list { margin: 0; padding: 0 0 0 10px; border-left: 1px solid rgba(var(--ink-rgb), 0.14); }
+.experiment-side .experiment-list li + li { border-top: 0; }
+/* A narrow column drops the state under the name instead of squeezing both. */
+.admin-shell .experiment-side .experiment-list button { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 10px; min-height: 46px; padding: 6px 12px; }
+.experiment-side .experiment-list-name { font: 500 0.95rem/1.25 "Fraunces", serif; }
+.experiment-side .experiment-list svg { display: none; }
+.admin-shell .experiment-side .experiment-list button.selected { background: rgba(var(--ink-rgb), 0.08); }
+.admin-shell .experiment-list button:focus-visible { outline: 2px solid var(--oxblood); outline-offset: -2px; }
+
 .admin-sync-monitor, .admin-sync-jobs, .admin-sync-job { display: grid; gap: 10px; min-width: 0; }
 .admin-sync-job { padding: 12px; border: 1px solid rgba(var(--ink-rgb), 0.12); border-radius: 8px; }
 .admin-sync-job-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
@@ -13421,7 +13552,9 @@ html.native-app .profile-back {
 .admin-create-user label { display: grid; gap: 5px; }
 .admin-create-user input[type="text"],
 .admin-create-user input[type="password"],
-.admin-create-user label input {
+.admin-create-user label input,
+.chapter-notes-provider :is(input, select),
+.recognition-choice-detail label:not(.recognition-choice-option) input {
   width: 100%;
   min-width: 0;
   padding: 10px 11px;
@@ -13468,8 +13601,8 @@ html.native-app .admin-shell:not(.admin-overlay) {
   .admin-overlay { padding: 22px 15px 40px; }
   .admin-head h1 { font-size: 2.5rem; }
   .admin-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .admin-nav button { min-height: 44px; font-size: 0.75rem; line-height: 1.4; padding: 10px 12px; }
-  .admin-nav button svg { display: none; }
+  .admin-nav > button { min-height: 44px; font-size: 0.75rem; line-height: 1.4; padding: 10px 12px; }
+  .admin-nav > button svg { display: none; }
   .admin-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-user-layout { grid-template-columns: 1fr; }
   .admin-create-user { position: static; order: -1; }
@@ -13481,7 +13614,6 @@ html.native-app .admin-shell:not(.admin-overlay) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .admin-experiment-list .admin-update-actions > * { min-width: 0; }
-  .admin-experiment-list .admin-software-version-head { flex-wrap: wrap; }
   .admin-software-head { align-items: stretch; flex-direction: column; }
   .admin-backup-actions { width: 100%; }
   .admin-backup-actions button { flex: 1; }
@@ -18192,7 +18324,7 @@ html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.
     margin: 14px 0 0;
     flex-direction: column;
   }
-  html.native-app .admin-shell:not(.admin-overlay) .admin-nav button {
+  html.native-app .admin-shell:not(.admin-overlay) .admin-nav > button {
     flex: none;
     justify-content: flex-start;
     padding: 0 12px;
@@ -20573,14 +20705,14 @@ html.native-app[data-fold-active][data-fold-axis="vertical"] .admin-shell:not(.a
   flex-direction: column;
 }
 
-html.native-app[data-fold-active][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) .admin-nav button {
+html.native-app[data-fold-active][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) .admin-nav > button {
   flex: none;
   justify-content: flex-start;
   padding: 0 12px;
   text-align: left;
 }
 
-html.native-app[data-fold-active][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) .admin-nav button svg {
+html.native-app[data-fold-active][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) .admin-nav > button svg {
   display: inline;
 }
 
@@ -21067,7 +21199,7 @@ html.native-app[data-fold-active][data-fold-axis] .admin-shell:not(.admin-overla
   margin: 18px 0;
   gap: 8px;
 }
-html.native-app[data-fold-active][data-fold-axis] .admin-shell:not(.admin-overlay) .admin-nav button {
+html.native-app[data-fold-active][data-fold-axis] .admin-shell:not(.admin-overlay) .admin-nav > button {
   flex: 1 1 150px;
   min-width: 0;
   min-height: 44px;
@@ -22483,7 +22615,7 @@ html:not(.native-app) .book-heading {
     width: auto;
     margin: 12px 0 0;
   }
-  html:not(.native-app) .admin-overlay .admin-nav button {
+  html:not(.native-app) .admin-overlay .admin-nav > button {
     flex: none;
     justify-content: flex-start;
     padding: 0 14px;
@@ -24267,7 +24399,7 @@ html.native-app .metadata-cover-controls label:focus-within {
     display: none;
   }
 
-  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-nav button {
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-nav > button {
     flex: none;
     scroll-snap-align: start;
     min-height: 44px;
@@ -24281,7 +24413,7 @@ html.native-app .metadata-cover-controls label:focus-within {
     white-space: nowrap;
   }
 
-  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-nav button.selected {
+  html.native-app:not([data-fold-active]) .admin-shell:not(.admin-overlay) .admin-nav > button.selected {
     box-shadow: none;
     border-color: var(--oxblood);
     background: var(--oxblood);
@@ -25227,7 +25359,7 @@ html.native-app .continue-reading-book .cover-art-frame.cover-mark {
     scrollbar-width: none;
   }
 
-  html:not(.native-app) .admin-nav button {
+  html:not(.native-app) .admin-nav > button {
     flex: 0 0 auto;
     min-height: 36px;
     padding: 0 12px;
@@ -25590,7 +25722,7 @@ html:not(.native-app) .audible-management .audible-primary-action:not(:disabled)
     scrollbar-width: none;
   }
 
-  html:not(.native-app) .admin-nav button {
+  html:not(.native-app) .admin-nav > button {
     flex: 0 0 auto;
     padding: 0 12px;
     white-space: nowrap;
