@@ -161,7 +161,6 @@ import { useMetadataEditor } from "./useMetadataEditor";
 import { useChapterEndSleep, useSleepTimer } from "./useSleepTimer";
 import { useShelf } from "./useShelf";
 import { usePurchases } from "./usePurchases";
-import { useReadingStreakWidget } from "./useReadingStreakWidget";
 import { useCarPlay } from "./useCarPlay";
 import type { LibraryProgressReplay, PendingSeek, QueuedProgressSave } from "./playbackTypes";
 import { useReadalong } from "./useReadalong";
@@ -1072,7 +1071,6 @@ function MainApp({
     speed,
     updateBookProgress
   });
-  useReadingStreakWidget(ios && !localMode, `${getServerStorageKey()}:${currentUser.id}`);
   const {
     adoptCarPlaybackState,
     carEventHandlersRef,

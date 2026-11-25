@@ -224,6 +224,7 @@ public final class AudiobookPlayer {
     private var recoveryTrackId: String?
     private var recoveryBookOffset: Double = 0
     private var lastCheckpointWrite = 0.0
+    private var listeningSample: (uptime: TimeInterval, position: Double, track: Int)?
     private static let playIntentGraceSeconds = 5.0
     private var playIntentAt = 0.0
     private var queuedTracks: [NativeAudioQueuedTrack] = []
@@ -448,6 +449,7 @@ public final class AudiobookPlayer {
     }
 
     private func performSeek(to position: Double, intentional: Bool, requiresExactPosition: Bool = false) {
+        listeningSample = nil
         let leavingPreview = requiresExactPosition || (intentional && isClipPreview)
         pendingPosition = position
         initialSeekComplete = false
@@ -719,6 +721,9 @@ public final class AudiobookPlayer {
                     player === self.player,
                     generation == self.generation
                 else { return }
+                if player.timeControlStatus != .playing {
+                    self.listeningSample = nil
+                }
                 self.syncSleepTimerWithPlaybackState(player.timeControlStatus)
                 self.updateNowPlayingInfo()
             }
@@ -855,6 +860,7 @@ public final class AudiobookPlayer {
             if self.initialSeekComplete, let position = self.validSeconds(time) {
                 self.lastKnownPosition = position
             }
+            self.recordListeningTime(player: player, time: time)
             self.persistCheckpoint(force: false)
             let chapterIndex = self.nowPlayingChapterIndex(
                 at: self.finiteSeconds(player.currentTime())
@@ -1414,6 +1420,27 @@ public final class AudiobookPlayer {
         }
     }
 
+    private func recordListeningTime(player: AVPlayer, time: CMTime) {
+        guard initialSeekComplete, !isClipPreview, player.timeControlStatus == .playing,
+              let scope = recoveryScopeKey, let position = validSeconds(time) else {
+            listeningSample = nil
+            return
+        }
+        let previous = listeningSample
+        let uptime = ProcessInfo.processInfo.systemUptime
+        listeningSample = (uptime, position, activeQueueIndex)
+        guard let previous, previous.track == activeQueueIndex else { return }
+
+        let elapsed = uptime - previous.uptime
+        let advanced = position - previous.position
+        let rate = effectivePlaybackRate(for: player)
+        // Reject seek jumps and gaps in playback observations.
+        guard elapsed > 0, elapsed <= 2, advanced > 0,
+              advanced <= elapsed * rate + 0.25 else { return }
+        ReadingStreakStore.shared.record(seconds: min(elapsed, advanced / rate),
+                                         on: Date(), playbackScope: scope)
+    }
+
     @discardableResult
     private func persistCheckpoint(
         force: Bool,
@@ -1690,6 +1717,7 @@ public final class AudiobookPlayer {
         interruptionIsActive = false
         interruptionResumeSerial += 1
         endInterruptionResumeTask()
+        listeningSample = nil
         recoveryScopeKey = nil
         recoveryTrackId = nil
         recoveryBookOffset = 0

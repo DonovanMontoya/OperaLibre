@@ -1,4 +1,3 @@
-import { syncReadingStreak } from "./carPlay";
 import { ArrowLeft, Headphones } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { getProfileStats, getServerStorageKey, isNetworkError, mediaUrl } from "./api";
@@ -133,7 +132,6 @@ export function ProfilePage({
           user.id,
           next
         );
-        void syncReadingStreak(`${serverScope}:${user.id}`, next).catch(() => undefined);
         setStats(next);
         setCachedAt(snapshot.cachedAt);
         setOfflineSource(null);

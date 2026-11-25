@@ -104,14 +104,3 @@ export function deriveDeviceProfileStats(books: Book[]): ProfileStats {
     measuringSince: null
   };
 }
-
-
-export function readingStreakSnapshot(stats: ProfileStats, now = new Date()) {
-  // The Ledger includes the rest of this calendar week, even days still ahead.
-  const today = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
-  return {
-    current: stats.currentStreakDays,
-    longest: stats.longestStreakDays,
-    activity: stats.streakCalendar.filter(day => day.date <= today).slice(-28).map(day => day.minutes > 0)
-  };
-}
