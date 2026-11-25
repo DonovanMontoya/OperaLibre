@@ -16333,9 +16333,11 @@ html.native-app .recent-row {
     box-shadow: inset 3px 0 0 var(--gold);
   }
 
+  /* Tall two-pane rows: pinned to the top it rode the divider. */
   html.native-app .native-shell .book-list.is-list .book-availability {
-    top: 10px;
+    top: 50%;
     right: 26px;
+    transform: translateY(-50%);
   }
 
   /* The reading ribbon. Bound into the gutter, laid across the
