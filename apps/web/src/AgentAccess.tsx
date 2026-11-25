@@ -1,16 +1,13 @@
-import { Bot, Check, Copy, FlaskConical, LoaderCircle, Plus, Trash2, X } from "lucide-react";
+import { Bot, Check, Copy, Plus, Trash2, X } from "lucide-react";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  type AgentAccessStatus,
   type AgentScope,
   type AgentToken,
   agentEndpointUrl,
   createAgentToken,
-  getAgentAccessStatus,
   listAgentTokens,
-  revokeAgentToken,
-  setAgentAccessEnabled
+  revokeAgentToken
 } from "./api";
 import { ApiError } from "./apiError";
 import { errorMessage } from "./formatting";
@@ -308,83 +305,5 @@ export function AgentAccessDialog({ onClose }: { onClose: () => void }) {
       </section>
     </div>,
     document.body
-  );
-}
-
-/** The owner's switch under Administration → Experiments. */
-export function AgentAccessExperiment({ isOwner }: { isOwner: boolean }) {
-  const [status, setStatus] = useState<AgentAccessStatus | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getAgentAccessStatus().then(
-      (loaded) => {
-        if (!cancelled) setStatus(loaded);
-      },
-      (err: unknown) => {
-        if (!cancelled) setError(errorMessage(err, "Could not check AI assistants."));
-      }
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function toggle() {
-    if (!status || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      setStatus(await setAgentAccessEnabled(!status.enabled));
-    } catch (err) {
-      setError(errorMessage(err, "Could not change AI assistants."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
-  return (
-    <article>
-      <div className="admin-software-version-head">
-        <div>
-          <span>AI assistants</span>
-          <strong>{status === null ? "Checking…" : status.enabled ? "On" : "Off"}</strong>
-        </div>
-        {status?.enabled ? (
-          <span className="admin-current-badge"><Check size={12} /> Enabled</span>
-        ) : (
-          <span className="admin-experimental-badge">Optional</span>
-        )}
-      </div>
-      <p>
-        Lets each listener connect an AI assistant they already use, such as Claude or Codex, for
-        spoiler-free recaps, what to read next, series and achievements, and, if they allow it,
-        getting books they own onto this server. Each listener chooses what their assistant may
-        do in Settings, and an assistant never sees other listeners. What it reads is sent to the
-        company that runs it. Built into the server, so there is nothing to install.
-      </p>
-      {status?.enabled ? (
-        <p className="admin-experiment-detail">
-          {status.assistants
-            ? `${plural(status.assistants, "assistant")} connected by ${plural(status.listeners, "listener")}.`
-            : "No one has connected an assistant yet."}
-          {" "}Turning this off stops them until it is turned back on.
-        </p>
-      ) : null}
-      {error ? <p className="admin-experiment-detail">{error}</p> : null}
-      <div className="admin-update-actions">
-        {isOwner ? (
-          <button type="button" className={status?.enabled ? "quiet-button" : undefined} disabled={status === null || busy} onClick={() => void toggle()}>
-            {busy ? <LoaderCircle size={15} className="spin-icon" /> : <FlaskConical size={15} />}
-            {status?.enabled ? "Disable" : "Enable"}
-          </button>
-        ) : (
-          <span>Only an owner can change experiments.</span>
-        )}
-      </div>
-    </article>
   );
 }

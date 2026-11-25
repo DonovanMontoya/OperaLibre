@@ -46,7 +46,7 @@ Gifts themselves do not travel through this proxy. It is only for you, when you 
 ## 2. Turn gifts on
 
 1. Open OperaLibre in a browser at its HTTPS address and sign in as the owner. The phone apps cannot change these settings.
-2. Go to **Administration → Experiments → Book gifts** and choose **Enable**.
+2. Go to **Administration → Experiments → Book gifts** and turn it on.
 
 ## 3. Set up the broker
 
@@ -143,6 +143,6 @@ Cloudflare's hosted TURN service is not supported yet, and neither are TCP or TL
 
 ## Turning it off
 
-**Administration → Experiments → Book gifts → Disable** stops gifts at once: transfers in progress end, and links already sent stop working until it is turned back on. Your broker settings are kept. To remove them from the server, open **Maintenance** and choose **Remove gift setup**. To stop the broker itself, delete the `operalibre-share-broker` Worker under **Workers & Pages** in the Cloudflare dashboard.
+Turning off **Administration → Experiments → Book gifts** stops gifts at once: transfers in progress end, and links already sent stop working until it is turned back on. Your broker settings are kept. To remove them from the server, open **Maintenance** and choose **Remove gift setup**. To stop the broker itself, delete the `operalibre-share-broker` Worker under **Workers & Pages** in the Cloudflare dashboard.
 
 The broker secrets are stored in the server's database and therefore in its backups. If a backup is exposed, use **Update or reinstall the broker** to give the broker new secrets.

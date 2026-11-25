@@ -1,9 +1,7 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { Check, FlaskConical, LoaderCircle } from "lucide-react";
+import { useState, type FormEvent } from "react";
+import { LoaderCircle } from "lucide-react";
 import {
-  getChapterNotesStatus,
   removeChapterNotesProvider,
-  setChapterNotesEnabled,
   setChapterNotesProvider,
   type ChapterNotesProviderKind,
   type ChapterNotesStatus
@@ -12,71 +10,8 @@ import { errorMessage } from "./formatting";
 
 const DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5";
 
-/** The switch for chapter notes, and the owner's choice of model. */
-export function ChapterNotesExperiment({ isOwner }: { isOwner: boolean }) {
-  const [status, setStatus] = useState<ChapterNotesStatus | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void getChapterNotesStatus().then(loaded => { if (!cancelled) setStatus(loaded); });
-    return () => { cancelled = true; };
-  }, []);
-
-  async function toggle() {
-    if (!status || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      setStatus(await setChapterNotesEnabled(!status.enabled));
-    } catch (failure) {
-      setError(errorMessage(failure, "Could not change chapter notes."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const provider = status?.provider ?? null;
-  return (
-    <article>
-      <div className="admin-software-version-head">
-        <div>
-          <span>Chapter notes</span>
-          <strong>{status === null ? "Checking…" : !status.enabled ? "Off" : provider ? `On, written by ${provider.model}` : "On, transcripts only"}</strong>
-        </div>
-        {status?.enabled ? (
-          <span className="admin-current-badge"><Check size={12} /> Enabled</span>
-        ) : (
-          <span className="admin-experimental-badge">Optional</span>
-        )}
-      </div>
-      <p>
-        Give each chapter a spoiler-free synopsis, a full summary, and the people and places in it.
-        Listeners see them on the book's page, and connected AI assistants can read them, only as far as
-        the listener has got. Books with a follow-along map use their own text; other books are
-        transcribed on this server.
-      </p>
-      <p className="admin-experiment-detail">
-        Transcribing needs the follow-along add-on{status?.enabled ? (status.transcriptionAvailable ? ", which is ready." : ", which is not installed or is off.") : "."}
-        {" "}Writing notes needs a language model. Without one, books are transcribed and assistants write their own recaps.
-        A chapter's text goes to the model you choose only when an administrator makes notes for that book.
-      </p>
-      {error ? <p className="admin-experiment-detail" role="alert">{error}</p> : null}
-      {isOwner ? (
-        <div className="admin-update-actions">
-          <button type="button" className={status?.enabled ? "quiet-button" : undefined} disabled={status === null || busy} onClick={() => void toggle()}>
-            {busy ? <LoaderCircle size={15} className="spin-icon" /> : <FlaskConical size={15} />}
-            {status?.enabled ? "Disable" : "Enable"}
-          </button>
-        </div>
-      ) : null}
-      {status?.enabled && isOwner ? <ProviderForm status={status} onSaved={setStatus} /> : null}
-    </article>
-  );
-}
-
-function ProviderForm({ status, onSaved }: { status: ChapterNotesStatus; onSaved: (status: ChapterNotesStatus) => void }) {
+/** The owner's choice of the model that writes chapter notes. */
+export function ChapterNotesProviderForm({ status, onSaved }: { status: ChapterNotesStatus; onSaved: (status: ChapterNotesStatus) => void }) {
   const saved = status.provider ?? null;
   const [kind, setKind] = useState<ChapterNotesProviderKind>(saved?.kind ?? "anthropic");
   const [model, setModel] = useState(saved?.model ?? DEFAULT_ANTHROPIC_MODEL);
@@ -127,7 +62,6 @@ function ProviderForm({ status, onSaved }: { status: ChapterNotesStatus; onSaved
   return (
     <form className="chapter-notes-provider" onSubmit={event => void save(event)}>
       <fieldset disabled={busy}>
-        <legend>Model that writes the notes</legend>
         <label>
           <span>Provider</span>
           <select value={kind} onChange={event => chooseKind(event.target.value as ChapterNotesProviderKind)}>

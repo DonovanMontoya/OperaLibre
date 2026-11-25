@@ -233,10 +233,8 @@ function Fixture() {
         <label><input type="checkbox" checked={dark} onChange={(e) => setDark(e.target.checked)} /> Dark</label>
       </p>
       <section className="admin-card">
-        <div className="admin-experiment-list">
-          <article>
-            <SyncJobMonitor books={books} syncEnabled={enabled} onOpenBook={() => {}} />
-          </article>
+        <div className="admin-experiment-list experiment-body">
+          <SyncJobMonitor books={books} syncEnabled={enabled} onOpenBook={() => {}} />
         </div>
       </section>
       {/* The reader's own account of the same failed job. */}

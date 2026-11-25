@@ -21,7 +21,6 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AgentAccessExperiment } from "./AgentAccess";
 import { AvatarFace } from "./Avatar";
 import {
   changePassword,
@@ -53,7 +52,7 @@ import {
   updateUserLibationAccess,
   updateUserRole
 } from "./api";
-import { countLabel, errorMessage } from "./formatting";
+import { countLabel, errorMessage, formatFileSize } from "./formatting";
 import type {
   AuthUser,
   Book,
@@ -67,27 +66,16 @@ import type {
   UpdateChannel
 } from "./types";
 import { FRONTEND_VERSION } from "./version";
-import { ExperimentSection } from "./ExperimentSection";
-import { CloudRecognition } from "./CloudRecognition";
 import { CompactNavBar } from "./CompactNavBar";
-import { SyncJobMonitor } from "./SyncJobMonitor";
 import { LibroImports } from "./LibroImports";
 import { LibroCatalog } from "./LibroCatalog";
-import { BookGiftsExperiment } from "./BookGiftsExperiment";
-import { ChapterNotesExperiment } from "./ChapterNotesExperiment";
-import { isDemoMode } from "./demo";
+import { Experiments } from "./Experiments";
 
 type AdminSection = "overview" | "users" | "requests" | "books" | "experiments" | "imports";
 type AccountRole = "owner" | "admin" | "reader";
 
 function isRunningJob(job: JobStatus | null) {
   return !!job && (job.status === "queued" || job.status === "running");
-}
-
-function formatFileSize(bytes: number) {
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
-  if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)} MiB`;
-  return `${Math.max(1, Math.round(bytes / 1024))} KiB`;
 }
 
 export function AdminPanel({
@@ -145,7 +133,8 @@ export function AdminPanel({
   const [syncAddonChecking, setSyncAddonChecking] = useState(false);
   const syncAddonSurveyed = useRef(false);
   const [syncAddonBusy, setSyncAddonBusy] = useState<"install" | "toggle" | "remove" | null>(null);
-  const [cloudRecognition, setCloudRecognition] = useState(false);
+  // Where the experiments are listed when navigation has a column of its own.
+  const [experimentListSlot, setExperimentListSlot] = useState<HTMLElement | null>(null);
   const backupInputRef = useRef<HTMLInputElement>(null);
 
   async function refreshUsers() {
@@ -750,6 +739,7 @@ export function AdminPanel({
             {item === "overview" ? "Overview" : item === "users" ? "Users & access" : item === "requests" ? `Requests${pendingRequests.length ? ` (${pendingRequests.length})` : ""}` : item === "experiments" ? "Experiments" : item === "imports" ? "Imports" : "Downloaded books"}
           </button>
         ))}
+        {section === "experiments" ? <div ref={setExperimentListSlot} className="experiment-side-slot" /> : null}
       </nav>
 
       {error ? <p className="admin-message error">{error}</p> : null}
@@ -969,120 +959,21 @@ export function AdminPanel({
       ) : null}
 
       {section === "experiments" ? (
-        <div className="admin-content">
-          <section className="admin-card admin-software-card">
-            <div className="admin-software-head">
-              <div className="admin-software-copy">
-                <span className="section-label"><FlaskConical size={13} /> Experimental features</span>
-                <h2>Optional server features</h2>
-                <p>
-                  Off until an owner turns them on. Add-ons install separately so the normal
-                  OperaLibre server stays small. Experimental features may change while their
-                  behavior is refined.
-                </p>
-              </div>
-              <div className="admin-software-actions">
-                <button
-                  type="button"
-                  className="quiet-button"
-                  disabled={syncAddonChecking || syncAddonBusy !== null}
-                  onClick={() => void refreshSyncAddon(true)}
-                >
-                  {syncAddonChecking ? <LoaderCircle size={14} className="spin-icon" /> : <RefreshCcw size={14} />}
-                  {syncAddonChecking ? "Checking…" : "Check add-ons"}
-                </button>
-              </div>
-            </div>
-
-            <div className="admin-experiment-list">
-              <article>
-                <div className="admin-software-version-head">
-                  <div>
-                    <span>Follow along</span>
-                    <strong>
-                      {syncAddonChecking && !syncAddon
-                        ? "Checking…"
-                        : syncAddon?.installed
-                          ? syncAddon.installedVersion
-                            ? `Version ${syncAddon.installedVersion}`
-                            : "External installation"
-                          : "Not installed"}
-                    </strong>
-                  </div>
-                  {syncAddon?.enabled ? (
-                    <span className="admin-current-badge"><Check size={12} /> Enabled</span>
-                  ) : syncAddon?.installed ? (
-                    <span className="admin-experimental-badge">Disabled</span>
-                  ) : (
-                    <span className="admin-experimental-badge">Optional</span>
-                  )}
-                </div>
-                <p>
-                  Enables sentence highlighting, sentence seeking, and automatic page turns in the EPUB
-                  reader, including existing sync maps. When disabled, EPUBs open beside the audio without Follow.
-                  {" "}{cloudRecognition
-                    ? "Creates precise sync maps using OpenAI speech recognition, with your API key, and forced alignment on this server."
-                    : "Creates precise sync maps on this server using local speech recognition and forced alignment. Audio stays on this server."} Jobs run one at a time and can use substantial CPU, memory, and disk space. On smaller servers, generation may affect playback.
-                </p>
-                {syncAddon?.packageBytes ? (
-                  <p className="admin-experiment-detail">
-                    Download size: {formatFileSize(syncAddon.packageBytes)}. The recognition model is
-                    downloaded separately on first use.
-                  </p>
-                ) : null}
-                {syncAddon?.message ? <p className="admin-experiment-detail">{syncAddon.message}</p> : null}
-                <div className="admin-update-actions">
-                  {currentUser.isOwner && syncAddon?.canInstall && (!syncAddon.installed || syncAddon.updateAvailable) ? (
-                    <button
-                      type="button"
-                      disabled={syncAddonBusy !== null}
-                      onClick={() => void handleInstallSyncAddon()}
-                    >
-                      {syncAddonBusy === "install" ? <LoaderCircle size={15} className="spin-icon" /> : <Download size={15} />}
-                      {syncAddonBusy === "install" ? "Installing…" : syncAddon.installed ? "Update add-on" : "Install add-on"}
-                    </button>
-                  ) : null}
-                  {currentUser.isOwner && syncAddon?.installed && (syncAddon.canToggle ?? syncAddon.managed) ? (
-                    <button
-                      type="button"
-                      className="quiet-button"
-                      disabled={syncAddonBusy !== null}
-                      onClick={() => void handleToggleSyncAddon()}
-                    >
-                      {syncAddonBusy === "toggle" ? <LoaderCircle size={15} className="spin-icon" /> : <FlaskConical size={15} />}
-                      {syncAddon.enabled ? "Disable" : "Enable"}
-                    </button>
-                  ) : null}
-                  {currentUser.isOwner && syncAddon?.installed && syncAddon.managed ? (
-                    <button
-                      type="button"
-                      className="danger"
-                      disabled={syncAddonBusy !== null}
-                      onClick={() => void handleRemoveSyncAddon()}
-                    >
-                      {syncAddonBusy === "remove" ? <LoaderCircle size={15} className="spin-icon" /> : <Trash2 size={15} />}
-                      {syncAddonBusy === "remove" ? "Removing…" : "Remove"}
-                    </button>
-                  ) : null}
-                  {!currentUser.isOwner && syncAddon?.installed ? <span>Only an owner can change add-ons.</span> : null}
-                  {syncAddon?.releaseUrl ? (
-                    <a className="quiet-button" href={syncAddon.releaseUrl} target="_blank" rel="noreferrer">
-                      <ExternalLink size={14} /> Release details
-                    </a>
-                  ) : null}
-                </div>
-                {/* An updated add-on can gain recognition options, so its choices are read again. */}
-                {syncAddon?.installed ? <CloudRecognition key={syncAddon.installedVersion ?? "external"} isOwner={currentUser.isOwner} onChange={setCloudRecognition} /> : null}
-                <ExperimentSection title="Sync books and activity">
-                  <SyncJobMonitor books={books} onOpenBook={onOpenBook} syncEnabled={syncAddon?.enabled === true} />
-                </ExperimentSection>
-              </article>
-              <AgentAccessExperiment isOwner={currentUser.isOwner} />
-              {currentUser.isOwner && !isDemoMode() ? <BookGiftsExperiment /> : null}
-              {!isDemoMode() ? <ChapterNotesExperiment isOwner={currentUser.isOwner} /> : null}
-            </div>
-          </section>
-        </div>
+        <Experiments
+          isOwner={currentUser.isOwner}
+          books={books}
+          onOpenBook={onOpenBook}
+          listSlot={experimentListSlot}
+          follow={{
+            status: syncAddon,
+            checking: syncAddonChecking,
+            busy: syncAddonBusy,
+            onCheck: () => void refreshSyncAddon(true),
+            onInstall: () => void handleInstallSyncAddon(),
+            onToggle: () => void handleToggleSyncAddon(),
+            onRemove: () => void handleRemoveSyncAddon()
+          }}
+        />
       ) : null}
 
       {section === "users" ? (
