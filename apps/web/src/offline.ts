@@ -1,5 +1,6 @@
 import { Capacitor } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
+import { toBase64 } from "./base64.ts";
 import { demoMediaUrl, isDemoMediaPath, isDemoMode } from "./demo.ts";
 import { getServerStorageKey, getServerUrl } from "./api";
 import {
@@ -168,16 +169,6 @@ const companionFilePath = (book: Book, companion: CompanionFile) =>
 const syncMapFilePath = (book: Book) => `${bookDirectory(book.id)}/sync.json`;
 const companionMediaKind = (companion: CompanionFile) => `companion:${companion.id}`;
 const SYNC_MAP_KIND = "sync";
-
-/** Base64 in chunks: one apply() over a whole ebook overruns the call stack. */
-function toBase64(data: ArrayBuffer) {
-  const bytes = new Uint8Array(data);
-  let binary = "";
-  for (let at = 0; at < bytes.length; at += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
-  }
-  return btoa(binary);
-}
 
 const backgroundDownloadJobId = (book: Pick<Book, "id">, retryMissing = false) =>
   `${sanitizeSegment(getServerStorageKey())}-${sanitizeSegment(book.id)}${retryMissing ? "-missing" : ""}`;
