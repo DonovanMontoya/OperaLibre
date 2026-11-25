@@ -313,6 +313,7 @@ impl UpdateManager {
         .await
         .map_err(|error| anyhow!("Could not save the update channel: {error:?}"))?;
         *self.cache.lock().await = None;
+        *self.sync_addon_cache.lock().await = None;
         *self.frontend_cache.lock().await = None;
         Ok(())
     }
@@ -501,7 +502,7 @@ impl UpdateManager {
             status.message = Some(error.to_string());
         }
 
-        match self.stable_manifest().await {
+        match self.sync_addon_manifest(platform).await {
             Ok(manifest) => {
                 status.release_url = Some(manifest.release_url.clone());
                 match sync_addon_package(&manifest, platform) {
@@ -550,9 +551,9 @@ impl UpdateManager {
         let Some(_guard) = InstallGuard::acquire(&self.installing) else {
             bail!("Another OperaLibre package is already being installed.");
         };
-        let manifest = self.stable_manifest().await?;
         let platform = platform_key()
             .ok_or_else(|| anyhow!("This server platform does not have a sync add-on package."))?;
+        let manifest = self.sync_addon_manifest(platform).await?;
         let package = sync_addon_package(&manifest, platform)?;
         let install = managed_install(self.web_dist_dir.as_deref())?;
         let updates_dir = self.data_dir.join("updates");
@@ -916,8 +917,17 @@ impl UpdateManager {
         })
     }
 
-    // Sync add-on releases remain independent of the selected server channel.
-    async fn stable_manifest(&self) -> anyhow::Result<Manifest> {
+    /// Stable releases list the add-on they shipped with; nightly manifests
+    /// list the newest published add-on, so a standalone add-on release
+    /// reaches nightly installs before the next stable release. Nightly
+    /// installs fall back to stable when the nightly manifest has none.
+    async fn sync_addon_manifest(&self, platform: &str) -> anyhow::Result<Manifest> {
+        if self.channel().await? == UpdateChannel::Nightly
+            && let Ok(manifest) = self.channel_manifest(UpdateChannel::Nightly).await
+            && sync_addon_package(&manifest, platform).is_ok()
+        {
+            return Ok(manifest);
+        }
         let current = Version::parse(&current_version()).ok();
         fetch_manifest(
             &self.client,

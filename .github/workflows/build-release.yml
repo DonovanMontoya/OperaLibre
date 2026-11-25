@@ -6,6 +6,9 @@ on:
       channel:
         type: string
         required: true
+      sync_only:
+        type: boolean
+        default: false
       tag:
         type: string
         default: ""
@@ -60,7 +63,13 @@ jobs:
           SOURCE_NIGHTLY: ${{ inputs.source_nightly }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_EVENT: ${{ inputs.release_event }}
-        run: node script/resolve_release.mjs
+          SYNC_ONLY: ${{ inputs.sync_only }}
+        run: |
+          if [[ "${SYNC_ONLY}" == "true" ]]; then
+            SOURCE_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+            export SOURCE_SHA
+          fi
+          node script/resolve_release.mjs
 
       - name: Checkout release source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -68,7 +77,7 @@ jobs:
           ref: ${{ steps.release-ref.outputs.ref }}
 
       - name: Check nightly compatibility baseline
-        if: steps.release-ref.outputs.channel == 'nightly' && steps.release-ref.outputs.publish == 'true'
+        if: inputs.sync_only != true && steps.release-ref.outputs.channel == 'nightly' && steps.release-ref.outputs.publish == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -89,7 +98,7 @@ jobs:
           JS
 
       - name: Check sync add-on release
-        if: steps.release-ref.outputs.channel == 'stable' && steps.release-ref.outputs.publish == 'true'
+        if: (inputs.sync_only == true || steps.release-ref.outputs.channel == 'stable') && steps.release-ref.outputs.publish == 'true'
         id: sync-addon
         shell: bash
         env:
@@ -205,6 +214,7 @@ jobs:
 
   frontend:
     name: Frontend package
+    if: inputs.sync_only != true
     needs:
       - prepare
       - verify
@@ -678,7 +688,7 @@ jobs:
       - android
       - native
       - publish-sync-addon
-    if: ${{ !cancelled() && !failure() && needs.prepare.outputs.publish == 'true' }}
+    if: ${{ !cancelled() && !failure() && inputs.sync_only != true && needs.prepare.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
@@ -763,6 +773,14 @@ jobs:
             latest_stable="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
             [[ "${latest_stable}" == "${STABLE_TAG}" ]] || { echo "Stable changed during this build; retry nightly." >&2; exit 1; }
             manifest_options+=(--stable-version "${STABLE_TAG#v}")
+            # Nightlies don't build the add-on, but nightly installs still
+            # need to see the published release that matches this source.
+            sync_tag="readalong-sync-v$(node -p 'require("./addons/readalong-sync/package.json").version')"
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${sync_tag}" > "${RUNNER_TEMP}/sync-release.json"; then
+              manifest_options+=(--sync-release "${RUNNER_TEMP}/sync-release.json")
+            else
+              echo "::warning::${sync_tag} is not published; this nightly manifest lists no sync add-on."
+            fi
           fi
           node release-signing-tools/script/release_manifest.mjs \
             --assets release-assets \
