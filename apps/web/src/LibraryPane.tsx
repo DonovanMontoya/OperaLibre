@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { useCarPlay } from "./useCarPlay";
 import type { useFinishFeed } from "./useFinishFeed";
 import type { useOfflineDownloads } from "./useOfflineDownloads";
@@ -279,6 +279,22 @@ export function LibraryPane({
   const audibleNeedsAccount = native && !!libationStatus && allAudibleAccounts.length === 0;
 
   const userMenuWrapRef = useRef<HTMLDivElement>(null);
+  // The pull indicator is fixed to the viewport, so on the Duo its left: 50%
+  // lands on the hinge. Center it over the shelf pane instead, and over the
+  // pane's first leaf when the shelf spreads across a vertical fold.
+  const pullActive = shelfPull.pull > 0 || shelfPull.refreshing;
+  const [pullIndicatorLeft, setPullIndicatorLeft] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (!pullActive) return;
+    const rect = libraryPaneRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const root = document.documentElement;
+    const foldX = root.dataset.foldAxis === "vertical"
+      ? Number.parseFloat(root.style.getPropertyValue("--fold-x"))
+      : Number.NaN;
+    const right = foldX > rect.left && foldX < rect.right ? foldX : rect.right;
+    setPullIndicatorLeft((rect.left + right) / 2);
+  }, [pullActive, libraryPaneRef]);
   // The native sheet has its own scrim; the web dropdown closes on a click
   // anywhere else or on Escape, which hands focus back to its button.
   useEffect(() => {
@@ -439,14 +455,15 @@ export function LibraryPane({
       {native ? (
         <div
           className={`pull-indicator ${shelfPull.refreshing ? "refreshing" : ""}`}
-          style={
-            shelfPull.refreshing
-              ? undefined
+          style={{
+            left: pullIndicatorLeft ?? undefined,
+            ...(shelfPull.refreshing
+              ? {}
               : {
                   opacity: Math.min(1, shelfPull.pull / PULL_REFRESH_THRESHOLD),
                   transform: `translateX(-50%) rotate(${Math.round(shelfPull.pull * 2.8)}deg)`
-                }
-          }
+                })
+          }}
           aria-hidden="true"
         >
           <RefreshCcw size={17} strokeWidth={2} />
