@@ -17,7 +17,8 @@ private struct StreakProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<StreakEntry>) -> Void) {
-        completion(Timeline(entries: [StreakEntry(streak: .read())], policy: .never))
+        let tomorrow = Calendar.current.dateInterval(of: .day, for: Date())?.end
+        completion(Timeline(entries: [StreakEntry(streak: .read())], policy: tomorrow.map { .after($0) } ?? .never))
     }
 }
 
@@ -77,7 +78,7 @@ struct ReadingStreakView: View {
                     .font(.caption2)
             } else {
                 Spacer(minLength: 0)
-                Text("Open OperaLibre to sync your Reading Ledger.").font(.subheadline)
+                Text("Listen in OperaLibre to start a streak.").font(.subheadline)
                 Spacer(minLength: 0)
             }
         }

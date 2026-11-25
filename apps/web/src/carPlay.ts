@@ -1,4 +1,3 @@
-import { readingStreakSnapshot } from "./profileCache";
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 
 /**
@@ -15,7 +14,6 @@ import {
   type CarPlaybackSession
 } from "./carLibrary.ts";
 
-import type { ProfileStats } from "./types";
 
 type CarPlayState = {
   connected: boolean;
@@ -39,8 +37,7 @@ interface CarPlayBridgePlugin {
    */
   setLibrary(options: { snapshot: string }): Promise<void>;
   takeWidgetResume(options: { scope: string }): Promise<{ bookId?: string } | undefined>;
-  hasStreakWidget(): Promise<{ installed: boolean }>;
-  setReadingStreak(options: { current: number; longest: number; activity: boolean[] }): Promise<void>;
+  setReadingStreakScope(options: { scope: string }): Promise<void>;
   clearLibrary(): Promise<void>;
   stopPlayback(options: { bookId: string }): Promise<{ connected: boolean; carOwnedBookId?: string; sessions: string }>;
   getState(): Promise<{ connected: boolean; carOwnedBookId?: string; sessions: string }>;
@@ -85,6 +82,7 @@ const libraryAccess = new CarLibraryAccess();
 
 export function beginCarLibrarySession(scope: string) {
   libraryAccess.begin(scope);
+  if (supportsCarPlay()) void CarPlayBridge.setReadingStreakScope({ scope }).catch(console.error);
 }
 
 export async function clearCarLibrary() {
@@ -108,15 +106,6 @@ export function watchWidgetResume(scope: string, resume: (id: string) => void) {
       await receive();
     }).catch(console.error);
   return () => { active = false; void listener?.remove(); };
-}
-
-export async function hasStreakWidget() {
-  return supportsCarPlay() && (await CarPlayBridge.hasStreakWidget()).installed;
-}
-
-export async function syncReadingStreak(scope: string, stats: ProfileStats) {
-  if (!supportsCarPlay() || !libraryAccess.allows(scope)) return;
-  await CarPlayBridge.setReadingStreak(readingStreakSnapshot(stats));
 }
 
 export async function syncCarLibrary(snapshot: CarLibrarySnapshot) {

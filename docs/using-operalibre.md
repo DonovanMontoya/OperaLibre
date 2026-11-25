@@ -184,7 +184,7 @@ To reach the same server from more than one network, save its other addresses un
 
 On iPhone or iPad, add OperaLibre’s **Continue listening** widget from the Home Screen widget gallery. Choose small for the cover and Resume, medium for the author and time left, or large for a progress bar as well. Tap the widget to open OperaLibre and resume the displayed book. If the widget is empty, play an audiobook in the app first.
 
-Choose **Reading streak** in the same gallery to see consecutive reading days. Medium and large also show your longest streak and recent listening days. The date tells you when the app last synced your Reading Ledger. Open the app while connected to refresh it. Device-only libraries do not measure streaks.
+Choose **Reading streak** in the same gallery to see consecutive reading days. Medium and large also show your longest streak and recent listening days. The widget counts listening on this device, including downloaded books played offline. It starts counting after you update to a version with on-device streak tracking. The in-app Reading Ledger shows the listening history measured by your server.
 
 #### Siri and Shortcuts
 

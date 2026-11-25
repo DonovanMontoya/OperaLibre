@@ -7,8 +7,7 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "CarPlayBridgePlugin"
     public let jsName = "CarPlayBridge"
     public let pluginMethods: [CAPPluginMethod] = [
-        CAPPluginMethod(name: "hasStreakWidget", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "setReadingStreak", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setReadingStreakScope", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "takeWidgetResume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setLibrary", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clearLibrary", returnType: CAPPluginReturnPromise),
@@ -52,46 +51,21 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    @objc public func hasStreakWidget(_ call: CAPPluginCall) {
-        WidgetCenter.shared.getCurrentConfigurations { result in
-            let installed = (try? result.get())?.contains { $0.kind == ReadingStreak.kind } ?? false
-            call.resolve(["installed": installed])
-        }
-    }
-
-    @objc public func setReadingStreak(_ call: CAPPluginCall) {
-        guard let current = call.getInt("current"), current >= 0,
-              let longest = call.getInt("longest"), longest >= current,
-              let activity = call.getArray("activity", Bool.self), activity.count <= 28,
-              let file = ReadingStreak.file else {
-            call.reject("Invalid reading streak.")
+    @objc public func setReadingStreakScope(_ call: CAPPluginCall) {
+        guard let scope = call.getString("scope"), !scope.isEmpty else {
+            call.reject("Invalid reading streak scope.")
             return
         }
         DispatchQueue.main.async {
-            let streak = ReadingStreak(current: current, longest: longest, activity: activity,
-                                       asOf: Calendar.current.startOfDay(for: Date()))
-            do {
-                if ReadingStreak.read() != streak {
-                    try JSONEncoder().encode(streak).write(to: file, options: .atomic)
-                    WidgetCenter.shared.reloadTimelines(ofKind: ReadingStreak.kind)
-                }
-                call.resolve()
-            } catch {
-                call.reject("Could not save reading streak.")
-            }
+            ReadingStreakStore.shared.select(scope)
+            call.resolve()
         }
     }
 
     @objc public func clearLibrary(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             self.coordinator.clearLibrary()
-            if let file = ReadingStreak.file, FileManager.default.fileExists(atPath: file.path) {
-                do { try FileManager.default.removeItem(at: file) } catch {
-                    call.reject("Could not clear reading streak.")
-                    return
-                }
-            }
-            WidgetCenter.shared.reloadTimelines(ofKind: ReadingStreak.kind)
+            ReadingStreakStore.shared.select(nil)
             call.resolve()
         }
     }
@@ -147,5 +121,73 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
             self.coordinator.acknowledgeSessions(acknowledged)
             call.resolve()
         }
+    }
+}
+
+// The native player and the account bridge both update this store on the main queue.
+final class ReadingStreakStore {
+    static let shared = ReadingStreakStore()
+    private static let scopeKey = "reading-streak.active-scope"
+    private let defaults = UserDefaults.standard
+    private var scope: String?
+    private var history = ReadingStreakHistory()
+    private var unsavedSeconds = 0.0
+
+    private init() {
+        scope = defaults.string(forKey: Self.scopeKey)
+        history = loadHistory()
+    }
+
+    func select(_ scope: String?) {
+        guard self.scope != scope else { return }
+        saveHistory()
+        self.scope = scope
+        defaults.set(scope, forKey: Self.scopeKey)
+        history = loadHistory()
+        unsavedSeconds = 0
+        if let file = ReadingStreakHistory.file {
+            try? FileManager.default.removeItem(at: file)
+        }
+        publishHistory()
+    }
+
+    func record(seconds: Double, on date: Date, playbackScope: String) {
+        guard let scope, playbackScope.hasPrefix(scope + ":") else { return }
+        let result = history.record(seconds: seconds, on: date)
+        if result == .alreadyActive { return }
+        unsavedSeconds += seconds
+        if unsavedSeconds >= 2 || result == .becameActive {
+            saveHistory()
+        }
+        if result == .becameActive {
+            publishHistory()
+        }
+    }
+
+    private var historyKey: String? {
+        scope.map { "reading-streak.history." + ResumeWidgetBook.identity(for: $0) }
+    }
+
+    private func loadHistory() -> ReadingStreakHistory {
+        guard let historyKey, let data = defaults.data(forKey: historyKey),
+              let history = try? JSONDecoder().decode(ReadingStreakHistory.self, from: data) else {
+            return ReadingStreakHistory()
+        }
+        return history
+    }
+
+    private func saveHistory() {
+        guard unsavedSeconds > 0, let historyKey,
+              let data = try? JSONEncoder().encode(history) else { return }
+        defaults.set(data, forKey: historyKey)
+        unsavedSeconds = 0
+    }
+
+    private func publishHistory() {
+        if scope != nil, let file = ReadingStreakHistory.file,
+           let data = try? JSONEncoder().encode(history) {
+            try? data.write(to: file, options: .atomic)
+        }
+        WidgetCenter.shared.reloadTimelines(ofKind: ReadingStreak.kind)
     }
 }

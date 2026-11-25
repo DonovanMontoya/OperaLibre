@@ -281,6 +281,33 @@ struct CarLibraryTests {
         let emptyBase = try! JSONDecoder().decode(CarPlaybackSession.self, from: try! JSONEncoder().encode(based))
         precondition(emptyBase.baseUpdatedAt == "", "an empty base reaches the web player")
 
+        try! checkLocalReadingStreak()
         print("CarLibraryTests passed")
     }
+
+    private static func checkLocalReadingStreak() throws {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        func day(_ offset: Int) -> Date {
+            calendar.date(byAdding: .day, value: offset, to: today)!
+        }
+
+        var history = ReadingStreakHistory()
+        precondition(history.record(seconds: 18, on: day(-2)) == .accumulated)
+        let saved = try JSONEncoder().encode(history)
+        history = try JSONDecoder().decode(ReadingStreakHistory.self, from: saved)
+        precondition(history.record(seconds: 12, on: day(-2)) == .accumulated)
+        precondition(history.streak(asOf: day(-2)).current == 0)
+        precondition(history.record(seconds: 1, on: day(-2)) == .becameActive)
+        precondition(history.record(seconds: 30, on: day(-2)) == .alreadyActive)
+        precondition(history.record(seconds: 31, on: day(-1)) == .becameActive)
+
+        let streak = history.streak(asOf: today)
+        precondition(streak.current == 2 && streak.longest == 2)
+        precondition(streak.activity.count == 28)
+        precondition(Array(streak.activity.suffix(3)) == [true, true, false])
+        let expired = history.streak(asOf: day(1))
+        precondition(expired.current == 0 && expired.longest == 2)
+    }
+
 }
