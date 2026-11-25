@@ -22,6 +22,26 @@ private struct Provider: TimelineProvider {
     }
 }
 
+/// The open book from the app icon, without its background and sound bars; fills with the foreground style.
+private struct BookMark: Shape {
+    func path(in rect: CGRect) -> Path {
+        var pages = Path()
+        for mirrored in [false, true] {
+            // Points on the icon's 1024 grid, normalised to the book's 713 × 553 bounds.
+            func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                let x = (x - 155) / 713, y = (y - 295) / 553
+                return CGPoint(x: rect.minX + (mirrored ? 1 - x : x) * rect.width, y: rect.minY + y * rect.height)
+            }
+            pages.move(to: point(155, 295))
+            pages.addQuadCurve(to: point(502, 640), control: point(430, 380))
+            pages.addLine(to: point(502, 848))
+            pages.addQuadCurve(to: point(155, 690), control: point(380, 700))
+            pages.closeSubpath()
+        }
+        return pages
+    }
+}
+
 struct ResumeWidgetView: View {
     @Environment(\.widgetFamily) private var family
     let book: ResumeWidgetBook?
@@ -117,27 +137,18 @@ struct ResumeWidgetView: View {
         }
     }
 
-    @ViewBuilder private var action: some View {
-        let label = Label("Resume", systemImage: "play.fill").font(.caption.bold())
+    // Solid rather than glass: WidgetKit renders widgets as snapshots and drops live glass effects.
+    private var action: some View {
+        Label("Resume", systemImage: "play.fill").font(.caption.bold())
             .padding(.horizontal, 12).padding(.vertical, 6)
-        let solid = label.foregroundStyle(.white).background(ink, in: Capsule())
-        #if compiler(>=6.2)
-        if #available(iOS 26, *), !reduceTransparency {
-            label.foregroundStyle(ink)
-                .glassEffect(.regular.tint(.white.opacity(0.25)), in: Capsule())
-        } else {
-            solid
-        }
-        #else
-        solid
-        #endif
+            .foregroundStyle(.white).background(ink, in: Capsule())
     }
 
     private var content: some View {
         GeometryReader { geo in
             if book == nil {
                 VStack(alignment: .leading, spacing: 8) {
-                    Image(systemName: "headphones").font(.title2)
+                    BookMark().frame(width: 28, height: 22).accessibilityHidden(true)
                     Text("Continue listening").font(.headline)
                     Text("Start an audiobook in OperaLibre.").font(.caption)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
@@ -145,7 +156,7 @@ struct ResumeWidgetView: View {
                 HStack(spacing: 14) {
                     artwork(min(geo.size.height, geo.size.width * 0.40))
                     VStack(alignment: .leading, spacing: 4) {
-                        Image(systemName: "headphones").font(.subheadline.bold())
+                        BookMark().frame(width: 24, height: 19)
                             .frame(maxWidth: .infinity, alignment: .trailing)
                             .accessibilityHidden(true)
                         Spacer(minLength: 0)
