@@ -112,7 +112,7 @@ html.native-app.platform-ios:not(.dark-mode)[data-color-vision] :is(.library-pan
   --spine-gold-rgb: var(--cv-accent-rgb);
 }
 
-html[data-color-vision] :is(.admin-message.error, .admin-message.success, .admin-current-badge, .admin-experimental-badge) {
+html[data-color-vision] :is(.admin-message.error, .admin-message.success, .admin-current-badge) {
   background: transparent;
   border: 1px solid currentColor;
 }

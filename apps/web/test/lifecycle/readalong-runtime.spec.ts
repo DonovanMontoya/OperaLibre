@@ -42,25 +42,28 @@ for (const source of ["path", "manual", "managed", "older-server"] as const) {
       });
       await page.goto(`${url}test/readalong-runtime.html?role=${role}`);
       await page.getByRole("button", { name: "Experiments", exact: true }).click();
-      await expect(page.getByText("External installation", { exact: true })).toBeVisible();
-      const runtime = page.locator(".admin-experiment-list > article").filter({ has: page.getByText("Follow along", { exact: true }) });
+      // The list is the page on a narrow window and sits beside the open experiment on a wide one.
+      await page.getByRole("button", { name: /^Follow along/ }).filter({ visible: true }).click();
+      const runtime = page.getByRole("region", { name: "Follow along", exact: true });
+      await runtime.getByRole("tab", { name: "Add-on", exact: true }).click();
+      await expect(runtime.getByText("External installation", { exact: true })).toBeVisible();
       if (source === "path" && role === "owner") {
         await runtime.screenshot({ path: testInfo.outputPath("readalong-runtime.png") });
       }
-      const disable = runtime.getByRole("button", { name: "Disable", exact: true });
-      const remove = runtime.getByRole("button", { name: "Remove", exact: true });
+      const enabled = runtime.getByRole("switch", { name: "Follow along", exact: true });
+      const remove = runtime.getByRole("button", { name: "Remove add-on", exact: true });
       if (role !== "owner" || source === "manual") {
-        await expect(disable).toHaveCount(0);
-        await expect(runtime.getByRole("button", { name: "Enable", exact: true })).toHaveCount(0);
+        await expect(enabled).toHaveCount(0);
         await expect(remove).toHaveCount(0);
         return;
       }
-      await expect(disable).toBeEnabled();
+      await expect(enabled).toBeChecked();
       await expect(remove).toHaveCount(managed ? 1 : 0);
-      await disable.click();
+      await enabled.click();
+      await expect(enabled).not.toBeChecked();
       await expect(page.getByLabel("Sentence following")).toHaveText("Unavailable");
-      await runtime.getByRole("button", { name: "Enable", exact: true }).click();
-      await expect(disable).toBeEnabled();
+      await enabled.click();
+      await expect(enabled).toBeChecked();
       await expect(page.getByLabel("Sentence following")).toHaveText("Available");
     });
   }
