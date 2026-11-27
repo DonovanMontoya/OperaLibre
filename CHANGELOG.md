@@ -15,12 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Games has two new games in place of Word Grid: Shelf Sort, where you move books between stacks until each stack holds one color, and Cover Grid, a sliding puzzle made from one of your own covers. ([#515](https://github.com/DonovanMontoya/OperaLibre/pull/515))
 - The web player can pop out into its own small window from Pop out in the player or the window button on the mini player. Chrome and Edge keep the window on top of other windows. ([#513](https://github.com/DonovanMontoya/OperaLibre/pull/513))
 - Listeners can save private audio clips. The Clip ribbon on the cover in Now Playing saves the last 30 seconds and the next 10, and a clip can be named, trimmed, shared as an audio file, or used to continue listening from that point. Clips are off by default. Turn on Audio clips under Beta Features in Settings or the account menu. Only the listener who saved a clip can see it. ([#305](https://github.com/DonovanMontoya/OperaLibre/pull/305))
+- Settings → Display offers eight Home Screen icons on iOS and Android. The choice applies to the device, and Classic restores the original icon. ([#570](https://github.com/DonovanMontoya/OperaLibre/pull/570))
+- Administration → Experiments lists the experiments with their state and opens one at a time. Where Administration has a navigation column, the list sits beside the open experiment. ([#565](https://github.com/DonovanMontoya/OperaLibre/pull/565))
+- Nightly builds now offer new sync add-on releases that match the add-on version in their source. ([#563](https://github.com/DonovanMontoya/OperaLibre/pull/563))
 
 ### Changed
 
 - The game picker in the apps is a row of tabs, and game names stay inside their tabs at large text sizes. ([#531](https://github.com/DonovanMontoya/OperaLibre/pull/531))
 - Book previews start sooner, and in the apps a downloaded book previews from the copy on the device. ([#530](https://github.com/DonovanMontoya/OperaLibre/pull/530))
-- The one-line installer checks the release's signature before installing when a recent OpenSSL is available, and warns when it can only check the download's checksum. On machines that can check the signature, it no longer installs releases older than 0.4.6. ([#522](https://github.com/DonovanMontoya/OperaLibre/pull/522))
+- The one-line installer now requires a verified release signature before it installs, and explains how to set up OpenSSL 3 when it cannot check one. It no longer installs releases older than 0.4.6. ([#522](https://github.com/DonovanMontoya/OperaLibre/pull/522)), ([#551](https://github.com/DonovanMontoya/OperaLibre/pull/551))
+- Chapter notes start collapsed behind a toggle that shows the chapter count and the current chapter, and fold back up when you are done. ([#561](https://github.com/DonovanMontoya/OperaLibre/pull/561))
+- English follow-along sync recognizes speech with NVIDIA Parakeet models, sized to the server. ([#562](https://github.com/DonovanMontoya/OperaLibre/pull/562))
 
 ### Fixed
 
@@ -34,6 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The apps no longer offer an Open link for companion files downloaded to the device, which on Android could let an HTML companion run as part of the app. ([#521](https://github.com/DonovanMontoya/OperaLibre/pull/521))
 - Books with a large, full-resolution embedded cover keep their cover, title, author, and chapters. ([#510](https://github.com/DonovanMontoya/OperaLibre/pull/510))
 - New follow-along maps keep their timing where narration resumes after a stretch of noise. ([#502](https://github.com/DonovanMontoya/OperaLibre/pull/502))
+- The Reading Streak widget on iOS now counts listening done offline, because the app records daily listening time on the device. ([#566](https://github.com/DonovanMontoya/OperaLibre/pull/566))
+- The medium and large Continue listening widgets show the Resume button, and the corner icon is now the open book from the app icon. ([#568](https://github.com/DonovanMontoya/OperaLibre/pull/568))
+- Text and icons that were hard to read are legible in every appearance. The worst case was the Saved clips sheet in the light themes. ([#569](https://github.com/DonovanMontoya/OperaLibre/pull/569))
+- On the Duo, the shelf refresh spinner is centered over the shelf and availability badges stay in place. ([#564](https://github.com/DonovanMontoya/OperaLibre/pull/564))
+- On iOS, your listening position is saved before a pause finishes, and again when the audio route changes or the app goes to the background. ([#560](https://github.com/DonovanMontoya/OperaLibre/pull/560))
+- Reopening a book after listening offline no longer leaves the player on the old position when another device has listened further on. ([#550](https://github.com/DonovanMontoya/OperaLibre/pull/550))
+- On iOS, web content stays visible when you resize a window, and tab controls and touch routing line up in the rail layout. ([#552](https://github.com/DonovanMontoya/OperaLibre/pull/552)), ([#559](https://github.com/DonovanMontoya/OperaLibre/pull/559))
+- CarPlay stops at an unavailable track instead of skipping it, and keeps your listening progress until it has been saved. ([#553](https://github.com/DonovanMontoya/OperaLibre/pull/553)), ([#558](https://github.com/DonovanMontoya/OperaLibre/pull/558))
+- Android downloads no longer get stuck when one finishes while the download worker is shutting down. ([#554](https://github.com/DonovanMontoya/OperaLibre/pull/554))
+- A managed update that was applied but whose confirmation was lost now recovers without restoring old data. ([#557](https://github.com/DonovanMontoya/OperaLibre/pull/557))
 
 ## [0.5.5] - 2026-11-15
 
