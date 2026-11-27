@@ -26568,3 +26568,34 @@ html:not(.native-app) .book-heading .book-quick-start .book-quick-return {
     transition: none;
   }
 }
+
+.app-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.app-icon-grid button {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 8px 2px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-size: .8rem;
+  cursor: pointer;
+}
+.app-icon-grid button > span { position: relative; }
+.app-icon-grid img { display: block; border-radius: 12px; }
+.app-icon-grid [aria-pressed="true"] img { outline: 2px solid currentColor; outline-offset: 2px; }
+.app-icon-grid svg {
+  position: absolute;
+  right: -5px;
+  bottom: -4px;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--paper);
+  padding: 2px;
+}

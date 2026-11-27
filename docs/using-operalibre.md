@@ -419,6 +419,8 @@ Turn on **Stronger visual cues** for outlined selections, underlined links, patt
 
 ## Light and dark themes
 
+On iPhone, iPad, and Android, open **Settings → Display → App icon** to change the home screen icon for this device. Choose **Classic** to restore the original.
+
 The iPhone and iPad apps can turn dark with your device or stay light or dark all the time; choose under **Settings → Display → Appearance**. **Themes**, just below it, sets how each appearance looks, with the light themes (**Parchment**, **Linen**, **Sage**, **Harbor**, **Pure White**) beside the dark ones (**Warm**, **Graphite**, **Midnight**, **Reading Room**, **True Black**). Each choice is remembered on the device and applies only while the app is in that appearance, so with **System** you can pick one of each. The Shelf and Games follow the appearance like every other screen.
 
 The iPhone and iPad apps also follow the text size set in iOS (**Settings → Display & Brightness → Text Size**, or **Accessibility → Display & Text Size → Larger Text** for the largest sizes). The ebook reader keeps its own text size under **Aa**.

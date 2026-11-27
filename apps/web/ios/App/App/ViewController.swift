@@ -71,11 +71,40 @@ class ViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(CarPlayBridgePlugin())
         bridge?.registerPluginInstance(NativeTabsPlugin())
         bridge?.registerPluginInstance(DeviceFoldPlugin())
+        bridge?.registerPluginInstance(AppIconPlugin())
         webView?.scrollView.bounces = false
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             webView?.scrollView.topEdgeEffect.isHidden = true
         }
         #endif
+    }
+}
+
+@objc(AppIconPlugin)
+final class AppIconPlugin: CAPPlugin, CAPBridgedPlugin {
+    let identifier = "AppIconPlugin"
+    let jsName = "AppIcon"
+    let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "current", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "select", returnType: CAPPluginReturnPromise)
+    ]
+
+    @objc func current(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            let app = UIApplication.shared
+            guard app.supportsAlternateIcons else { call.resolve(); return }
+            call.resolve(["name": app.alternateIconName ?? "Classic"])
+        }
+    }
+
+    @objc func select(_ call: CAPPluginCall) {
+        guard let name = call.getString("name") else { call.reject("Missing icon name"); return }
+        DispatchQueue.main.async {
+            UIApplication.shared.setAlternateIconName(name == "Classic" ? nil : name) { error in
+                if let error { call.reject(error.localizedDescription); return }
+                call.resolve(["name": name])
+            }
+        }
     }
 }

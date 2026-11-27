@@ -1,3 +1,4 @@
+import { AppIconSetting } from "./AppIconSetting";
 import type { ColorVision } from "./colorVision";
 import { ColorVisionSettings } from "./ColorVisionSettings";
 import { DemoMediaCredits } from "./DemoMediaCredits";
@@ -163,6 +164,7 @@ export function DisplaySettings({
           <ThemeColumn label="Dark" themes={DARK_THEMES} selected={darkTheme} select={updateDarkTheme} />
         </div>
       </details> : null}
+      <AppIconSetting />
       <ColorVisionSettings colorVision={colorVision} strongerVisualCues={strongerVisualCues}
         updateColorVision={updateColorVision} toggleStrongerVisualCues={toggleStrongerVisualCues} />
       {rotationLockAvailable ? <div className="settings-toggle-row">
