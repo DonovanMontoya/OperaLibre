@@ -1860,7 +1860,7 @@ async fn get_chapter_notes(
     if !chapter_notes::experiment_enabled(state).await {
         return Err("Chapter notes are not turned on for this server.".into());
     }
-    let Some(notes) = chapter_notes::load_notes(state, &book.id)
+    let Some(notes) = chapter_notes::load_notes(&state.database, &book.id)
         .await
         .filter(|notes| !notes.chapters.is_empty())
     else {

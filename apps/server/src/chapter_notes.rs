@@ -364,10 +364,9 @@ fn notes_document(book_id: &str) -> String {
     format!("{NOTES_DOCUMENT_PREFIX}{book_id}")
 }
 
-pub(crate) async fn load_notes(state: &AppState, book_id: &str) -> Option<BookNotes> {
+pub(crate) async fn load_notes(database: &Database, book_id: &str) -> Option<BookNotes> {
     let name = notes_document(book_id);
-    let payload = state
-        .database
+    let payload = database
         .call(move |db| read_document(db, &name))
         .await
         .ok()
@@ -471,7 +470,7 @@ pub(crate) async fn transcript_spans(
     book_id: &str,
     heard_through: f64,
 ) -> Vec<TranscriptSpan> {
-    let Some(notes) = load_notes(state, book_id).await else {
+    let Some(notes) = load_notes(&state.database, book_id).await else {
         return Vec::new();
     };
     let mut spans = Vec::new();
@@ -829,7 +828,9 @@ async fn generate(
         .map_err(|_| {
             GenerateError::Failed("Could not prepare a connection to the model provider.".into())
         })?;
-    let mut notes = load_notes(state, book_id).await.unwrap_or_default();
+    let mut notes = load_notes(&state.database, book_id)
+        .await
+        .unwrap_or_default();
     // Notes for chapters the book no longer has would mislead.
     notes.chapters.retain(|note| {
         plans.iter().any(|plan| {
@@ -1312,13 +1313,15 @@ pub(crate) struct BookChapterNotes {
     generation: Option<GenerationStatus>,
 }
 
-async fn book_notes_response(state: &AppState, book_id: &str) -> BookChapterNotes {
-    let notes = load_notes(state, book_id).await;
+async fn book_notes_response(database: &Database, book_id: &str) -> BookChapterNotes {
+    // A successful run clears its status after saving the final chapter.
+    // Read status first so a completed run cannot return an older chapter list.
     let generation = GENERATIONS
         .lock()
         .await
         .get(book_id)
         .map(|generation| generation.status.clone());
+    let notes = load_notes(database, book_id).await;
     BookChapterNotes {
         book_id: book_id.to_string(),
         updated_at: notes.as_ref().map(|notes| notes.updated_at.clone()),
@@ -1340,7 +1343,7 @@ pub(crate) async fn get_book_chapter_notes(
     Path(book_id): Path<String>,
 ) -> Result<Json<BookChapterNotes>, ApiError> {
     ensure_book(&state, &auth, &book_id).await?;
-    Ok(Json(book_notes_response(&state, &book_id).await))
+    Ok(Json(book_notes_response(&state.database, &book_id).await))
 }
 
 pub(crate) async fn generate_book_chapter_notes(
@@ -1397,7 +1400,7 @@ pub(crate) async fn generate_book_chapter_notes(
             guard,
         ));
     }
-    Ok(Json(book_notes_response(&state, &book_id).await))
+    Ok(Json(book_notes_response(&state.database, &book_id).await))
 }
 
 /// Stops generation and forgets the book's notes and transcripts.
@@ -1424,6 +1427,68 @@ pub(crate) async fn delete_book_chapter_notes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_generation_shows_the_final_chapter() {
+        tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap()
+            .block_on(async {
+                let dir = tempfile::tempdir().unwrap();
+                let database = Database::open(&dir.path().join("notes.db")).unwrap();
+                let book_id = mint_identity_id();
+                let mut generations = GENERATIONS.lock().await;
+                generations.insert(
+                    book_id.clone(),
+                    Generation {
+                        status: GenerationStatus {
+                            state: "running",
+                            step: "Writing the final chapter".into(),
+                            completed: 0,
+                            total: 1,
+                            error: None,
+                        },
+                        cancel: Arc::default(),
+                        running: Arc::default(),
+                        started: Arc::new(AtomicBool::new(true)),
+                    },
+                );
+                let mut response = std::pin::pin!(book_notes_response(&database, &book_id));
+
+                // Start the response before the final write. With one blocking
+                // worker, this query drains any read already queued by it.
+                let first_poll =
+                    std::future::poll_fn(|cx| std::task::Poll::Ready(response.as_mut().poll(cx)))
+                        .await;
+                assert!(first_poll.is_pending());
+                database.call(|_| Ok(())).await.unwrap();
+
+                let document = notes_document(&book_id);
+                let stored = serde_json::json!({
+                    "chapters": [{
+                        "index": 0,
+                        "title": "Final chapter",
+                        "startSeconds": 0.0,
+                        "endSeconds": 60.0,
+                        "source": "ebook",
+                        "charactersOfText": 21,
+                        "summary": "The end."
+                    }]
+                });
+                database
+                    .transaction(move |db| write_document(db, &document, &stored.to_string()))
+                    .await
+                    .unwrap();
+                generations.remove(&book_id);
+                drop(generations);
+
+                let response = response.await;
+                assert!(response.generation.is_none());
+                assert_eq!(response.chapters.len(), 1);
+                assert_eq!(response.chapters[0].summary.as_deref(), Some("The end."));
+            });
+    }
 
     #[test]
     fn audio_pieces_follow_a_chapter_across_files_in_windows() {
