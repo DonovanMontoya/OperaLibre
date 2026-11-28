@@ -1772,9 +1772,28 @@ fn login_throttle_locks_after_max_failures() {
 }
 
 #[cfg(unix)]
-pub(crate) fn fake_libation_state(root: &std::path::Path) -> (super::AppState, std::path::PathBuf) {
+fn write_fake_libation_cli(path: &std::path::Path, script: &str) {
     use std::os::unix::fs::PermissionsExt;
 
+    // Open the script for writing in a separate process. A concurrent fork
+    // from the test process could otherwise inherit the writer and make exec
+    // fail with ETXTBSY even after the test closes its descriptor.
+    let status = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            r#"printf '%s' "$1" > "$2""#,
+            "write-libation-fixture",
+            script,
+        ])
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "could not write {}", path.display());
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+pub(crate) fn fake_libation_state(root: &std::path::Path) -> (super::AppState, std::path::PathBuf) {
     let library_root = root.join("library");
     let data_dir = root.join("data");
     std::fs::create_dir_all(&library_root).unwrap();
@@ -1896,10 +1915,7 @@ exit 0
         broken = root.join("libation-broken-account").display(),
         shared = root.join("libation-shared-asin").display()
     );
-    std::fs::write(&cli_path, script).unwrap();
-    let mut permissions = std::fs::metadata(&cli_path).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&cli_path, permissions).unwrap();
+    write_fake_libation_cli(&cli_path, &script);
 
     let database = super::Database::open(&data_dir.join("operalibre.db")).unwrap();
     let state = super::AppState {
@@ -8770,11 +8786,10 @@ async fn shared_audible_download_falls_back_without_finishing_the_job_early() {
             root.path().join("libation-export.json").display(),
             root.path().join("attempts.log").display()
         );
-        std::fs::write(
+        write_fake_libation_cli(
             cli,
-            script.replace("asins=\"\"", &format!("{hook}asins=\"\"")),
-        )
-        .unwrap();
+            &script.replace("asins=\"\"", &format!("{hook}asins=\"\"")),
+        );
         let created = super::liberate_profile_libation_book(
             super::State(state.clone()),
             super::Extension(admin_user()),
@@ -9020,14 +9035,13 @@ fi
 "#,
         root.join("libation-accounts.tsv").display()
     );
-    std::fs::write(
+    write_fake_libation_cli(
         cli,
-        source.replace(
+        &source.replace(
             "command=\"$1\"\nshift\n",
             &format!("command=\"$1\"\nshift\n{login}"),
         ),
-    )
-    .unwrap();
+    );
     state
 }
 
@@ -9683,17 +9697,16 @@ async fn libation_reconnect_reports_a_failed_account_listing() {
     let cli = state.libation_config.cli_path.as_ref().unwrap();
     let source = std::fs::read_to_string(cli).unwrap();
     let listed_once = root.path().join("listed-once");
-    std::fs::write(
+    write_fake_libation_cli(
         cli,
-        source.replace(
+        &source.replace(
             "if [ \"$command\" = \"list-accounts\" ]; then",
             &format!(
                 "if [ \"$command\" = \"list-accounts\" ]; then\n  if [ -f '{marker}' ]; then\n    printf 'Account settings are locked\\n' >&2\n    exit 1\n  fi\n  : > '{marker}'",
                 marker = listed_once.display()
             ),
         ),
-    )
-    .unwrap();
+    );
     let error = super::start_libation_account_login(
         super::State(state.clone()),
         super::AdminUser(admin_user()),
@@ -9733,17 +9746,16 @@ async fn libation_status_preserves_legacy_accounts_without_probing_during_sign_i
     let cli = state.libation_config.cli_path.as_ref().unwrap();
     let source = std::fs::read_to_string(cli).unwrap();
     let probe_log = root.path().join("unexpected-probes.log");
-    std::fs::write(
+    write_fake_libation_cli(
         cli,
-        source.replace(
+        &source.replace(
             "if [ \"$command\" = \"list-accounts\" ]; then",
             &format!(
                 "if [ \"$command\" = \"list-accounts\" ]; then\n  printf 'probe\\n' >> '{}'",
                 probe_log.display()
             ),
         ),
-    )
-    .unwrap();
+    );
     let status = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         super::libation_status(super::State(state.clone()), super::AdminUser(admin_user())),
@@ -9831,11 +9843,10 @@ async fn libation_auto_import_uses_each_shared_accounts_purchase_status() {
             "  if [ -f '{}' ]",
             root.path().join("libation-shared-asin").display()
         );
-        std::fs::write(
+        write_fake_libation_cli(
             cli,
-            source.replace(&shared_condition, &(hook + &shared_condition)),
-        )
-        .unwrap();
+            &source.replace(&shared_condition, &(hook + &shared_condition)),
+        );
         let write_export = |account: &str, titles: &[(&str, bool)]| {
             let records = titles
                 .iter()
